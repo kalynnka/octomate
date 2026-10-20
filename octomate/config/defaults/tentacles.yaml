@@ -17,8 +17,8 @@
 
 # tentacles:
 
-  # Native Claude and Codex sessions through the ACP API. Adapters start only when
-  # a client initializes a connection. Declare this once, under any unused key.
+  # Expose enabled agents and their models through one ACP API.
+  # Declare this once, under any unused key.
   #
   # acp:
   #   type: acp

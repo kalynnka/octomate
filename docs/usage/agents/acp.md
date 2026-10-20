@@ -1,12 +1,12 @@
 # ACP
 
 !!! note "WIP"
-    ACP support in Octomate is still in development. The features under
-    [Coming soon](#coming-soon) are planned and are not available yet.
+    ACP support is still in development. The features under
+    [Coming soon](#coming-soon) are not available yet.
 
-Use ACP to run Claude or Codex through Octomate. Each connection owns its
-native sessions, receives streaming updates and answers the agent's permission
-requests. Work runs as the Octomate service account.
+Use ACP to work with Octomate's enabled agents. Your client connects to one
+Octomate agent and chooses a model from the available options. Changing that
+choice keeps the same session and thread history.
 
 ## Connect
 
@@ -19,80 +19,76 @@ tentacles:
     type: acp
 ```
 
-The registry key can be any unused tentacle id. Declare ACP once per deployment.
-Omitting the block or setting `enabled: false` leaves the ACP API unavailable.
-ACP registers one agent under that key. Claude and Codex are provider choices
-within ACP; their separate SDK tentacles can be enabled independently.
+Declare ACP once per deployment, under any unused registry key. Omitting it or
+setting `enabled: false` leaves the API unavailable.
 
-1. Install the [Claude](https://github.com/agentclientprotocol/claude-agent-acp)
-   or [Codex](https://github.com/agentclientprotocol/codex-acp) adapter for the
-   service account. Its executable must be on the service's PATH. Complete the
-   provider's login there before connecting; Octomate does not install adapters
-   or expose provider login through this connection.
+1. Enable and authenticate the agent tentacles you want to use, such as
+   [Claude](claude-code.md), [Codex](codex.md), or [Inkling](inkling.md). ACP uses their
+   existing runtimes and model catalogs; no separate provider adapter is needed.
 2. In Trunkline's **Account** panel, issue a key with the `acp` scope. Save the
    token when it is shown. See [Accounts and tokens](../../installation/accounts.md).
 3. Connect using the [WebSocket contract](../../api/tentacles/acp.md#octomate.tentacles.acp.routes),
    initialize, and create a session. Use WSS for a remote server. The client must
-   support Octomate's custom transport and bearer header; a client that only
-   launches stdio agents cannot connect directly.
-4. Send a prompt. Respond to permission requests in your client, or cancel
-   the prompt. Keep the connection open for subsequent turns.
-
-Separate Claude or Codex tentacle blocks are not needed for this API. Each
-connection starts its own adapter when it initializes.
+   support this custom transport and its bearer header; stdio-only clients need
+   a transport bridge.
+4. Choose an advertised model, then send a prompt. Answer permission requests in
+   your client, or cancel the prompt. Questions require a client that supports
+   form elicitation.
 
 Each prompt runs through the [reflex graph](../../concepts/reflex.md). A session
-accepts one turn at a time and becomes idle again when the turn and its history
-recording finish. Keeping a session connected does not keep it busy.
+accepts one prompt at a time. Keeping it connected does not keep the thread busy.
 
 ## Session settings
 
-Your client receives the modes and configuration options the provider offers.
-Change them on a session created or reopened through the current connection,
-including while a prompt is running. Available choices depend on the provider;
-it may reject a change or update the available options as work proceeds.
+The model selector contains choices from the enabled agent tentacles.
+Its default uses the first available agent's own default. Permission choices belong to the
+selected agent and change when you choose a different agent.
+
+You can change the model during a prompt. The current prompt, including its
+approval or question continuations, finishes with its original choice; the next
+prompt uses the new choice. Each agent retains its own conversation within the
+session's thread. Switching agents does not copy another agent's private model
+history.
 
 ## Where work happens
 
-Choose a directory accessible on the server. Octomate preserves that directory
-and creates no managed checkout. Client-supplied stdio MCP commands also run on
-the server. File and terminal callbacks reach your client when the adapter
-uses its advertised capabilities; these callbacks do not mount a remote directory.
+File operations and terminal commands run on the Octomate server. A directory in
+a declared project selects that project's managed checkout. An unregistered
+directory selects an empty chat workspace, discarded when the prompt ends.
+Project work follows the normal [workspace lifecycle](../../concepts/workspaces.md).
+Symbolic-link aliases work when selecting or filtering a project.
 
-## History
+Octomate's tools are available when enabled for the selected agent, using your
+account's permissions and linked MCP accounts.
 
-Creating a session writes its native thread and conversation identity to Octomate.
-Your first prompt makes it visible in your Trunkline history. Octomate records
-each prompt and the replies, thinking and tool activity received through ACP,
-and publishes live updates for viewers of that thread. No hook setup is needed.
-Cancelled or failed prompts retain the input and any output already received.
+MCP servers supplied by the client are rejected when creating or reopening a
+session. Client file operations and terminals are not supported.
 
-This history contains what the provider shares through ACP. It does not include
-hidden model messages or infer model usage. Media remains in the recorded
-conversation; the thread ledger shows a media label.
+## History and reopening
 
-## Reopen a session
+A session is an Octomate thread. Its conversations, runs, and messages belong to
+the agents that execute them. The first prompt makes the thread visible in your
+Trunkline history. Live activity is published through the nerve; no hooks are
+needed.
 
-Disconnecting shuts down the adapter and keeps the session's history. Connect
-again as the same Octomate user, initialize, and list your available sessions.
-Load a session to replay its history into your client, or resume it without
-replay. Then continue prompting. Availability depends on the provider's
-advertised capabilities; see the [API contract](../../api/tentacles/acp.md#octomate.tentacles.acp.routes).
+Disconnecting cancels active work and retains history. Connect again as the same
+Octomate user to list and reopen your sessions, including empty sessions. Load
+replays the thread's messages; resume continues without replay. Replaying does
+not create duplicate messages or runs. Only one connection can attach a session
+at a time.
 
-You can reopen native sessions whose history you can access in Octomate.
-An empty session disconnected before its first prompt has no recorded
-participant and cannot be reopened through this API. A session can attach to
-only one ACP connection on this Octomate instance at a time; disconnect the
-previous client before reopening it elsewhere.
-
-Replaying history does not create duplicate messages or runs in Octomate.
+Reopening keeps the selected model and the thread's project. Create a new session
+to choose a different project. Sessions from the earlier provider-specific API
+retain their recorded history but cannot be resumed through this endpoint.
 
 ## Current limits
 
-API-key revocation and expiry are checked when connecting.
+API-key revocation and expiry are checked when connecting. Media prompts are not
+advertised. History replay presents the thread ledger; detailed tool and thinking
+history remains in Octomate's conversations.
 
 ## Coming soon
 
-- Run Inkling through ACP using Pydantic AI.
-
-DeepSeek Harness support is planned after Claude, Codex and Inkling.
+- External ACP providers as configurable agent backends.
+- File operations and terminal commands in the connected client's environment.
+- MCP servers supplied by the client.

@@ -1,20 +1,22 @@
-"""The ACP agent tentacle, its connections and native session attachments."""
+"""Expose the ACP API and run outbound ACP providers through the agent interface."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Sequence
-from contextlib import aclosing
+from contextlib import AsyncExitStack, aclosing, asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import acp
 from acp import schema
-from acp.connection import StreamEvent
-from acp.utils import request_model
+from acp.connection import StreamDirection, StreamEvent
+from acp.utils import notify_model, request_model
 from anyio import CancelScope
 from fastapi import APIRouter
-from pydantic import UUID7
+from httpx import URL
+from pydantic import UUID7, JsonValue
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -33,95 +35,85 @@ from pydantic_ai.agent.abstract import (
     EventStreamHandler,
     RunOutputDataT,
 )
-from pydantic_ai.messages import EnqueuedMessagesEvent, UserContent
+from pydantic_ai.messages import TextContent, ToolCallPart, UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
-from pydantic_ai.tools import DeferredToolResults
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
+from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.deferred import DeferredSuspender
+from octomate.capabilities.harness.events import (
+    ActionBatchAnsweredEvent,
+    ActionBatchEvent,
+)
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import AgentRouteModelName
+from octomate.mcp.gateway import CLIENT_HEADER
+from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
+from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import ThreadKey, ThreadMessage
+from octomate.schemas.user import UserProfile
+from octomate.tentacles.acp.adapter import json_value_adapter
+from octomate.tentacles.acp.client import AcpProvider, NativeAcpClient
 from octomate.tentacles.acp.history import AcpHistory
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
-    from octomate.tentacles.acp.broker import (
-        AcpTurn,
-        NativeAcpBroker,
-        RegisteredAcpSession,
-    )
+    from octomate.tentacles.acp.broker import AcpBroker
 
 
 class AcpTentacle(AgentTentacle[str, None]):
-    """Run an admitted ACP turn on its owner's existing provider connection.
+    """Own the public connection registry and optional outbound agent execution.
 
-    Protocol payloads remain at this boundary. Reflex sees the usual agent stream
-    and result, owns run events and reply bindings, and never needs ACP types.
-    Settings and permissions stay with the provider and its connected client.
-    This tentacle owns attachments, including pending loads and idle sessions;
-    the reflex owns active turns. Routes mount when connected, and an adapter
-    starts only when a client initializes.
+    AcpBroker owns public sessions and dispatch. Outbound runs use the thread and
+    conversation supplied by the reflex, with the provider session ID stored on
+    that conversation. Each turn holds its managed workspace, provider connection,
+    and MCP credentials until the provider has stopped.
+
+    Deployment configuration currently enables only the public API. Supplying
+    `provider` programmatically enables outbound execution with the provider's
+    default model; provider configuration and model discovery remain future work.
     """
 
     gateway: bool = False
-    attachments: dict[ThreadKey, NativeAcpBroker]
+    in_process: ClassVar[bool] = True
+    provider: AcpProvider | None
+    clients: dict[UUID7, AcpBroker]  # Public threads attached to a connection.
 
-    def __init__(self, id: str, octomate: Octomate) -> None:
-        app = octomate
+    def __init__(
+        self, id: str, octomate: Octomate, *, provider: AcpProvider | None = None
+    ) -> None:
         super().__init__(
             id=id,
-            octomate=app,
-            commands=app.commands,
-            projects=app.projects,
-            threads=app.threads,
-            files=app.files,
+            octomate=octomate,
+            commands=octomate.commands,
+            projects=octomate.projects,
+            threads=octomate.threads,
+            files=octomate.files,
         )
-        self.attachments = {}
-        self.conversations = app.conversations
-        self.workspaces = app.workspaces
+        self.provider = provider
+        self.clients = {}
+        self.pendings = {}
+        self.conversations = octomate.conversations
+        self.workspaces = octomate.workspaces
         self.models = {}
 
     def routers(self) -> tuple[APIRouter, ...]:
-        # Routes import Octomate and the broker, which depend on this tentacle.
-        from octomate.tentacles.acp.routes import acp_router
+        # Routes depend on this tentacle.
+        from octomate.tentacles.acp.routes import build_acp_router
 
-        return (acp_router,)
+        return (build_acp_router(self),)
 
     def resolve_model(
         self, model: AgentRouteModelName | None = None
     ) -> AgentRouteModelName | None:
-        """Keep model selection on the attached ACP session."""
+        """Use the outbound provider's default until its model catalog is exposed."""
         if model is not None:
-            raise ValueError("Configure the ACP session through its provider")
+            raise ValueError("Outbound ACP model selection is not available")
         return None
-
-    async def resolve_conversation(
-        self,
-        thread_id: UUID7,
-        *,
-        conversation_address: ChannelAddress,
-        conversation_id: UUID7 | None = None,
-    ) -> Conversation:
-        """Use the caller's attached native context without changing its owner."""
-        key = ThreadKey.from_address(conversation_address)
-        owner = self.attachments.get(key)
-        if owner is None:
-            raise ValueError("The native session is not attached to this ACP tentacle")
-        session = owner.sessions.get(key.chat_id)
-        if session is None:
-            raise ValueError("The native session has not finished attaching")
-        if conversation_address.user_id != owner.sender.channel_user_id:
-            raise ValueError("The ACP turn belongs to another caller")
-        if thread_id != session.conversation.thread_id:
-            raise ValueError("The ACP turn belongs to another thread")
-        if conversation_id is not None and conversation_id != session.conversation.id:
-            raise ValueError("The ACP turn belongs to another conversation")
-        return session.conversation
 
     async def run(
         self,
@@ -153,9 +145,9 @@ class AcpTentacle(AgentTentacle[str, None]):
         capabilities: Sequence[AgentCapability[None]] | None = None,
         spec: AgentSpecInput | None = None,
     ) -> AgentRunResult[str | RunOutputDataT]:
-        """Collect the same admitted invocation used by the streaming entry."""
+        """Collect the same agent stream used by the reflex."""
         if event_stream_handler is not None:
-            raise ValueError("ACP callbacks are handled by the connected client")
+            raise ValueError("Use run_stream_events to observe outbound ACP events")
         result: AgentRunResult[str | RunOutputDataT] | None = None
         async with self.run_stream_events(
             user_prompt,
@@ -220,7 +212,7 @@ class AcpTentacle(AgentTentacle[str, None]):
         capabilities: Sequence[AgentCapability[None]] | None = None,
         spec: AgentSpecInput | None = None,
     ) -> ReactEventStream[str | RunOutputDataT]:
-        """Stream the selected session; runtime options are set through ACP itself."""
+        """Run the supplied prompt in this agent's conversation and workspace."""
         if (
             any(
                 value is not None
@@ -241,149 +233,410 @@ class AcpTentacle(AgentTentacle[str, None]):
                 )
             )
             or capabilities
-            or not interactive
         ):
-            raise ValueError("Configure the ACP session through its provider")
+            raise ValueError("Outbound ACP accepts text prompts with provider defaults")
         return ReactEventStream(
-            self.stream(conversation_address, thread_id, conversation_id)
+            self.stream(
+                user_prompt,
+                conversation_address,
+                thread_id,
+                conversation_id,
+                source_thread_address,
+                source_thread_message_ids,
+                run_name,
+                deferred_suspender if interactive else None,
+            )
         )
 
     async def stream(
         self,
+        user_prompt: str | Sequence[UserContent] | None,
         address: ChannelAddress,
         thread_id: UUID7 | None,
         conversation_id: UUID7 | None,
+        source_address: ChannelAddress | None,
+        source_message_ids: Sequence[UUID7] | None,
+        run_name: str | None,
+        suspender: DeferredSuspender | None,
     ) -> AsyncGenerator[ReactStreamEvent[str]]:
+        provider = self.provider
+        if provider is None:
+            raise ValueError("No outbound ACP provider is configured")
         if thread_id is None:
             raise ValueError("agent run requires a thread_id to own its conversation")
-        await self.resolve_conversation(
+        if isinstance(user_prompt, str):
+            text = user_prompt
+        else:
+            parts: list[str] = []
+            for part in user_prompt or []:
+                if not isinstance(part, str | TextContent):
+                    raise ValueError("Outbound ACP currently accepts only text")
+                parts.append(part.content if isinstance(part, TextContent) else part)
+            text = "\n".join(parts)
+        if not text.strip():
+            raise ValueError("ACP requires a non-empty text prompt")
+        conversation = await self.resolve_conversation(
             thread_id, conversation_address=address, conversation_id=conversation_id
         )
-        key = ThreadKey.from_address(address)
-        owner = self.attachments[key]
-        session = owner.sessions[key.chat_id]
-        if session.turn is None:
-            raise ValueError("The ACP session has no admitted prompt")
+        sender = await self.octomate.users.profile(
+            address.channel_tentacle_id, address.user_id
+        )
+        if sender is None or sender.user_id is None:
+            raise ValueError("Outbound ACP requires a registered user")
+        thread = await self.threads.get(thread_id, with_messages=False)
+        assert thread is not None
+        project = await self.projects.of(thread)
+        workspace = self.workspaces.open(thread_id, project)
+        updates: asyncio.Queue[
+            StreamEvent | ActionBatchEvent | ActionBatchAnsweredEvent | None
+        ] = asyncio.Queue()
+        session_id: str | None = None
+
+        async def handle(
+            method: str, params: JsonValue | None, notification: bool
+        ) -> JsonValue | None:
+            if notification:
+                return None
+            if method != "session/request_permission":
+                raise acp.RequestError.method_not_found(method)
+            request = schema.RequestPermissionRequest.model_validate(params)
+            if request.session_id != session_id:
+                raise acp.RequestError.invalid_params({"reason": "Unknown session"})
+            response = await self.permission(request, suspender, updates)
+            return json_value_adapter.validate_python(
+                response.model_dump(mode="json", by_alias=True, exclude_none=True)
+            )
+
         async with (
-            self.driving(f"{key.channel_tentacle_id}/{key.chat_id}"),
-            aclosing(self.invoke(owner, session, session.turn)) as events,
+            workspace,
+            AsyncExitStack() as credentials,
+            NativeAcpClient.connect(
+                provider,
+                handle,
+                schema.InitializeRequest(
+                    protocol_version=acp.PROTOCOL_VERSION,
+                    client_capabilities=schema.ClientCapabilities(),
+                ),
+            ) as client,
         ):
-            async for event in events:
-                yield event
+            mcp_servers = await credentials.enter_async_context(
+                self.mcp_servers(client, sender)
+            )
+            if conversation.external_id is None:
+                native = await client.new_session(
+                    schema.NewSessionRequest(
+                        cwd=str(workspace.path), mcp_servers=[*mcp_servers]
+                    )
+                )
+                session_id = native.session_id
+                await self.conversations.set_external_id(conversation, session_id)
+            else:
+                capabilities = client.initialization.agent_capabilities
+                if capabilities is None or not capabilities.load_session:
+                    raise ValueError("The ACP provider cannot reopen this conversation")
+                session_id = conversation.external_id
+                await request_model(
+                    client.connection,
+                    acp.AGENT_METHODS["session_load"],
+                    schema.LoadSessionRequest(
+                        session_id=session_id,
+                        cwd=str(workspace.path),
+                        mcp_servers=[*mcp_servers],
+                    ),
+                    schema.LoadSessionResponse,
+                )
+            request = schema.PromptRequest(
+                session_id=session_id, prompt=[acp.text_block(text)]
+            )
+            async with (
+                self.driving(f"{provider.native_id}/{session_id}"),
+                aclosing(
+                    self.invoke(
+                        client,
+                        conversation,
+                        request,
+                        workspace.path,
+                        address,
+                        sender,
+                        source_address,
+                        source_message_ids,
+                        run_name,
+                        updates,
+                    )
+                ) as events,
+            ):
+                async for event in events:
+                    yield event
+
+    async def permission(
+        self,
+        request: schema.RequestPermissionRequest,
+        suspender: DeferredSuspender | None,
+        updates: asyncio.Queue[
+            StreamEvent | ActionBatchEvent | ActionBatchAnsweredEvent | None
+        ],
+    ) -> schema.RequestPermissionResponse:
+        """Route provider approvals through the existing live deferred-action flow."""
+        if suspender is None:
+            return schema.RequestPermissionResponse(
+                outcome=schema.DeniedOutcome(outcome="cancelled")
+            )
+        batch_id = uuid7()
+        future: asyncio.Future[DeferredActionBatchResponse] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self.pendings[batch_id] = future
+        try:
+            batch = await suspender.pause(
+                DeferredToolRequests(
+                    approvals=[
+                        ToolCallPart(
+                            tool_name=request.tool_call.title or "ACP tool",
+                            tool_call_id=request.tool_call.tool_call_id,
+                            args=request.tool_call.model_dump_json(
+                                by_alias=True, exclude_none=True
+                            ),
+                        )
+                    ]
+                ),
+                batch_id=batch_id,
+            )
+            updates.put_nowait(batch)
+            answer = await future
+            await self.octomate.deferred_actions.resolve_batch(answer)
+            updates.put_nowait(ActionBatchAnsweredEvent.of(answer))
+        finally:
+            self.pendings.pop(batch_id, None)
+        allowed = answer.approvals.get(batch.approvals[0].id, False)
+        kind = "allow_once" if allowed else "reject_once"
+        option = next(
+            (option for option in request.options if option.kind == kind), None
+        )
+        if option is None:
+            return schema.RequestPermissionResponse(
+                outcome=schema.DeniedOutcome(outcome="cancelled")
+            )
+        return schema.RequestPermissionResponse(
+            outcome=schema.AllowedOutcome(
+                outcome="selected", option_id=option.option_id
+            )
+        )
+
+    @asynccontextmanager
+    async def mcp_servers(
+        self, client: NativeAcpClient, sender: UserProfile
+    ) -> AsyncGenerator[list[schema.HttpMcpServer]]:
+        """Supply the caller's remote Octomate MCP, revoking its key after the turn."""
+        capabilities = client.initialization.agent_capabilities
+        if (
+            capabilities is None
+            or capabilities.mcp_capabilities is None
+            or not capabilities.mcp_capabilities.http
+        ):
+            raise ValueError("The ACP provider must support HTTP MCP servers")
+        auth = self.octomate.auth
+        user_id = sender.user_id
+        if auth is None or user_id is None:
+            raise ValueError(
+                "ACP MCP access requires a registered user and authentication"
+            )
+        with CancelScope(shield=True):
+            issued = await auth.create_api_key(
+                user_id,
+                name=f"ACP {client.provider.value}",
+                scopes=["mcp"],
+                expires_at=datetime.now(UTC) + auth.config.runtime_api_key_lifetime,
+            )
+        config = self.octomate.config
+        try:
+            yield [
+                schema.HttpMcpServer(
+                    name=OCTOMATE_SERVER_NAME,
+                    type="http",
+                    url=str(
+                        URL(
+                            scheme="http",
+                            host=str(config.host),
+                            port=config.port,
+                            path=OCTOMATE_MCP_PATH,
+                        )
+                    ),
+                    headers=[
+                        schema.HttpHeader(
+                            name="Authorization",
+                            value=f"Bearer {issued.token.get_secret_value()}",
+                        ),
+                        schema.HttpHeader(
+                            name=CLIENT_HEADER, value=client.provider.native_id
+                        ),
+                    ],
+                )
+            ]
+        finally:
+            with CancelScope(shield=True):
+                await auth.revoke_api_key(user_id, issued.key.id)
 
     async def invoke(
-        self, owner: NativeAcpBroker, session: RegisteredAcpSession, turn: AcpTurn
+        self,
+        client: NativeAcpClient,
+        conversation: Conversation,
+        request: schema.PromptRequest,
+        cwd: Path,
+        address: ChannelAddress,
+        sender: UserProfile,
+        source_address: ChannelAddress | None,
+        source_message_ids: Sequence[UUID7] | None,
+        run_name: str | None,
+        updates: asyncio.Queue[
+            StreamEvent | ActionBatchEvent | ActionBatchAnsweredEvent | None
+        ],
     ) -> AsyncGenerator[ReactStreamEvent[str]]:
-        history = AcpHistory(turn.request)
-        inbound = await self.threads.record_inbound(
-            turn.message, happened_at=history.request.timestamp
-        )
-        updates: asyncio.Queue[StreamEvent | None] = asyncio.Queue()
-        session.updates = updates
+        history = AcpHistory(request)
+        run_id = str(uuid7())
+
+        def observe(event: StreamEvent) -> None:
+            params = event.message.get("params")
+            if (
+                event.direction == StreamDirection.INCOMING
+                and event.message.get("method") == "session/update"
+                and isinstance(params, dict)
+                and params.get("sessionId") == request.session_id
+            ):
+                updates.put_nowait(event)
+
+        client.connection.add_observer(observe)
         prompt = asyncio.create_task(
             request_model(
-                owner.client.connection,
+                client.connection,
                 acp.AGENT_METHODS["session_prompt"],
-                turn.request,
+                request,
                 schema.PromptResponse,
             )
         )
         prompt.add_done_callback(lambda task: updates.put_nowait(None))
         failed = False
         try:
-            yield EnqueuedMessagesEvent(
-                enqueue_id=str(inbound.id), messages=(history.request,)
-            )
             while (event := await updates.get()) is not None:
+                if isinstance(event, ActionBatchEvent | ActionBatchAnsweredEvent):
+                    yield event
+                    continue
                 for wire in history.feed(
                     schema.SessionNotification.model_validate(event.message["params"])
                 ):
                     yield wire
             for wire in history.end_part():
                 yield wire
-            turn.response = await asyncio.shield(prompt)
-            if turn.response is None:
-                raise ValueError("ACP prompt returned no response")
+            response = await asyncio.shield(prompt)
             assert history.request.metadata is not None
-            history.request.metadata["stop_reason"] = turn.response.stop_reason
+            history.request.metadata["stop_reason"] = response.stop_reason
         except (asyncio.CancelledError, GeneratorExit):
             failed = True
             assert history.request.metadata is not None
             history.request.metadata["stop_reason"] = "cancelled"
             with CancelScope(shield=True):
-                await owner.cancel(
-                    schema.CancelNotification(session_id=turn.request.session_id)
+                await notify_model(
+                    client.connection,
+                    acp.AGENT_METHODS["session_cancel"],
+                    schema.CancelNotification(session_id=request.session_id),
                 )
-                turn.response = await prompt
+                await prompt
             raise
         except Exception as error:
             failed = True
             assert history.request.metadata is not None
             history.request.metadata["error"] = str(error)
             if not prompt.done():
-                await owner.cancel(
-                    schema.CancelNotification(session_id=turn.request.session_id)
+                await notify_model(
+                    client.connection,
+                    acp.AGENT_METHODS["session_cancel"],
+                    schema.CancelNotification(session_id=request.session_id),
                 )
                 await prompt
             raise
         finally:
-            session.updates = None
-            while not updates.empty():
-                pending = updates.get_nowait()
-                if pending is not None:
-                    history.feed(
-                        schema.SessionNotification.model_validate(
-                            pending.message["params"]
-                        )
-                    )
             with CancelScope(shield=True):
-                await self.record(owner, session, turn, history, inbound, failed=failed)
+                await self.record(
+                    client,
+                    conversation,
+                    history,
+                    run_id,
+                    cwd,
+                    address,
+                    sender,
+                    source_address,
+                    source_message_ids,
+                    run_name,
+                    updates,
+                    failed=failed,
+                )
         yield AgentRunResultEvent(
             AgentRunResult(
                 output=history.answer,
                 _state=GraphAgentState(
                     message_history=history.messages,
                     usage=RunUsage(),
-                    run_id=turn.message.message_id,
-                    conversation_id=str(session.conversation.id),
+                    run_id=run_id,
+                    conversation_id=str(conversation.id),
                 ),
             )
         )
 
     async def record(
         self,
-        owner: NativeAcpBroker,
-        session: RegisteredAcpSession,
-        turn: AcpTurn,
+        client: NativeAcpClient,
+        conversation: Conversation,
         history: AcpHistory,
-        inbound: ThreadMessage,
+        run_id: str,
+        cwd: Path,
+        address: ChannelAddress,
+        sender: UserProfile,
+        source_address: ChannelAddress | None,
+        source_message_ids: Sequence[UUID7] | None,
+        run_name: str | None,
+        updates: asyncio.Queue[
+            StreamEvent | ActionBatchEvent | ActionBatchAnsweredEvent | None
+        ],
         *,
         failed: bool,
     ) -> None:
-        """Persist native messages and input bindings, retaining partial failed replies.
-
-        Successful replies are recorded and bound by the shared reflex runtime.
-        A failed stream cannot return a result, so its partial reply is retained here.
-        """
+        """Bind existing inbound messages and preserve partial replies on failure."""
+        while not updates.empty():
+            pending = updates.get_nowait()
+            if isinstance(pending, StreamEvent):
+                history.feed(
+                    schema.SessionNotification.model_validate(pending.message["params"])
+                )
         run = await self.conversations.record_agent_run(
-            session.conversation,
-            turn.message.message_id,
+            conversation,
+            run_id,
             history.messages,
-            cwd=Path(session.native.cwd),
-            external_id=session.native.session_id,
-            native_id=session.native.provider.native_id,
+            name=run_name,
+            cwd=cwd,
+            external_id=history.prompt.session_id,
+            native_id=client.provider.native_id,
         )
         assert run is not None
-        await self.threads.bind_messages(
-            [inbound.id], run.messages[0].id, kind="request_source", run_id=run.id
-        )
+        if source_message_ids:
+            await self.threads.bind_messages(
+                list(source_message_ids),
+                run.messages[0].id,
+                kind="request_source",
+                run_id=run.id,
+            )
+            source_thread = await self.threads.ensure(source_address or address)
+            await self.threads.advance_prompt_cursor(
+                source_thread, source_message_ids[-1]
+            )
         if failed and history.answer:
             reply = await self.threads.record_outbound(
-                session.native.key.address(owner.sender.channel_user_id),
+                address,
                 agent_tentacle_id=self.id,
                 segments=[TextSegment(data={"text": history.answer})],
-                sender=owner.sender,
+                sender=sender,
             )
             await self.threads.bind_messages(
-                [reply.id], run.messages[1].id, kind="assistant_reply", run_id=run.id
+                [reply.id],
+                run.messages[1].id,
+                kind="assistant_reply",
+                run_id=run.id,
             )

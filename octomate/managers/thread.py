@@ -467,6 +467,8 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         *,
         limit: int = 100,
         user_id: UUID7 | None = None,
+        chat_id: str | None = None,
+        offset: int = 0,
     ) -> list[Thread]:
         """Threads most recently touched first — one channel's, or every
         channel's when `channel_tentacle_id` is None. Sub-threads are not listed;
@@ -489,10 +491,13 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             )
         if channel_tentacle_id is not None:
             expressions.append(Thread["channel_tentacle_id"] == channel_tentacle_id)
+        if chat_id is not None:
+            expressions.append(Thread["chat_id"] == chat_id)
         async with async_session() as session:
             rows = await session.list(
                 Thread,
                 limit=limit,
+                offset=offset,
                 options=[selectinload(Thread["conversations"]).noload("*")],
                 order_bys=[Thread["updated_at"].desc(), Thread["id"].desc()],
                 expressions=expressions,

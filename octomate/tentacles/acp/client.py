@@ -15,7 +15,6 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
 from typing import Self
 
 import acp
@@ -23,6 +22,7 @@ from acp import schema
 from acp.connection import Connection
 from acp.core import DEFAULT_STDIO_BUFFER_LIMIT_BYTES
 from acp.utils import request_model
+from anyio import Path as AsyncPath
 from pydantic import JsonValue
 
 from octomate.schemas.thread import ThreadKey
@@ -49,15 +49,23 @@ class AcpProvider(StrEnum):
         """Use the same native surface as the runtime's transcript ingestion."""
         return CLAUDE_NATIVE_ID if self is AcpProvider.CLAUDE else CODEX_NATIVE_ID
 
-
-def validate_workspace(
-    cwd: str, additional_directories: list[str] | None = None
-) -> None:
-    """Reject relative workspace roots before starting or reopening a session."""
-    if any(
-        not Path(path).is_absolute() for path in [cwd, *(additional_directories or [])]
-    ):
-        raise ValueError("ACP workspace paths must be absolute")
+    @staticmethod
+    async def resolve_workspace(
+        cwd: str,
+        additional_directories: list[str] | None = None,
+    ) -> tuple[str, list[str] | None]:
+        """Resolve absolute server paths, including symbolic-link aliases."""
+        if any(
+            not AsyncPath(path).is_absolute()
+            for path in [cwd, *(additional_directories or [])]
+        ):
+            raise ValueError("ACP workspace paths must be absolute")
+        return (
+            str(await AsyncPath(cwd).resolve()),
+            [str(await AsyncPath(path).resolve()) for path in additional_directories]
+            if additional_directories is not None
+            else None,
+        )
 
 
 @dataclass(frozen=True)
@@ -74,7 +82,7 @@ class NativeAcpSession[
     """
 
     provider: AcpProvider
-    cwd: str  # Absolute path on the adapter's host, preserved without resolution.
+    cwd: str  # Canonical server workspace path.
     session_id: str  # Native identity supplied by creation or an authorized reopen.
     response: ResponseT  # Includes provider modes and extensions.
 
@@ -145,11 +153,22 @@ class NativeAcpClient:
     ) -> NativeAcpSession[schema.NewSessionResponse]:
         """Create a native session using the supplied workspace and MCP settings.
 
-        Paths are checked for absoluteness, not resolved or replaced by a managed
-        checkout. The adapter validates access on its host. The complete ACP
-        request and response, including extensions, cross the SDK boundary intact.
+        The agent tentacle supplies the managed server workspace.
+        HTTP MCP settings and extensions cross the SDK boundary intact, without
+        mutating the caller's request. MCP process commands are refused.
         """
-        validate_workspace(request.cwd, request.additional_directories)
+        if any(
+            not isinstance(server, schema.HttpMcpServer)
+            for server in request.mcp_servers
+        ):
+            raise ValueError("Only HTTP MCP servers are supported")
+        cwd, additional_directories = await self.provider.resolve_workspace(
+            request.cwd,
+            request.additional_directories,
+        )
+        request = request.model_copy(
+            update={"cwd": cwd, "additional_directories": additional_directories}
+        )
         response = await request_model(
             self.connection,
             acp.AGENT_METHODS["session_new"],

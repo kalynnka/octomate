@@ -19,7 +19,7 @@ from octomate.schemas.conversation import Conversation
 from octomate.schemas.thread import Thread
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.acp.auth import acp_sender
-from octomate.tentacles.acp.client import AcpProvider
+from octomate.tentacles.acp.base import AcpTentacle
 from octomate.tentacles.hooks import hook_guard
 from octomate.types.auth import ApiKeyScope
 from tests.support.users import a_user, auth_config
@@ -29,10 +29,12 @@ from tests.support.users import a_user, auth_config
 def app(in_memory_engine: AsyncEngine) -> Octomate:
     app = Octomate(config=OctomateConfig(auth=auth_config()))
 
-    @app.websocket("/test/acp/{provider}")
+    tentacle = app.connect(AcpTentacle(id="bridge", octomate=app))
+
+    @app.websocket("/test/acp")
     async def connection(
         websocket: WebSocket,
-        sender: Annotated[UserProfile, Depends(acp_sender)],
+        sender: Annotated[UserProfile, Depends(acp_sender(tentacle))],
     ) -> None:
         await websocket.accept()
         await websocket.send_json(
@@ -52,23 +54,22 @@ async def user(app: Octomate) -> User:
     return await a_user("alice")
 
 
-@pytest.mark.parametrize("provider", list(AcpProvider))
 @pytest.mark.parametrize("scheme", ["Bearer", "bearer"])
 async def test_scoped_key_resolves_its_owner_without_inherited_database_context(
-    app: Octomate, user: User, provider: AcpProvider, scheme: str
+    app: Octomate, user: User, scheme: str
 ) -> None:
     assert app.auth is not None
     key = await app.auth.create_api_key(user.id, name="ACP client", scopes=["acp"])
 
     def connect() -> None:
         with TestClient(app).websocket_connect(
-            f"/test/acp/{provider}?username=bob",
+            "/test/acp?username=bob",
             headers={"Authorization": f"{scheme} {key.token.get_secret_value()}"},
         ) as socket:
             assert socket.receive_json() == {
                 "user_id": str(user.id),
                 "username": "alice",
-                "runtime": provider.native_id,
+                "runtime": "bridge",
             }
 
     Context().run(connect)
@@ -87,7 +88,7 @@ async def test_existing_scopes_cannot_authorize_acp(
     with (
         pytest.raises(WebSocketDenialResponse) as denial,
         TestClient(app).websocket_connect(
-            "/test/acp/claude",
+            "/test/acp",
             headers={"Authorization": f"Bearer {key.token.get_secret_value()}"},
         ),
     ):
@@ -105,7 +106,7 @@ def test_missing_or_invalid_credentials_are_refused(
     headers = {} if authorization is None else {"Authorization": authorization}
     with (
         pytest.raises(WebSocketDenialResponse) as denial,
-        TestClient(app).websocket_connect("/test/acp/codex", headers=headers),
+        TestClient(app).websocket_connect("/test/acp", headers=headers),
     ):
         pytest.fail("Invalid credentials reached the endpoint")
     assert denial.value.status_code == 401
@@ -128,7 +129,7 @@ async def test_revoked_or_expired_keys_are_refused(
     with (
         pytest.raises(WebSocketDenialResponse) as denial,
         TestClient(app).websocket_connect(
-            "/test/acp/claude",
+            "/test/acp",
             headers={"Authorization": f"Bearer {key.token.get_secret_value()}"},
         ),
     ):
@@ -150,9 +151,7 @@ async def test_browser_session_and_query_token_cannot_authorize_execution(
     client.cookies.set("octomate_access", tokens.access_token.get_secret_value())
     with (
         pytest.raises(WebSocketDenialResponse) as denial,
-        client.websocket_connect(
-            f"/test/acp/claude?token={key.token.get_secret_value()}"
-        ),
+        client.websocket_connect(f"/test/acp?token={key.token.get_secret_value()}"),
     ):
         pytest.fail("Cookies or a query token authorized execution")
     assert denial.value.status_code == 401
@@ -173,7 +172,7 @@ async def test_authentication_must_be_configured(app: Octomate) -> None:
     with (
         pytest.raises(WebSocketDenialResponse) as denial,
         TestClient(app).websocket_connect(
-            "/test/acp/claude", headers={"Authorization": "Bearer token"}
+            "/test/acp", headers={"Authorization": "Bearer token"}
         ),
     ):
         pytest.fail("An unconfigured verifier authorized execution")

@@ -55,15 +55,13 @@ class ResumeDeferred(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             Impulse(ActionBatchAnsweredEvent.of(self.awake), batch.target_address)
         )
         target_channel = ctx.deps.channels.get(batch.target_address.channel_tentacle_id)
-        if target_channel is None:
-            raise ValueError(
-                f"unknown channel {batch.target_address.channel_tentacle_id!r}"
-            )
         ctx.deps.agent(batch.agent_tentacle_id)
         target = ResponseTarget(
             channel_id=batch.target_address.channel_tentacle_id,
             address=batch.target_address,
-            thread_strategy=target_channel.thread_strategy,
+            thread_strategy=target_channel.thread_strategy
+            if target_channel
+            else "main_only",
             mode=batch.target_mode,
         )
         source_channel = ctx.deps.channels.get(batch.source_address.channel_tentacle_id)
@@ -74,7 +72,7 @@ class ResumeDeferred(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             thread_strategy=(
                 source_channel.thread_strategy
                 if source_channel is not None
-                else target_channel.thread_strategy
+                else target.thread_strategy
             ),
             mode="main",
         )

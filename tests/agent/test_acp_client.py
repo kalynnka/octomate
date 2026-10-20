@@ -52,7 +52,7 @@ def adapter_environment(
         executable = tmp_path / command
         executable.write_text(f"#!{sys.executable}\n{source}")
         executable.chmod(0o700)
-    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.defpath}")
     return {"ACP_TEST_LOG": str(tmp_path / "requests.jsonl")}
 
 
@@ -74,11 +74,13 @@ async def test_native_session_preserves_workspace_mcp_and_extensions(
         cwd="/workspace/../project",
         additional_directories=["/second-root"],
         mcp_servers=[
-            schema.McpServerStdio(
-                name="local-tools", command="/bin/tools", args=["--stdio"], env=[]
-            ),
             schema.HttpMcpServer(
-                type="http", name="web-tools", url="https://example.com/mcp", headers=[]
+                type="http",
+                name="web-tools",
+                url="https://EXAMPLE.com/mcp?token=a%2fb",
+                headers=[
+                    schema.HttpHeader(name="Authorization", value="Bearer fixture")
+                ],
             ),
         ],
         field_meta={"cwd": "extension, not the workspace", "nested": {"flag": True}},
@@ -93,7 +95,7 @@ async def test_native_session_preserves_workspace_mcp_and_extensions(
         assert first.key.channel_tentacle_id == native_id
         assert first.key.chat_id == first.response.session_id == "native-1"
         assert second.key.chat_id == "native-2"
-        assert first.cwd == request.cwd
+        assert first.cwd == "/project"
         assert first.response.field_meta == {"providerSession": True}
         capabilities = client.initialization.agent_capabilities
         assert capabilities is not None
@@ -102,14 +104,46 @@ async def test_native_session_preserves_workspace_mcp_and_extensions(
 
     log = await AsyncPath(adapter_environment["ACP_TEST_LOG"]).read_text()
     records = [json.loads(line) for line in log.splitlines()]
-    assert records[0]["message"]["params"] == initialize.model_dump(
+    expected = initialize.model_dump(
         mode="json", by_alias=True, exclude_none=True, exclude_defaults=True
     )
-    assert records[1]["message"]["params"] == request.model_dump(
-        mode="json", by_alias=True, exclude_none=True, exclude_defaults=True
-    )
+    assert records[0]["message"]["params"] == expected
+    assert records[1]["message"]["params"] == {
+        **request.model_dump(
+            mode="json", by_alias=True, exclude_none=True, exclude_defaults=True
+        ),
+        "cwd": "/project",
+    }
+    assert request.cwd == "/workspace/../project"
     with pytest.raises(ProcessLookupError):
         os.kill(records[0]["pid"], 0)
+
+
+@pytest.mark.parametrize("provider", list(AcpProvider))
+async def test_session_resolves_workspace_aliases_without_changing_request(
+    adapter_environment: dict[str, str], provider: AcpProvider, tmp_path: Path
+) -> None:
+    workspace = tmp_path / "workspace"
+    await AsyncPath(workspace).mkdir()
+    alias = tmp_path / "alias"
+    await AsyncPath(alias).symlink_to(workspace, target_is_directory=True)
+    request = schema.NewSessionRequest(
+        cwd=str(alias), additional_directories=[str(alias)], mcp_servers=[]
+    )
+    async with NativeAcpClient.connect(
+        provider,
+        Callbacks(),
+        schema.InitializeRequest(protocol_version=1),
+        env=adapter_environment,
+    ) as client:
+        session = await client.new_session(request)
+    log = await AsyncPath(adapter_environment["ACP_TEST_LOG"]).read_text()
+    records = [json.loads(line) for line in log.splitlines()]
+    assert session.cwd == str(await AsyncPath(workspace).resolve())
+    assert records[1]["message"]["params"]["cwd"] == session.cwd
+    assert records[1]["message"]["params"]["additionalDirectories"] == [session.cwd]
+    assert request.cwd == str(alias)
+    assert request.additional_directories == [str(alias)]
 
 
 @pytest.mark.parametrize("provider", list(AcpProvider))

@@ -1,1 +1,1 @@
-"""ACP stream translation and client connections to native agent sessions."""
+"""The Octomate ACP endpoint, stream translation, and outbound ACP clients."""

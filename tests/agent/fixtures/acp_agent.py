@@ -261,6 +261,11 @@ def main() -> None:
                                     "sessionId": session_id,
                                     "path": "/project/file.txt",
                                 },
+                                "fs/write_text_file": {
+                                    "sessionId": session_id,
+                                    "path": "/project/file.txt",
+                                    "content": "client file",
+                                },
                                 "terminal/create": {
                                     "sessionId": session_id,
                                     "command": "echo",

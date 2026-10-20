@@ -1247,10 +1247,10 @@ def test_acp_connects_only_when_configured_and_enabled(
         assert isinstance(host.tentacles["bridge"], AcpTentacle)
         assert list(host.tentacles) == ["bridge"]
         assert list(host.agents) == ["bridge"]
-        assert routes.count("/api/acp/{provider}") == 1
+        assert routes.count("/api/acp") == 1
     else:
         assert host.tentacles == {}
-        assert "/api/acp/{provider}" not in routes
+        assert "/api/acp" not in routes
 
 
 def test_startup_builds_tentacles_by_type_and_keeps_their_ids(
