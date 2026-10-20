@@ -2,7 +2,7 @@
 
 `ReflexSuspender` is the policy react invokes (via `ResolveDeferred`) when an
 agent run yields `DeferredToolRequests` and no in-process resolver is configured:
-it persists a batch + presents it through the channel, then records the batch id
+it persists a batch and returns its event, then records the batch id
 so the caller can report the suspended run.
 """
 
@@ -30,7 +30,6 @@ from octomate.schemas.triage import (
     SummonDecision,
     TeleportDecision,
 )
-from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
     FakeActionManager,
     FakeConversationManager,
@@ -65,7 +64,6 @@ async def test_human_review_suspender_persists_batch_and_records_id() -> None:
     requests = _requests()
     conversations = FakeConversationManager()
     action_manager = FakeActionManager()
-    channel = FakeChannelTentacle()
     decision = SummonDecision(
         action="summon",
         agent_id="inkling",
@@ -76,7 +74,6 @@ async def test_human_review_suspender_persists_batch_and_records_id() -> None:
     )
 
     suspender = ReflexSuspender(
-        channel=channel,
         action_manager=cast(DeferredActionManager, action_manager),
         conversation_manager=conversations,
         agent_tentacle_id="inkling",
@@ -116,10 +113,8 @@ async def test_suspender_returns_batch_event_without_rendering() -> None:
         args=ApprovalRequest(tool_name="do_thing"),
     )
     batch = FakePresentedBatch(questions=[question], approvals=[approval])
-    channel = FakeChannelTentacle()
 
     suspender = ReflexSuspender(
-        channel=channel,
         action_manager=cast(
             DeferredActionManager, FakeActionManager(presented_batch=batch)
         ),
@@ -138,7 +133,6 @@ async def test_suspender_returns_batch_event_without_rendering() -> None:
     # Persisted (batch id recorded) and handed back as one event — rendered nothing
     # through the channel (that is its siphon's job, off the run's stream).
     assert suspender.suspended_batch_id == batch.id
-    assert channel.sent == []
 
     assert isinstance(event, ActionBatchEvent)
     assert event.batch_id == str(batch.id)
@@ -166,7 +160,6 @@ async def test_a_teleport_goes_to_the_graph_with_its_validated_destination(
     )
     action_manager = FakeActionManager()
     suspender = ReflexSuspender(
-        channel=FakeChannelTentacle(),
         action_manager=cast(DeferredActionManager, action_manager),
         conversation_manager=FakeConversationManager(),
         agent_tentacle_id="inkling",
@@ -195,7 +188,6 @@ async def test_a_teleport_deferral_without_a_destination_is_refused() -> None:
         metadata={"move": {"kind": TELEPORT_DEFER_KIND, "hint": "Continue"}},
     )
     suspender = ReflexSuspender(
-        channel=FakeChannelTentacle(),
         action_manager=cast(DeferredActionManager, FakeActionManager()),
         conversation_manager=FakeConversationManager(),
         agent_tentacle_id="inkling",
@@ -216,7 +208,6 @@ async def test_a_teleport_beside_another_deferral_is_refused() -> None:
         agent_id="inkling", hint="Continue", destination=_key()
     ).deferral("move")
     suspender = ReflexSuspender(
-        channel=FakeChannelTentacle(),
         action_manager=cast(DeferredActionManager, FakeActionManager()),
         conversation_manager=FakeConversationManager(),
         agent_tentacle_id="inkling",
@@ -245,9 +236,7 @@ async def test_a_live_run_pauses_on_its_batch_without_suspending() -> None:
         args={"question": "What should I clarify?"},
     )
     batch = FakePresentedBatch(questions=[question])
-    channel = FakeChannelTentacle()
     suspender = ReflexSuspender(
-        channel=channel,
         action_manager=cast(
             DeferredActionManager, FakeActionManager(presented_batch=batch)
         ),
@@ -268,6 +257,5 @@ async def test_a_live_run_pauses_on_its_batch_without_suspending() -> None:
     assert (batch.id, batch.response_mode) == (batch_id, "live")
     # The run stays live, so nothing records it as ended suspended.
     assert suspender.suspended_batch_id is None
-    # The run's own stream presents it; the channel is not touched.
+    # The run's own stream presents it.
     assert event == ActionBatchEvent.from_batch(cast(DeferredActionBatch, batch))
-    assert channel.sent == []

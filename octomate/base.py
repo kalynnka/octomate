@@ -380,7 +380,13 @@ class Octomate(FastAPI):
                         # falling asleep, so whoever hears it can kick there again.
                         del self.awakes[thread]
 
+            def release(task: asyncio.Task[ReflexGraphResult]) -> None:
+                # Cancellation before the coroutine starts never enters its finally.
+                if self.awakes.get(thread) is task:
+                    del self.awakes[thread]
+
             self.awakes[thread] = asyncio.create_task(reflex())
+            self.awakes[thread].add_done_callback(release)
             return self.awakes[thread]
 
     async def deliver_live_response(

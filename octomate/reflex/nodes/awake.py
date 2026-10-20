@@ -168,20 +168,18 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 
         address = self.signal.address
         channel = ctx.deps.channels.get(address.channel_tentacle_id)
-        if channel is None:
-            raise ValueError(f"unknown channel {address.channel_tentacle_id!r}")
-
         source_target = ResponseTarget(
             channel_id=address.channel_tentacle_id,
             address=address,
-            thread_strategy=channel.thread_strategy,
+            thread_strategy=channel.thread_strategy
+            if channel is not None
+            else "main_only",
             mode="main",
         )
         ctx.state.source_target = source_target
         ctx.state.thread = await ctx.deps.thread_manager.enter(address)
         ctx.state.trigger_thread_message_id = self.signal.trigger_thread_message_id
         ctx.state.user_profile = self.signal.messages[-1].sender
-
         user_prompt = "\n\n".join(str(event) for event in self.signal.messages).strip()
         ctx.state.user_prompt = user_prompt
         if not user_prompt and self.signal.trigger_thread_message_id is None:
@@ -196,7 +194,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     target=source_target,
                 )
             )
-        return Route()
+        return Route(agent_id=self.signal.agent_id)
 
     async def thread_operation(
         self,

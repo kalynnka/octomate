@@ -1,5 +1,4 @@
-"""The node that decides which agent takes an inbound message: the thread's owner,
-the flat-thread agent, or the channel's entry agent."""
+"""Select the caller's agent, the thread's owner, or the channel's entry agent."""
 
 from __future__ import annotations
 
@@ -23,8 +22,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Route(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
-    """Picks the agent for an inbound message — the chat's pinned owner, the
-    flat-thread agent, or the channel's entry agent — and enters `React`."""
+    """Choose an agent for an inbound message, then enter `React`."""
+
+    agent_id: str | None = (
+        None  # Explicit caller choice takes precedence over ownership.
+    )
 
     @reflex_logfire.instrument("reflex.route", extract_args=False)
     async def run(
@@ -37,41 +39,25 @@ class Route(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             raise ValueError("Route requires a resolved source target")
 
         source_address = source_target.address
-
         # Who owns the chat, not who owns this kick: a chat room's sub-thread is
         # opened fresh every time, and the owner a handoff pinned is the chat's.
         chat = (
             await ctx.deps.thread_manager.surface(state.thread)
-            if state.thread is not None
+            if self.agent_id is None and state.thread is not None
             else None
         )
         active_agent_id = chat.active_agent_tentacle_id if chat is not None else None
-        if chat is not None and active_agent_id is not None:
-            active_model = chat.active_model
-            ctx.deps.agent(active_agent_id)
-            resolved = ctx.deps.resolve_agent(
-                source_address.channel_tentacle_id,
-                active_agent_id,
-                active_model,
-            )
-            await ctx.deps.load_pending_prompt(state, resolved.agent)
-            model = resolved.model
-            state.decision = SummonDecision(
-                action="summon",
-                agent_id=resolved.agent,
-                model=model,
-                reason="Continuing with the active thread owner.",
-                hint="Continuing with the active thread owner.",
-                brief="",
-            )
-            state.target = replace(
-                source_target,
-                mode="sub" if source_address.channel_thread_id else "main",
-            )
-            state.handoff = None
-            return React()
-
-        if (
+        agent_id = self.agent_id
+        model = None
+        hint = ""
+        state.handoff = None
+        if agent_id is not None:
+            reason = "The caller selected this agent for the turn."
+        elif chat is not None and active_agent_id is not None:
+            agent_id = active_agent_id
+            model = chat.active_model
+            reason = hint = "Continuing with the active thread owner."
+        elif (
             source_address.channel_thread_id
             and source_target.thread_strategy == "flat_thread"
         ):
@@ -80,44 +66,24 @@ class Route(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 channel_id=source_address.channel_tentacle_id,
                 conversation_address=str(source_address),
             )
-            resolved = ctx.deps.resolve_agent(
-                source_address.channel_tentacle_id,
-                None,
-                None,
-            )
-            await ctx.deps.load_pending_prompt(state, resolved.agent)
-            model = resolved.model
-            state.decision = SummonDecision(
-                action="summon",
-                agent_id=resolved.agent,
-                model=model,
-                reason="Continuing in the current thread.",
-                hint="Continuing in the current thread.",
-                brief="",
-            )
-            state.target = replace(source_target, mode="sub")
+            reason = hint = "Continuing in the current thread."
             state.handoff = PendingHandoff()
-            return React()
+        else:
+            reason = "Entry agent."
 
-        # No active owner and not already in a flat thread: run the channel's default
-        # agent directly in this conversation — no separate screening pass. It
-        # self-routes via the gate toolset (summon / teleport) if it wants to hand off
-        # or relocate. No handoff is recorded, so a group main is never pinned to an
-        # owner (Case 1).
         resolved = ctx.deps.resolve_agent(
-            source_address.channel_tentacle_id, None, None
+            source_address.channel_tentacle_id, agent_id, model
         )
         await ctx.deps.load_pending_prompt(state, resolved.agent)
         state.decision = SummonDecision(
             action="summon",
             agent_id=resolved.agent,
             model=resolved.model,
-            reason="Entry agent.",
-            hint="",
+            reason=reason,
+            hint=hint,
             brief="",
         )
         state.target = replace(
             source_target, mode="sub" if source_address.channel_thread_id else "main"
         )
-        state.handoff = None
         return React()

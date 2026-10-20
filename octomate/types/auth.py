@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 from pydantic import AfterValidator, ConfigDict, Field, SecretStr, TypeAdapter
 
-ApiKeyScope = Literal["hooks", "mcp"]
+ApiKeyScope = Literal["hooks", "mcp", "acp"]
 
 
 def validate_password_complexity(password: SecretStr) -> SecretStr:

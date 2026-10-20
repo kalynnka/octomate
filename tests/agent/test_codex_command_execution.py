@@ -1058,18 +1058,17 @@ async def test_compact_waits_and_records_only_a_command_receipt(
             assert isinstance(outcome, CommandResult | CommandError)
             return outcome
 
-    task = asyncio.create_task(execute())
-    try:
-        await asyncio.wait_for(entered.wait(), 2)
+    async with asyncio.TaskGroup() as tasks:
+        task = tasks.create_task(execute())
+        await entered.wait()
         assert not task.done()
         receipt = await agent.threads.find_message(
             conversation.thread_id, "compact-1", "inbound"
         )
         assert isinstance(receipt, ThreadCommand)
         assert receipt.outcome is None
-    finally:
         finish.set()
-    outcome = await asyncio.wait_for(task, 2)
+    outcome = task.result()
     assert outcome.status == ("completed" if status == "completed" else "failed")
     start.assert_awaited_once_with("existing")
     stored = await agent.conversations.get(conversation.id)

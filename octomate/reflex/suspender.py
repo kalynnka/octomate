@@ -20,7 +20,6 @@ from octomate.schemas.triage import (
     SummonDecision,
 )
 from octomate.telemetry import reflex_logfire
-from octomate.tentacles.channel import ChannelTentacle
 from octomate.types.deferred import DeferredResponseMode
 
 
@@ -82,7 +81,6 @@ class ReflexSuspender:
     A runtime that asks a human mid-run pauses here instead, and stays live.
     """
 
-    channel: ChannelTentacle
     action_manager: DeferredActionManager
     conversation_manager: ConversationManager
     agent_tentacle_id: str

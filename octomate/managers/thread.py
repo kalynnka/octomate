@@ -10,6 +10,7 @@ from arcanus import Cursor, Page, Relation
 from arcanus.expression import Expression
 from arcanus.materia.sqlalchemy import aliased, noload, selectinload
 from pydantic import UUID7
+from pydantic_ai.messages import FilePart
 from sqlalchemy import ColumnElement, and_, or_, select
 
 from octomate.capabilities.harness.events import (
@@ -164,6 +165,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         *,
         project: Project | None = None,
         title: str | None = None,
+        new: bool = False,
     ) -> Thread:
         """The thread this key names, created if it is new.
 
@@ -181,6 +183,9 @@ class ThreadManager(Manager, Locks[ThreadKey]):
 
         Only a thread and a native thread can take one; naming a project for a DM or a
         group chat raises rather than dropping it silently.
+
+        `new=True` refuses an existing surface under the creation lock. A native
+        provider claiming a fresh session cannot thereby attach an existing one.
         """
         if isinstance(address_or_key, ChannelAddress):
             key = ThreadKey.from_address(address_or_key)
@@ -199,6 +204,8 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                 options=[selectinload(Thread["conversations"]).noload("*")],
                 expressions=keyed(key),
             )
+            if new and thread is not None:
+                raise ValueError("The thread already exists")
             if thread is None:
                 thread = Thread(
                     channel_tentacle_id=key.channel_tentacle_id,
@@ -460,6 +467,8 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         *,
         limit: int = 100,
         user_id: UUID7 | None = None,
+        chat_id: str | None = None,
+        offset: int = 0,
     ) -> list[Thread]:
         """Threads most recently touched first — one channel's, or every
         channel's when `channel_tentacle_id` is None. Sub-threads are not listed;
@@ -482,10 +491,13 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             )
         if channel_tentacle_id is not None:
             expressions.append(Thread["channel_tentacle_id"] == channel_tentacle_id)
+        if chat_id is not None:
+            expressions.append(Thread["chat_id"] == chat_id)
         async with async_session() as session:
             rows = await session.list(
                 Thread,
                 limit=limit,
+                offset=offset,
                 options=[selectinload(Thread["conversations"]).noload("*")],
                 order_bys=[Thread["updated_at"].desc(), Thread["id"].desc()],
                 expressions=expressions,
@@ -1102,11 +1114,14 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                 expressions=[
                     ModelResponse["run_id"] == run_id,
                     ModelResponse["role"] == "assistant",
-                    ModelResponse["message_text"].is_not(None),
-                    ModelResponse["message_text"] != "",
                 ],
             )
-        assistant_replies = list(responses)
+        assistant_replies = [
+            response
+            for response in responses
+            if response.message_text
+            or any(isinstance(part, FilePart) for part in response.parts)
+        ]
         if not assistant_replies:
             return []
         if len(assistant_replies) == len(thread_message_ids):
