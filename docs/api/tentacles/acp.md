@@ -1,4 +1,6 @@
 # ACP
+::: octomate.tentacles.acp.channel
+
 ::: octomate.tentacles.acp.base
 
 ::: octomate.tentacles.acp.broker

@@ -19,6 +19,27 @@ def main() -> None:
     session_count = len(sessions)
     boolean_options = False
     configurations: dict[str, list[dict[str, JsonValue]]] = {}
+    model_options: list[dict[str, JsonValue]] = []
+    if os.getenv("ACP_TEST_MODELS"):
+        choices: list[JsonValue] = [
+            {"value": "fast", "name": "Fast", "description": "Quick replies"},
+            {"value": "careful", "name": "Careful"},
+        ]
+        options: list[JsonValue] = (
+            [{"group": "provider", "name": "Provider", "options": choices}]
+            if os.getenv("ACP_TEST_MODELS") == "grouped"
+            else choices
+        )
+        model_options = [
+            {
+                "id": "engine",
+                "name": "Model",
+                "category": "model",
+                "type": "select",
+                "currentValue": "fast",
+                "options": options,
+            }
+        ]
     with Path(os.environ["ACP_TEST_LOG"]).open("w") as log:
         for line in sys.stdin:
             message = json.loads(line)
@@ -49,19 +70,33 @@ def main() -> None:
                                     if disabled
                                     else {"list": {}, "resume": {}},
                                     "promptCapabilities": {"image": True},
-                                    "mcpCapabilities": {"http": True},
+                                    "mcpCapabilities": {
+                                        "http": os.getenv("ACP_TEST_HTTP") != "0"
+                                    },
                                 },
                                 "agentInfo": {"name": "scripted", "version": "1"},
+                                **(
+                                    {
+                                        "authMethods": [
+                                            {"id": "fixture", "name": "Fixture"}
+                                        ]
+                                    }
+                                    if os.getenv("ACP_TEST_AUTH")
+                                    else {}
+                                ),
                                 "_meta": {"peer": "retained"},
                             },
                         }
                     )
+                case "authenticate":
+                    send({"id": message["id"], "result": {}})
                 case "session/new":
                     session_count += 1
                     session_id = f"native-{session_count}"
                     sessions[session_id] = message["params"]["cwd"]
                     stored.write_text(json.dumps(sessions))
                     configurations[session_id] = [
+                        *model_options,
                         {
                             "id": "mode",
                             "name": "Mode",
@@ -148,7 +183,7 @@ def main() -> None:
                             }
                         )
                         continue
-                    configurations[session_id] = []
+                    configurations[session_id] = [*model_options]
                     if message["method"] == "session/load":
                         send(
                             {
@@ -169,7 +204,7 @@ def main() -> None:
                         {
                             "id": message["id"],
                             "result": {
-                                "configOptions": [],
+                                "configOptions": [*configurations[session_id]],
                                 "_meta": {"providerOpen": True},
                             },
                         }
@@ -236,7 +271,12 @@ def main() -> None:
                                 "sessionId": session_id,
                                 "update": {
                                     "sessionUpdate": "agent_message_chunk",
-                                    "content": {"type": "text", "text": "x" * 100_000},
+                                    "content": {
+                                        "type": "text",
+                                        "text": os.getenv(
+                                            "ACP_TEST_TEXT", "x" * 100_000
+                                        ),
+                                    },
                                 },
                             },
                         }

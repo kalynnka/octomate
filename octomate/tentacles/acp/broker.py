@@ -48,7 +48,7 @@ from octomate.tentacles.acp.client import AcpProvider
 
 if TYPE_CHECKING:
     from octomate.reflex.state import ReflexGraphResult
-    from octomate.tentacles.acp.base import AcpTentacle
+    from octomate.tentacles.acp.channel import AcpChannelTentacle
 
 
 @dataclass
@@ -79,7 +79,7 @@ class AcpBroker:
     settle the graph before releasing session attachments.
     """
 
-    tentacle: AcpTentacle
+    tentacle: AcpChannelTentacle
     sender: UserProfile
     connection: Connection
     initialized: bool = False

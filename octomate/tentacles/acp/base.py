@@ -1,4 +1,4 @@
-"""Expose the ACP API and run outbound ACP providers through the agent interface."""
+"""Run outbound ACP providers through the agent interface."""
 
 from __future__ import annotations
 
@@ -7,14 +7,14 @@ from collections.abc import AsyncGenerator, Sequence
 from contextlib import AsyncExitStack, aclosing, asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from tempfile import TemporaryDirectory
+from typing import TYPE_CHECKING, ClassVar, Self
 
 import acp
 from acp import schema
 from acp.connection import StreamDirection, StreamEvent
 from acp.utils import notify_model, request_model
 from anyio import CancelScope
-from fastapi import APIRouter
 from httpx import URL
 from pydantic import UUID7, JsonValue
 from pydantic_ai import (
@@ -42,49 +42,51 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 from uuid_utils.compat import uuid7
 
+from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
 )
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import AgentRouteModelName
-from octomate.mcp.gateway import CLIENT_HEADER
+from octomate.config.agents import AgentRouteModelName, Claim
+from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.acp.adapter import json_value_adapter
-from octomate.tentacles.acp.client import AcpProvider, NativeAcpClient
+from octomate.tentacles.acp.client import AcpProvider, NativeAcpClient, NativeAcpSession
 from octomate.tentacles.acp.history import AcpHistory
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
-    from octomate.tentacles.acp.broker import AcpBroker
 
 
-class AcpTentacle(AgentTentacle[str, None]):
-    """Own the public connection registry and optional outbound agent execution.
+class AcpAgentTentacle(AgentTentacle[str, None]):
+    """Execute turns through an installed ACP harness.
 
-    AcpBroker owns public sessions and dispatch. Outbound runs use the thread and
-    conversation supplied by the reflex, with the provider session ID stored on
-    that conversation. Each turn holds its managed workspace, provider connection,
-    and MCP credentials until the provider has stopped.
+    Outbound runs use the thread and conversation supplied by the reflex, with
+    the provider session ID stored on that conversation. Each turn holds its
+    managed workspace, provider connection, and MCP credentials until the
+    provider has stopped.
 
-    Deployment configuration currently enables only the public API. Supplying
-    `provider` programmatically enables outbound execution with the provider's
-    default model; provider configuration and model discovery remain future work.
+    Startup discovers model config options from an unprompted provider session.
+    Each real session validates the chosen model again before submitting its prompt.
     """
 
-    gateway: bool = False
     in_process: ClassVar[bool] = True
-    provider: AcpProvider | None
-    clients: dict[UUID7, AcpBroker]  # Public threads attached to a connection.
+    provider: AcpProvider
 
     def __init__(
-        self, id: str, octomate: Octomate, *, provider: AcpProvider | None = None
+        self,
+        id: str,
+        octomate: Octomate,
+        *,
+        provider: AcpProvider,
+        gateway: bool = True,
     ) -> None:
         super().__init__(
             id=id,
@@ -95,25 +97,55 @@ class AcpTentacle(AgentTentacle[str, None]):
             files=octomate.files,
         )
         self.provider = provider
-        self.clients = {}
+        self.gateway = gateway
         self.pendings = {}
         self.conversations = octomate.conversations
         self.workspaces = octomate.workspaces
         self.models = {}
 
-    def routers(self) -> tuple[APIRouter, ...]:
-        # Routes depend on this tentacle.
-        from octomate.tentacles.acp.routes import build_acp_router
+    async def __aenter__(self) -> Self:
+        """Discover a harness catalog without prompting or creating Octomate history."""
 
-        return (build_acp_router(self),)
+        async def handle(
+            method: str, params: JsonValue | None, notification: bool
+        ) -> JsonValue | None:
+            if notification:
+                return None
+            raise acp.RequestError.method_not_found(method)
+
+        with TemporaryDirectory(prefix="octomate-acp-") as cwd:
+            async with NativeAcpClient.connect(
+                self.provider,
+                handle,
+                schema.InitializeRequest(
+                    protocol_version=acp.PROTOCOL_VERSION,
+                    client_capabilities=schema.ClientCapabilities(),
+                ),
+            ) as client:
+                session = await client.new_session(
+                    schema.NewSessionRequest(cwd=cwd, mcp_servers=[])
+                )
+                self.models = (
+                    {option.value: option.value for option in session.models}
+                    if session.model_option is not None
+                    else {"default": "default"}
+                )
+                self.default_model = (
+                    session.model_option.current_value
+                    if session.model_option is not None
+                    else None
+                )
+                self.claims = {
+                    option.value: Claim(option.description or option.name)
+                    for option in session.models
+                }
+        return await super().__aenter__()
 
     def resolve_model(
         self, model: AgentRouteModelName | None = None
     ) -> AgentRouteModelName | None:
-        """Use the outbound provider's default until its model catalog is exposed."""
-        if model is not None:
-            raise ValueError("Outbound ACP model selection is not available")
-        return None
+        """Omitting a model preserves the provider session's current selection."""
+        return None if model is None else super().resolve_model(model)
 
     async def run(
         self,
@@ -213,28 +245,29 @@ class AcpTentacle(AgentTentacle[str, None]):
         spec: AgentSpecInput | None = None,
     ) -> ReactEventStream[str | RunOutputDataT]:
         """Run the supplied prompt in this agent's conversation and workspace."""
-        if (
-            any(
-                value is not None
-                for value in (
-                    output_type,
-                    deferred_tool_results,
-                    model,
-                    effort,
-                    instructions,
-                    model_settings,
-                    usage_limits,
-                    usage,
-                    metadata,
-                    output_retries,
-                    toolsets,
-                    builtin_tools,
-                    spec,
-                )
+        if any(
+            value is not None
+            for value in (
+                output_type,
+                deferred_tool_results,
+                effort,
+                instructions,
+                model_settings,
+                usage_limits,
+                usage,
+                metadata,
+                output_retries,
+                toolsets,
+                builtin_tools,
+                spec,
             )
-            or capabilities
+        ) or any(
+            not isinstance(capability, GatewayCapability)
+            for capability in capabilities or []
         ):
-            raise ValueError("Outbound ACP accepts text prompts with provider defaults")
+            raise ValueError("Outbound ACP accepts text prompts and model selection")
+        if model is not None and not isinstance(model, str):
+            raise ValueError("Outbound ACP requires a model identifier")
         return ReactEventStream(
             self.stream(
                 user_prompt,
@@ -245,6 +278,7 @@ class AcpTentacle(AgentTentacle[str, None]):
                 source_thread_message_ids,
                 run_name,
                 deferred_suspender if interactive else None,
+                self.resolve_model(model),
             )
         )
 
@@ -258,10 +292,9 @@ class AcpTentacle(AgentTentacle[str, None]):
         source_message_ids: Sequence[UUID7] | None,
         run_name: str | None,
         suspender: DeferredSuspender | None,
+        model: str | None,
     ) -> AsyncGenerator[ReactStreamEvent[str]]:
         provider = self.provider
-        if provider is None:
-            raise ValueError("No outbound ACP provider is configured")
         if thread_id is None:
             raise ValueError("agent run requires a thread_id to own its conversation")
         if isinstance(user_prompt, str):
@@ -320,7 +353,7 @@ class AcpTentacle(AgentTentacle[str, None]):
             ) as client,
         ):
             mcp_servers = await credentials.enter_async_context(
-                self.mcp_servers(client, sender)
+                self.mcp_servers(client, sender, conversation.id)
             )
             if conversation.external_id is None:
                 native = await client.new_session(
@@ -335,7 +368,7 @@ class AcpTentacle(AgentTentacle[str, None]):
                 if capabilities is None or not capabilities.load_session:
                     raise ValueError("The ACP provider cannot reopen this conversation")
                 session_id = conversation.external_id
-                await request_model(
+                response = await request_model(
                     client.connection,
                     acp.AGENT_METHODS["session_load"],
                     schema.LoadSessionRequest(
@@ -345,11 +378,15 @@ class AcpTentacle(AgentTentacle[str, None]):
                     ),
                     schema.LoadSessionResponse,
                 )
+                native = NativeAcpSession(
+                    provider, str(workspace.path), session_id, response
+                )
+            selected_model = await native.select_model(client.connection, model)
             request = schema.PromptRequest(
                 session_id=session_id, prompt=[acp.text_block(text)]
             )
             async with (
-                self.driving(f"{provider.native_id}/{session_id}"),
+                self.driving(session_id),
                 aclosing(
                     self.invoke(
                         client,
@@ -362,6 +399,7 @@ class AcpTentacle(AgentTentacle[str, None]):
                         source_message_ids,
                         run_name,
                         updates,
+                        selected_model,
                     )
                 ) as events,
             ):
@@ -424,9 +462,12 @@ class AcpTentacle(AgentTentacle[str, None]):
 
     @asynccontextmanager
     async def mcp_servers(
-        self, client: NativeAcpClient, sender: UserProfile
+        self, client: NativeAcpClient, sender: UserProfile, conversation_id: UUID7
     ) -> AsyncGenerator[list[schema.HttpMcpServer]]:
         """Supply the caller's remote Octomate MCP, revoking its key after the turn."""
+        if not self.gateway:
+            yield []
+            return
         capabilities = client.initialization.agent_capabilities
         if (
             capabilities is None
@@ -443,7 +484,7 @@ class AcpTentacle(AgentTentacle[str, None]):
         with CancelScope(shield=True):
             issued = await auth.create_api_key(
                 user_id,
-                name=f"ACP {client.provider.value}",
+                name=f"ACP {self.id}",
                 scopes=["mcp"],
                 expires_at=datetime.now(UTC) + auth.config.runtime_api_key_lifetime,
             )
@@ -467,7 +508,7 @@ class AcpTentacle(AgentTentacle[str, None]):
                             value=f"Bearer {issued.token.get_secret_value()}",
                         ),
                         schema.HttpHeader(
-                            name=CLIENT_HEADER, value=client.provider.native_id
+                            name=CONVERSATION_HEADER, value=str(conversation_id)
                         ),
                     ],
                 )
@@ -490,6 +531,7 @@ class AcpTentacle(AgentTentacle[str, None]):
         updates: asyncio.Queue[
             StreamEvent | ActionBatchEvent | ActionBatchAnsweredEvent | None
         ],
+        model: str | None,
     ) -> AsyncGenerator[ReactStreamEvent[str]]:
         history = AcpHistory(request)
         run_id = str(uuid7())
@@ -556,7 +598,6 @@ class AcpTentacle(AgentTentacle[str, None]):
         finally:
             with CancelScope(shield=True):
                 await self.record(
-                    client,
                     conversation,
                     history,
                     run_id,
@@ -567,6 +608,7 @@ class AcpTentacle(AgentTentacle[str, None]):
                     source_message_ids,
                     run_name,
                     updates,
+                    model,
                     failed=failed,
                 )
         yield AgentRunResultEvent(
@@ -583,7 +625,6 @@ class AcpTentacle(AgentTentacle[str, None]):
 
     async def record(
         self,
-        client: NativeAcpClient,
         conversation: Conversation,
         history: AcpHistory,
         run_id: str,
@@ -596,6 +637,7 @@ class AcpTentacle(AgentTentacle[str, None]):
         updates: asyncio.Queue[
             StreamEvent | ActionBatchEvent | ActionBatchAnsweredEvent | None
         ],
+        model: str | None,
         *,
         failed: bool,
     ) -> None:
@@ -611,9 +653,10 @@ class AcpTentacle(AgentTentacle[str, None]):
             run_id,
             history.messages,
             name=run_name,
+            model_name=model,
             cwd=cwd,
             external_id=history.prompt.session_id,
-            native_id=client.provider.native_id,
+            native_id=self.id,
         )
         assert run is not None
         if source_message_ids:

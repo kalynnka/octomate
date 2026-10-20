@@ -31,7 +31,7 @@ from octomate.nerve import ThreadTopic
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadMessage
-from octomate.tentacles.acp.base import AcpTentacle
+from octomate.tentacles.acp.channel import AcpChannelTentacle
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.inkling.base import InklingTentacle
@@ -63,7 +63,7 @@ async def client(in_memory_engine: AsyncEngine) -> TestClient:
                 gateway=False,
             )
         )
-    app.connect(AcpTentacle(id="bridge", octomate=app))
+    app.connect(AcpChannelTentacle(id="bridge", octomate=app))
     user = await a_user("alice")
     assert app.auth is not None
     key = await app.auth.create_api_key(user.id, name="ACP client", scopes=["acp"])
@@ -566,7 +566,7 @@ async def test_agent_permissions_and_cancellation(
     assert calls == (["echo"] if decision == "allow" else [])
     assert not app.awakes
     bridge = app.tentacles["bridge"]
-    assert isinstance(bridge, AcpTentacle)
+    assert isinstance(bridge, AcpChannelTentacle)
     assert not bridge.clients
 
 

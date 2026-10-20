@@ -1,5 +1,7 @@
 # Channels
 
+::: octomate.config.acp.AcpChannelConfig
+
 ::: octomate.config.channels
     options:
       members:

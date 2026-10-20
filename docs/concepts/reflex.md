@@ -78,8 +78,9 @@ deferral becomes `Teleport`, any other deferral ends the graph suspended, and a
 plain result ends it. Whatever happened, the turn's workspace is saved.
 
 ACP prompts follow this same `Awake` → `Route` → `React` path with the caller's
-selected agent and model. The ACP tentacle tracks connected sessions; the reflex
-owns active turns and publishes their activity to the nerve. Permissions and
+selected agent and model recorded on the thread. `Route` validates that selection.
+The inbound ACP channel tracks connected sessions; the reflex owns active turns
+and publishes their activity to the nerve. Permissions and
 questions return through ordinary deferred responses. The selected backend uses
 the thread's managed workspace. An idle connection holds no awake task.
 

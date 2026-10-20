@@ -19,7 +19,8 @@ The [Tentacles guide](../../tentacles/index.md#enable-a-tentacle) walks through
 the shared steps. To collect sessions from your own app, editor or terminal,
 also follow the [client setup](../../installation/clients/quickstart.md).
 
-Use [ACP](acp.md) to choose among enabled agents through one Octomate connection.
+Use [ACP](acp.md) to choose among enabled agents through one Octomate connection,
+or connect another installed ACP harness as an agent.
 
 ## Configuration
 
@@ -37,7 +38,8 @@ tentacles:
       - name: anthropic:claude-sonnet-5
 ```
 
-Each agent `type` may be declared once, because each owns a fixed hook route. Every
+The native agent types are declared once, because each owns a fixed hook route.
+ACP harnesses can repeat under independent registry keys. Every
 block accepts `enabled` (default `true`) and `gateway` (default `true`): with
 `gateway: false`, that agent's driven turns get none of the routing spells.
 
@@ -49,7 +51,8 @@ the caller picks. The answering agent reads the claims when deciding whether to 
 work to somebody better placed.
 
 Claude Code, Codex and DeepSeek Harness report their catalogs at startup, with each
-model's description and supported efforts where the harness has them. Inkling's
+model's description and supported efforts where the harness has them. ACP harnesses
+report their model configuration choices; otherwise they offer their default. Inkling's
 routes are its configured `models`. Where a harness reports nothing, `claims` fills
 the gap, keyed by the provider-qualified model name:
 

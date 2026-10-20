@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock
 from uuid import UUID
@@ -9,6 +10,7 @@ from uuid import UUID
 import acp
 import pytest
 from anyio import Path as AsyncPath
+from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
@@ -21,7 +23,7 @@ from octomate.capabilities.harness.events import (
 )
 from octomate.config import OctomateConfig
 from octomate.database import async_session
-from octomate.mcp.gateway import CLIENT_HEADER
+from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.nerve import ThreadTopic
 from octomate.reflex.state import ReflexResult
 from octomate.schemas.auth import UserApiKey
@@ -32,22 +34,209 @@ from octomate.schemas.runs import AgentRun
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import MessageBinding, Thread, ThreadKey, ThreadMessage
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.acp.base import AcpTentacle
+from octomate.tentacles.acp.base import AcpAgentTentacle
+from octomate.tentacles.acp.channel import AcpChannelTentacle
 from octomate.tentacles.acp.client import AcpProvider
 from tests.agent.test_acp_client import adapter_environment as adapter_environment
+from tests.agent.test_acp_routes import initialize, new_session, rpc
 from tests.support.managers import a_project, a_registry
 from tests.support.nerve import held
 from tests.support.users import a_user, auth_config
 
 
-@pytest.fixture(params=list(AcpProvider))
+@pytest.fixture
+def custom_provider(tmp_path: Path) -> AcpProvider:
+    return AcpProvider.model_validate(
+        {
+            "command": sys.executable,
+            "args": [str(Path(__file__).with_name("fixtures") / "acp_agent.py")],
+            "env": {
+                "ACP_TEST_LOG": str(tmp_path / "custom-requests.jsonl"),
+                "ACP_TEST_MODELS": "grouped",
+                "ACP_TEST_TEXT": "custom harness answer",
+            },
+        }
+    )
+
+
+@pytest.mark.parametrize("catalog", ["grouped", "flat", "none"])
+async def test_custom_harness_discovers_selects_and_reopens(
+    custom_provider: AcpProvider,
+    in_memory_engine: AsyncEngine,
+    tmp_path: Path,
+    catalog: str,
+) -> None:
+    provider = AcpProvider.model_validate(
+        {
+            **custom_provider.model_dump(),
+            "env": {
+                **custom_provider.env,
+                "ACP_TEST_MODELS": "" if catalog == "none" else catalog,
+            },
+        }
+    )
+    app = Octomate(config=OctomateConfig(auth=auth_config()))
+    agent = app.connect(AcpAgentTentacle("custom", app, provider=provider))
+    user = await a_user("alice")
+    sender = await app.users.native_profile(agent.id, user.username)
+    assert sender is not None
+    sender = await app.users.ensure_profile(agent.id, sender)
+    thread = await app.threads.ensure(
+        ThreadKey(agent.id, "thread", str(user.id), uuid7().hex)
+    )
+    async with agent:
+        assert set(agent.models) == (
+            {"default"} if catalog == "none" else {"fast", "careful"}
+        )
+        assert agent.default_model == (None if catalog == "none" else "fast")
+        assert not agent.routers()
+        async with async_session() as session:
+            assert not await session.list(Conversation)
+            assert not await session.list(AgentRun)
+        for model in ["default", None] if catalog == "none" else ["careful", "fast"]:
+            result = await agent.run(
+                "hello",
+                conversation_address=thread.key.address(sender.channel_user_id),
+                thread_id=thread.id,
+                model=model,
+                interactive=False,
+            )
+            assert result.output == "custom harness answer"
+        with pytest.raises(ValueError, match="does not serve model"):
+            agent.resolve_model("unknown")
+    async with async_session() as session:
+        [conversation] = await session.list(Conversation)
+        runs = await session.list(AgentRun)
+        assert len(runs) == 2
+        assert {run.conversation_id for run in runs} == {conversation.id}
+        assert [run.model_name for run in runs] == (
+            [None, None] if catalog == "none" else ["careful", "fast"]
+        )
+        assert all(run.native_id == agent.id for run in runs)
+        assert all(key.revoked_at is not None for key in await session.list(UserApiKey))
+    messages = [
+        json.loads(line)["message"]
+        for line in (tmp_path / "custom-requests.jsonl").read_text().splitlines()
+    ]
+    assert messages[1]["method"] == "session/load"
+    assert "replayed history" not in result.output
+    assert not agent.routes
+
+
+async def test_public_endpoint_drives_custom_harness(
+    custom_provider: AcpProvider,
+    in_memory_engine: AsyncEngine,
+) -> None:
+    app = Octomate(config=OctomateConfig(auth=auth_config()))
+    agent = app.connect(AcpAgentTentacle("custom", app, provider=custom_provider))
+    app.connect(AcpChannelTentacle("entry", app))
+    user = await a_user("alice")
+    assert app.auth is not None
+    key = await app.auth.create_api_key(user.id, name="test", scopes=["acp"])
+    client = TestClient(
+        app, headers={"Authorization": f"Bearer {key.token.get_secret_value()}"}
+    )
+    async with agent:
+        with client.websocket_connect("/api/acp") as socket:
+            initialize(socket)
+            session_id = new_session(socket)
+            frames = rpc(
+                socket,
+                "session/set_config_option",
+                {
+                    "sessionId": session_id,
+                    "configId": "model",
+                    "value": "custom:careful",
+                },
+            )
+            assert "result" in frames[-1]
+            socket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "prompt",
+                    "method": "session/prompt",
+                    "params": {
+                        "sessionId": session_id,
+                        "prompt": [{"type": "text", "text": "hello"}],
+                    },
+                }
+            )
+            while (frame := socket.receive_json()).get(
+                "method"
+            ) != "session/request_permission":
+                assert frame.get("id") != "prompt", frame
+            socket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": frame["id"],
+                    "result": {"outcome": {"outcome": "selected", "optionId": "allow"}},
+                }
+            )
+            while (frame := socket.receive_json()).get("id") != "prompt":
+                pass
+            assert frame["result"] == {"stopReason": "end_turn"}
+    async with async_session() as session:
+        [conversation] = await session.list(Conversation)
+        [run] = await session.list(AgentRun)
+        assert str(conversation.thread_id) == session_id
+        assert conversation.agent_tentacle_id == "custom"
+        assert run.model_name == "careful"
+        assert len(await session.list(ThreadMessage)) == 2
+    assert not app.awakes
+    assert not agent.pendings
+
+
+@pytest.mark.parametrize("gateway", [True, False])
+async def test_harness_without_http_mcp(
+    custom_provider: AcpProvider,
+    in_memory_engine: AsyncEngine,
+    gateway: bool,
+) -> None:
+    provider = AcpProvider.model_validate(
+        {
+            **custom_provider.model_dump(),
+            "env": {**custom_provider.env, "ACP_TEST_HTTP": "0"},
+        }
+    )
+    app = Octomate(config=OctomateConfig(auth=auth_config()))
+    agent = app.connect(
+        AcpAgentTentacle("custom", app, provider=provider, gateway=gateway)
+    )
+    user = await a_user("alice")
+    sender = await app.users.native_profile(agent.id, user.username)
+    assert sender is not None
+    sender = await app.users.ensure_profile(agent.id, sender)
+    thread = await app.threads.ensure(
+        ThreadKey(agent.id, "thread", str(user.id), uuid7().hex)
+    )
+    async with agent:
+        if gateway:
+            with pytest.raises(ValueError, match="must support HTTP MCP"):
+                await agent.run(
+                    "hello",
+                    thread_id=thread.id,
+                    conversation_address=thread.key.address(sender.channel_user_id),
+                )
+            return
+        result = await agent.run(
+            "hello",
+            thread_id=thread.id,
+            conversation_address=thread.key.address(sender.channel_user_id),
+            interactive=False,
+        )
+        assert result.output == "custom harness answer"
+    async with async_session() as session:
+        assert not await session.list(UserApiKey)
+
+
+@pytest.fixture(params=["claude-agent-acp", "codex-acp"])
 async def agent(
     request: pytest.FixtureRequest,
     adapter_environment: dict[str, str],
     in_memory_engine: AsyncEngine,
     tmp_path: Path,
-) -> tuple[AcpTentacle, UserProfile, Thread]:
-    provider = AcpProvider(request.param)
+) -> tuple[AcpAgentTentacle, UserProfile, Thread]:
+    provider = AcpProvider(command=request.param)
     executable = tmp_path / provider.command
     source = executable.read_text()
     executable.write_text(
@@ -60,7 +249,7 @@ async def agent(
     (root / "README.md").write_text("ACP test workspace\n")
     app = Octomate(config=OctomateConfig(auth=auth_config()))
     app.workspaces.projects = await a_registry(a_project(root, name="project"))
-    tentacle = app.connect(AcpTentacle(id="acp", octomate=app, provider=provider))
+    tentacle = app.connect(AcpAgentTentacle(id="acp", octomate=app, provider=provider))
     user = await a_user("alice")
     sender = await app.users.native_profile(tentacle.id, user.username)
     assert sender is not None
@@ -74,7 +263,7 @@ async def agent(
 
 @pytest.mark.parametrize("allowed", [True, False])
 async def test_reflex_owns_dispatch_and_history(
-    agent: tuple[AcpTentacle, UserProfile, Thread],
+    agent: tuple[AcpAgentTentacle, UserProfile, Thread],
     adapter_environment: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
     allowed: bool,
@@ -153,8 +342,7 @@ async def test_reflex_owns_dispatch_and_history(
     assert new["cwd"] == str(app.workspaces.path(thread.id))
     [mcp] = new["mcpServers"]
     headers = {item["name"]: item["value"] for item in mcp["headers"]}
-    assert tentacle.provider is not None
-    assert headers[CLIENT_HEADER] == tentacle.provider.native_id
+    assert headers[CONVERSATION_HEADER] == str(conversation.id)
     token = headers["Authorization"].removeprefix("Bearer ")
     assert await app.bearers.owner(token, scope="mcp") is None
     prompt = next(
@@ -170,7 +358,7 @@ async def test_reflex_owns_dispatch_and_history(
 
 
 async def test_direct_runs_reopen_the_conversation_without_dispatch(
-    agent: tuple[AcpTentacle, UserProfile, Thread],
+    agent: tuple[AcpAgentTentacle, UserProfile, Thread],
     adapter_environment: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -205,7 +393,7 @@ async def test_direct_runs_reopen_the_conversation_without_dispatch(
 
 
 async def test_cancel_settles_provider_and_keeps_partial_history(
-    agent: tuple[AcpTentacle, UserProfile, Thread],
+    agent: tuple[AcpAgentTentacle, UserProfile, Thread],
     adapter_environment: dict[str, str],
 ) -> None:
     tentacle, sender, thread = agent
@@ -253,7 +441,7 @@ async def test_cancel_settles_provider_and_keeps_partial_history(
 
 
 async def test_conversation_cannot_cross_threads(
-    agent: tuple[AcpTentacle, UserProfile, Thread],
+    agent: tuple[AcpAgentTentacle, UserProfile, Thread],
     adapter_environment: dict[str, str],
 ) -> None:
     tentacle, sender, thread = agent
@@ -274,11 +462,10 @@ async def test_conversation_cannot_cross_threads(
 
 
 async def test_provider_failure_preserves_partial_run_and_revokes_key(
-    agent: tuple[AcpTentacle, UserProfile, Thread],
+    agent: tuple[AcpAgentTentacle, UserProfile, Thread],
     tmp_path: Path,
 ) -> None:
     tentacle, sender, thread = agent
-    assert tentacle.provider is not None
     executable = AsyncPath(tmp_path / tentacle.provider.command)
     source = await executable.read_text()
     await executable.write_text(

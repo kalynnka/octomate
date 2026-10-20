@@ -15,12 +15,12 @@ from pydantic import JsonValue
 
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.acp.auth import acp_sender
-from octomate.tentacles.acp.base import AcpTentacle
 from octomate.tentacles.acp.broker import AcpBroker
+from octomate.tentacles.acp.channel import AcpChannelTentacle
 from octomate.tentacles.acp.transport import websocket_connection
 
 
-def build_acp_router(tentacle: AcpTentacle) -> APIRouter:
+def build_acp_router(tentacle: AcpChannelTentacle) -> APIRouter:
     """Bind authentication and connections to the registered ACP instance."""
     router = APIRouter(prefix="/api/acp", tags=["acp"])
 

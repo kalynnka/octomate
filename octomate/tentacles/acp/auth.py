@@ -6,11 +6,11 @@ from typing import Annotated
 from fastapi import Header, HTTPException
 
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.acp.base import AcpTentacle
+from octomate.tentacles.acp.channel import AcpChannelTentacle
 
 
 def acp_sender(
-    tentacle: AcpTentacle,
+    tentacle: AcpChannelTentacle,
 ) -> Callable[[str | None], Awaitable[UserProfile]]:
     """Bind the ACP bearer dependency to the tentacle mounted by the router.
 

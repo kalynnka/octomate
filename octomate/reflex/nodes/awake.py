@@ -168,13 +168,6 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 
         address = self.signal.address
         channel = ctx.deps.channels.get(address.channel_tentacle_id)
-        if (
-            channel is None
-            and self.signal.agent_id is None
-            and address.channel_tentacle_id not in ctx.deps.agents
-        ):
-            raise ValueError(f"unknown channel {address.channel_tentacle_id!r}")
-
         source_target = ResponseTarget(
             channel_id=address.channel_tentacle_id,
             address=address,

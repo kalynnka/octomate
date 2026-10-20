@@ -19,8 +19,9 @@ tentacles:
     type: acp
 ```
 
-Declare ACP once per deployment, under any unused registry key. Omitting it or
-setting `enabled: false` leaves the API unavailable.
+Declare the ACP API once per deployment, under any unused registry key. Omitting
+it or setting `enabled: false` leaves the API unavailable. This channel exposes
+the enabled agents; it does not run an external harness itself.
 
 1. Enable and authenticate the agent tentacles you want to use, such as
    [Claude](claude-code.md), [Codex](codex.md), or [Inkling](inkling.md). ACP uses their
@@ -37,6 +38,52 @@ setting `enabled: false` leaves the API unavailable.
 
 Each prompt runs through the [reflex graph](../../concepts/reflex.md). A session
 accepts one prompt at a time. Keeping it connected does not keep the thread busy.
+
+## Connect a harness
+
+An installed harness that speaks ACP can also run as an Octomate agent. Install
+and authenticate it as the server's user, then add a separate tentacle:
+
+```yaml
+tentacles:
+  acp:
+    type: acp
+  harness:
+    type: acp_agent
+    provider:
+      command: /opt/bin/my-agent
+      args: [--acp]
+  trunkline:
+    type: trunkline
+    agents: [harness]
+```
+
+Replace the executable and arguments with your harness's ACP command. Each
+harness has its own registry key; several can coexist. Choose it in Trunkline,
+another configured channel, or the public ACP model selector. An `acp_agent`
+entry requires a provider and does not enable the public API; keep the separate
+`acp` entry when clients should connect to Octomate through ACP.
+
+Octomate discovers the harness's advertised model configuration choices at
+startup. A harness without that selector is available with its default model.
+Startup may leave an empty session in the harness's own history. No prompt is
+sent and no Octomate conversation is created for discovery.
+
+Prompts run in the usual managed server workspace. Subsequent prompts load the
+same provider session, so the harness must support session loading to continue
+a conversation. Streaming, approvals, cancellation, and recorded history use the
+same Octomate flow as the other agents. Permission modes and thinking effort
+remain at the harness's defaults.
+
+By default, the harness receives Octomate's MCP with the calling user's identity.
+This requires HTTP MCP support. Set `gateway: false` on this tentacle to omit
+Octomate tools when the harness cannot accept them. Client file and terminal
+callbacks are not offered; the harness must operate on the server itself.
+
+Some harnesses require an ACP authentication method even after local login.
+Configure that method and any required environment overrides in
+[the provider settings](../../api/config/agents.md#octomate.config.acp.AcpProvider).
+Interactive login is not relayed.
 
 ## Session settings
 
@@ -89,6 +136,5 @@ history remains in Octomate's conversations.
 
 ## Coming soon
 
-- External ACP providers as configurable agent backends.
 - File operations and terminal commands in the connected client's environment.
 - MCP servers supplied by the client.

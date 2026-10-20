@@ -4,7 +4,7 @@ to know which module owns a name. The deployment itself lives in `base.py`."""
 
 from __future__ import annotations
 
-from octomate.config.acp import AcpConfig
+from octomate.config.acp import AcpAgentConfig, AcpChannelConfig
 from octomate.config.agents import (
     AgentConfig,
     AgentRouteModelName,
@@ -75,7 +75,8 @@ from octomate.config.workspaces import WorkspacesConfig
 __all__ = [  # noqa: RUF022
     "OctomateConfig",
     "TentacleConfigVariant",
-    "AcpConfig",
+    "AcpAgentConfig",
+    "AcpChannelConfig",
     "ArtifactConfig",
     # agents
     "AgentConfig",

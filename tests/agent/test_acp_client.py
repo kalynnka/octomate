@@ -17,7 +17,6 @@ from anyio import Path as AsyncPath
 from pydantic import JsonValue
 
 from octomate.tentacles.acp.client import AcpProvider, NativeAcpClient
-from octomate.types.threads import CLAUDE_NATIVE_ID, CODEX_NATIVE_ID
 
 
 @dataclass
@@ -57,13 +56,12 @@ def adapter_environment(
 
 
 @pytest.mark.parametrize(
-    ("provider", "native_id"),
-    [(AcpProvider.CLAUDE, CLAUDE_NATIVE_ID), (AcpProvider.CODEX, CODEX_NATIVE_ID)],
+    "provider",
+    [AcpProvider(command="claude-agent-acp"), AcpProvider(command="codex-acp")],
 )
 async def test_native_session_preserves_workspace_mcp_and_extensions(
     adapter_environment: dict[str, str],
     provider: AcpProvider,
-    native_id: str,
 ) -> None:
     initialize = schema.InitializeRequest(
         protocol_version=1,
@@ -91,10 +89,8 @@ async def test_native_session_preserves_workspace_mcp_and_extensions(
         first = await client.new_session(request)
         second = await client.new_session(request)
         assert first.provider is provider
-        assert first.key.kind == "native_thread"
-        assert first.key.channel_tentacle_id == native_id
-        assert first.key.chat_id == first.response.session_id == "native-1"
-        assert second.key.chat_id == "native-2"
+        assert first.session_id == first.response.session_id == "native-1"
+        assert second.session_id == "native-2"
         assert first.cwd == "/project"
         assert first.response.field_meta == {"providerSession": True}
         capabilities = client.initialization.agent_capabilities
@@ -119,7 +115,10 @@ async def test_native_session_preserves_workspace_mcp_and_extensions(
         os.kill(records[0]["pid"], 0)
 
 
-@pytest.mark.parametrize("provider", list(AcpProvider))
+@pytest.mark.parametrize(
+    "provider",
+    [AcpProvider(command="claude-agent-acp"), AcpProvider(command="codex-acp")],
+)
 async def test_session_resolves_workspace_aliases_without_changing_request(
     adapter_environment: dict[str, str], provider: AcpProvider, tmp_path: Path
 ) -> None:
@@ -146,7 +145,10 @@ async def test_session_resolves_workspace_aliases_without_changing_request(
     assert request.additional_directories == [str(alias)]
 
 
-@pytest.mark.parametrize("provider", list(AcpProvider))
+@pytest.mark.parametrize(
+    "provider",
+    [AcpProvider(command="claude-agent-acp"), AcpProvider(command="codex-acp")],
+)
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_updates_and_control_continue_while_permission_is_pending(
     adapter_environment: dict[str, str], provider: AcpProvider, cancel: bool
@@ -201,7 +203,7 @@ async def test_relative_workspace_is_rejected_before_session_creation(
     adapter_environment: dict[str, str], cwd: str
 ) -> None:
     async with NativeAcpClient.connect(
-        AcpProvider.CLAUDE,
+        AcpProvider(command="claude-agent-acp"),
         Callbacks(),
         schema.InitializeRequest(protocol_version=1),
         env=adapter_environment,
@@ -223,7 +225,7 @@ async def test_unsupported_negotiated_version_closes_process(
 ) -> None:
     with pytest.raises(ValueError, match="unsupported protocol 2"):
         async with NativeAcpClient.connect(
-            AcpProvider.CODEX,
+            AcpProvider(command="codex-acp"),
             Callbacks(),
             schema.InitializeRequest(protocol_version=1),
             env={**adapter_environment, "ACP_TEST_VERSION": "2"},
@@ -241,7 +243,7 @@ async def test_peer_error_propagates_and_exception_closes_process(
 ) -> None:
     with pytest.raises(acp.RequestError, match="scripted refusal"):
         async with NativeAcpClient.connect(
-            AcpProvider.CODEX,
+            AcpProvider(command="codex-acp"),
             Callbacks(),
             schema.InitializeRequest(protocol_version=1),
             env=adapter_environment,
@@ -260,7 +262,7 @@ async def test_cancelling_connection_owner_reaps_process(
 
     async def own_connection() -> None:
         async with NativeAcpClient.connect(
-            AcpProvider.CLAUDE,
+            AcpProvider(command="claude-agent-acp"),
             Callbacks(),
             schema.InitializeRequest(protocol_version=1),
             env=adapter_environment,
@@ -286,10 +288,48 @@ async def test_unsupported_requested_version_does_not_start_process(
 ) -> None:
     with pytest.raises(ValueError, match="requires protocol version 1"):
         async with NativeAcpClient.connect(
-            AcpProvider.CLAUDE,
+            AcpProvider(command="claude-agent-acp"),
             Callbacks(),
             schema.InitializeRequest(protocol_version=2),
             env=adapter_environment,
         ):
             pytest.fail("an incompatible connection must not be opened")
     assert not await AsyncPath(adapter_environment["ACP_TEST_LOG"]).exists()
+
+
+@pytest.mark.parametrize("method", ["fixture", "unknown"])
+async def test_configured_authentication_method(
+    adapter_environment: dict[str, str], method: str
+) -> None:
+    provider = AcpProvider.model_validate(
+        {
+            "command": "codex-acp",
+            "auth_method": method,
+            "env": {**adapter_environment, "ACP_TEST_AUTH": "1"},
+        }
+    )
+    if method == "unknown":
+        with pytest.raises(ValueError, match="authentication method"):
+            async with NativeAcpClient.connect(
+                provider, Callbacks(), schema.InitializeRequest(protocol_version=1)
+            ):
+                pytest.fail("Unknown authentication must be refused")
+        return
+    async with NativeAcpClient.connect(
+        provider, Callbacks(), schema.InitializeRequest(protocol_version=1)
+    ) as client:
+        await client.new_session(
+            schema.NewSessionRequest(cwd="/project", mcp_servers=[])
+        )
+    records = [
+        json.loads(line)["message"]
+        for line in (
+            await AsyncPath(adapter_environment["ACP_TEST_LOG"]).read_text()
+        ).splitlines()
+    ]
+    assert [item["method"] for item in records] == [
+        "initialize",
+        "authenticate",
+        "session/new",
+    ]
+    assert records[1]["params"] == {"methodId": "fixture"}

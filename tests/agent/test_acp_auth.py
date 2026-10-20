@@ -19,7 +19,7 @@ from octomate.schemas.conversation import Conversation
 from octomate.schemas.thread import Thread
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.acp.auth import acp_sender
-from octomate.tentacles.acp.base import AcpTentacle
+from octomate.tentacles.acp.channel import AcpChannelTentacle
 from octomate.tentacles.hooks import hook_guard
 from octomate.types.auth import ApiKeyScope
 from tests.support.users import a_user, auth_config
@@ -29,7 +29,7 @@ from tests.support.users import a_user, auth_config
 def app(in_memory_engine: AsyncEngine) -> Octomate:
     app = Octomate(config=OctomateConfig(auth=auth_config()))
 
-    tentacle = app.connect(AcpTentacle(id="bridge", octomate=app))
+    tentacle = app.connect(AcpChannelTentacle(id="bridge", octomate=app))
 
     @app.websocket("/test/acp")
     async def connection(
