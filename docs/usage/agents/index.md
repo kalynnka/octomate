@@ -52,7 +52,8 @@ work to somebody better placed.
 
 Claude Code, Codex and DeepSeek Harness report their catalogs at startup, with each
 model's description and supported efforts where the harness has them. ACP harnesses
-report their model configuration choices; otherwise they offer their default. Inkling's
+report model choices and each model's available reasoning levels; without a model
+selector they offer their default. Inkling's
 routes are its configured `models`. Where a harness reports nothing, `claims` fills
 the gap, keyed by the provider-qualified model name:
 

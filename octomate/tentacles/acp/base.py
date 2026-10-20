@@ -73,8 +73,9 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
     managed workspace, provider connection, and MCP credentials until the
     provider has stopped.
 
-    Startup discovers model config options from an unprompted provider session.
-    Each real session validates the chosen model again before submitting its prompt.
+    Startup discovers models and their reasoning levels from an unprompted session,
+    selecting each model to read its current thought_level choices. Real sessions
+    validate the chosen model and effort again before submitting their prompt.
     """
 
     in_process: ClassVar[bool] = True
@@ -135,10 +136,16 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                     if session.model_option is not None
                     else None
                 )
-                self.claims = {
-                    option.value: Claim(option.description or option.name)
+                abilities = {
+                    option.value: option.description or option.name
                     for option in session.models
                 }
+                self.claims = {}
+                for model in self.models:
+                    await session.select_model(client.connection, model)
+                    self.claims[model] = Claim(
+                        abilities.get(model, self.description), efforts=session.efforts
+                    )
         return await super().__aenter__()
 
     def resolve_model(
@@ -250,7 +257,6 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             for value in (
                 output_type,
                 deferred_tool_results,
-                effort,
                 instructions,
                 model_settings,
                 usage_limits,
@@ -265,7 +271,9 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             not isinstance(capability, GatewayCapability)
             for capability in capabilities or []
         ):
-            raise ValueError("Outbound ACP accepts text prompts and model selection")
+            raise ValueError(
+                "Outbound ACP accepts text prompts, model and effort selection"
+            )
         if model is not None and not isinstance(model, str):
             raise ValueError("Outbound ACP requires a model identifier")
         return ReactEventStream(
@@ -279,6 +287,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                 run_name,
                 deferred_suspender if interactive else None,
                 self.resolve_model(model),
+                effort,
             )
         )
 
@@ -293,6 +302,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         run_name: str | None,
         suspender: DeferredSuspender | None,
         model: str | None,
+        effort: str | None,
     ) -> AsyncGenerator[ReactStreamEvent[str]]:
         provider = self.provider
         if thread_id is None:
@@ -311,6 +321,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         conversation = await self.resolve_conversation(
             thread_id, conversation_address=address, conversation_id=conversation_id
         )
+        effort = await self.resolve_effort(conversation, model=model, effort=effort)
         sender = await self.octomate.users.profile(
             address.channel_tentacle_id, address.user_id
         )
@@ -382,6 +393,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                     provider, str(workspace.path), session_id, response
                 )
             selected_model = await native.select_model(client.connection, model)
+            await native.select_effort(client.connection, effort)
             request = schema.PromptRequest(
                 session_id=session_id, prompt=[acp.text_block(text)]
             )

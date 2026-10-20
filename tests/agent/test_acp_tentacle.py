@@ -123,6 +123,86 @@ async def test_custom_harness_discovers_selects_and_reopens(
     assert not agent.routes
 
 
+@pytest.mark.parametrize("catalog", ["grouped", "flat"])
+async def test_harness_efforts_follow_model_and_reach_new_and_loaded_sessions(
+    custom_provider: AcpProvider,
+    in_memory_engine: AsyncEngine,
+    tmp_path: Path,
+    catalog: str,
+) -> None:
+    provider = AcpProvider.model_validate(
+        {
+            **custom_provider.model_dump(),
+            "env": {**custom_provider.env, "ACP_TEST_EFFORTS": catalog},
+        }
+    )
+    app = Octomate(config=OctomateConfig(auth=auth_config()))
+    agent = app.connect(AcpAgentTentacle("custom", app, provider=provider))
+    user = await a_user("alice")
+    sender = await app.users.native_profile(agent.id, user.username)
+    assert sender is not None
+    sender = await app.users.ensure_profile(agent.id, sender)
+    thread = await app.threads.ensure(
+        ThreadKey(agent.id, "thread", str(user.id), uuid7().hex)
+    )
+    conversation = await agent.resolve_conversation(
+        thread.id, conversation_address=thread.key.address(sender.channel_user_id)
+    )
+    async with agent:
+        assert {route.model: route.claim.efforts for route in agent.info.routes} == {
+            "fast": ("low", "medium", "high"),
+            "careful": ("high", "max"),
+        }
+        assert agent.default_model == "fast"
+        for model, explicit, stored, expected in [
+            ("careful", "max", "high", "max"),
+            ("fast", None, "low", "low"),
+            (None, "medium", "low", None),
+            ("fast", None, None, None),
+        ]:
+            await app.conversations.set_effort(conversation, stored)
+            result = await agent.run(
+                "hello",
+                conversation_address=thread.key.address(sender.channel_user_id),
+                thread_id=thread.id,
+                model=model,
+                effort=explicit,
+                interactive=False,
+            )
+            assert result.output == "custom harness answer"
+            requests = [
+                json.loads(line)["message"]
+                for line in (tmp_path / "custom-requests.jsonl")
+                .read_text()
+                .splitlines()
+            ]
+            settings = [
+                item["params"]
+                for item in requests
+                if item.get("method") == "session/set_config_option"
+            ]
+            assert [
+                item["value"] for item in settings if item["configId"] == "deliberation"
+            ] == ([] if expected is None else [expected])
+            if model == "careful":
+                assert [item["configId"] for item in settings] == [
+                    "engine",
+                    "deliberation",
+                ]
+            assert requests[1]["method"] == (
+                "session/new" if model == "careful" else "session/load"
+            )
+        with pytest.raises(ValueError, match="does not take effort"):
+            await agent.run(
+                "hello",
+                conversation_address=thread.key.address(sender.channel_user_id),
+                thread_id=thread.id,
+                model="fast",
+                effort="max",
+                interactive=False,
+            )
+
+
 async def test_public_endpoint_drives_custom_harness(
     custom_provider: AcpProvider,
     in_memory_engine: AsyncEngine,

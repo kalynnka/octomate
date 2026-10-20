@@ -64,16 +64,18 @@ another configured channel, or the public ACP model selector. An `acp_agent`
 entry requires a provider and does not enable the public API; keep the separate
 `acp` entry when clients should connect to Octomate through ACP.
 
-Octomate discovers the harness's advertised model configuration choices at
-startup. A harness without that selector is available with its default model.
+Octomate discovers the harness's advertised models and reasoning levels at
+startup. Choose an effort supported by the selected model in Trunkline, or leave
+it on Auto to preserve the harness's own setting. A harness without a model
+selector is available with its default model.
 Startup may leave an empty session in the harness's own history. No prompt is
 sent and no Octomate conversation is created for discovery.
 
 Prompts run in the usual managed server workspace. Subsequent prompts load the
 same provider session, so the harness must support session loading to continue
 a conversation. Streaming, approvals, cancellation, and recorded history use the
-same Octomate flow as the other agents. Permission modes and thinking effort
-remain at the harness's defaults.
+same Octomate flow as the other agents. Permission modes remain at the harness's
+defaults.
 
 By default, the harness receives Octomate's MCP with the calling user's identity.
 This requires HTTP MCP support. Set `gateway: false` on this tentacle to omit

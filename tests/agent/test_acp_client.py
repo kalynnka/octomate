@@ -333,3 +333,43 @@ async def test_configured_authentication_method(
         "session/new",
     ]
     assert records[1]["params"] == {"methodId": "fixture"}
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_effort_selection_uses_current_model_options(
+    adapter_environment: dict[str, str], enabled: bool
+) -> None:
+    async with NativeAcpClient.connect(
+        AcpProvider(command="codex-acp"),
+        Callbacks(),
+        schema.InitializeRequest(protocol_version=1),
+        env={
+            **adapter_environment,
+            "ACP_TEST_MODELS": "flat",
+            "ACP_TEST_EFFORTS": "grouped" if enabled else "",
+        },
+    ) as client:
+        session = await client.new_session(
+            schema.NewSessionRequest(cwd="/project", mcp_servers=[])
+        )
+        await session.select_effort(client.connection, None)
+        await session.select_model(client.connection, "careful")
+        assert session.efforts == (("high", "max") if enabled else ())
+        if enabled:
+            await session.select_effort(client.connection, "max")
+            assert session.effort_option is not None
+            assert session.effort_option.current_value == "max"
+            await session.select_effort(client.connection, "max")
+        with pytest.raises(ValueError, match="does not offer effort"):
+            await session.select_effort(client.connection, "low")
+    records = [
+        json.loads(line)["message"]
+        for line in (
+            await AsyncPath(adapter_environment["ACP_TEST_LOG"]).read_text()
+        ).splitlines()
+    ]
+    assert [
+        item["params"]["value"]
+        for item in records
+        if item["method"] == "session/set_config_option"
+    ] == (["careful", "max"] if enabled else ["careful"])

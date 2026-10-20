@@ -78,6 +78,37 @@ class NativeAcpSession[
             else []
         )
 
+    @property
+    def effort_option(self) -> schema.SessionConfigOptionSelect | None:
+        """The first advertised reasoning selector, using its semantic category."""
+        return next(
+            (
+                option
+                for option in self.response.config_options or []
+                if isinstance(option, schema.SessionConfigOptionSelect)
+                and option.category == "thought_level"
+            ),
+            None,
+        )
+
+    @property
+    def efforts(self) -> tuple[str, ...]:
+        """The current model's reasoning levels, in the provider's order."""
+        option = self.effort_option
+        return (
+            tuple(
+                value.value
+                for entry in option.options
+                for value in (
+                    entry.options
+                    if isinstance(entry, schema.SessionConfigSelectGroup)
+                    else [entry]
+                )
+            )
+            if option is not None
+            else ()
+        )
+
     async def select_model(
         self, connection: Connection, model: str | None
     ) -> str | None:
@@ -92,7 +123,7 @@ class NativeAcpSession[
         if model not in {value.value for value in self.models}:
             raise ValueError(f"The ACP session does not offer model {model!r}")
         if model != option.current_value:
-            await request_model(
+            response = await request_model(
                 connection,
                 acp.AGENT_METHODS["session_set_config_option"],
                 schema.SetSessionConfigOptionSelectRequest(
@@ -100,7 +131,29 @@ class NativeAcpSession[
                 ),
                 schema.SetSessionConfigOptionResponse,
             )
+            self.response.config_options = response.config_options
         return model
+
+    async def select_effort(self, connection: Connection, effort: str | None) -> None:
+        """Apply an explicit effort after model selection has refreshed its choices.
+
+        Omitting effort preserves the provider session's current setting.
+        """
+        if effort is None:
+            return
+        option = self.effort_option
+        if option is None or effort not in self.efforts:
+            raise ValueError(f"The ACP session does not offer effort {effort!r}")
+        if effort != option.current_value:
+            response = await request_model(
+                connection,
+                acp.AGENT_METHODS["session_set_config_option"],
+                schema.SetSessionConfigOptionSelectRequest(
+                    session_id=self.session_id, config_id=option.id, value=effort
+                ),
+                schema.SetSessionConfigOptionResponse,
+            )
+            self.response.config_options = response.config_options
 
 
 @dataclass(frozen=True)

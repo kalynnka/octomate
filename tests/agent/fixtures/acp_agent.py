@@ -12,6 +12,27 @@ def send(message: dict[str, JsonValue]) -> None:
     print(json.dumps({"jsonrpc": "2.0", **message}), flush=True)
 
 
+def effort_options(model: str) -> list[dict[str, JsonValue]]:
+    if not os.getenv("ACP_TEST_EFFORTS"):
+        return []
+    levels = ["low", "medium", "high"] if model == "fast" else ["high", "max"]
+    choices: list[JsonValue] = [{"value": level, "name": level} for level in levels]
+    return [
+        {
+            "id": "deliberation",
+            "name": "Thinking",
+            "category": "thought_level",
+            "type": "select",
+            "currentValue": "medium" if model == "fast" else "high",
+            "options": (
+                [{"group": "levels", "name": "Levels", "options": choices}]
+                if os.getenv("ACP_TEST_EFFORTS") == "grouped"
+                else choices
+            ),
+        }
+    ]
+
+
 def main() -> None:
     pending: str | int | None = None
     stored = Path(os.environ["ACP_TEST_LOG"]).with_suffix(".sessions.json")
@@ -97,6 +118,7 @@ def main() -> None:
                     stored.write_text(json.dumps(sessions))
                     configurations[session_id] = [
                         *model_options,
+                        *effort_options("fast"),
                         {
                             "id": "mode",
                             "name": "Mode",
@@ -183,7 +205,10 @@ def main() -> None:
                             }
                         )
                         continue
-                    configurations[session_id] = [*model_options]
+                    configurations[session_id] = [
+                        *model_options,
+                        *effort_options("fast"),
+                    ]
                     if message["method"] == "session/load":
                         send(
                             {
@@ -221,6 +246,12 @@ def main() -> None:
                         else option
                         for option in configurations[session_id]
                     ]
+                    if config_id == "engine" and os.getenv("ACP_TEST_EFFORTS"):
+                        configurations[session_id] = [
+                            option
+                            for option in configurations[session_id]
+                            if option["id"] != "deliberation"
+                        ] + effort_options(value)
                     send(
                         {
                             "method": "session/update",
