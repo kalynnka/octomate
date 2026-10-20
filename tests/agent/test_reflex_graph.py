@@ -16,7 +16,15 @@ import pytest
 from arcanus import Relation
 from octomate_protocol.gateway import GatewayTool
 from pydantic_ai import AgentCapability, AgentRunResult, AgentRunResultEvent, RunContext
-from pydantic_ai.messages import ToolCallPart, UserPromptPart
+from pydantic_ai._agent_graph import GraphAgentState
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    UserPromptPart,
+)
+from pydantic_ai.usage import RequestUsage, RunUsage
 from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -28,6 +36,7 @@ from octomate.capabilities.harness.events import (
     MessageSentEvent,
     ResultSegmentEvent,
     RunErrorEvent,
+    RunResultEvent,
 )
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config import ChannelConfig, ChannelStreamConfig
@@ -281,6 +290,46 @@ def _recorded_gate_capability(run: RecordedRun) -> GatewayCapability:
     ]
     assert len(gates) == 1
     return gates[0]
+
+
+def test_run_result_event_carries_the_last_request_context() -> None:
+    # GraphAgentState is private pydantic-ai internals, pinned with the SDK
+    # version — the same construction ClaudeRunAccumulator.build_result uses.
+    result = AgentRunResultEvent(
+        AgentRunResult(
+            "done",
+            _state=GraphAgentState(
+                message_history=[
+                    ModelRequest(parts=[UserPromptPart(content="go")]),
+                    ModelResponse(
+                        parts=[TextPart(content="one")],
+                        usage=RequestUsage(input_tokens=100, cache_read_tokens=4_000),
+                    ),
+                    ModelResponse(
+                        parts=[TextPart(content="two")],
+                        usage=RequestUsage(input_tokens=150, cache_read_tokens=5_000),
+                    ),
+                ],
+                usage=RunUsage(input_tokens=250, cache_read_tokens=9_000, requests=2),
+                run_id="run-1",
+                conversation_id="conv-1",
+            ),
+        )
+    )
+
+    wire = ReflexDeps.to_wire(result)
+
+    assert isinstance(wire, RunResultEvent)
+    assert wire.usage.input_tokens == 250
+    # The run's own tokens sum its requests; the context is the last one's
+    # input side alone, which is the window the final turn ran with.
+    assert wire.context_tokens == 150 + 5_000
+
+
+def test_run_result_event_context_is_none_when_nothing_reported_usage() -> None:
+    wire = ReflexDeps.to_wire(AgentRunResultEvent(AgentRunResult("done")))
+    assert isinstance(wire, RunResultEvent)
+    assert wire.context_tokens is None
 
 
 def test_available_routes_skip_disconnected_reception_agents() -> None:

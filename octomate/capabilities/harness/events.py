@@ -131,6 +131,12 @@ class RunResultEvent(BaseModel):
     event_kind: Literal["run_result"] = "run_result"
     output: str | list[MessageSegment] | None = None
     usage: RunUsage
+    context_tokens: int | None = Field(
+        default=None,
+        description="The input-side tokens of the run's last model request — the "
+        "context its last turn ran with, as the newest response that carried "
+        "usage reported it; None when no response did.",
+    )
 
 
 class RunErrorEvent(BaseModel):

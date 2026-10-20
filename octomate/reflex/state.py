@@ -18,7 +18,7 @@ from anyio.abc import ObjectSendStream
 from opentelemetry import trace
 from pydantic import UUID7
 from pydantic_ai import AgentCapability, AgentRunResult, AgentRunResultEvent
-from pydantic_ai.messages import UserContent
+from pydantic_ai.messages import ModelMessage, ModelResponse, UserContent
 from pydantic_ai.result import FinalResult
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_graph import BaseNode, End, GraphRunContext
@@ -183,6 +183,20 @@ ReflexEntryT = TypeVar(
     "ReflexEntryT",
     bound="BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]",
 )
+
+
+def last_context_tokens(messages: Sequence[ModelMessage]) -> int | None:
+    """The input-side tokens of a run's last model request — the context its last
+    turn ran with, as the newest response that carried usage reported it. None
+    when no response did; the run's cost can still be known without it."""
+    for message in reversed(messages):
+        if isinstance(message, ModelResponse) and message.usage is not None:
+            return (
+                message.usage.input_tokens
+                + message.usage.cache_read_tokens
+                + message.usage.cache_write_tokens
+            )
+    return None
 
 
 @dataclass
@@ -416,7 +430,11 @@ class ReflexDeps:
                         output = None
                     case segments:
                         output = list(segments)
-                return RunResultEvent(output=output, usage=item.result.usage)
+                return RunResultEvent(
+                    output=output,
+                    usage=item.result.usage,
+                    context_tokens=last_context_tokens(item.result.all_messages()),
+                )
             case FinalResult():
                 return None
             case _:

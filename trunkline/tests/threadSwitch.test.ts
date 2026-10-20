@@ -299,3 +299,37 @@ test('a run streaming on the open thread comes over its own socket alone, and th
   assert.ok(run.closed)
   assert.notEqual(await socketOn('thread_id=solo'), watching)
 })
+
+test('a run the console drove says its cost on the open panel when it ends', async () => {
+  const live: ThreadDetail = { ...detail, key: 'solo', live: true, sendKey: 'solo-key' }
+  const getDetail = mock.method(api, 'getThreadDetail', async () => live)
+  mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) =>
+    init?.method === 'POST' ? new Response(null, { status: 202 }) : Response.json([]))
+  queryClient.setQueryData(['thread-detail', 'solo'], live)
+  const actions = useConsole.getState().actions
+  await actions.selectThread('trunkline', 'solo')
+
+  actions.sendDirective('carry on')
+  const run = await socketOn('thread_key=solo-key')
+  run.deliver(
+    { event_kind: 'reflex_awake' },
+    {
+      event_kind: 'run_result', output: 'done',
+      usage: { requests: 44, tool_calls: 0, input_tokens: 5707, output_tokens: 4588, cache_read_tokens: 464192, cache_write_tokens: 0 },
+      context_tokens: 469899,
+    },
+    { event_kind: 'reflex_asleep' },
+  )
+  for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
+
+  // The bar says the run that just ended — spent tokens summed onto the thread,
+  // context from the run's own last request — without re-reading the thread.
+  const held = useConsole.getState().detail
+  assert.equal(held?.usage.input, 5707)
+  assert.equal(held?.usage.output, 4588)
+  assert.equal(held?.usage.cacheRead, 464192)
+  assert.equal(held?.usage.cacheRate, 464192 / 469899)
+  assert.equal(held?.ctxK, 470)
+  assert.equal(getDetail.mock.callCount(), 1)
+  assert.ok(useConsole.getState().live.some((item) => item.kind === 'stream' && item.text === 'done'))
+})
