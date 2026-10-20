@@ -59,6 +59,7 @@ from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEve
 from octomate.config.agents import (
     AgentRouteModelName,
 )
+from octomate.managers.conversation import ConversationManager
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.triage import (
     DIRECT_TARGET,
@@ -193,6 +194,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     id: str = "inkling"
     description: str = "fake agent"
     octomate: Octomate | None = None
+    conversations: ConversationManager = field(default_factory=ConversationManager)
     reception_output: ChannelOutput = "handled"
     reception_summon: SummonDecision | None = None
     reception_scheme: SchemeDecision | None = None

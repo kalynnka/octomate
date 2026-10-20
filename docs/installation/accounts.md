@@ -46,8 +46,9 @@ Choose its scopes:
 |---|---|
 | `hooks` | The hook handlers and the transcript stream |
 | `mcp` | The `/octomate/mcp` endpoint |
+| `acp` | Run native agents through [ACP](../usage/agents/acp.md) |
 
-One key may carry both. The token is shown once. Save it on the client:
+One key may carry several scopes. The token is shown once. For hooks and MCP, save it on the client:
 
 ```sh
 octomate configure --url http://127.0.0.1:8000 --token '<api-token>'
@@ -67,6 +68,9 @@ that presents it. The account API behind the panel:
 
 These use the browser session cookie and need `X-Octomate-Request: 1` on writes.
 The full schema is at the server's `/docs`.
+
+Existing `hooks` and `mcp` keys do not grant access through ACP. Select `acp`
+explicitly when issuing a key for your client.
 
 ## Link your channel profiles
 

@@ -994,7 +994,12 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
     # The replay presents no run: the reflex wakes and falls asleep.
     awake, started, sent, answered, ended, *rest = carried
     assert awake == ReflexAwakeEvent()
-    assert started == RunStartedEvent(address=address)
+    sender = await app.users.profile(address.channel_tentacle_id, address.user_id)
+    assert sender is not None
+    assert isinstance(started, RunStartedEvent)
+    assert started.address == address
+    assert started.sender is not None
+    assert started.sender.id == sender.id
     assert isinstance(sent, MessageSentEvent)
     assert isinstance(answered, RunResultEvent)
     assert answered.output == "Done"
@@ -1068,7 +1073,12 @@ async def test_command_presents_a_persisted_reflex_approval(
         carried = published(live)
     assert command_outcome(response) == CommandOutcomeEvent(outcome=CommandResult())
     _, started, asked, *_ = carried
-    assert started == RunStartedEvent(address=address)
+    sender = await app.users.profile(address.channel_tentacle_id, address.user_id)
+    assert sender is not None
+    assert isinstance(started, RunStartedEvent)
+    assert started.address == address
+    assert started.sender is not None
+    assert started.sender.id == sender.id
     assert isinstance(asked, ActionBatchEvent)
     assert len(asked.approvals) == 1
     assert carried[-1] == ReflexAsleepEvent()

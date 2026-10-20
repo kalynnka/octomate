@@ -74,6 +74,7 @@ nav:
           - Claude Code: usage/agents/claude-code.md
           - Codex: usage/agents/codex.md
           - DeepSeek Harness: usage/agents/deepseek.md
+          - ACP: usage/agents/acp.md
           - Inkling: usage/agents/inkling.md
       - Channels:
           - usage/channels/index.md
@@ -148,6 +149,7 @@ nav:
           - Feelers: api/tentacles/feelers.md
           - Nerve and siphon: api/tentacles/nerve.md
           - Trunkline: api/tentacles/trunkline.md
+          - ACP: api/tentacles/acp.md
       - Reflex graph:
           - api/reflex.md
           - Graph, state and dependencies: api/reflex/graph.md

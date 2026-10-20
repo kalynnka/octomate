@@ -8,11 +8,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from fastapi.routing import APIWebSocketRoute
 from openai_codex import CodexConfig as CodexSdkConfig
 from openai_codex.generated.v2_all import ReasoningEffort
 from pydantic import ValidationError
 
 from octomate.config import (
+    AcpChannelConfig,
     AgentModelConfig,
     BareMcpConfig,
     ChannelConfig,
@@ -37,6 +39,8 @@ from octomate.config.database import DatabaseSettings, database_settings
 from octomate.config.observability import LogfireConfig
 from octomate.schemas.project import DirectoryUpstream, Project
 from octomate.schemas.triage import Claim
+from octomate.tentacles.acp.base import AcpAgentTentacle
+from octomate.tentacles.acp.channel import AcpChannelTentacle
 from tests.support.config import ISOLATED_HOME
 from tests.support.mcp import configured_mcp
 
@@ -140,10 +144,11 @@ def test_tentacles_preserve_types_ids_and_serialization() -> None:
             "coding": CodexConfig(),
             "review": ClaudeCodeConfig(enabled=False),
             "assistant": InklingConfig(models=[ModelConfig(name="openai:gpt-4o")]),
+            "bridge": AcpChannelConfig(),
         }
     )
     serialized = config.model_dump(mode="json")
-    assert list(serialized["tentacles"]) == ["coding", "review", "assistant"]
+    assert list(serialized["tentacles"]) == ["coding", "review", "assistant", "bridge"]
     assert serialized["tentacles"]["review"]["type"] == "claude"
     assert serialized["tentacles"]["review"]["enabled"] is False
     assert not {"agents", "channels", "mcp"} & serialized.keys()
@@ -152,13 +157,16 @@ def test_tentacles_preserve_types_ids_and_serialization() -> None:
 
 
 @pytest.mark.parametrize("enabled", [True, False])
-def test_tentacles_reject_duplicate_agent_runtimes(enabled: bool) -> None:
-    with pytest.raises(ValidationError, match="duplicate agent runtime 'codex'"):
+@pytest.mark.parametrize("runtime", ["codex", "acp"])
+def test_tentacles_reject_duplicate_agent_runtimes(enabled: bool, runtime: str) -> None:
+    with pytest.raises(
+        ValidationError, match=f"duplicate tentacle runtime '{runtime}'"
+    ):
         OctomateConfig.model_validate(
             {
                 "tentacles": {
-                    "coding": {"type": "codex"},
-                    "review": {"type": "codex", "enabled": enabled},
+                    "coding": {"type": runtime},
+                    "review": {"type": runtime, "enabled": enabled},
                 }
             }
         )
@@ -1217,6 +1225,113 @@ def test_authorization_code_mcp_requires_callback_configuration() -> None:
         )
 
 
+@pytest.mark.parametrize("enabled", [None, False, True])
+def test_acp_connects_only_when_configured_and_enabled(
+    monkeypatch: pytest.MonkeyPatch, enabled: bool | None
+) -> None:
+    application = importlib.import_module("octomate.app")
+    config = OctomateConfig.model_validate(
+        {
+            "tentacles": {}
+            if enabled is None
+            else {"bridge": {"type": "acp", "enabled": enabled}}
+        }
+    )
+    monkeypatch.setattr(application, "config", config)
+    with patch("logfire.configure"), patch("logging.basicConfig"):
+        host = application.create_app()
+    host.build_middleware_stack()
+    routes = [
+        route.path for route in host.routes if isinstance(route, APIWebSocketRoute)
+    ]
+    if enabled:
+        assert isinstance(host.tentacles["bridge"], AcpChannelTentacle)
+        assert list(host.tentacles) == ["bridge"]
+        assert not host.agents
+        assert routes.count("/api/acp") == 1
+    else:
+        assert host.tentacles == {}
+        assert "/api/acp" not in routes
+
+
+@pytest.mark.parametrize("public_api", [False, True])
+def test_acp_harnesses_are_independent_of_the_public_api(
+    monkeypatch: pytest.MonkeyPatch, public_api: bool
+) -> None:
+    application = importlib.import_module("octomate.app")
+    config = OctomateConfig.model_validate(
+        {
+            "tentacles": {
+                **({"entry": {"type": "acp"}} if public_api else {}),
+                "first": {
+                    "type": "acp_agent",
+                    "provider": {"command": "first-agent", "args": ["--acp"]},
+                },
+                "second": {
+                    "type": "acp_agent",
+                    "gateway": False,
+                    "provider": {"command": "second-agent"},
+                },
+                "disabled": {
+                    "type": "acp_agent",
+                    "enabled": False,
+                    "provider": {"command": "unavailable"},
+                },
+                "console": {"type": "trunkline", "agents": ["first", "second"]},
+            }
+        }
+    )
+    monkeypatch.setattr(application, "config", config)
+    with patch("logfire.configure"), patch("logging.basicConfig"):
+        app = application.create_app()
+    assert set(app.agents) == {"first", "second"}
+    if public_api:
+        assert isinstance(app.tentacles["entry"], AcpChannelTentacle)
+    first = app.agents["first"]
+    second = app.agents["second"]
+    assert isinstance(first, AcpAgentTentacle)
+    assert isinstance(second, AcpAgentTentacle)
+    assert first.provider.command == "first-agent"
+    assert first.provider.args == ["--acp"]
+    assert first.gateway
+    assert not second.gateway
+    routes = [
+        route.path for route in app.routes if isinstance(route, APIWebSocketRoute)
+    ]
+    assert routes.count("/api/acp") == int(public_api)
+
+
+def test_acp_agent_requires_a_provider() -> None:
+    with pytest.raises(ValidationError, match=r"provider\s+Field required"):
+        OctomateConfig.model_validate({"tentacles": {"harness": {"type": "acp_agent"}}})
+
+
+def test_acp_channel_rejects_an_agent_provider() -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        OctomateConfig.model_validate(
+            {
+                "tentacles": {
+                    "entry": {
+                        "type": "acp",
+                        "provider": {"command": "agent"},
+                    }
+                }
+            }
+        )
+
+
+def test_channel_cannot_select_acp_api_as_an_agent() -> None:
+    with pytest.raises(ValidationError, match="configured agent tentacle"):
+        OctomateConfig.model_validate(
+            {
+                "tentacles": {
+                    "entry": {"type": "acp"},
+                    "console": {"type": "trunkline", "agents": ["entry"]},
+                }
+            }
+        )
+
+
 def test_startup_builds_tentacles_by_type_and_keeps_their_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1226,6 +1341,8 @@ def test_startup_builds_tentacles_by_type_and_keeps_their_ids(
             "tentacles": {
                 "web": {"type": "trunkline", "agents": ["coding"]},
                 "coding": {"type": "codex"},
+                "review": {"type": "claude"},
+                "bridge": {"type": "acp"},
                 "tools": {"type": "bare", "url": "https://mcp.example/mcp"},
                 "linear": {
                     "type": "oauth_discovery",
@@ -1246,11 +1363,18 @@ def test_startup_builds_tentacles_by_type_and_keeps_their_ids(
     monkeypatch.setattr(application, "config", config)
     with patch("logfire.configure"), patch("logging.basicConfig"):
         host = application.create_app()
-    assert list(host.tentacles) == ["web", "coding", "tools", "linear"]
-    assert list(host.agents) == ["coding"]
+    assert list(host.tentacles) == [
+        "web",
+        "coding",
+        "review",
+        "bridge",
+        "tools",
+        "linear",
+    ]
+    assert list(host.agents) == ["coding", "review"]
     assert list(host.channels) == ["web"]
     assert list(host.mcp.tentacles) == ["tools", "linear"]
-    assert host.channels["web"].agent_ids == ["coding"]
+    assert host.channels["web"].agent_ids == ["coding", "review"]
     assert isinstance(config.tentacles["linear"], DiscoveredOAuthMcpConfig)
     assert host.mcp.tentacles["linear"].info.auth_kind == "oauth"
 

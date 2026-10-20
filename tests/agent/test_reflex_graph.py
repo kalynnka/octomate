@@ -131,6 +131,9 @@ async def _run(
     host = FakeOctomate()
     host.threads = deps.thread_manager
     host.deferred_actions = deps.action_manager
+    for agent in deps.agents.values():
+        if isinstance(agent, FakeAgent):
+            agent.conversations = deps.conversation_manager
     for channel in deps.channels.values():
         channel.octomate = host
     origin = state.source_target.address if state.source_target else None
@@ -544,6 +547,42 @@ async def test_route_runs_entry_agent_directly() -> None:
     assert [turn.run_name for turn in agent.turns] == ["react"]
     assert im.consumed[0][0] == address
     assert im.sent[-1][2][0]["text"] == "hello"
+
+
+@pytest.mark.parametrize("allowed", [True, False])
+async def test_explicit_agent_overrides_thread_owner_within_channel_routes(
+    allowed: bool,
+) -> None:
+    address = _key("thread")
+    threads = FakeThreadManager()
+    thread = await threads.ensure(address)
+    await threads.record_handoff(thread, to_agent_tentacle_id="previous")
+    conversations = FakeConversationManager()
+    agent = FakeAgent(id="other", reception_output="selected")
+    im = FakeChannelTentacle(
+        config=ChannelConfig(
+            type="fake", agents=["previous", "other"] if allowed else ["previous"]
+        )
+    )
+    state = _state(address, thread=thread)
+    deps = _deps(
+        conversations=conversations, channels={"im": im}, agent=agent, threads=threads
+    )
+
+    if not allowed:
+        with pytest.raises(ValueError, match="not bound to channel"):
+            await _run(Route(agent_id="other"), state=state, deps=deps)
+        assert agent.turns == []
+        return
+
+    result = await _run(Route(agent_id="other"), state=state, deps=deps)
+    assert isinstance(result, ReflexResult)
+    assert result.result is not None
+    assert result.result.output == "selected"
+    conversation = await conversations.ensure(thread.id, agent_tentacle_id="other")
+    assert agent.turns[0].conversation_id == conversation.id
+    assert state.conversation_id == conversation.id
+    assert [handoff.to_agent_tentacle_id for handoff in thread.handoffs] == ["previous"]
 
 
 async def test_a_streamed_reply_is_recorded_with_the_id_it_was_rendered_as() -> None:

@@ -129,6 +129,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 user_prompt,
                 conversation_address=target_address,
                 thread_id=thread_id,
+                conversation_id=state.conversation_id,
                 source_thread_address=state.source_thread_address,
                 source_thread_message_ids=state.source_thread_message_ids,
                 run_name=state.run_name,
@@ -141,12 +142,13 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 async for event in stream:
                     yield event
 
+        channel = ctx.deps.channels.get(target.channel_id)
         with reflex_logfire.span(
             "react",
             channel_id=target_address.channel_tentacle_id,
             agent_id=agent.id,
             conversation_address=str(target_address),
-            streaming=suspender.channel.config.stream.enabled,
+            streaming=channel.config.stream.enabled if channel is not None else True,
             resume_batch_id=str(self.resume_batch_id) if self.resume_batch_id else None,
         ) as span:
             async with ctx.deps.gateway.driving(

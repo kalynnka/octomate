@@ -86,7 +86,6 @@ def a_suspender(agent: LiveAgent, conversation: Conversation) -> ReflexSuspender
     """The graph's suspender for a live run."""
     app = agent.octomate
     return ReflexSuspender(
-        channel=app.channels["im"],
         action_manager=app.deferred_actions,
         conversation_manager=app.conversations,
         agent_tentacle_id=agent.id,

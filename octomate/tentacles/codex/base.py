@@ -1665,24 +1665,11 @@ class CodexTentacle(AgentTentacle[str, None]):
                 "CodexTentacle does not support DeferredToolRequests in output_type"
             )
 
-        if conversation_id is not None:
-            conversation = await self.conversations.get(
-                conversation_id, with_history=False
-            )
-            if (
-                conversation.agent_tentacle_id != self.id
-                or conversation.thread_id != thread_id
-            ):
-                raise ValueError(
-                    f"conversation {conversation_id} does not belong to "
-                    f"({self.id!r}, {thread_id})"
-                )
-        else:
-            conversation = await self.conversations.ensure(
-                thread_id,
-                agent_tentacle_id=self.id,
-                with_history=False,
-            )
+        conversation = await self.resolve_conversation(
+            thread_id,
+            conversation_address=conversation_address,
+            conversation_id=conversation_id,
+        )
         if deferred_tool_results is not None:
             # A resumed run. The app-server takes no tool result back, so the graph's
             # resolution of the deferral is this turn's prompt, ledgered as one.

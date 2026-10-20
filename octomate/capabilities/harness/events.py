@@ -185,7 +185,7 @@ class RunStartedEvent(BaseModel):
     address: ChannelAddress
     sender: UserProfile | None = Field(
         default=None,
-        description="The profile supplying a native transcript's prompts; None "
+        description="The profile supplying a native session's prompts; None "
         "when the run does not have a single native sender.",
     )
 

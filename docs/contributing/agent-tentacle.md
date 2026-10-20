@@ -567,7 +567,8 @@ the destination, and the import must still validate the history it consumes.
 
 Add the config model to `TentacleConfigVariant` in `octomate/config/tentacles.py`,
 inheriting `AgentConfig` so `enabled` and `gateway` behave, and a case to the
-`match` in `octomate/app.py`. The loader enforces one block per agent type.
+`match` in `octomate/app.py`. The loader enforces one block per agent type with
+fixed routes. Outbound ACP harnesses mount no routes and may repeat.
 
 ## Tests
 

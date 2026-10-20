@@ -927,24 +927,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         cli_model = model.model_name if isinstance(model, Model) else model
         if thread_id is None:
             raise ValueError("agent run requires a thread_id to own its conversation")
-        if conversation_id is not None:
-            conversation = await self.conversations.get(
-                conversation_id, with_history=False
-            )
-            if (
-                conversation.agent_tentacle_id != self.id
-                or conversation.thread_id != thread_id
-            ):
-                raise ValueError(
-                    f"conversation {conversation_id} does not belong to "
-                    f"({self.id!r}, {thread_id})"
-                )
-        else:
-            conversation = await self.conversations.ensure(
-                thread_id,
-                agent_tentacle_id=self.id,
-                with_history=False,
-            )
+        conversation = await self.resolve_conversation(
+            thread_id,
+            conversation_address=conversation_address,
+            conversation_id=conversation_id,
+        )
         effort = await self.resolve_effort(conversation, model=cli_model, effort=effort)
         if deferred_tool_results is not None:
             # A resumed run. The CLI takes no tool result back, so the graph's

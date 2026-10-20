@@ -26,6 +26,7 @@ import { Field, Refusal } from './parts'
 const SCOPES: { id: ApiKeyScope; note: string }[] = [
   { id: 'hooks', note: 'native session hooks · transcript streams' },
   { id: 'mcp', note: 'installed MCP clients' },
+  { id: 'acp', note: 'run native agents through ACP' },
 ]
 
 const EXPIRIES: { label: string; days: number | null }[] = [
@@ -698,8 +699,9 @@ export function ApiKeysPanel() {
       <div className="trk-control-scroll" style={{ flexShrink: 0, maxHeight: '60%' }}>
         <p style={{ margin: '0 0 8px', ...serif(12), lineHeight: 1.6, color: 'var(--fg-2)' }}>
           A key lets a client machine speak for this account: <b>hooks</b> for native session
-          hooks and transcript streams, <b>mcp</b> for installed MCP clients. The relay keeps a
-          hash and shows the token once, when it is issued.
+          hooks and transcript streams, <b>mcp</b> for installed MCP clients, and <b>acp</b> to
+          run native agents through ACP. The relay keeps a hash and shows the token once,
+          when it is issued.
         </p>
         {issued && (
           <IssuedKey

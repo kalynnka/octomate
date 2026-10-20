@@ -17,6 +17,29 @@
 
 # tentacles:
 
+  # The inbound ACP channel exposes enabled agents and their models through one API.
+  # Declare this once, under any unused key.
+  #
+  # acp:
+  #   type: acp
+  #   enabled: true
+
+  # Connect each installed ACP harness under its own key. These blocks may coexist.
+  # Startup discovers model choices; authenticate each harness on the server first.
+  #
+  # codex_acp:
+  #   type: acp_agent
+  #   provider:
+  #     command: codex-acp
+  #   gateway: true  # Requires HTTP MCP; false omits Octomate tools.
+  #
+  # gemini_acp:
+  #   type: acp_agent
+  #   provider:
+  #     command: gemini
+  #     args: [--acp]
+  #   gateway: true  # Requires HTTP MCP; false omits Octomate tools.
+
   # The in-process pydantic-ai agent. Takes any pydantic-ai model id and reaches each
   # provider through `providers.yaml`, or that provider's own environment variable.
   #

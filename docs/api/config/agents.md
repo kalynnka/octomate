@@ -1,5 +1,11 @@
 # Agents
 
+::: octomate.config.acp
+    options:
+      members:
+        - AcpProvider
+        - AcpAgentConfig
+
 ::: octomate.config.agents.common
 
 ::: octomate.config.agents.claude

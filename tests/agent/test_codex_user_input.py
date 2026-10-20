@@ -99,7 +99,6 @@ async def test_mcp_consent_rides_the_turn_and_returns_the_selected_answer(
         conversation=conversation,
         session_allowed=set(),
         suspender=ReflexSuspender(
-            channel=octomate.channels["trunkline"],
             action_manager=octomate.deferred_actions,
             conversation_manager=octomate.conversations,
             agent_tentacle_id="codex",

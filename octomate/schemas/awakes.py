@@ -15,8 +15,11 @@ from octomate.schemas.user import UserProfile
 
 @dataclass(frozen=True)
 class UserMessageSignal:
+    """Messages using channel routing or a caller-selected agent."""
+
     messages: list[MessageEvent]
     trigger_thread_message_id: UUID7 | None = None
+    agent_id: str | None = None  # Caller-selected executor; otherwise Route selects it.
 
     def __bool__(self) -> bool:
         return bool(self.messages)
@@ -49,8 +52,8 @@ class NativeGatewaySignal:
     """A native session's own spell, kicked as its own turn.
 
     A driven turn's decision is read off its Octomate session when the run ends; a
-    native session has no run in the graph, so the served spell hands its
-    validated decision straight to the graph instead.
+    session running outside Octomate has no run in the graph, so its served
+    spell hands the validated decision straight to the graph instead.
     """
 
     # A native session cannot be summoned: there is nothing here to hand over.

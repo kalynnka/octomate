@@ -43,6 +43,7 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
+from octomate.config.acp import AcpAgentConfig, AcpChannelConfig
 from octomate.config.agents import AgentConfig
 from octomate.config.artifacts import ArtifactConfig
 from octomate.config.auth import AuthConfig
@@ -161,12 +162,14 @@ class OctomateConfig(BaseSettings):
     def validate_unique_agent_runtimes(
         cls, tentacles: dict[str, TentacleConfigVariant]
     ) -> dict[str, TentacleConfigVariant]:
-        """Agent runtimes own fixed native hook routes, so each is declared once."""
+        """Runtimes with fixed routes are unique; outbound ACP harnesses repeat."""
         runtimes: set[str] = set()
         for tentacle in tentacles.values():
-            if isinstance(tentacle, AgentConfig):
+            if isinstance(tentacle, AcpAgentConfig):
+                continue
+            if isinstance(tentacle, AgentConfig | AcpChannelConfig):
                 if tentacle.type in runtimes:
-                    raise ValueError(f"duplicate agent runtime {tentacle.type!r}")
+                    raise ValueError(f"duplicate tentacle runtime {tentacle.type!r}")
                 runtimes.add(tentacle.type)
         return tentacles
 

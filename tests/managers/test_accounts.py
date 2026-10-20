@@ -24,6 +24,7 @@ from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.trunkline import TrunklineTentacle
+from octomate.types.auth import ApiKeyScope
 from tests.support.agents import build_scripted_agent
 from tests.support.nerve import settled
 
@@ -661,13 +662,14 @@ async def test_private_threads_and_mutations_are_isolated(
     assert "Alice's private message" not in str(messages)
 
 
+@pytest.mark.parametrize("scopes", [["hooks", "mcp"], ["acp"]])
 async def test_api_keys_are_issued_once_and_managed_only_by_their_owner(
-    client: httpx.AsyncClient, auth: AuthManager
+    client: httpx.AsyncClient, auth: AuthManager, scopes: list[ApiKeyScope]
 ) -> None:
     assert (await client.get("/api/auth/api-keys")).status_code == 401
     await enroll(client, auth)
     issued = await client.post(
-        "/api/auth/api-keys", json={"name": "Laptop", "scopes": ["hooks", "mcp"]}
+        "/api/auth/api-keys", json={"name": "Laptop", "scopes": scopes}
     )
     assert issued.status_code == 201
     assert issued.headers["Cache-Control"] == "no-store"
@@ -675,8 +677,11 @@ async def test_api_keys_are_issued_once_and_managed_only_by_their_owner(
     key_id = issued.json()["key"]["id"]
     assert token.startswith(auth.config.api_key_prefix)
     assert "key_hash" not in issued.json()["key"]
-    assert await auth.authenticate_api_key(SecretStr(token), scope="hooks") is not None
-    assert await auth.authenticate_api_key(SecretStr(token), scope="mcp") is not None
+    assert issued.json()["key"]["scopes"] == scopes
+    for scope in scopes:
+        assert (
+            await auth.authenticate_api_key(SecretStr(token), scope=scope) is not None
+        )
     listed = await client.get("/api/auth/api-keys")
     assert [key["id"] for key in listed.json()] == [key_id]
     assert token not in listed.text
@@ -685,14 +690,17 @@ async def test_api_keys_are_issued_once_and_managed_only_by_their_owner(
     await enroll(client, auth, "bob")
     assert (await client.get("/api/auth/api-keys")).json() == []
     assert (await client.delete(f"/api/auth/api-keys/{key_id}")).status_code == 404
-    assert await auth.authenticate_api_key(SecretStr(token), scope="mcp") is not None
+    for scope in scopes:
+        assert (
+            await auth.authenticate_api_key(SecretStr(token), scope=scope) is not None
+        )
 
     await client.post(
         "/api/auth/login", json={"username": "alice", "password": PASSWORD}
     )
     assert (await client.delete(f"/api/auth/api-keys/{key_id}")).status_code == 204
-    assert await auth.authenticate_api_key(SecretStr(token), scope="hooks") is None
-    assert await auth.authenticate_api_key(SecretStr(token), scope="mcp") is None
+    for scope in scopes:
+        assert await auth.authenticate_api_key(SecretStr(token), scope=scope) is None
 
 
 async def test_api_key_creation_rejects_invalid_scope_expiry_and_cross_origin_writes(

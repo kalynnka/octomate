@@ -315,8 +315,14 @@ class ReflexDeps:
         agent_id: str | None,
         model: AgentRouteModelName | None,
     ) -> AgentModelConfig:
-        """Select an exposed agent and resolve a model from its catalog."""
-        agent_ids = self.channel(channel_id).agent_ids
+        """Resolve a channel route, or an explicitly selected executor without a channel."""
+        channel = self.channels.get(channel_id)
+        if channel is not None:
+            agent_ids = channel.agent_ids
+        elif agent_id is not None:
+            agent_ids = [agent_id]
+        else:
+            raise ValueError(f"unknown channel {channel_id!r}")
         if agent_id is None:
             agent_id = agent_ids[0]
         if agent_id not in agent_ids:
@@ -325,8 +331,6 @@ class ReflexDeps:
             )
 
         agent = self.agent(agent_id)
-        if not agent.models:
-            raise ValueError(f"agent {agent_id!r} has no available model catalog")
         if model is None:
             return AgentModelConfig(agent=agent_id, model=agent.resolve_model())
         served = agent.served_model(model)
@@ -512,16 +516,15 @@ class ReflexRuntime:
                 "a Reflex run requires a selected agent and resolved source and target addresses"
             )
         agent = ctx.deps.agent(selection.agent_id)
-        channel = ctx.deps.channel(target)
         thread_id = state.thread.id if state.thread else None
         state.summon_routes = [
             route
-            for route in ctx.deps.available_routes[target.channel_id]
+            for route in ctx.deps.available_routes.get(target.channel_id, [])
             if route.agent_id != agent.id
         ]
         if state.conversation_id is None and thread_id is not None:
-            conversation = await ctx.deps.conversation_manager.ensure(
-                thread_id, agent_tentacle_id=agent.id, with_history=False
+            conversation = await agent.resolve_conversation(
+                thread_id, conversation_address=target.address
             )
             state.conversation_id = conversation.id
         session = await ctx.deps.octomate_session(
@@ -539,7 +542,6 @@ class ReflexRuntime:
                 )
             )
         suspender = ReflexSuspender(
-            channel=channel,
             action_manager=ctx.deps.action_manager,
             conversation_manager=ctx.deps.conversation_manager,
             agent_tentacle_id=agent.id,
@@ -624,7 +626,11 @@ class ReflexRuntime:
                     continue
                 yield event
 
-        await ctx.deps.impulses.send(Impulse(RunStartedEvent(address=address), address))
+        await ctx.deps.impulses.send(
+            Impulse(
+                RunStartedEvent(address=address, sender=ctx.state.user_profile), address
+            )
+        )
         reply: ThreadMessage | None = None
         try:
             async with aclosing(source), aclosing(events()) as stream:
@@ -660,12 +666,20 @@ class ReflexRuntime:
         reply_to, body = split_reply(segments)
         message = None
         if body:
+            channel = ctx.deps.channels.get(
+                suspender.target_address.channel_tentacle_id
+            )
+            sender = (
+                channel.self_profile if channel is not None else ctx.state.user_profile
+            )
+            if sender is None:
+                raise ValueError("a native reply requires its session owner")
             message = await ctx.deps.thread_manager.record_outbound(
                 suspender.target_address,
                 agent_tentacle_id=suspender.agent_tentacle_id,
                 segments=segments,
                 reply_id=reply_to or "",
-                sender=suspender.channel.self_profile,
+                sender=sender,
                 raw=output
                 if isinstance(output, str)
                 else "\n\n".join(str(segment) for segment in body),
