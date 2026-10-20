@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.0.6](https://github.com/kalynnka/octomate/compare/octomate-v0.0.5...octomate-v0.0.6) (2026-10-20)
+
+
+### Features
+
+* **acp:** expose a unified channel and connect agent harnesses ([#142](https://github.com/kalynnka/octomate/issues/142)) ([f60084b](https://github.com/kalynnka/octomate/commit/f60084bb7ffd120468979007c3d38fc0661b0054))
+* **artifacts:** capture Codex widgets and embed them in Trunkline ([#143](https://github.com/kalynnka/octomate/issues/143)) ([9fdb7a3](https://github.com/kalynnka/octomate/commit/9fdb7a3bf4a3be6bed597c9822312737210c31a7))
+* **gateway:** summon independent work in a new thread ([#140](https://github.com/kalynnka/octomate/issues/140)) ([7789a19](https://github.com/kalynnka/octomate/commit/7789a19d0580ec231ad8c5924bb93bf2498ff5db))
+
 ## [0.0.5](https://github.com/kalynnka/octomate/compare/octomate-v0.0.4...octomate-v0.0.5) (2026-10-17)
 
 

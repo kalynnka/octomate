@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.6](https://github.com/kalynnka/octomate/compare/octomate-cli-v0.0.5...octomate-cli-v0.0.6) (2026-10-20)
+
+
+### Features
+
+* **artifacts:** capture Codex widgets and embed them in Trunkline ([#143](https://github.com/kalynnka/octomate/issues/143)) ([9fdb7a3](https://github.com/kalynnka/octomate/commit/9fdb7a3bf4a3be6bed597c9822312737210c31a7))
+
 ## [0.0.5](https://github.com/kalynnka/octomate/compare/octomate-cli-v0.0.4...octomate-cli-v0.0.5) (2026-10-17)
 
 
