@@ -8,6 +8,7 @@ alike, projecting each into stream events for the channel feelers and persisted
 from __future__ import annotations
 
 import base64
+import logging
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, TypeVar, cast
@@ -73,6 +74,8 @@ from octomate.tentacles.claude.transcript import (
 
 StructuredOutputT = TypeVar("StructuredOutputT")
 
+logger = logging.getLogger(__name__)
+
 # The Claude Agent SDK runs against Anthropic; naming the provider lets pydantic-ai
 # round-trip the thinking `signature` and keep the provenance fields honest.
 CLAUDE_PROVIDER_NAME = "anthropic"
@@ -92,16 +95,47 @@ FINISH_REASON_MAP: dict[str, FinishReason] = {
 }
 
 
+def _count(value: object) -> int | None:
+    """A usage count as an int, however the wire typed it.
+
+    Relays fronting the Anthropic wire have been seen typing whole token counts
+    as floats or numeric strings, which read as real numbers everywhere else but
+    would vanish in an int-only filter. `bool` is an int subclass but never a
+    count.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 def map_usage(raw: dict[str, object] | None) -> RequestUsage:
     """Project a Claude usage block onto pydantic-ai's RequestUsage.
 
     Anthropic names its cache counts differently (`cache_creation`/`cache_read` →
-    RequestUsage's `cache_write`/`cache_read`); any other integer counts are kept
+    RequestUsage's `cache_write`/`cache_read`); counts typed as floats or numeric
+    strings are read as the ints they carry, and any other counts are kept
     verbatim in `details` so nothing is silently dropped.
     """
     if not raw:
         return RequestUsage()
-    counts = {key: value for key, value in raw.items() if isinstance(value, int)}
+    counts: dict[str, int] = {}
+    for key, value in raw.items():
+        count = _count(value)
+        if count is not None:
+            counts[key] = count
+    if not counts:
+        # A block with nothing countable in it is the wire shape that once zeroed
+        # every thread's token stats — say so instead of passing silently.
+        logger.warning("usage block carried no counts; raw keys: %s", sorted(raw))
     primary = {
         "input_tokens",
         "output_tokens",
@@ -304,6 +338,42 @@ class ClaudeRunAccumulator:
                 self.result_text = message.result
             if message.structured_output is not None:
                 self.structured_output = message.structured_output
+            self._fold_turn_usage(message.usage)
+
+    def _fold_turn_usage(self, raw: dict[str, object] | None) -> None:
+        """Credit the result message's cumulative usage when no response carried any.
+
+        The result's usage is the whole turn as one count, so it only stands in
+        when every response's own block was empty or lost — otherwise it would
+        double-count on top of them. It lands on the last response, which is
+        what the relay sums for a thread and the console reads as the last
+        turn's context, and in the run usage the result card shows.
+        """
+        turn = map_usage(raw)
+        spent = self.usage
+        if not any(
+            (
+                turn.input_tokens,
+                turn.output_tokens,
+                turn.cache_read_tokens,
+                turn.cache_write_tokens,
+            )
+        ):
+            return
+        if any(
+            (
+                spent.input_tokens,
+                spent.output_tokens,
+                spent.cache_read_tokens,
+                spent.cache_write_tokens,
+            )
+        ):
+            return
+        spent.incr(turn)
+        for message in reversed(self.messages):
+            if isinstance(message, ModelResponse):
+                message.usage = turn
+                break
 
     def build_result(self, run_id: str, conversation_id: str) -> AgentRunResult[str]:
         state = GraphAgentState(
