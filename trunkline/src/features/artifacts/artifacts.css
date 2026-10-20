@@ -1,0 +1,43 @@
+.trk-artifact { --motion-base: var(--motion-entry); position: relative; width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid var(--line-divider); background-color: var(--card-bg); color: var(--fg-1); }
+.trk-artifact-row { width: 100%; max-width: 640px; min-width: 0; }
+.trk-artifact-row:has(> .trk-artifact[data-wide]) { max-width: 100%; }
+.trk-artifact-header { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-height: 36px; padding: 3px 5px 3px 7px; box-sizing: border-box; border-bottom: 1px solid var(--line-divider); background-color: var(--card-bg); }
+.trk-artifact-header strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--label); letter-spacing: var(--track-wide); text-transform: uppercase; }
+.trk-artifact-controls { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; align-items: center; gap: 4px; flex-shrink: 0; }
+.trk-artifact-header :is(a, button) { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 30px; padding: 0 8px; border: 0; border-radius: 0; background: transparent; color: var(--fg-2); font: var(--label-xs); letter-spacing: var(--track-wide); text-transform: uppercase; text-decoration: none; cursor: pointer; }
+.trk-artifact-controls > a { color: var(--color-accent); }
+.trk-artifact-controls > :not(:first-child) { position: relative; }
+.trk-artifact-controls > :not(:first-child)::before { content: ''; position: absolute; left: -2px; top: 8px; bottom: 8px; border-left: 1px solid var(--line-divider); pointer-events: none; }
+.trk-artifact-sheet { padding: 8px; }
+.trk-artifact-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; flex-shrink: 0; font-size: 16px; line-height: 1; letter-spacing: normal; transform: translateY(-1px); }
+.trk-artifact-header :is(a, button):hover { background: var(--card-bg-hover); color: var(--fg-1); }
+.trk-artifact-header :is(a, button):focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.trk-artifact-header > :is(.trk-artifact-toggle, .trk-artifact-disclosure) { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 24px; padding: 0; color: var(--fg-3); font: 400 11px var(--font-mono); }
+.trk-artifact-heading { display: flex; align-items: center; flex: 1; gap: 10px; min-width: 0; }
+.trk-artifact-heading > :not(strong) { flex-shrink: 0; }
+.trk-artifact-heading strong { color: var(--color-accent); font: 700 12px var(--font-mono); letter-spacing: normal; text-transform: none; }
+.trk-artifact p { margin: 0; padding: 18px 14px; color: var(--fg-2); font: var(--ui); }
+.trk-artifact [role="alert"] { color: var(--color-terra); }
+.trk-artifact-loading { width: 100%; height: 240px; border-radius: var(--radius-soft-md); }
+.trk-artifact-stage { position: relative; }
+.trk-artifact-stage[data-loading] { height: 240px; overflow: hidden; }
+.trk-artifact-stage[data-loading] > .trk-artifact-loading { position: absolute; inset: 0; }
+.trk-artifact-stage[data-loading] > .trk-artifact-frame { visibility: hidden; }
+.trk-artifact [data-folded] .trk-artifact-loading::after { animation: none; }
+.trk-artifact-frame { position: static; width: 100%; max-width: none; max-height: none; box-sizing: border-box; padding: 0; margin: 0; border: 0; border-radius: var(--radius-soft-md); background: var(--card-bg); color: var(--fg-1); }
+.trk-artifact-frame:not([data-display-mode="fullscreen"]) { height: var(--artifact-height); overflow: hidden; transition: height var(--motion-entry) var(--ease-in-out); }
+.trk-artifact-frame[data-display-mode="fullscreen"] { position: fixed; inset: 0; width: 100%; height: 100%; margin: 0; border-radius: 0; overflow: hidden; }
+.trk-artifact-frame .trk-artifact-header[hidden] { display: none; }
+.trk-artifact-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line-divider); background: var(--surface-raised); }
+.trk-artifact-actions :is(a, button) { min-height: 32px; padding: 6px 10px; box-sizing: border-box; border: 1px solid var(--line-divider); background: var(--card-bg); color: var(--fg-1); font: var(--ui); text-decoration: none; overflow-wrap: anywhere; cursor: pointer; }
+.trk-artifact-actions :is(a, button):hover { background: var(--card-bg-hover); }
+.trk-artifact-actions :is(a, button):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.trk-artifact-page { max-width: 1280px; padding: 24px; margin: auto; }
+.trk-artifact-page > a { display: inline-block; margin-bottom: 16px; color: var(--fg-1); }
+@media (pointer: coarse) {
+  .trk-artifact-header :is(a, button) { min-height: 44px; min-width: 44px; }
+}
+.trk-artifact[data-folded] > .trk-artifact-header { border-bottom: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .trk-artifact-frame:not([data-display-mode="fullscreen"]) { transition: none; }
+}

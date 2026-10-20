@@ -15,6 +15,7 @@ from websockets.asyncio.client import ClientConnection
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import ImageData, ImageSegment, TextSegment
+from octomate.tentacles.feelers.artifacts import PlainTextArtifactFeeler
 from octomate.tentacles.feelers.base import Feelers
 from octomate.tentacles.feelers.deferred import (
     PlainTextApprovalFeeler,
@@ -358,8 +359,14 @@ async def test_napcat_consume_renders_plain_answer_via_default_timeline() -> Non
     approvals = PlainTextApprovalFeeler(markdown_feeler)
     ask_questions = PlainTextAskQuestionFeeler(markdown_feeler)
     oauth = PlainTextOAuthFeeler(ink, markdown_feeler)
+    host = FakeOctomate()
     channel.feelers = Feelers(
         markdown=markdown_feeler,
+        artifacts=PlainTextArtifactFeeler(
+            artifacts=host.artifacts,
+            users=host.users,
+            segments=DefaultSegmentsFeeler(ink=ink, chromo=chromo),
+        ),
         timeline=DefaultTimelineFeeler(
             ink=ink,
             chromo=chromo,

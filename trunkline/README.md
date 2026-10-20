@@ -173,10 +173,9 @@ feeler resolve (the old items 2, 3, 6, 7). Still missing:
    the whole ledger, and the console pages it client-side (latest page first,
    earlier on scroll-up). A `?before=` cursor is wanted once one thread's
    ledger outgrows one response.
-3. **`GET /api/trunkline/events` (standing SSE/WebSocket)** — a live ledger
-   stream outside the request/response run call, so native-agent ingests,
-   IM-relayed turns, and other-session runs land in an open console. Today
-   the only stream is per-directive.
+3. **Running indicators for threads outside the open panel** — the thread list
+   already watches user-topic metadata changes, and the open thread has its own
+   live stream. Lifecycle notifications for the other threads remain to be added.
 4. **Thread create with a project** — a directive registers the thread but
    carries no workspace binding, so a console thread is never in a project.
    The new-thread strip says so rather than offering a picker: a thread's

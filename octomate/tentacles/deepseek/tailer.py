@@ -13,22 +13,17 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from anyio.abc import ObjectSendStream
 from octomate_protocol.stream import SESSION_FILE
 from pydantic import ValidationError
-from pydantic_ai.messages import (
-    ModelMessage,
-    ModelRequest,
-    ModelResponse,
-    UserPromptPart,
-)
+from pydantic_ai.messages import ModelMessage
 
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
-from octomate.schemas.conversation import Conversation
-from octomate.schemas.events import MessageEvent
+from octomate.nerve import Impulse
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.runs import ExternalAgentRun
-from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import (
     DEEPSEEK_NATIVE_ID,
     Thread,
@@ -52,6 +47,7 @@ from octomate.tentacles.deepseek.wire import (
     user_message_of,
 )
 from octomate.tentacles.locks import SessionLocks
+from octomate.tentacles.tailer import NativeTurn
 
 logger = logging.getLogger(__name__)
 
@@ -63,16 +59,6 @@ COMMIT_LOCK_TIMEOUT = 30.0
 # already returned; awaiting there would deadlock the seam against its own
 # flush). Bounded: a turn that outlives the wait is left for the next connect.
 STOP_SETTLE_TIMEOUT = 5.0
-
-
-def assembled(conversation: Conversation) -> set[str]:
-    """The ids of the turns already built from the event stream. The seq range
-    is the mark: every run this tailer commits carries one."""
-    return {
-        run.id
-        for run in conversation.runs
-        if isinstance(run, ExternalAgentRun) and run.end_offset is not None
-    }
 
 
 def committed_floor(conversation: Conversation) -> int:
@@ -115,9 +101,9 @@ def human_prompt(event: SessionEvent) -> PendingPrompt | None:
     """The human's own words in a `user/message`, or None. dsh logs injected
     user-role messages in the same turn — `agent-instructions`, `plugin`
     runtime context — which are the harness talking, not the ledger's prompt;
-    only `source.kind == "user"` is the person."""
+    human prompts and late question replies are the person's input."""
     message = user_message_of(event)
-    if message is None or message.source.kind != "user":
+    if message is None or message.source.kind not in {"user", "user-question-reply"}:
         return None
     text = text_of(message.content)
     if not text:
@@ -138,13 +124,12 @@ class OpenTurn:
     turn: int | None
     start_seq: int
     end_seq: int
-    prompt_text: str
-    prompt_time: datetime | None
     # The prompt arrived through the /api gateway (it carries the gateway's
     # rpcId) rather than being typed into a local CLI/TUI.
     prompt_via_gateway: bool
     permission_mode: str | None  # Observed permission preset for this turn.
     accumulator: DeepseekRunAccumulator = field(default_factory=DeepseekRunAccumulator)
+    native: NativeTurn | None = None
 
 
 @dataclass
@@ -162,6 +147,8 @@ class TailState:
     # The verified bearer's own profile — who every ledger row this stream
     # writes is attributed to.
     sender: UserProfile
+    address: ChannelAddress  # The native surface resolved by the tentacle.
+    impulses: ObjectSendStream[Impulse]  # The publisher open for this connection.
     conversation: Conversation | None = None
     recorded: set[str] = field(default_factory=set)
     floor: int = -1
@@ -203,31 +190,34 @@ class DeepseekEventTailer:
         self.sessions: dict[str, TailState] = {}
 
     async def attach_remote(
-        self, session_id: str, transcript_path: Path, cwd: str, sender: UserProfile
+        self,
+        session_id: str,
+        transcript_path: Path,
+        cwd: str,
+        sender: UserProfile,
+        address: ChannelAddress,
+        impulses: ObjectSendStream[Impulse],
     ) -> tuple[TailState, dict[str, int]]:
         """Register a streamed session and answer where it resumes: the seq
         after the committed floor, recomputed from the durable runs — the
         client holds no cursor of its own. A lingering registration (its
         client died without a close) is replaced; the dead route keeps feeding
         the state it attached, and its commits are idempotent."""
-        state = TailState(session_id, transcript_path, cwd, asyncio.Event(), sender)
+        state = TailState(
+            session_id, transcript_path, cwd, asyncio.Event(), sender, address, impulses
+        )
         thread = await self.session_thread(session_id, cwd)
         state.conversation = await self.conversation_manager.ensure(
             thread.id, agent_tentacle_id=DEEPSEEK_NATIVE_ID
         )
-        state.recorded = assembled(state.conversation)
+        state.recorded = state.conversation.native_run_ids
         state.floor = committed_floor(state.conversation)
         self.sessions[session_id] = state
         logger.info("session %s: remote tail attached", session_id)
         return state, {SESSION_FILE: state.floor + 1}
 
-    async def feed_remote(
-        self, state: TailState, key: str | None, raw: str, start: int, end: int
-    ) -> None:
-        """Advance a streamed session by one framed entry. `key` is always
-        None for dsh — a session streams as a single event sequence, and the
-        route refuses labeled lines before they reach here."""
-        del key, start, end  # contiguity is the route's check, in seq space
+    async def feed_remote(self, state: TailState, raw: str) -> None:
+        """Fold one history entry; the route validates the sequence framing."""
         try:
             entry = history_entry_adapter.validate_json(raw)
         except ValidationError:
@@ -275,6 +265,8 @@ class DeepseekEventTailer:
 
     async def process_entry(self, state: TailState, entry: HistoryEntry) -> None:
         event = entry.event
+        if event.seq <= state.floor:
+            return
         if event.type == "session/title":
             try:
                 name = SessionTitle.model_validate(event.data).title
@@ -303,12 +295,17 @@ class DeepseekEventTailer:
             elif event.type == "turn/start":
                 prompts = state.prompts
                 state.prompts = []
+                number = (
+                    event.data.get("turn") if isinstance(event.data, dict) else None
+                )
+                number = number if isinstance(number, int) else None
+                run_id = (
+                    f"{state.session_id}:{number if number is not None else event.seq}"
+                )
                 state.open_turn = OpenTurn(
-                    turn=None,
+                    turn=number,
                     start_seq=prompts[0].seq if prompts else event.seq,
                     end_seq=event.seq,
-                    prompt_text="\n\n".join(prompt.text for prompt in prompts),
-                    prompt_time=prompts[0].time if prompts else None,
                     prompt_via_gateway=any(prompt.via_gateway for prompt in prompts),
                     permission_mode=(
                         state.conversation.permission_mode
@@ -316,24 +313,34 @@ class DeepseekEventTailer:
                         else None
                     ),
                 )
-                self.fold(state.open_turn, state.session_id, entry)
+                state.open_turn.native = await NativeTurn.open(
+                    run_id=run_id,
+                    recorded=state.recorded,
+                    conversations=self.conversation_manager,
+                    threads=self.thread_manager,
+                    locks=self.locks,
+                    address=state.address,
+                    sender=state.sender,
+                    impulses=state.impulses,
+                    messages=state.open_turn.accumulator.messages,
+                )
+                if state.open_turn.native is None:
+                    return
+                for prompt in prompts:
+                    await self.record_prompt(state, state.open_turn, prompt)
+                await self.fold(state.open_turn, state, entry)
             return
         turn = state.open_turn
+        if turn.native is None:
+            if event.type == "turn/end":
+                state.open_turn = None
+            return
         if event.type == "user/message":
-            # The turn's own prompt arrives *inside* it — dsh opens the turn,
-            # then splices the inbox into the step — and a steered prompt lands
-            # the same way, so every human message joins the turn's ledger row.
             prompt = human_prompt(event)
             if prompt is not None:
-                turn.prompt_text = (
-                    f"{turn.prompt_text}\n\n{prompt.text}"
-                    if turn.prompt_text
-                    else prompt.text
-                )
-                if turn.prompt_time is None:
-                    turn.prompt_time = prompt.time
+                await self.record_prompt(state, turn, prompt)
                 turn.prompt_via_gateway = turn.prompt_via_gateway or prompt.via_gateway
-        self.fold(turn, state.session_id, entry)
+        await self.fold(turn, state, entry)
         if turn.accumulator.turn_ended:
             state.open_turn = None
             end = turn_end_of(event)
@@ -341,20 +348,39 @@ class DeepseekEventTailer:
                 turn.turn = end.turn
             await self.commit_turn(state, turn)
 
-    def fold(self, turn: OpenTurn, session_id: str, entry: HistoryEntry) -> None:
-        """Fold one entry into the open turn: consume it (the live events are
-        nobody's here — no channel watches a native session) and date the
-        messages it produced by the event's own clock."""
+    async def record_prompt(
+        self, state: TailState, turn: OpenTurn, prompt: PendingPrompt
+    ) -> None:
+        """Keep each human input where it occurs, including mid-turn steering.
+
+        The event seq is stable across reconnects, even before dsh reports a turn
+        number. Its ledger row grants access while the turn is still streaming.
+        """
+        assert turn.native is not None
+        await turn.native.prompt(
+            message_id=f"{state.session_id}:message:{prompt.seq}",
+            text=prompt.text,
+            timestamp=prompt.time,
+            metadata=deepseek_metadata(),
+        )
+
+    async def fold(self, turn: OpenTurn, state: TailState, entry: HistoryEntry) -> None:
+        """Fold and publish one entry, dating messages by the log's clock.
+
+        Committed seqs never reach the fold. The native thread receives only run
+        brackets, with the end delivered after its ledger binding commits.
+        Re-streaming an open turn starts it again without waking a reflex.
+        """
         accumulator = turn.accumulator
         written = len(accumulator.messages)
         frame = SessionEventFrame(
             type="session/event",
-            session_id=session_id,
+            session_id=state.session_id,
             event=entry.event,
             view=entry.view,
         )
-        for _ in accumulator.consume(frame):
-            pass
+        assert turn.native is not None
+        await turn.native.fold(accumulator.consume(frame))
         stamp(accumulator.messages[written:], event_time(entry.event))
         turn.end_seq = entry.event.seq
 
@@ -362,18 +388,9 @@ class DeepseekEventTailer:
         session_id = state.session_id
         run_key = turn.turn if turn.turn is not None else turn.start_seq
         run_id = f"{session_id}:{run_key}"
-        if run_id in state.recorded or not turn.accumulator.messages:
+        if turn.native is None:
             return
-        messages: list[ModelMessage] = []
-        if turn.prompt_text:
-            messages.append(
-                ModelRequest(
-                    parts=[UserPromptPart(content=turn.prompt_text)],
-                    timestamp=turn.prompt_time,
-                    metadata=deepseek_metadata(),
-                )
-            )
-        messages.extend(turn.accumulator.messages)
+        messages = turn.accumulator.messages
         conversation = state.conversation
         assert conversation is not None
         with deepseek_logfire.span(
@@ -403,12 +420,11 @@ class DeepseekEventTailer:
                     end_offset=turn.end_seq,
                 )
                 span.set_attribute("committed", run is not None)
-                state.recorded.add(run_id)
+                await turn.native.close(
+                    run, run_id=run_id, answer=turn.accumulator.result_text
+                )
                 state.floor = max(state.floor, turn.end_seq)
                 state.commit_pulse.set()
-                if run is None:
-                    return
-                await self.bind_ledger(state, run, turn)
                 logger.info(
                     "session %s: turn %s synced — %d messages, seqs %d-%d",
                     session_id,
@@ -429,64 +445,3 @@ class DeepseekEventTailer:
         if preset == conversation.permission_mode:
             return
         await self.conversation_manager.set_permission_mode(conversation, preset)
-
-    async def bind_ledger(
-        self, state: TailState, run: ExternalAgentRun, turn: OpenTurn
-    ) -> None:
-        """The turn's human ledger — its prompt and answer as thread messages,
-        dated by the log's clock and bound to the run. Written here rather than
-        live at the hooks: dsh's hook dialect carries no per-turn key and no
-        answer, so the stream's assembly is the first moment both rows can
-        exist deduplicated."""
-        thread = await self.thread_manager.ensure(
-            ThreadKey(DEEPSEEK_NATIVE_ID, "thread", state.session_id)
-        )
-        request = next(
-            (message for message in run.messages if isinstance(message, ModelRequest)),
-            None,
-        )
-        if request is not None and turn.prompt_text:
-            inbound = await self.thread_manager.find_message(
-                thread.id, run.id, "inbound"
-            )
-            if inbound is None:
-                inbound = await self.thread_manager.record_inbound(
-                    MessageEvent(
-                        tentacle_id=DEEPSEEK_NATIVE_ID,
-                        message_id=run.id,
-                        chat_id=state.session_id,
-                        chat_type="thread",
-                        user_id=state.sender.channel_user_id,
-                        sender=state.sender,
-                        segments=[TextSegment(data={"text": turn.prompt_text})],
-                    ),
-                    happened_at=request.timestamp,
-                )
-            await self.thread_manager.bind_messages(
-                [inbound.id], request.id, kind="request_source", run_id=run.id
-            )
-        answer = turn.accumulator.result_text
-        if answer:
-            answered = next(
-                (
-                    message
-                    for message in reversed(run.messages)
-                    if isinstance(message, ModelResponse)
-                ),
-                None,
-            )
-            outbound = await self.thread_manager.find_message(
-                thread.id, run.id, "outbound"
-            )
-            if outbound is None:
-                outbound = await self.thread_manager.record_outbound(
-                    thread,
-                    agent_tentacle_id=DEEPSEEK_NATIVE_ID,
-                    segments=[MarkdownSegment(data={"text": answer})],
-                    sender=state.sender,
-                    platform_message_id=run.id,
-                    happened_at=answered.timestamp if answered is not None else None,
-                )
-            await self.thread_manager.bind_assistant_replies(
-                [outbound.id], run_id=run.id
-            )

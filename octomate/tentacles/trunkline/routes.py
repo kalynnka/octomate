@@ -80,14 +80,21 @@ from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import WorkspaceManager
+from octomate.nerve import ThreadTopic, UserTopic
 from octomate.schemas.agent import AgentInfo
-from octomate.schemas.awakes import DeferredActionBatchResponse
+from octomate.schemas.awakes import DeferredActionBatchResponse, StillAwake
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import DeferredActionBatch, QuestionAnswer
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.operations import ThreadOperations
 from octomate.schemas.project import Project
-from octomate.schemas.thread import Thread, ThreadCommand, ThreadKey, ThreadMessage
+from octomate.schemas.thread import (
+    Thread,
+    ThreadArtifact,
+    ThreadCommand,
+    ThreadKey,
+    ThreadMessage,
+)
 from octomate.schemas.user import ProfileInfo, User, UserProfile
 from octomate.tentacles.trunkline.base import (
     ROUTE_SEP,
@@ -314,9 +321,9 @@ def build_trunkline_router(
                 hint=body["hint"],
                 prompt=prompt,
             )
-        except GatewayRefusal as exc:
+            await octomate.kick(session.thread_operation())
+        except (GatewayRefusal, StillAwake) as exc:
             raise HTTPException(409, str(exc)) from exc
-        octomate.kick_soon(session.thread_operation())
 
     @router.post("/threads/{thread_id}/summon", status_code=202, response_model=None)
     async def summon_thread(
@@ -332,9 +339,9 @@ def build_trunkline_router(
                 brief=body["brief"],
                 effort=body.get("effort"),
             )
-        except GatewayRefusal as exc:
+            await octomate.kick(session.thread_operation())
+        except (GatewayRefusal, StillAwake) as exc:
             raise HTTPException(409, str(exc)) from exc
-        octomate.kick_soon(session.thread_operation())
 
     @router.get("/health", include_in_schema=False)
     async def health() -> JSONResponse:
@@ -432,7 +439,7 @@ def build_trunkline_router(
     @router.get(
         "/threads/{thread_id}/messages",
         summary="The thread's chat ledger, newest first, a page at a time",
-        response_model=Page[ThreadMessage | ThreadCommand],
+        response_model=Page[ThreadMessage | ThreadCommand | ThreadArtifact],
         response_model_exclude={"items": {"__all__": {"model_messages"}}},
     )
     async def thread_messages(
@@ -442,8 +449,8 @@ def build_trunkline_router(
         unbound: bool = False,
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
     ) -> Page[ThreadMessage]:
-        """Every row the thread shows, its commands among them. `cursor` is a
-        page's `next_cursor`, read further back. `unbound` keeps to the rows no
+        """Every row the thread shows, including command receipts and artifact references.
+        `cursor` is a page's `next_cursor`, read further back. `unbound` keeps to the rows no
         model message of the thread carries — notices, commands, a chat room's
         talk — since the rest arrive bound to the model messages they prompted or
         delivered."""
@@ -554,7 +561,7 @@ def build_trunkline_router(
         )
         try:
             await channel.handle_directive(directive)
-        except RouteLockedError as error:
+        except (RouteLockedError, StillAwake) as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
@@ -685,7 +692,14 @@ def build_trunkline_router(
         if batch.status != "pending":
             # A resolved batch must not resume twice (double-click, retry).
             raise HTTPException(status_code=409, detail=f"batch already {batch.status}")
-        octomate.kick_soon(
+        if (
+            batch.response_mode == "resume"
+            and ThreadKey.from_address(batch.source_address) in octomate.awakes
+        ):
+            # The kick would wait out the turn running there, holding this
+            # request open for as long.
+            raise HTTPException(status_code=409, detail=str(StillAwake()))
+        await octomate.kick(
             DeferredActionBatchResponse(
                 batch_id=batch_id,
                 responder_id=str(user.id),
@@ -703,6 +717,18 @@ def build_trunkline_live_router(channel: TrunklineTentacle) -> APIRouter:
     the console router runs the same-origin write guard on every request, and a
     handshake has no method for that guard to read."""
     router = APIRouter(prefix="/api/trunkline", tags=["trunkline"])
+
+    @router.websocket("/live/user")
+    async def watch_user(
+        websocket: WebSocket,
+        user: Annotated[User, Depends(current_user)],
+    ) -> None:
+        """Subscribe to the authenticated user's topic, without replay.
+
+        The subscription precedes acceptance. Read the thread list after the
+        handshake, then apply the events received while that read was pending.
+        """
+        await channel.siphon.watch(websocket, UserTopic(user.id))
 
     @router.websocket("/live")
     async def watch_thread(
@@ -742,6 +768,6 @@ def build_trunkline_live_router(channel: TrunklineTentacle) -> APIRouter:
                 code=1008, reason="Name the thread by its id or by its key, not both"
             )
             return
-        await channel.siphon.watch(websocket, key)
+        await channel.siphon.watch(websocket, ThreadTopic(key))
 
     return router

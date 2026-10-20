@@ -2658,6 +2658,8 @@ async def test_driven_isolation_overrides_local_feature_settings(
                     "features.plugins=true",
                     "features.apps=true",
                     'notify=["owner-hook"]',
+                    'shell_environment_policy.inherit="all"',
+                    "shell_environment_policy.exclude=[]",
                 )
             ),
         ),
@@ -2665,11 +2667,13 @@ async def test_driven_isolation_overrides_local_feature_settings(
     async with tentacle:
         await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
     assert FakeCodex.last_config is not None
-    assert FakeCodex.last_config.config_overrides[-4:] == (
+    assert FakeCodex.last_config.config_overrides[-6:] == (
         "features.hooks=false",
         "features.plugins=false",
         "features.apps=false",
         "notify=[]",
+        'shell_environment_policy.inherit="core"',
+        'shell_environment_policy.exclude=["OCTOMATE_*"]',
     )
 
 

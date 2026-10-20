@@ -14,6 +14,7 @@ Inkling, so every runtime corrects from one wording.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -51,6 +52,7 @@ if TYPE_CHECKING:
     # Runtime dependency runs the other way (the host builds and mounts this
     # module's servers); the resolver only needs the host's type here.
     from octomate.base import Octomate
+    from octomate.reflex import ReflexGraphResult
 
 # What a runtime a tool result cannot suspend is told: the decision is recorded, its
 # turn is interrupted on it, and the graph performs the move and resumes it there.
@@ -210,7 +212,10 @@ def mount_gateway(
     mcp: FastMCP,
     octomate_session: OctomateSession,
     thread_manager: ThreadManager,
-    kick: Callable[[NativeGatewaySignal], None] | None = None,
+    kick: Callable[
+        [NativeGatewaySignal], Awaitable[asyncio.Task[ReflexGraphResult] | None]
+    ]
+    | None = None,
 ) -> None:
     """Register the gateway's spells on `mcp`.
 
@@ -261,8 +266,11 @@ def mount_gateway(
         reason: str,
         brief: Annotated[str, Field(max_length=8_000)],
         effort: str | None = None,
+        destination: ChannelAddress | None = None,
+        project: str | None = None,
+        ref: str | None = None,
         session: OctomateSession = octomate_session,
-    ) -> str:
+    ) -> str | ChannelAddress:
         return await session.summon(
             agent_id=agent_id,
             model=model,
@@ -270,6 +278,9 @@ def mount_gateway(
             reason=reason,
             brief=brief,
             effort=effort,
+            destination=destination,
+            project=project,
+            ref=ref,
         )
 
     @mcp.tool(
@@ -310,7 +321,7 @@ def mount_gateway(
             raise RuntimeError(
                 "a native session reached a gateway mounted without a kick"
             )
-        kick(session.native_handoff())
+        await kick(session.native_handoff())
         return NATIVE_TELEPORT_STARTED
 
     @mcp.tool(
@@ -330,7 +341,7 @@ def mount_gateway(
                 raise RuntimeError(
                     "a native session reached a gateway mounted without a kick"
                 )
-            kick(session.native_handoff())
+            await kick(session.native_handoff())
         return sentence
 
     @mcp.tool(

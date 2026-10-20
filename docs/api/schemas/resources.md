@@ -1,4 +1,6 @@
-# Projects, MCP and the rest
+# Artifacts, projects, MCP and the rest
+
+::: octomate.schemas.artifacts
 
 ::: octomate.schemas.project
 

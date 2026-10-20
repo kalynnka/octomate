@@ -88,10 +88,14 @@ with that reason.
 
 ## Rendering
 
-Answers arrive as plain text when complete, with the latest todo checklist
-appended. Mid-run notices can arrive separately. There are no streamed edits,
-thinking cards or tool cards. Images and files are sent as native attachments;
-inbound images are downloaded, while other inbound attachment types are ignored.
+Answers arrive when complete, with markdown stripped to plain text and the latest
+todo checklist appended. Quoted replies stay native, and mentions work in group
+chats. Images and files are sent as native attachments. Mid-run notices can arrive separately.
+There are no streamed edits, thinking cards or tool cards. Inbound images are
+downloaded, while other inbound attachment types are ignored.
+
+[Artifact overviews](index.md#artifact-overviews) arrive separately as text and a
+viewer link in the same chat.
 
 Approvals and questions appear as text only. There are no buttons or handlers to
 submit a decision by replying in this channel. Use the pending request in

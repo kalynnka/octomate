@@ -18,6 +18,22 @@ from octomate.tentacles.slack.schema import SlackOutboundMessage
 from tests.channels.slack.fakes import FakeSlackClient
 
 
+@pytest.mark.parametrize("status", ["Thinking…", ""])
+async def test_assistant_status_uses_json_including_an_empty_clear(
+    status: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ink = SlackInk(SecretStr("test"))
+    call = AsyncMock()
+    monkeypatch.setattr(ink.client, "api_call", call)
+
+    await ink.set_assistant_status("D1", "1710000000.000100", status)
+
+    call.assert_awaited_once_with(
+        "assistant.threads.setStatus",
+        json={"channel_id": "D1", "thread_ts": "1710000000.000100", "status": status},
+    )
+
+
 async def test_group_name_reads_the_channel_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

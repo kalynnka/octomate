@@ -77,6 +77,7 @@ from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.usage import RequestUsage, RunUsage
 
 from octomate.capabilities.harness.events import StreamEvents
+from octomate.tentacles.codex.html import visualization_text
 from octomate.types.json import JsonObject, JsonValue
 
 type ToolOutcome = Literal["success", "failed", "denied"]
@@ -111,6 +112,7 @@ class StreamingPartState:
     index: int
     part: TextPart | ThinkingPart
     events: list[JsonValue] = field(default_factory=list)
+    pending_text: str = ""  # Withhold incomplete visualization references from prose.
 
 
 @dataclass
@@ -364,12 +366,17 @@ class CodexRunAccumulator:
             yield PartStartEvent(index=state.index, part=replace(part))
         state.events.append(event)
         if isinstance(state.part, TextPart):
-            state.part.content += payload.delta
-            self.result_text += payload.delta
+            text, state.pending_text = visualization_text(
+                state.pending_text + payload.delta
+            )
+            state.part.content += text
+            self.result_text += text
+            if not text:
+                return
             yield PartDeltaEvent(
                 index=state.index,
                 delta=TextPartDelta(
-                    payload.delta,
+                    text,
                     provider_name=CODEX_PROVIDER_NAME,
                 ),
             )
@@ -622,6 +629,7 @@ class CodexRunAccumulator:
         text = (
             item.review if isinstance(item, ExitedReviewModeThreadItem) else item.text
         )
+        text = visualization_text(text, final=True)[0]
         state = self.streaming_parts.pop(item.id, None)
         if state is None or not isinstance(state.part, TextPart):
             part = TextPart(
@@ -632,6 +640,13 @@ class CodexRunAccumulator:
             state = StreamingPartState(index=self.take_part_index(), part=part)
             yield PartStartEvent(index=state.index, part=part)
         else:
+            if state.pending_text and text.endswith(state.pending_text):
+                yield PartDeltaEvent(
+                    index=state.index,
+                    delta=TextPartDelta(
+                        state.pending_text, provider_name=CODEX_PROVIDER_NAME
+                    ),
+                )
             state.part.content = text
         state.events.append(event)
         if (

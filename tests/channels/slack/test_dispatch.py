@@ -9,15 +9,79 @@ from __future__ import annotations
 
 import asyncio
 from typing import ClassVar, cast
+from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import SecretStr
 from slack_bolt.async_app import AsyncApp, AsyncSay
+from slack_bolt.request.async_request import AsyncBoltRequest
+from slack_sdk.web.async_client import AsyncWebClient
+from slack_sdk.web.async_slack_response import AsyncSlackResponse
 
+from octomate.config import SlackChannelConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.slack import base as slack_base
 from octomate.tentacles.slack.schema import SlackMessageEvent
 from tests.channels.slack.fakes import FakeSlackInk, slack_channel
+from tests.support.channels import FakeOctomate
+
+
+@pytest.mark.parametrize("tab", ["home", "messages"])
+async def test_app_home_opened_is_acknowledged_without_starting_a_turn(
+    tab: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    host = FakeOctomate()
+    channel = slack_base.SlackTentacle(
+        "slack",
+        host,
+        config=SlackChannelConfig(
+            app_id="A-test",
+            bot_token=SecretStr("xoxb-test"),
+            app_token=SecretStr("xapp-test"),
+            agents=["inkling"],
+        ),
+    )
+    monkeypatch.setattr(
+        AsyncWebClient,
+        "auth_test",
+        AsyncMock(
+            return_value=AsyncSlackResponse(
+                client=channel.app.client,
+                http_verb="POST",
+                api_url="https://slack.com/api/auth.test",
+                req_args={},
+                data={"ok": True, "team_id": "T1", "user_id": "U-bot", "bot_id": "B1"},
+                headers={},
+                status_code=200,
+            )
+        ),
+    )
+    ingest = AsyncMock()
+    monkeypatch.setattr(channel, "ingest", ingest)
+    response = await channel.app.async_dispatch(
+        AsyncBoltRequest(
+            body={
+                "type": "event_callback",
+                "team_id": "T1",
+                "event": {
+                    "type": "app_home_opened",
+                    "user": "U1",
+                    "channel": "D1",
+                    "tab": tab,
+                    "event_ts": "1600000000.000001",
+                },
+            },
+            mode="socket_mode",
+        )
+    )
+    await asyncio.sleep(0)
+    assert response.status == 200
+    assert response.body == ""
+    assert "Unhandled request" not in caplog.text
+    ingest.assert_not_awaited()
+    assert channel.ingest_tasks == set()
+    assert host.kicks == []
 
 
 async def test_enter_connects_socket_mode_without_parking(

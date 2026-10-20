@@ -24,6 +24,7 @@ from rich.style import Style
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from octomate.config.base import OctomateConfig
+from octomate.managers.artifacts import ArtifactManager
 from octomate.managers.auth import AuthManager
 from octomate.managers.commands import CommandManager
 from octomate.managers.conversation import ConversationManager
@@ -52,12 +53,15 @@ from octomate.schemas.awakes import (
     DeferredActionBatchResponse,
     DrivenGatewaySignal,
     NativeGatewaySignal,
+    StillAwake,
+    SummonSignal,
     UserMessageSignal,
 )
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.mcp import OAuthMcp
 from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import ProfileInfo, User
 from octomate.telemetry import octomate_logfire
 from octomate.tentacles.agent import AgentTentacle
@@ -136,6 +140,7 @@ class Octomate(FastAPI):
     auth: AuthManager | None = field(init=False)
     oauth: OAuthManager = field(init=False)
     mcp: McpManager = field(init=False)
+    artifacts: ArtifactManager = field(init=False)
     users: UserManager = field(default_factory=UserManager)
     files: FileManager = field(default_factory=FileManager)
 
@@ -157,9 +162,11 @@ class Octomate(FastAPI):
     # the typed views below are readings of this dict, taken fresh each time: a
     # router builder reads `channels` while `connect` is still mounting.
     tentacles: dict[str, Tentacle] = field(default_factory=dict)
-    # Fire-and-forget graph turns (`kick_soon`), held strongly until they settle.
-    background: set[asyncio.Task[ReflexGraphResult | None]] = field(
-        default_factory=set, init=False
+    # The task of the reflex awake on each thread, by the thread its kick was asked
+    # on: one at a time, so what a thread hears between waking and falling asleep
+    # is one reflex's.
+    awakes: dict[ThreadKey, asyncio.Task[ReflexGraphResult]] = field(
+        default_factory=dict, init=False
     )
     # The next console color for a tentacle with no brand of its own.
     log_styles: Iterator[Style] = field(
@@ -173,7 +180,7 @@ class Octomate(FastAPI):
             redoc_url=None,
             lifespan=self.lifespan,
         )
-        self.threads = ThreadManager(users=self.users)
+        self.threads = ThreadManager(users=self.users, nerve=self.nerve)
         self.commands = CommandManager(
             tentacles=self.tentacles,
             users=self.users,
@@ -205,6 +212,12 @@ class Octomate(FastAPI):
             cipher=self.oauth.cipher,
             idle_timeout=self.config.mcp_pool.idle_timeout,
             oauth=self.oauth,
+        )
+        self.artifacts = ArtifactManager(
+            config=self.config.artifacts,
+            mcp=self.mcp,
+            threads=self.threads,
+            files=self.files,
         )
 
         @self.exception_handler(RequestValidationError)
@@ -295,14 +308,15 @@ class Octomate(FastAPI):
         tag = short_log_name(logger_name)
         return tag, SHARED_LOG_STYLES.get(tag) or muted_log_style(tag)
 
-    async def kick(
-        self,
-        signal: AwakeSignal,
-    ) -> ReflexGraphResult | None:
-        """Trigger the agent graph from a user message turn or deferred response,
-        unless the response answers a live request, which goes to the run waiting
-        on it. What the kick does is published on the nerve as it goes, on a
-        stream opened on the thread it was asked on, if it names one."""
+    async def kick(self, signal: AwakeSignal) -> asyncio.Task[ReflexGraphResult] | None:
+        """Wake the reflex on a user message turn or deferred response, unless the
+        response answers a live request, which goes to the run waiting on it and
+        wakes nothing. Returns once the reflex holds its thread, with the task it
+        runs in. What it does is published on the nerve as it goes, on a stream
+        opened on the thread it was asked on. A thread holds one reflex at a
+        time: a kick asked on one whose reflex is still awake is refused with
+        `StillAwake`, but for an answer to a suspended run, which waits for that
+        reflex to fall asleep."""
         with octomate_logfire.span(
             "kick {signal_type}", signal_type=type(signal).__name__
         ) as span:
@@ -316,6 +330,8 @@ class Octomate(FastAPI):
                     origin = signal.context.address
                 case DrivenGatewaySignal():
                     origin = signal.source
+                case SummonSignal():
+                    origin = signal.destination
                 case NativeGatewaySignal():
                     origin = signal.source
                     span.set_attribute("agent_id", signal.agent_id)
@@ -330,18 +346,42 @@ class Octomate(FastAPI):
             ):
                 span.set_attribute("resolved_live", agent_id)
                 return None
-            async with self.nerve.publish(origin) as impulses:
-                deps = ReflexDeps(
-                    workspaces=self.workspaces,
-                    agents=self.agents,
-                    channels=self.channels,
-                    conversation_manager=self.conversations,
-                    thread_manager=self.threads,
-                    action_manager=self.deferred_actions,
-                    gateway=self.gateway,
-                    impulses=impulses,
-                )
-                return await run_reflex(signal, state=ReflexState(), deps=deps)
+            if origin is None:
+                raise ValueError("A kick names no thread to wake on.")
+            thread = ThreadKey.from_address(origin)
+            # TODO: hand the answer to the reflex awake there, not wait it out. Lark
+            # and Discord settle a card before its answer is kicked, so a refused
+            # answer would be lost.
+            while (
+                isinstance(signal, DeferredActionBatchResponse)
+                and thread in self.awakes
+            ):
+                await asyncio.wait({self.awakes[thread]})
+            if thread in self.awakes:
+                raise StillAwake()
+
+            async def reflex() -> ReflexGraphResult:
+                async with self.nerve.publish(origin) as impulses:
+                    deps = ReflexDeps(
+                        workspaces=self.workspaces,
+                        agents=self.agents,
+                        channels=self.channels,
+                        conversation_manager=self.conversations,
+                        thread_manager=self.threads,
+                        action_manager=self.deferred_actions,
+                        gateway=self.gateway,
+                        impulses=impulses,
+                    )
+                    try:
+                        return await run_reflex(signal, state=ReflexState(), deps=deps)
+                    finally:
+                        # Nothing sent on the stream is heard before this task next
+                        # yields: the thread is let go before the reflex is heard
+                        # falling asleep, so whoever hears it can kick there again.
+                        del self.awakes[thread]
+
+            self.awakes[thread] = asyncio.create_task(reflex())
+            return self.awakes[thread]
 
     async def deliver_live_response(
         self, response: DeferredActionBatchResponse
@@ -359,13 +399,6 @@ class Octomate(FastAPI):
         if not future.done():
             future.set_result(response)
         return agent.id
-
-    def kick_soon(self, signal: AwakeSignal) -> None:
-        """`kick` as its own task, for a caller that must answer now — a served
-        native spell whose handoff is a whole agent turn it cannot wait out."""
-        task = asyncio.create_task(self.kick(signal))
-        self.background.add(task)
-        task.add_done_callback(self.background.discard)
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI) -> AsyncGenerator[dict[str, Octomate]]:
@@ -462,7 +495,7 @@ class Octomate(FastAPI):
         octoate_mcp = octomate_mcp(
             served_session(self),
             self.threads,
-            kick=self.kick_soon,
+            kick=self.kick,
             bearers=self.bearers,
             manager=self.mcp,
         )
@@ -473,12 +506,14 @@ class Octomate(FastAPI):
 
     def build_middleware_stack(self) -> ASGIApp:
         # The router imports the dependency providers, which import Octomate.
+        from octomate.artifacts import ArtifactSandbox, artifact_router
         from octomate.auth import auth_router
         from octomate.commands import command_router
         from octomate.mcp.routes import mcp_router
         from octomate.oauth.routes import oauth_router
         from octomate.tentacles.trunkline.base import ConsoleFiles, TrunklineTentacle
 
+        self.include_router(artifact_router)
         self.include_router(auth_router)
         self.include_router(command_router)
         self.include_router(mcp_router)
@@ -507,4 +542,7 @@ class Octomate(FastAPI):
                 )
                 break
 
-        return super().build_middleware_stack()
+        return ArtifactSandbox(
+            super().build_middleware_stack(),
+            origin=self.config.artifacts.sandbox_origin,
+        )

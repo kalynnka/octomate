@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import uuid
+from base64 import b64decode
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -13,6 +14,7 @@ from functools import partial
 from pathlib import Path
 
 import anyio
+from fastmcp.apps.config import UI_MIME_TYPE
 from httpx import URL
 from octomate_protocol.gateway import GatewayTool, gateway_tool
 from openai_codex import AsyncThread, AsyncTurnHandle, InputItem
@@ -36,6 +38,11 @@ from openai_codex.generated.v2_all import (
     IdleThreadStatus,
     ItemGuardianApprovalReviewCompletedNotification,
     ListMcpServerStatusResponse,
+    McpResourceReadParams,
+    McpResourceReadResponse,
+    McpResourceReadTarget,
+    McpToolCallStatus,
+    McpToolCallThreadItem,
     ModeKind,
     Model,
     ModelListResponse,
@@ -45,6 +52,7 @@ from openai_codex.generated.v2_all import (
     RateLimitSnapshot,
     ReasoningEffort,
     ReasoningSummary,
+    ResourceContent1,
     ReviewTarget,
     Settings,
     SkillsListEntry,
@@ -57,11 +65,12 @@ from openai_codex.generated.v2_all import (
     ThreadUnsubscribeResponse,
     TurnStartParams,
 )
-from pydantic import SecretStr, TypeAdapter
+from pydantic import AnyUrl, SecretStr, TypeAdapter
 from pydantic.alias_generators import to_snake
 
 from octomate.config.agents import CodexConfig
 from octomate.mcp.gateway import CONVERSATION_HEADER
+from octomate.schemas.mcp import McpAppResource
 from octomate.telemetry import octomate_trace_environment
 from octomate.tentacles.codex.adapter import json_object_adapter
 from octomate.tentacles.codex.client import RequestHandler, SharedCodex
@@ -80,6 +89,8 @@ DRIVEN_CONFIG_OVERRIDES = (
     "features.plugins=false",
     "features.apps=false",
     "notify=[]",
+    'shell_environment_policy.inherit="core"',
+    'shell_environment_policy.exclude=["OCTOMATE_*"]',
 )
 
 
@@ -601,6 +612,69 @@ class CodexInk:
             cursor = page.next_cursor
             if cursor is None:
                 return "\n".join(lines) or "No MCP servers are connected."
+
+    async def app_resource(
+        self, thread_id: str, item: McpToolCallThreadItem
+    ) -> McpAppResource | None:
+        """Read a completed tool call's advertised UI through its Codex connection.
+
+        Prefer ``mcpAppUi``; older items may carry the URI in ``appContext`` or
+        ``mcpAppResourceUri``. Calls without a completed result or UI return None.
+        The read retains the thread, server, originating call and hosted account,
+        including an explicit null link for no-auth access. It never runs a tool.
+
+        Require one matching MCP Apps resource and validate decoded HTML and UI
+        metadata for the isolated sandbox. This does not persist or publish it.
+        """
+        if item.status != McpToolCallStatus.completed or item.result is None:
+            return None
+        context = item.app_context
+        uri = (
+            item.mcp_app_ui.resource_uri
+            if item.mcp_app_ui is not None
+            else context.resource_uri
+            if context is not None and context.resource_uri is not None
+            else item.mcp_app_resource_uri
+        )
+        if uri is None:
+            return None
+        if AnyUrl(uri).scheme != "ui":
+            raise ValueError("MCP app resource URI must use the ui scheme")
+        params = McpResourceReadParams(
+            thread_id=thread_id,
+            server=item.server,
+            origin_call_id=item.id,
+            uri=uri,
+        )
+        if context is not None:
+            params.target = McpResourceReadTarget(
+                connector_id=context.connector_id, link_id=context.link_id
+            )
+        response = await self.client._client.request(
+            "mcpServer/resource/read",
+            json_object_adapter.validate_python(
+                params.model_dump(mode="json", by_alias=True, exclude_unset=True)
+            ),
+            response_model=McpResourceReadResponse,
+        )
+        if response.origin_call_id not in {None, item.id}:
+            raise ValueError("Codex returned an MCP app resource for another call")
+        if len(response.contents) != 1:
+            raise ValueError("An MCP app must return exactly one UI resource")
+        resource = response.contents[0].root
+        if resource.uri != uri or resource.mime_type != UI_MIME_TYPE:
+            raise ValueError("MCP app resource URI or MIME type does not match")
+        html = (
+            resource.text
+            if isinstance(resource, ResourceContent1)
+            else b64decode(resource.blob, validate=True).decode("utf-8")
+        )
+        metadata = json_object_adapter.validate_python(
+            resource.field_meta if resource.field_meta is not None else {}
+        )
+        return McpAppResource.model_validate(
+            {"uri": uri, "html": html, "ui": metadata.get("ui", {})}
+        )
 
     async def start_command(
         self, thread_id: str, review: ReviewTarget | None = None

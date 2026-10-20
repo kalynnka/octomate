@@ -88,6 +88,33 @@ const reads = (
 const page = <T>(items: T[]) => ({ items: [...items].reverse(), total: 4, next_cursor: 'end', has_more: false })
 const kinds = (ledger: LedgerItem[]) => ledger.map((item) => item.kind)
 
+for (const [agent, bound] of [['codex-native', true], ['codex-native', false], ['deepseek-native', true], ['deepseek-native', false]] as const) {
+  test(`${agent} question replies remain readable ${bound ? 'after binding' : 'before their run commits'}`, () => {
+    const deepseek = agent === 'deepseek-native'
+    const text = deepseek ? JSON.stringify({ kind: 'answer_to_pending_question', tool: 'ask_user_question', callId: 'native-q', answers: [{ id: 'inspect', selected: ['Yes'] }] }) : `<send_user_message_question_reply>\n${JSON.stringify([{
+      questionItemId: JSON.stringify(['request_user_input_async', 'native-q', 0]), question: 'Inspect?', answer: 'Yes',
+    }])}\n</send_user_message_question_reply>`
+    const replied = said('060', text, 'human')
+    const asked: ApiModelMessage = {
+      id: '030', run_id: 'run', kind: 'response', timestamp: at, thread_messages: [],
+      parts: [{ part_kind: 'builtin-tool-call', tool_name: deepseek ? 'ask_user_question' : 'request_user_input_async', tool_call_id: 'native-q', args: { questions: [deepseek ? { id: 'inspect', question: 'Inspect?' } : { title: 'Inspect?', options: ['Yes', 'No'] }] } }],
+    }
+    const reply: ApiModelMessage = {
+      id: '070', run_id: 'later-run', kind: 'request', timestamp: at,
+      parts: [{ part_kind: 'user-prompt', content: text }], thread_messages: [replied],
+    }
+    const native = reads(bound ? [asked, reply] : [asked], bound ? [] : [replied], { model: null, unbound: null })
+    native.conversations = [{ ...conversation, agent_tentacle_id: agent }]
+    const ledger = liveThreadDetail(native).ledger
+    const card = ledger.find(item => item.kind === 'ask')
+    assert.equal(card?.kind === 'ask' && card.state, 'answered')
+    assert.deepEqual(card?.kind === 'ask' && card.questions[0].answer, deepseek ? ['Yes'] : 'Yes')
+    const user = ledger.find(item => item.kind === 'user')
+    assert.deepEqual(user?.kind === 'user' && [user.who, user.text], ['Ada', 'Yes'])
+    assert.equal(user?.uid, '060')
+  })
+}
+
 test('a thread is rebuilt from its model messages, in the words its rows were said in', () => {
   const whole = liveThreadDetail(reads([prompt, narration, built, answer], [notice], { model: null, unbound: null }))
   assert.deepEqual(kinds(whole.ledger), ['session-open', 'system', 'user', 'stream', 'tool', 'agent'])
@@ -240,3 +267,42 @@ test('usage is the relay total, and the context is the newest response in hand',
   })
   assert.equal(latest.ctxK, 6)
 })
+
+test('artifact references survive pagination with their row identity and no text card', () => {
+  const artifact: ApiThreadMessage = { ...said('060', '', 'system'), kind: 'artifact', artifact_id: 'saved-app' }
+  const detail = liveThreadDetail(reads([], [artifact], { model: null, unbound: null }))
+  assert.deepEqual(detail.ledger.filter((item) => item.kind === 'artifact'), [{ kind: 'artifact', uid: '060', artifactId: 'saved-app' }])
+  assert.equal(detail.ledger.some((item) => item.kind === 'system'), false)
+  const paged = withOlderPage(detail, detail.reads!, { read: 'unbound', page: page([artifact]) })
+  assert.equal(paged.ledger.filter((item) => item.kind === 'artifact').length, 1)
+})
+
+for (const text of ['Here is the chart.', '']) {
+  test(`captured HTML stays after its originating response on reload (${text ? 'caption' : 'reference only'})`, () => {
+    const artifact: ApiThreadMessage = { ...said('015', '', 'system'), direction: 'outbound', kind: 'artifact', artifact_id: 'saved-html' }
+    const response: ApiModelMessage = { ...answer, parts: [{ part_kind: 'text', content: text }], thread_messages: [artifact] }
+    const next: ApiModelMessage = { ...prompt, id: '060', thread_messages: [said('055', 'Next question', 'human')] }
+    const detail = liveThreadDetail(reads([prompt, response, next], [], { model: null, unbound: null }))
+    assert.deepEqual(detail.ledger.map(item => item.kind), text
+      ? ['session-open', 'user', 'agent', 'artifact', 'user']
+      : ['session-open', 'user', 'artifact', 'user'])
+    assert.equal(detail.ledger.find(item => item.kind === 'artifact')?.uid, artifact.id)
+    const paged = withOlderPage(detail, detail.reads!, { read: 'model', page: page([prompt, response]) })
+    assert.deepEqual(paged.ledger, detail.ledger)
+  })
+}
+
+for (const runtime of ['claude-native', 'codex-native', 'deepseek-native']) {
+  test(`${runtime} preserves append order despite source clocks, including the pagination horizon`, () => {
+    const native = { ...thread, kind: 'native_thread' as const, channel_tentacle_id: runtime, handoffs: [] }
+    const earlier = { ...answer, id: '010', timestamp: '2026-10-09T11:00:00Z', parts: [{ part_kind: 'text' as const, content: 'Earlier' }] }
+    const later = { ...answer, id: '090', timestamp: '2026-10-09T09:00:00Z' }
+    const middle = { ...notice, id: '020', happened_at: at }
+    const source = { ...reads([earlier, later], [middle], { model: 'more', unbound: 'more' }), thread: native }
+    assert.equal(holdingBack(source), 'unbound')
+    const latest = liveThreadDetail(source)
+    assert.deepEqual(latest.ledger.map((item) => item.uid), ['020.0', '090.0'])
+    const whole = withOlderPage(latest, source, { read: 'unbound', page: page([]) })
+    assert.deepEqual(whole.ledger.map((item) => item.uid), ['010.0', '020.0', '090.0'])
+  })
+}

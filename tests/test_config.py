@@ -862,6 +862,81 @@ def test_a_workspaces_block_validates() -> None:
     assert config.workspaces.sweep_interval == 600
 
 
+def test_artifact_config_loads_from_yaml_and_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OCTOMATE_HOME", str(tmp_path))
+    assert OctomateConfig().artifacts.path == "/artifacts"
+    assert OctomateConfig().artifacts.viewer_origin is None
+    assert OctomateConfig().artifacts.sandbox_origin is None
+    (tmp_path / "octomate.yaml").write_text(
+        "artifacts:\n  path: /ui/artifacts\n"
+        "  viewer_origin: https://console.example\n"
+        "  sandbox_origin: https://sandbox.example\n"
+    )
+    config = OctomateConfig()
+    assert config.artifacts.path == "/ui/artifacts"
+    assert str(config.artifacts.viewer_origin) == "https://console.example/"
+    assert str(config.artifacts.sandbox_origin) == "https://sandbox.example/"
+    monkeypatch.setenv("OCTOMATE__ARTIFACTS__VIEWER_ORIGIN", "http://localhost:8000")
+    monkeypatch.setenv("OCTOMATE__ARTIFACTS__SANDBOX_ORIGIN", "http://localhost:8001")
+    config = OctomateConfig()
+    assert config.artifacts.path == "/ui/artifacts"
+    assert str(config.artifacts.viewer_origin) == "http://localhost:8000/"
+    assert str(config.artifacts.sandbox_origin) == "http://localhost:8001/"
+    monkeypatch.setenv("OCTOMATE__ARTIFACTS__PATH", "/generated")
+    assert OctomateConfig().artifacts.path == "/generated"
+
+
+@pytest.mark.parametrize("field", ["viewer_origin", "sandbox_origin"])
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://sandbox.example/proxy",
+        "https://user:secret@sandbox.example",
+        "https://sandbox.example/?query=value",
+        "https://sandbox.example/#fragment",
+        "ftp://sandbox.example",
+    ],
+)
+def test_artifact_origins_reject_non_origins(field: str, origin: str) -> None:
+    with pytest.raises(ValidationError, match=field):
+        OctomateConfig.model_validate({"artifacts": {field: origin}})
+
+
+@pytest.mark.parametrize(
+    "sandbox", ["https://console.example", "https://console.example:443/"]
+)
+def test_artifact_viewer_cannot_use_the_sandbox_origin(sandbox: str) -> None:
+    with pytest.raises(ValidationError, match="viewer_origin must differ"):
+        OctomateConfig.model_validate(
+            {
+                "artifacts": {
+                    "viewer_origin": "https://console.example",
+                    "sandbox_origin": sandbox,
+                }
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "artifacts",
+        "https://example.com/artifacts",
+        "//example.com/artifacts",
+        "/",
+        "/artifacts/",
+        "/../api",
+        "/artifacts?mode=edit",
+        "/artifacts#fragment",
+    ],
+)
+def test_artifact_path_requires_a_root_relative_prefix(path: str) -> None:
+    with pytest.raises(ValidationError, match=r"artifacts\.path"):
+        OctomateConfig.model_validate({"artifacts": {"path": path}})
+
+
 def test_mcp_pool_timeout_loads_from_yaml_and_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

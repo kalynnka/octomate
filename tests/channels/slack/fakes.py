@@ -27,6 +27,7 @@ from octomate.tentacles.feelers.output import (
 from octomate.tentacles.siphon import Siphon
 from octomate.tentacles.slack import SlackChromo, SlackTentacle
 from octomate.tentacles.slack.feelers.approvals import SlackApprovalFeeler
+from octomate.tentacles.slack.feelers.artifacts import SlackArtifactFeeler
 from octomate.tentacles.slack.feelers.oauth import SlackOAuthFeeler
 from octomate.tentacles.slack.feelers.output import SlackTimelineFeeler
 from octomate.tentacles.slack.feelers.questions import SlackAskQuestionFeeler
@@ -277,6 +278,11 @@ def compose_slack_feelers(
     actions = deferred_actions or DeferredActionManager()
     channel.feelers = Feelers(
         markdown=markdown_feeler,
+        artifacts=SlackArtifactFeeler(
+            artifacts=channel.octomate.artifacts,
+            users=channel.octomate.users,
+            ink=ink,
+        ),
         timeline=SlackTimelineFeeler(
             ink=ink,
             chromo=chromo,

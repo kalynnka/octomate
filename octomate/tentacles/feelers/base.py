@@ -12,6 +12,7 @@ from octomate.capabilities.harness.events import (
 )
 from octomate.schemas.conversation import ChannelAddress
 from octomate.telemetry import channel_logfire
+from octomate.tentacles.feelers.artifacts import ArtifactFeeler
 from octomate.tentacles.feelers.deferred import (
     ApprovalFeeler,
     QuestionFeeler,
@@ -38,6 +39,8 @@ class Feelers:
     approvals: ApprovalFeeler
     ask_questions: QuestionFeeler
     oauth: OAuthFeeler
+    # Saved artifacts presented independently of the run's reply.
+    artifacts: ArtifactFeeler
 
     async def present(
         self, address: ChannelAddress, event: GatewayEvent | RunErrorEvent

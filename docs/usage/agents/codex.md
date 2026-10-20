@@ -56,13 +56,18 @@ subagent conversation names do not replace the parent thread's title. A failed
 name lookup is logged and does not discard the run's result.
 
 The run's working directory is the thread's [workspace](../workspaces.md). In
-`user_review` and `auto_review` the sandbox is `workspace_write`, so that directory
-is the write boundary; `full_access` removes the sandbox and the prompts. Both the
-sandbox and the approval policy are reapplied on every turn. Changing a mode also
-sends the new settings to the loaded Codex thread immediately, without sending a
-prompt or interrupting work. Codex retains an active turn's permissions; the new
-mode takes effect on the next run. A rejected update leaves the saved selection
-unchanged.
+`user_review` and `auto_review` the native sandbox is `workspace_write`, which
+restricts writes to the workspace and native writable roots, including temporary
+storage. It still allows reads and execution outside the workspace.
+`full_access` removes the sandbox and the prompts. Both the sandbox and the
+approval policy are reapplied on every turn. Changing a mode also sends the new
+settings to the loaded Codex thread immediately, without sending a prompt or
+interrupting work. Codex retains an active turn's permissions; the new mode takes
+effect on the next run. A rejected update leaves the saved selection unchanged.
+
+Native approvals can grant additional access. These settings are not a boundary
+between mutually untrusted users. See the
+[native sandbox matrix](../../contributing/agent-tentacle.md#native-sandbox-verification).
 
 Local customisation is off through config overrides appended after your own:
 hooks, plugins, apps and notifications are disabled, and every MCP server in the
@@ -155,6 +160,27 @@ runs through the same streaming, approval and history path as a driven turn.
 Arguments may be empty; attachments are not supported. A skill's path comes from
 discovery, never from a separate client-supplied path.
 
+## HTML visualizations
+
+Driven and native Codex conversations can produce interactive visualizations.
+Trunkline shows them directly in chat; other channels show a card or viewer link. Saved
+visualizations remain available after the run ends and require the owner's account
+to open.
+
+Only self-contained visualizations are supported. External content and
+ChatGPT-specific controls are unavailable. Ordinary HTML code blocks and file links
+remain text. Native capture requires the updated Octomate CLI on the machine
+running Codex; restart the native session after updating it. New visualizations
+are captured as their turns finish. Previously imported turns are not backfilled.
+
+Standard MCP apps supplied through driven Codex connections also appear as
+artifacts. Their saved interface and result remain available after the session
+ends. App controls that need additional tool calls or ChatGPT-specific features
+are unavailable. Native MCP app capture is not supported yet.
+
+See [Trunkline artifacts](../channels/trunkline.md#artifacts) for viewer controls
+and [artifact settings](../../api/config/artifacts.md) for hosting setup.
+
 ## Approvals and questions
 
 Codex's own approval requests, command execution and file changes, and its
@@ -175,6 +201,13 @@ native `prompt` approval mode. It follows the selected permission policy and
 reviewer, including `auto_review`; Octomate does not add another confirmation.
 
 ## Native sessions
+
+A console with the native thread open shows prompts, reasoning, tool activity
+and replies as the tail reads them, a whole item at a time. The completed turn
+settles into the ledger. Prompts sent while a turn is running stay between the
+replies they arrived between. Without a connected tail, no messages are imported.
+The tail keeps watching after a reply finishes until its completed turn is saved,
+so the final reply does not need another prompt to appear in the console.
 
 `octomate codex hooks install` registers `SessionStart`, `UserPromptSubmit`,
 `Stop`, `SubagentStart` and `SubagentStop`. Codex must trust the hooks: open

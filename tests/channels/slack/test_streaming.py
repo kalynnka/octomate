@@ -6,9 +6,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
-from pydantic import JsonValue
+from pydantic import AnyHttpUrl, JsonValue
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -27,6 +28,7 @@ from slack_sdk.models.messages.chunk import Chunk, TaskUpdateChunk
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.events import (
+    ArtifactAvailableEvent,
     ResultSegmentEvent,
     StreamEvents,
     SubagentStartedEvent,
@@ -145,6 +147,97 @@ async def test_slack_consume_renders_timeline_per_event() -> None:
     assert "Lookup…" in ink.statuses
     assert "Writing the response…" in ink.statuses
     assert ink.statuses[-1] == ""
+
+
+@pytest.mark.parametrize("failure", ["tool_completion", "stream_stop"])
+async def test_status_clears_even_when_finishing_the_timeline_fails(
+    failure: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ink = FakeSlackInk()
+    channel = slack_channel(ink)
+
+    async def run() -> None:
+        async with channel.feelers.timeline.open(slack_key()) as state:
+            if failure == "tool_completion":
+                await state.tool_start(
+                    FunctionToolCallEvent(
+                        ToolCallPart("lookup", {}, tool_call_id="tool")
+                    )
+                )
+                method = "append_stream_chunks"
+            else:
+                await state.answer_delta("done")
+                method = "stop_stream"
+            monkeypatch.setattr(
+                ink,
+                method,
+                AsyncMock(side_effect=RuntimeError("Slack refused cleanup")),
+            )
+
+    with pytest.raises(RuntimeError, match="Slack refused cleanup"):
+        await run()
+    await asyncio.sleep(0)
+    assert ink.statuses[-1] == ""
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_status_clears_after_a_run_error_or_cancellation(cancelled: bool) -> None:
+    ink = FakeSlackInk()
+    channel = slack_channel(ink)
+    error = asyncio.CancelledError if cancelled else RuntimeError
+
+    async def run() -> None:
+        async with channel.feelers.timeline.open(slack_key()) as state:
+            await state.answer_delta("partial")
+            raise error()
+
+    with pytest.raises(error):
+        await run()
+    assert ink.statuses[-1] == ""
+    assert all(stream.stopped for stream in ink.stream_objects)
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_clearing_status_waits_for_a_delayed_running_update(
+    cancelled: bool,
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class DelayedStatusInk(FakeSlackInk):
+        async def set_assistant_status(
+            self, channel: str, thread_ts: str, status: str
+        ) -> None:
+            if status:
+                started.set()
+                await release.wait()
+            await super().set_assistant_status(channel, thread_ts, status)
+
+    ink = DelayedStatusInk()
+    channel = slack_channel(ink)
+
+    async def run() -> None:
+        async with channel.feelers.timeline.open(slack_key()):
+            pass
+
+    task = asyncio.create_task(run())
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        assert not task.done()
+        assert ink.statuses == []
+        if cancelled:
+            task.cancel()
+    finally:
+        release.set()
+        results = await asyncio.wait_for(
+            asyncio.gather(task, return_exceptions=True), 1
+        )
+    if cancelled:
+        assert isinstance(results[0], asyncio.CancelledError)
+        assert ink.statuses == [""]
+    else:
+        assert results == [None]
+        assert ink.statuses == [slack_output.STATUS_THINKING, ""]
 
 
 async def test_slack_thinking_appends_coalesce_off_the_drive_loop() -> None:
@@ -388,6 +481,54 @@ async def test_slack_timeline_alternates_plan_and_message() -> None:
     ]
     assert {chunk.id for chunk in second_tasks} == {"thinking-2", "call_logs_1"}
     assert second_plan.stopped
+
+
+async def test_artifact_rotates_the_plan_without_moving_a_late_tool_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ink = FakeSlackInk()
+    channel = slack_channel(ink)
+    channel.octomate.config.artifacts.viewer_origin = AnyHttpUrl(
+        "https://console.example"
+    )
+    present = AsyncMock(return_value="artifact-ts")
+    monkeypatch.setattr(channel.feelers.artifacts, "present", present)
+    event = ArtifactAvailableEvent(message_id=uuid7(), artifact_id=uuid7())
+    async with channel.feelers.timeline.open(slack_key()) as state:
+        state.artifacts = channel.feelers.artifacts
+        await state.tool_start(
+            FunctionToolCallEvent(
+                ToolCallPart("create_diagram", {}, tool_call_id="first")
+            )
+        )
+        await state.artifact_available(event)
+        present.assert_awaited_once_with(slack_key(), event)
+        await state.tool_start(
+            FunctionToolCallEvent(ToolCallPart("lookup", {}, tool_call_id="second"))
+        )
+        await state.tool_end(
+            FunctionToolResultEvent(
+                ToolReturnPart("create_diagram", "done", tool_call_id="first")
+            )
+        )
+    first, second = ink.stream_objects
+    first_tasks = [
+        chunk
+        for group in first.chunks
+        for chunk in group
+        if isinstance(chunk, TaskUpdateChunk)
+    ]
+    second_tasks = [
+        chunk
+        for group in second.chunks
+        for chunk in group
+        if isinstance(chunk, TaskUpdateChunk)
+    ]
+    assert {chunk.id for chunk in first_tasks} == {"first"}
+    assert first_tasks[-1].status == "complete"
+    assert {chunk.id for chunk in second_tasks} == {"second"}
+    assert first.stopped
+    assert second.stopped
 
 
 async def test_slack_answer_deltas_coalesce_while_append_is_in_flight() -> None:

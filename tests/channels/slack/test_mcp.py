@@ -335,7 +335,8 @@ async def test_slacks_tools_act_as_the_person_from_any_channel() -> None:
 
     assert [tool.name for tool in tools] == LISTED_TO_ALL
     assert [tool.name for tool in catalog.tools] == ["slack_read_user_profile"]
-    assert result.data == {"result": "steve.li"}
+    assert result.structured_content == {"result": "steve.li"}
+    assert result.data == "steve.li"
     assert seen == ["Bearer xoxp-user"]
 
 
@@ -431,7 +432,8 @@ async def test_a_connected_caller_is_listed_slacks_tools_and_acts_as_themselves(
     # fixed, and the call carries the token Octomate holds for them.
     assert [tool.name for tool in tools] == LISTED_TO_ALL
     assert [tool.name for tool in catalog.tools] == ["slack_read_user_profile"]
-    assert result.data == {"result": "steve.li"}
+    assert result.structured_content == {"result": "steve.li"}
+    assert result.data == "steve.li"
     assert seen == ["Bearer xoxp-user"]
 
 

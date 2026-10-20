@@ -4,6 +4,7 @@ from fastapi import Depends, HTTPException
 from starlette.requests import HTTPConnection
 
 from octomate.base import Octomate
+from octomate.managers.artifacts import ArtifactManager
 from octomate.managers.auth import AuthManager
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
@@ -47,6 +48,10 @@ def oauth_manager(app: Annotated[Octomate, Depends(application)]) -> OAuthManage
 
 def mcp_manager(app: Annotated[Octomate, Depends(application)]) -> McpManager:
     return app.mcp
+
+
+def artifact_manager(app: Annotated[Octomate, Depends(application)]) -> ArtifactManager:
+    return app.artifacts
 
 
 def workspace_manager(

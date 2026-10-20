@@ -34,6 +34,7 @@ from octomate.managers.mcp import McpManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.managers.workspaces.mirrors import run_git
 from octomate.mcp.server import octomate_mcp
+from octomate.nerve import Nerve
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import ProjectSummary, TeleportDecision
@@ -91,7 +92,7 @@ async def a_harness(
         workspaces_dir=tmp_path / "workspaces",
     )
     users, profile = await a_registered_profile()
-    threads = ThreadManager(users=users)
+    threads = ThreadManager(nerve=Nerve(), users=users)
     thread = await threads.ensure(key)
     session = OctomateSession(
         channel_routes={},

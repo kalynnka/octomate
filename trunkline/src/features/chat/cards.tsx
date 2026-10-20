@@ -7,6 +7,7 @@ import { Fragment, useLayoutEffect, useRef, useState, type CSSProperties, type R
 import { answerText } from '@/lib/api/fold'
 import type { AgentBlock, AskAnswer, LedgerItem, MessageReply, QueueChip, ToolDetail } from '@/lib/api/types'
 import { useAuth } from '@/state/auth'
+import { ArtifactViewer } from '@/features/artifacts/ArtifactViewer'
 import { useConsole } from '@/state/console'
 import { Brackets } from '@/components/Brackets'
 import { Icon, type IconName } from '@/components/Icon'
@@ -269,8 +270,9 @@ function ThinkRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'thi
     <div
       id={`pm-${item.uid}`}
       className="lt-entry"
-      style={{ '--i': i ?? 0, maxWidth: cardMax, border: '1px solid var(--line-divider)', background: 'var(--card-bg)' } as CSSProperties}
+      style={{ '--i': i ?? 0, maxWidth: cardMax, position: 'relative', border: '1px solid var(--line-divider)', background: 'var(--card-bg)' } as CSSProperties}
     >
+      <Brackets />
       <div onClick={() => toggleCardOpen(item.uid, item.thinking)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 13px', cursor: 'pointer' }}>
         <Disclose open={open} style={{ ...mono(11), ...ghost3, width: 12 }} />
         <Icon name="sparkle" style={{ color: 'var(--fg-2)' }} />
@@ -765,6 +767,28 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
   const [ansOpen, setAnsOpen] = useState(false)
   const operator = useAuth((s) => s.user?.username ?? 'operator')
 
+  if (item.nativeCallId) {
+    return (
+      <div id={`pm-${item.uid}`} className="lt-entry" style={{ '--i': i ?? 0, maxWidth: cardMax } as CSSProperties}>
+        <div style={{ border: '1px solid var(--line-divider)', borderLeft: `3px solid var(--color-${item.state === 'answered' ? 'sage' : 'gold'})`, background: 'var(--card-bg)', padding: '11px 16px' }}>
+          <div style={{ ...cardKind, color: 'var(--fg-1)' }}>{item.title} · {item.nativeAgent}</div>
+          {item.questions.map((question, index) => (
+            <div key={index} style={{ marginTop: 8 }}>
+              <p style={{ margin: 0, ...serif(13), lineHeight: 1.7, color: 'var(--fg-1)' }}>{question.body}</p>
+              {question.options.length > 0 && (
+                <ul style={{ margin: '5px 0', paddingLeft: 20, ...serif(12.5), color: 'var(--fg-2)' }}>
+                  {question.options.map((option, optionIndex) => <li key={optionIndex}>{option.label}{option.desc && ` — ${option.desc}`}</li>)}
+                </ul>
+              )}
+              {question.answer !== undefined && <p style={{ margin: '5px 0 0', ...serif(13), color: 'var(--color-sage)' }}>Answer: {answerText(question.answer) || 'Skipped'}</p>}
+            </div>
+          ))}
+          <div style={{ marginTop: 8, ...microMeta, color: 'var(--fg-3)' }}>{item.state === 'answered' ? `Answered in ${item.nativeAgent}` : item.state === 'failed' ? `Not answered: ${item.meta}` : item.meta}</div>
+        </div>
+      </div>
+    )
+  }
+
   if (item.state === 'answered') {
     const answers = item.questions.map((q) => (q.answer === undefined ? '' : answerText(q.answer)))
     return (
@@ -1134,7 +1158,12 @@ function StreamRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'strea
 
 /** Dispatch a ledger item to its card. `i` staggers entry animations. */
 export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: string; i?: number }) {
+  const threadId = useConsole((s) => s.selThreadId)
   switch (item.kind) {
+    case 'artifact':
+      return <div id={`pm-${item.uid}`} className="lt-entry trk-artifact-row">
+        <ArtifactViewer artifactId={item.artifactId} messageId={item.uid} threadId={threadId} />
+      </div>
     case 'divider':
       return (
         <Rule>

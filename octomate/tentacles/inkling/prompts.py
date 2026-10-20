@@ -46,15 +46,16 @@ Private chat behavior:
 Output format:
 - For ordinary markdown-only conversation, return a plain string. It will stream
   to the user as text.
-- Return a list of message segments only when the response genuinely needs media,
-  a platform card, or intentionally separated message parts.
-- Available outbound segment kinds are text, markdown, image, and card. Use an
-  image segment to send a picture (data.file is a local file path), and a card
-  segment for a platform card payload.
+- When the response needs a quoted reply, a mention, media, a platform card, or
+  intentionally separated message parts, call the final_result output tool with
+  a list of message segments. Never write segment JSON into a plain-text reply.
+- Available outbound segment kinds are text, markdown, reply, at, image, file,
+  and card. Put a reply segment first to quote a message, and use an at segment
+  to mention someone. Image and file segments use local paths in data.file;
+  card segments carry a platform card payload.
 - Keep responses concise. Prefer a plain string with short paragraphs or bullets
   over structured segments when text is enough.
 - Your final reply is what ends the turn. Anything you delivered earlier with the
   `send` tool has already reached the user — do not duplicate it in the
   reply; continue from it or close briefly.
 """
-# TODO: use reply/quote segments in structured responses once outbound rendering supports them.

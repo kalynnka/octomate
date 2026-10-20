@@ -18,15 +18,17 @@ from octomate_protocol.gateway import GatewayTool
 from pydantic_ai import AgentCapability, AgentRunResult, AgentRunResultEvent, RunContext
 from pydantic_ai._agent_graph import GraphAgentState
 from pydantic_ai.messages import (
-    ModelRequest,
+    ModelRequest as AiModelRequest,
+)
+from pydantic_ai.messages import (
     ModelResponse,
     TextPart,
     ToolCallPart,
     UserPromptPart,
 )
-from pydantic_ai.usage import RequestUsage, RunUsage
 from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+from pydantic_ai.usage import RequestUsage, RunUsage
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
@@ -37,6 +39,7 @@ from octomate.capabilities.harness.events import (
     ResultSegmentEvent,
     RunErrorEvent,
     RunResultEvent,
+    to_wire,
 )
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config import ChannelConfig, ChannelStreamConfig
@@ -49,6 +52,7 @@ from octomate.managers.user import UserManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.managers.workspaces.base import thread_ref
 from octomate.managers.workspaces.mirrors import run_git
+from octomate.nerve import Nerve
 from octomate.reflex import (
     DeferredResult,
     ReflexDeps,
@@ -300,7 +304,7 @@ def test_run_result_event_carries_the_last_request_context() -> None:
             "done",
             _state=GraphAgentState(
                 message_history=[
-                    ModelRequest(parts=[UserPromptPart(content="go")]),
+                    AiModelRequest(parts=[UserPromptPart(content="go")]),
                     ModelResponse(
                         parts=[TextPart(content="one")],
                         usage=RequestUsage(input_tokens=100, cache_read_tokens=4_000),
@@ -317,7 +321,7 @@ def test_run_result_event_carries_the_last_request_context() -> None:
         )
     )
 
-    wire = ReflexDeps.to_wire(result)
+    wire = to_wire(result)
 
     assert isinstance(wire, RunResultEvent)
     assert wire.usage.input_tokens == 250
@@ -327,7 +331,7 @@ def test_run_result_event_carries_the_last_request_context() -> None:
 
 
 def test_run_result_event_context_is_none_when_nothing_reported_usage() -> None:
-    wire = ReflexDeps.to_wire(AgentRunResultEvent(AgentRunResult("done")))
+    wire = to_wire(AgentRunResultEvent(AgentRunResult("done")))
     assert isinstance(wire, RunResultEvent)
     assert wire.context_tokens is None
 
@@ -1497,6 +1501,10 @@ async def test_teleport_carries_the_history_across_to_a_far_sub_thread(
     if not fork_supported:
         assert len(entry.turns) == 1
         assert entry.relocated == []
+        # A move whose history never arrived is not announced where it left.
+        assert not [
+            event for _, event in im.presented if isinstance(event, GatewayEvent)
+        ]
         return
 
     assert isinstance(result, ReflexResult)
@@ -2381,7 +2389,7 @@ async def test_a_dismiss_releases_the_workspace_once_the_turn_is_saved(
     )
     project = workspaces.projects.get("inky")
     assert project is not None
-    threads = ThreadManager(users=UserManager())
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
     address = ChannelAddress(
         channel_tentacle_id="im",
         chat_type="thread",
@@ -2422,8 +2430,9 @@ async def test_a_dismiss_releases_the_workspace_once_the_turn_is_saved(
     )
 
 
+@pytest.mark.parametrize("resume", [True, False])
 async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
-    in_memory_engine: AsyncEngine, tmp_path: Path
+    in_memory_engine: AsyncEngine, tmp_path: Path, resume: bool
 ) -> None:
     # `here` with a project: the move is only into the workspace. The thread is
     # bound and its tree forked before the agent resumes, with the call answered.
@@ -2436,7 +2445,7 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
         mirrors=MirrorManager(config=MirrorsConfig(), mirrors_dir=tmp_path / "mirrors"),
         workspaces_dir=tmp_path / "workspaces",
     )
-    threads = ThreadManager(users=UserManager())
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
     address = ChannelAddress(
         channel_tentacle_id="im",
         chat_type="thread",
@@ -2450,6 +2459,7 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
         reception_teleport="into inky",
         reception_teleport_destination="here",
         reception_teleport_project="inky",
+        reception_teleport_resume=resume,
         reception_output="carried on",
     )
     deps = _deps(
@@ -2509,7 +2519,7 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
     )
     project = workspaces.projects.get("inky")
     assert project is not None
-    threads = ThreadManager(users=UserManager())
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
     address = ChannelAddress(
         channel_tentacle_id="im",
         chat_type="thread",

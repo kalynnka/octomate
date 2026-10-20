@@ -33,11 +33,11 @@ from octomate.capabilities.harness.events import (
     SubagentStartedEvent,
     TodoEvent,
     WireEvent,
+    to_wire,
 )
 from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
-from octomate.reflex.state import ReflexDeps
 from octomate.schemas.awakes import AwakeSignal
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
@@ -77,6 +77,7 @@ async def drive(
     """A run as a streaming channel draws it: carried onto the nerve, and driven
     onto the timeline the siphon opens for the run."""
     async with channel.feelers.timeline.open(address) as state:
+        state.artifacts = channel.feelers.artifacts
         await state.drive(carried(stream))
     return state.message_id
 
@@ -87,7 +88,7 @@ async def carried(
     """A run's stream as the graph carries it onto the nerve: each item as its
     wire event."""
     async for item in stream:
-        event = ReflexDeps.to_wire(item)
+        event = to_wire(item)
         if event is not None:
             yield event
 
@@ -102,6 +103,7 @@ def bound(
     state.address = address
     state.ask_questions = channel.feelers.ask_questions
     state.approvals = channel.feelers.approvals
+    state.artifacts = channel.feelers.artifacts
     state.deferred_actions = channel.octomate.deferred_actions
     return state
 
@@ -357,6 +359,7 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
         self.self_profile = self.recording_ink.self_profile
         self.feelers = RecordingFeelers(
             markdown=self.feelers.markdown,
+            artifacts=self.feelers.artifacts,
             timeline=RecordingTimelineFeeler(self.feelers.timeline, self.consumed),
             segments=self.feelers.segments,
             approvals=self.feelers.approvals,

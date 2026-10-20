@@ -1,15 +1,21 @@
-"""Fixtures for the @trigger live-replay layer.
+"""Fixtures for the @trigger live layer.
 
-Trigger tests replay the canonical scenario scripts through a REAL channel
-tentacle into a real chat, so a human can inspect the rendering in the IM
-client. They need two things from the gitignored config home: the channel's
-credentials (the regular `tentacles.yaml`) and a `trigger.yaml` naming the target
-chat per channel:
+Trigger tests call real model providers or replay canonical scenario scripts
+through a REAL channel tentacle into a real chat, so a human can inspect the
+rendering in the IM client. Channel replays need two things from the gitignored
+config home: the channel's credentials (the regular `tentacles.yaml`) and a
+`trigger.yaml` naming the target chat per channel:
 
     trigger:
       slack: {chat_id: D0123, user_id: U0123}
       lark: {chat_type: group, chat_id: oc_xxx, user_id: ou_xxx}
       discord: {chat_type: group, chat_id: "123", user_id: "456"}
+      napcat: {chat_id: "123456789", user_id: "123456789"}
+
+Artifact previews additionally use `trigger.artifact`, a saved ArtifactOverview
+with a real viewer URL. They send only that overview through the platform feeler;
+they never create an artifact, read app HTML, or execute an MCP tool. Open its link
+while signed in as the artifact owner to inspect the browser window.
 
 `trigger.yaml` is not one of the config home's `CONFIG_FILES`, so it is invisible
 to the application. Tests skip cleanly when either piece is missing.
@@ -43,6 +49,7 @@ from pydantic_settings import (
 
 from octomate.config import OctomateConfig
 from octomate.config.base import OCTOMATE_HOME_ENV, config_home
+from octomate.schemas.artifacts import ArtifactOverview
 
 # Real images for the showcase live in tests/src/images (see tests/src/README);
 # the generated 1x1 transparent PNG below is only the fallback when none is there.
@@ -94,6 +101,7 @@ class TriggerTargets(BaseSettings):
     lark: TriggerTarget | None = None
     discord: TriggerTarget | None = None
     napcat: TriggerTarget | None = None
+    artifact: ArtifactOverview | None = None
 
     @classmethod
     def settings_customise_sources(
@@ -128,9 +136,9 @@ def pytest_collection_modifyitems(
     """Skip trigger tests unless they were explicitly targeted.
 
     This keeps them visible to IDE test explorers (a plain `pytest tests`
-    discovery collects them) while guaranteeing a full-suite run never fires
-    live IM messages. Naming anything under tests/trigger on the command line
-    — or selecting the marker — counts as explicit intent.
+    discovery collects them) while guaranteeing a full-suite run never calls
+    live models or posts IM messages. Naming anything under tests/trigger on the
+    command line — or selecting the marker — counts as explicit intent.
     """
     if config.option.markexpr == "trigger":
         return
@@ -172,7 +180,15 @@ def trigger_targets() -> TriggerTargets:
             lark=None,
             discord=None,
             napcat=None,
+            artifact=None,
         )
+
+
+@pytest.fixture(scope="session")
+def artifact_overview(trigger_targets: TriggerTargets) -> ArtifactOverview:
+    if trigger_targets.artifact is None:
+        pytest.skip("artifact overview not configured under trigger.artifact")
+    return trigger_targets.artifact
 
 
 @pytest.fixture

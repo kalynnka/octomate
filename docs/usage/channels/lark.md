@@ -71,6 +71,10 @@ thought. Todos are one card patched as they change. Subagents get a card of thei
 own with their response in folded panels. A card Lark refuses to render falls back
 to a plain message carrying the raw text.
 
+[Artifact overviews](index.md#artifact-overviews) appear as native cards with a
+blue title header, a provider subtitle and an **Open artifact** button in the same
+chat or thread. The button opens the authenticated web viewer, where the app runs.
+
 Approvals are one card per action with Approve and Deny; the click toasts and the
 card is replaced with the resolution. Questions are one card holding the whole
 batch: a dropdown for choices, which takes several picks when the question allows

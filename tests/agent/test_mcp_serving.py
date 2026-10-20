@@ -13,6 +13,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Literal, Self
+from unittest.mock import AsyncMock
 
 import httpx
 import httpx2
@@ -33,6 +34,7 @@ from octomate.managers.gateway import OctomateSession
 from octomate.mcp.gateway import (
     CLIENT_HEADER,
     CONVERSATION_HEADER,
+    native_session,
 )
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL, LINK_PROFILE_TOOL
 from octomate.mcp.server import (
@@ -48,8 +50,9 @@ from octomate.mcp.server import (
     history_tool,
     octomate_instructions,
 )
-from octomate.schemas.awakes import NativeGatewaySignal
+from octomate.schemas.awakes import NativeGatewaySignal, SummonSignal
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.triage import SchemeDecision
 from octomate.tentacles.mcp import OAuthMcpTentacle
 from octomate.types.threads import CLAUDE_NATIVE_ID
@@ -298,7 +301,7 @@ async def test_the_server_refuses_an_unauthenticated_call(
 
 
 @pytest.mark.parametrize("mode", ["legacy", "2026-07-28"])
-async def test_an_api_token_opens_the_six_spells_and_the_history_tools(
+async def test_an_api_token_opens_the_shared_spells_and_the_history_tools(
     mode: Literal["legacy", "2026-07-28"],
 ) -> None:
     async with served(await a_driven_deployment()) as (octomate, app):
@@ -447,7 +450,7 @@ async def test_a_native_scheme_kicks_exactly_one_handoff() -> None:
                     "destination": {"kind": "dm", "channel": "im"},
                 },
             )
-        await asyncio.gather(*octomate.background)
+        await asyncio.gather(*octomate.awakes.values())
 
     assert result.data.startswith("Taking this to")
     assert isinstance(octomate, FakeOctomate)
@@ -461,3 +464,46 @@ async def test_a_native_scheme_kicks_exactly_one_handoff() -> None:
     assert isinstance(signal.decision, SchemeDecision)
     assert signal.decision.destination == ChannelAddress("im", "dm", "", "alice")
     assert signal.decision.brief == "Please take this up."
+
+
+async def test_native_summon_resolves_the_session_once_on_the_http_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolve = AsyncMock(wraps=native_session)
+    monkeypatch.setattr("octomate.mcp.gateway.native_session", resolve)
+    octomate = await a_native_deployment()
+    async with served(octomate) as (octomate, app):
+        resolve.assert_not_awaited()
+        async with over(octomate, app, {**USER_BEARER, **NATIVE}) as client:
+            assert "gateway_summon" in {tool.name for tool in await client.list_tools()}
+            resolve.assert_not_awaited()
+            result = await client.call_tool(
+                "gateway_summon",
+                {
+                    "agent_id": "other",
+                    "model": "test",
+                    "hint": "Investigating separately",
+                    "reason": "independent work",
+                    "brief": "Find the cause of the failing test.",
+                    "destination": {
+                        "channel_tentacle_id": "im",
+                        "chat_type": "dm",
+                        "chat_id": "",
+                        "user_id": "alice",
+                    },
+                },
+            )
+    resolve.assert_awaited_once_with(octomate, CLAUDE_NATIVE_ID, "luhui")
+    assert result.structured_content is not None
+    opened = TypeAdapter(ChannelAddress).validate_python(
+        result.structured_content["result"]
+    )
+    assert isinstance(octomate, FakeOctomate)
+    [signal] = octomate.kicks
+    assert isinstance(signal, SummonSignal)
+    assert signal.destination == opened
+    assert signal.user_profile.channel_tentacle_id == "im"
+    assert signal.user_profile.channel_user_id == "alice"
+    thread = await octomate.threads.get(ThreadKey.from_address(opened))
+    assert thread is None
+    assert signal.source_conversation_id is None

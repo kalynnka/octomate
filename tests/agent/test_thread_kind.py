@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate.managers import ThreadManager, UserManager
+from octomate.nerve import Nerve
 from octomate.schemas.project import Project
 from octomate.schemas.thread import (
     CLAUDE_NATIVE_ID,
@@ -50,7 +51,7 @@ async def inky(tmp_path: Path) -> Project:
 
 async def test_each_surface_is_recorded_as_what_it_is() -> None:
     # A native thread's key has a DM's shape; only its tentacle separates them.
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
 
     kinds = [
         (await manager.ensure(key)).kind
@@ -76,9 +77,9 @@ async def test_each_surface_is_recorded_as_what_it_is() -> None:
 
 async def test_the_kind_is_on_the_row_a_later_reader_loads() -> None:
     """The point of the column: a later reader takes the kind off the row."""
-    await ThreadManager(users=UserManager()).ensure(SLACK_DM)
+    await ThreadManager(nerve=Nerve(), users=UserManager()).ensure(SLACK_DM)
 
-    reloaded = await ThreadManager(users=UserManager()).ensure(SLACK_DM)
+    reloaded = await ThreadManager(nerve=Nerve(), users=UserManager()).ensure(SLACK_DM)
 
     assert reloaded.kind == "dm"
 
@@ -108,7 +109,7 @@ def test_a_native_row_cannot_call_itself_a_plain_thread() -> None:
 
 
 async def test_a_dm_is_refused_a_project(tmp_path: Path) -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     project = await inky(tmp_path)
 
     with pytest.raises(ValueError, match="is a dm and cannot be attributed"):
@@ -119,7 +120,7 @@ async def test_a_dm_is_refused_a_project(tmp_path: Path) -> None:
 
 
 async def test_a_group_chat_is_refused_a_project(tmp_path: Path) -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     project = await inky(tmp_path)
 
     with pytest.raises(ValueError, match="is a group and cannot be attributed"):
@@ -129,7 +130,7 @@ async def test_a_group_chat_is_refused_a_project(tmp_path: Path) -> None:
 async def test_a_dm_that_already_exists_is_refused_too(tmp_path: Path) -> None:
     """`ensure` ignores `project` for an existing thread, so the refusal must not
     depend on which call came first."""
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     project = await inky(tmp_path)
     await manager.ensure(SLACK_DM)
 
@@ -140,7 +141,7 @@ async def test_a_dm_that_already_exists_is_refused_too(tmp_path: Path) -> None:
 async def test_a_slack_thread_and_a_lark_sub_thread_are_attributed(
     tmp_path: Path,
 ) -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     project = await inky(tmp_path)
 
     slack = await manager.ensure(SLACK_THREAD, project=project)
@@ -152,7 +153,7 @@ async def test_a_slack_thread_and_a_lark_sub_thread_are_attributed(
 async def test_a_native_thread_keeps_the_attribution_octo_31_gives_it(
     tmp_path: Path,
 ) -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     project = await inky(tmp_path)
 
     claude = await manager.ensure(CLAUDE_SESSION, project=project)
@@ -166,7 +167,7 @@ async def test_a_chat_thread_binds_to_the_project_it_had_none_of(
 ) -> None:
     # The attribution a chat thread has no way to be given at creation,
     # arriving on the turn someone says what the thread is about.
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     project = await inky(tmp_path)
     thread = await manager.ensure(SLACK_THREAD)
     assert thread.project_id is None
@@ -185,7 +186,7 @@ async def test_a_chat_thread_binds_to_the_project_it_had_none_of(
 async def test_a_dm_cannot_be_bound_either(tmp_path: Path) -> None:
     # `ensure` refuses a DM a project at creation; binding is the other door into
     # the same room, and a DM outlives every project in it either way.
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     project = await inky(tmp_path)
     dm = await manager.ensure(SLACK_DM)
 
@@ -196,7 +197,7 @@ async def test_a_dm_cannot_be_bound_either(tmp_path: Path) -> None:
 async def test_binding_a_thread_that_does_not_exist_is_refused(
     tmp_path: Path,
 ) -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     project = await inky(tmp_path)
 
     with pytest.raises(ValueError, match="no thread"):

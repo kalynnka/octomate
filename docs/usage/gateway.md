@@ -17,12 +17,41 @@ Use a handoff when you want a different agent to own the task and its follow-ups
 > to show me the changes before committing.
 
 The receiver starts from your brief: include the goal, relevant context and key
-decisions. It takes over this conversation; to move elsewhere, [teleport](#teleport)
-first. Choose an agent available on this channel. For a group's main channel or a
-native session, teleport into a thread first.
+decisions. Without a destination, it takes over this conversation. Choose an agent
+available on this channel. A group's main channel or a native session cannot be
+handed over in place.
+
+You can also ask **summon** to start the specialist in a new thread at a chosen
+destination. Your current conversation keeps running, and the receiver starts
+from the brief with its own history. This works from native sessions too. Choose
+an agent available at the destination and, optionally, a project and starting
+branch for its workspace.
 
 The tool for this is **summon**. A handoff does not transfer a running process or
 copy files from your machine.
+
+## Start independent work while staying here { #independent-work }
+
+Use **summon** with a destination to give another agent its own visible work
+thread. Name the current chat as the destination to open the work under it.
+
+> Start a separate thread for Codex to investigate the failing test in the website
+> project. Give it our reproduction steps while we continue planning here.
+
+The receiver starts from the brief and reports in the new thread. Your current
+conversation continues with its existing agent and history. The call returns
+where to follow the work without waiting for the result; reply in that thread
+for follow-ups. You can select a registered project and starting branch for the
+new workspace.
+
+Native sessions can also start work this way: name the connected channel and
+destination where you want the new thread. No uploaded history is needed; the
+receiver starts from the brief. The destination must support opening a thread,
+and an existing sub-thread cannot contain another.
+
+Each call starts new work, so do not repeat it to check progress. Work uses
+the ordinary running server lifecycle; automatic retry and restart recovery are
+not provided.
 
 ## Continue with the same agent elsewhere { #teleport }
 
@@ -85,9 +114,10 @@ own holding the work as it stood, uncommitted changes and ignored files such as
 an `.env` included, on a branch of its own, and the source keeps its own. A
 teleport never switches projects; asking for another one is refused.
 
-Teleport uses `new_thread=false` only to bind a current thread that is about no
-project. It never reuses an unrelated existing conversation, and a failed thread
-creation does not silently turn into an in-place move.
+You can also ask the agent to attach a project workspace to the current thread
+if it has no project yet. The agent automatically continues your task once the
+workspace is ready. Teleport never reuses an unrelated existing conversation,
+and a failed thread creation does not silently turn into an in-place move.
 
 Teleport requires independent history copying: driven Codex, Claude and Inkling
 support it; DeepSeek does not yet. An owned native Codex or Claude Code session

@@ -4,19 +4,27 @@ and summaries."""
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from functools import cached_property
 from typing import Annotated, Literal, Self
 
 from arcanus import BaseTransmuter
 from arcanus.base import Identity
-from mcp.types import Tool
+from fastmcp.apps import AppConfig, ResourceCSP
+from mcp.types import CallToolResult, Tool
 from pydantic import (
     UUID7,
+    AliasChoices,
+    AliasPath,
+    AnyUrl,
     AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     SecretStr,
     UrlConstraints,
+    ValidationInfo,
+    field_validator,
     model_validator,
 )
 from uuid_utils.compat import uuid7
@@ -24,6 +32,122 @@ from uuid_utils.compat import uuid7
 from octomate.models import mcp as mcp_models
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.types.oauth import HttpsUrl, OAuthConnectionStatus, OAuthFlowKind
+
+
+class McpAppToolMeta(BaseModel):
+    """Extract the app URI, including the SDK's legacy spelling.
+
+    Unrelated metadata is ignored here and preserved on the original Tool.
+    """
+
+    resource_uri: Annotated[AnyUrl, UrlConstraints(allowed_schemes=["ui"])] | None = (
+        Field(
+            default=None,
+            validation_alias=AliasChoices(
+                AliasPath("ui", "resourceUri"), "ui/resourceUri"
+            ),
+            description="The UI resource advertised by a tool, when present.",
+        )
+    )
+
+
+class McpAppInvocation(BaseModel):
+    """A completed MCP app call, retained independently of its content source.
+
+    The tool declaration and complete result are snapshots: replay needs neither
+    another tool call nor a namespace lookup that could resolve a replacement
+    installation. The artifact's source determines how its UI resource is loaded.
+    """
+
+    provider_name: str = Field(
+        description="The installation's display name or runtime server name at execution."
+    )
+    tool: Tool | None = Field(
+        default=None,
+        description="The upstream tool declaration when supplied by the runtime.",
+    )
+    resource_uri: Annotated[AnyUrl, UrlConstraints(allowed_schemes=["ui"])] = Field(
+        description="The UI resource declared by the tool.",
+    )
+    arguments: dict[str, JsonValue] = Field(
+        description="Original arguments passed to the upstream tool, without clipping."
+    )
+    result: CallToolResult = Field(
+        description="Complete upstream result, including structured content and metadata."
+    )
+
+
+class McpAppResourceCSP(ResourceCSP):
+    """Declared origins, restricted to HTTP(S) and network-only WS(S) sources.
+
+    Subdomain wildcards are supported. CSP keywords, credentials, paths, queries,
+    fragments, and directive separators are refused before header construction.
+    """
+
+    @field_validator(
+        "connect_domains", "resource_domains", "frame_domains", "base_uri_domains"
+    )
+    @classmethod
+    def validate_domains(
+        cls, domains: list[str] | None, info: ValidationInfo
+    ) -> list[str] | None:
+        if domains is None:
+            return None
+        schemes = {"http", "https"}
+        if info.field_name == "connect_domains":
+            schemes.update({"ws", "wss"})
+        validated = []
+        for domain in domains:
+            if any(char.isspace() or char in ";,'\"\\" for char in domain):
+                raise ValueError("CSP sources must be HTTP(S) or WS(S) origins")
+            url = AnyUrl(domain)
+            if (
+                url.scheme not in schemes
+                or url.host is None
+                or "*" in url.host.removeprefix("*.")
+                or url.username is not None
+                or url.password is not None
+                or url.path not in {None, "/"}
+                or url.query is not None
+                or url.fragment is not None
+            ):
+                raise ValueError("CSP sources must be HTTP(S) or WS(S) origins")
+            validated.append(str(url).removesuffix("/"))
+        return validated
+
+
+class McpAppResourceUI(AppConfig):
+    """Resource UI metadata; requested permissions and domains are not grants."""
+
+    csp: McpAppResourceCSP | None = Field(
+        default=None, description="Validated declared origins for sandbox policy."
+    )
+
+
+class McpAppResource(BaseModel):
+    """A single matching MCP Apps HTML resource, decoded for the sandbox.
+
+    HTML is untrusted and must only be rendered by the isolated sandbox. Resource
+    metadata describes requests; the host still applies its own sandbox policy.
+    """
+
+    uri: Annotated[AnyUrl, UrlConstraints(allowed_schemes=["ui"])] = Field(
+        description="The saved invocation's UI resource URI."
+    )
+    html: str = Field(
+        min_length=1, description="Resource text or strictly decoded UTF-8 HTML."
+    )
+    ui: McpAppResourceUI = Field(
+        default_factory=McpAppResourceUI, description="The resource's UI metadata."
+    )
+
+    @field_validator("html")
+    @classmethod
+    def validate_html(cls, value: str) -> str:
+        value.encode("utf-8")
+        if not value.strip():
+            raise ValueError("MCP app HTML must not be empty")
+        return value
 
 
 class NoAuth(BaseModel):
@@ -197,6 +321,11 @@ class McpToolCatalog(BaseModel):
 
     instructions: str = Field(description="The selected provider's tool instructions.")
     tools: list[Tool] = Field(description="The selected provider's MCP tool schemas.")
+
+    @cached_property
+    def tools_by_name(self) -> dict[str, Tool]:
+        """Index this discovery snapshot once; refresh creates a new catalog."""
+        return {tool.name: tool for tool in self.tools}
 
 
 type McpVariant = NoAuthMcp | BearerMcp | OAuthMcp

@@ -2,10 +2,10 @@
 server's stream endpoint when a native session's transcript lives on another machine.
 
 The payload is raw transcript lines plus the byte offsets they occupy in the client's
-own file. The client never parses what it ships — every translation stays server-side,
-so a transcript format change is a server-only fix — which also keeps this protocol
-agent-neutral: the same frames carry a Claude session file or a Codex rollout, and
-which tree a stream feeds is the mounting endpoint's business.
+own file. Turn assembly stays server-side. Codex clients additionally recognize
+explicit visualization references to attach bounded HTML snapshots; raw transcript
+lines and their offsets are unchanged. The same frames carry a Claude session file
+or a Codex rollout; the mounting endpoint selects its assembler.
 
 The server is the only cursor authority. A connect opens with `hello`/`welcome`: the
 client claims a session, the server answers where each of its files resumes (recomputed
@@ -17,10 +17,12 @@ costs a re-stream, never a loss. Lines then flow contiguously per file; `finaliz
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import BaseModel, Field, TypeAdapter, model_validator
+
+from octomate_protocol.visualizations import HtmlSnapshot, codex_html_references
 
 # Bumped when a message's meaning changes. The server refuses a mismatch at hello and
 # names both versions, so a stale client surfaces as one clear line instead of being
@@ -66,6 +68,20 @@ class StreamLine(BaseModel):
     start: int
     end: int
     line: str
+    visualizations: list[HtmlSnapshot] = Field(
+        default_factory=list,
+        description="HTML snapshots explicitly referenced by this Codex assistant line, read on the client.",
+    )
+
+    @model_validator(mode="after")
+    def snapshots_match_references(self) -> Self:
+        if self.visualizations and (
+            self.agent_id is not None
+            or [snapshot.reference for snapshot in self.visualizations]
+            != codex_html_references(self.line)
+        ):
+            raise ValueError("HTML snapshots must match the root assistant references")
+        return self
 
 
 class StreamEof(BaseModel):

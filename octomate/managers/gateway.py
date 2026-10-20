@@ -24,8 +24,12 @@ from pydantic import UUID7
 from octomate.capabilities.harness.events import WireEvent
 from octomate.managers.base import Manager
 from octomate.managers.workspaces.mirrors import run_git
-from octomate.nerve import Impulse, Nerve
-from octomate.schemas.awakes import DrivenGatewaySignal, NativeGatewaySignal
+from octomate.nerve import ChannelTopic, Impulse, Nerve, ThreadTopic
+from octomate.schemas.awakes import (
+    DrivenGatewaySignal,
+    NativeGatewaySignal,
+    SummonSignal,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.operations import (
     OperationAvailability,
@@ -163,7 +167,8 @@ class OctomateSession:
             return
         if self.nerve is None:
             raise RuntimeError("a spell no kick drives publishes on the host's nerve")
-        self.nerve.deliver(impulse)
+        self.nerve.deliver(ChannelTopic(address.channel_tentacle_id), impulse)
+        self.nerve.deliver(ThreadTopic(ThreadKey.from_address(address)), impulse)
 
     @property
     def allow_here(self) -> bool:
@@ -586,21 +591,40 @@ class OctomateSession:
         hint: str,
         reason: str,
         brief: str,
+        destination: ChannelAddress | None = None,
         effort: str | None = None,
-    ) -> str:
-        """Validate and record a handoff of this conversation, where it is, for the
-        graph to perform. Continuing somewhere else is `teleport`'s."""
-        if agent_id == self.current_agent_id:
-            raise GatewayRefusal(
-                f"Cannot summon yourself {self.current_agent_id!r}. "
-                f'Call `{GatewayTool.INSPECT}` with `reveal="routes"` to choose a valid route.'
+        project: str | None = None,
+        ref: str | None = None,
+    ) -> str | ChannelAddress:
+        """Hand over here, or open independent work at a destination.
+
+        Without a destination, record the decision for this turn's graph. With
+        one, validate and open a thread, then kick a separate summon there. The
+        graph creates its ledger, project workspace and handoff. Return the new
+        address without waiting for the agent; the source decision stays put.
+        Native sessions need a destination, but no uploaded history.
+        """
+        if destination is None:
+            if agent_id == self.current_agent_id:
+                raise GatewayRefusal(
+                    f"Cannot summon yourself {self.current_agent_id!r}. "
+                    f'Call `{GatewayTool.INSPECT}` with `reveal="routes"` to choose a valid route.'
+                )
+            if refusal := self.summon_unavailable:
+                raise GatewayRefusal(refusal)
+            if project is not None or ref is not None:
+                raise GatewayRefusal(
+                    "A summon naming a project or ref needs a destination."
+                )
+            routes = self.other_routes
+        else:
+            routes = await self.inspect(
+                "routes", channel=destination.channel_tentacle_id
             )
-        if refusal := self.summon_unavailable:
-            raise GatewayRefusal(refusal)
         route = self.claimed_route(
-            agent_id, model, effort, spell="summon", offered=self.other_routes
+            agent_id, model, effort, spell="summon", offered=routes
         )
-        self.decision = SummonDecision(
+        decision = SummonDecision(
             agent_id=route.agent_id,
             model=route.model,
             effort=effort,
@@ -608,7 +632,55 @@ class OctomateSession:
             reason=reason,
             brief=brief,
         )
-        return f"Summoning {route.agent_id} ({route.model}) to take over here."
+        if destination is None:
+            self.decision = decision
+            return f"Summoning {route.agent_id} ({route.model}) to take over here."
+        destination = await self.prepare_address(destination)
+        channel = self.channels[destination.channel_tentacle_id]
+        profile = await self.channel_profile(channel)
+        if profile.channel_tentacle_id != channel.id:
+            profile = UserProfile(
+                channel_tentacle_id=channel.id,
+                channel_user_id=destination.user_id,
+                user_id=profile.user_id,
+                name=profile.name,
+                nickname=profile.nickname,
+            )
+        if ref is not None and project is None:
+            raise GatewayRefusal("A starting ref requires a project.")
+        if project is not None:
+            available = await self.projects()
+            if self.workspaces is None:
+                raise RuntimeError("summoning project work needs the workspaces")
+            registered = self.workspaces.projects.get(project)
+            if registered is None or not registered.enabled:
+                raise GatewayRefusal(
+                    f"No project called {project!r} is registered here. "
+                    f"Available: {', '.join(sorted(p.name for p in available)) or 'none'}."
+                )
+            mirror = await self.workspaces.mirrors.sync(registered)
+            if ref is not None and not await run_git("ls-remote", str(mirror), ref):
+                raise GatewayRefusal(
+                    f"{registered.name!r} has no {ref!r} to start from. Name a "
+                    "branch, tag or commit its mirror has, or omit it for the "
+                    "default branch."
+                )
+        try:
+            opened = await channel.start_thread(destination, hint)
+        except ValueError as error:
+            raise GatewayRefusal(str(error)) from error
+        await channel.octomate.kick(
+            SummonSignal(
+                decision=decision,
+                destination=opened,
+                agent_id=self.current_agent_id,
+                user_profile=profile,
+                source_conversation_id=self.conversation_id,
+                project=project,
+                ref=ref,
+            )
+        )
+        return opened
 
     async def teleport(
         self,

@@ -4,8 +4,8 @@ The spells decide where a turn goes, who handles it, and what it is about. Each 
 opaque on its own, so the instruction opens with plain words for what they actually do:
 
 - `inspect`: reveal agent routes, suggested addresses, or projects.
-- `summon`: hand the conversation to another agent (a handoff — they take over from a
-  brief). The graph reads the recorded decision after the run.
+- `summon`: hand over here after this turn, or start independent work at a supplied
+  destination. The receiver starts from a brief.
 - `teleport`: continue the same agent in a new thread, carrying the
   history forward. Deferred, so the graph can fork the history and resume. With a
   `project`, the place is that project's workspace — the door out of a throwaway
@@ -96,8 +96,9 @@ well or do the work, do it and call none of them. Routing is the exception — r
 tool only when one of the signals below clearly fires.
 
 ### Addresses and discovery
-For `{teleport}`, `destination` is a `ChannelAddress` object, or
-`destination=null` to use the current conversation's address. An address carries
+For `{teleport}`, `destination=null` uses the current address.
+For `{summon}`, null hands over here; a supplied address starts independent work.
+A destination is a `ChannelAddress` object carrying
 `channel_tentacle_id`, `chat_type`, `chat_id`, `user_id`, and optional
 `channel_thread_id` and `shared` visibility. Use known identifiers and preserve
 visibility; `user_id` must match the requesting user's linked identity on that
@@ -111,12 +112,13 @@ why not. A channel that cannot be browsed says so.
 You can also supply a known address directly; discovery is optional, and each
 operation validates the address independently. Suggestions are not an exhaustive
 list or a guarantee that every spell can use each address.
-`new_thread=true` is the default: create a thread at the address. For creation,
+For `{teleport}`, `new_thread=true` is the default. For creation,
 use `channel_thread_id=null`; an existing thread cannot contain another thread.
 
 ### `{summon}` — hand off to another agent
-Summon transfers the conversation to a specialist who takes over this turn *and its
-follow-ups*: a real, sticky handoff, so the bar is high. Summon only when:
+Without a destination, summon transfers the conversation to a specialist who takes
+over this turn *and its follow-ups*: a real, sticky handoff. With a destination,
+the specialist starts independent work in a new thread. Summon only when:
 - The request needs a capability you lack — e.g. running or editing code in a real
   repository or environment, or a domain another agent is described for.
 - It is substantial specialist work another agent would do markedly better, not
@@ -133,10 +135,18 @@ and the effort levels it accepts — pick the route whose ability covers the wor
 `effort` only when the user explicitly asked for a level; otherwise leave it unset so
 the agent's own default applies. Then `{summon}` — copying its `agent_id` and `model`
 exactly from that route, and writing a self-contained brief since the other agent may
-not see this chat. Summon hands over this conversation where it is; to continue
-somewhere else, `{teleport}` there with `resume=true` and summon from the thread you
-land in. It is refused on a group's main conversation and in native sessions. You
-yourself are not a valid summon target.
+not see this chat. Omit `destination` to hand over here; this is refused on a
+group's main conversation and in native sessions. Supply a parent address to start
+independent work there while continuing here, inspecting that channel's routes first.
+The call returns the new thread's address without waiting for its result. A `project`
+and optional `ref` select its workspace. Native sessions may use this mode without
+uploading history. You yourself are not a valid summon target.
+
+The `hint` visibly opens the thread; `brief` is the receiver's self-contained task.
+Tell the user where to follow the work. Results and follow-ups belong in that thread;
+your current conversation keeps its owner and history. Unsupported or already nested
+destinations are refused. Each summon with a destination starts new work;
+do not repeat a successful call to check its progress.
 
 ### `{teleport}` — relocate yourself
 Move this conversation into a new thread that *you* keep handling, carrying
@@ -155,6 +165,7 @@ start: the thread you land in is bound to it and you resume in its workspace, wh
 work is kept. A thread about no project runs in a throwaway tree, so do this before
 you start work, not after. From inside a thread, use `destination=null`,
 `new_thread=false` and `project` to bind this one without opening another.
+Binding the current thread always resumes your work in its project workspace.
 Staying put requires a project; a thread binds once, and a different project is
 a different thread. Native sessions must move into a new thread.
 
@@ -346,8 +357,8 @@ class Accomplices:
 
 @dataclass
 class GatewayCapability(AbstractCapability[None]):
-    """The gateway spells as one turn's toolset: inspect, summon, teleport, scheme,
-    send and dismiss, plus the accomplice spells when there is a thread to run
+    """The gateway spells as one turn's toolset: inspect, summon, teleport,
+    scheme, send and dismiss, plus the accomplice spells when there is a thread to run
     them in."""
 
     # The turn's policy and decision slot, shared with the graph that acts on it.
@@ -486,7 +497,8 @@ class GatewayCapability(AbstractCapability[None]):
 
         Args:
             reveal: `routes` — agent/model choices on the current or selected channel.
-                Summon and commission use the current channel's routes.
+                In-place summon and commission use the current channel's routes;
+                summon with a destination uses that channel's routes.
                 `destinations` — optional address suggestions, validated independently
                 when used; known addresses need not appear in this list. With
                 `channel`, one level of that channel's addresses instead.
@@ -514,9 +526,17 @@ class GatewayCapability(AbstractCapability[None]):
         reason: str,
         brief: Annotated[str, Field(max_length=8_000)],
         effort: str | None = None,
-    ) -> str:
-        """Hand this conversation to another Octomate agent, who takes it over where
-        it is.
+        destination: ChannelAddress | None = None,
+        project: str | None = None,
+        ref: str | None = None,
+    ) -> str | ChannelAddress:
+        """Hand over here, or start another agent in a new independent thread.
+
+        Omit destination to hand over this conversation when the turn ends.
+        Supply a parent address to open independent work immediately and return
+        its thread address without waiting for a result. The current conversation
+        keeps its agent, history and pending decision. Native sessions may use
+        a destination without uploading history.
 
         Args:
             agent_id: The target agent, copied exactly from an `inspect` route
@@ -537,6 +557,12 @@ class GatewayCapability(AbstractCapability[None]):
             effort: How hard the agent should think, from the effort levels the
                 route's claim offers. Set it only when the user explicitly asked
                 for a level; omitted, the agent's own default applies.
+            destination: A parent address at which to create a new thread. Use
+                this channel's inspected routes and the requester's linked identity.
+                Omit for an in-place handoff. Existing threads cannot be parents.
+            project: An enabled project for the new thread; requires a destination
+                and a registered user. Omit for a throwaway workspace.
+            ref: A starting branch, tag or commit for that project; requires project.
         """
         try:
             return await self.session.summon(
@@ -546,6 +572,9 @@ class GatewayCapability(AbstractCapability[None]):
                 reason=reason,
                 brief=brief,
                 effort=effort,
+                destination=destination,
+                project=project,
+                ref=ref,
             )
         except GatewayRefusal as refusal:
             raise ModelRetry(str(refusal)) from refusal
@@ -573,6 +602,7 @@ class GatewayCapability(AbstractCapability[None]):
                 attached history that the agent can copy.
             new_thread: Create a thread before continuing. Set false only to bind
                 the current thread to a project without opening another one.
+                Binding the current thread always resumes your work.
                 For creation, the address must have no `channel_thread_id`.
             project: A project's name, copied exactly from `inspect`
                 (`reveal="projects"`), for a conversation about no project: the
@@ -581,9 +611,10 @@ class GatewayCapability(AbstractCapability[None]):
                 wherever it goes, so omit this there.
             ref: The branch, tag or commit that workspace starts from; omit it for
                 the project's default branch.
-            resume: Carry on working there at once, as after any tool call. Leave
-                it false when the move is all that was asked: you continue when
-                the user next writes there.
+            resume: Carry on working in a new thread at once, as after any tool
+                call. Leave it false when the move is all that was asked: you
+                continue when the user next writes there. Ignored when
+                new_thread is false: binding the current thread always resumes.
         """
         try:
             decision = await self.session.teleport(

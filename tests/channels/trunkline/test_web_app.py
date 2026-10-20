@@ -23,12 +23,15 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.auth import current_user
 from octomate.capabilities.harness.agent import Agent
+from octomate.capabilities.harness.events import ThreadTitleChangedEvent
+from octomate.config import OctomateConfig
 from octomate.config.agents import DeepseekConfig
 from octomate.config.agents.common import Claim
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import async_session
 from octomate.managers.oauth import OAuthConnector
 from octomate.managers.workspaces import WorkspaceManager
+from octomate.nerve import Impulse, ThreadTopic, UserTopic
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.mcp import NoAuthMcp, OAuthMcp
@@ -56,7 +59,8 @@ from octomate.types.permissions import InklingPermissionMode, PermissionMode
 from tests.managers.test_oauth import FakeDeviceFlow
 from tests.support.agents import FakeAgent, build_non_stream_agent, build_scripted_agent
 from tests.support.managers import a_loaded_thread, a_project, a_registry
-from tests.support.nerve import settled
+from tests.support.nerve import awake_on, settled
+from tests.support.users import auth_config
 
 # The console drives one configured reception agent through octomate.kick.
 RECEPTION_MODEL = "deepseek:deepseek-v4-pro"
@@ -114,7 +118,7 @@ async def _post(
     project: str | None = None,
 ) -> list[JsonObject]:
     key = ThreadKey.from_address(_console_address(thread_id))
-    with channel.octomate.nerve.subscribe(key) as live:
+    with channel.octomate.nerve.subscribe(ThreadTopic(key)) as live:
         await channel.handle_directive(
             TrunklineDirective(
                 user=console_user(),
@@ -136,7 +140,7 @@ async def _send(
     """Post a directive over HTTP and wait for its turn to settle, as the console
     does on the thread's socket."""
     key = ThreadKey.from_address(_console_address(thread_key))
-    with octomate.nerve.subscribe(key) as live:
+    with octomate.nerve.subscribe(ThreadTopic(key)) as live:
         response = await client.post(
             f"/api/trunkline/threads/{thread_key}/messages", json=body
         )
@@ -204,6 +208,7 @@ def test_trunkline_router_requires_registered_channel() -> None:
         route.path for route in app.routes if isinstance(route, APIWebSocketRoute)
     }
     assert "/api/trunkline/live" in sockets
+    assert "/api/trunkline/live/user" in sockets
 
 
 class ConsoleSocket:
@@ -212,7 +217,9 @@ class ConsoleSocket:
     sends is read back. Starlette's test client runs the app on a thread of its
     own, which the in-memory database cannot be shared with."""
 
-    def __init__(self, octomate: Octomate, query: str) -> None:
+    def __init__(
+        self, octomate: Octomate, query: str = "", *, path: str = "/api/trunkline/live"
+    ) -> None:
         self.inbound: asyncio.Queue[Message] = asyncio.Queue()
         self.outbound: asyncio.Queue[Message] = asyncio.Queue()
         self.inbound.put_nowait({"type": "websocket.connect"})
@@ -221,8 +228,8 @@ class ConsoleSocket:
             "asgi": {"version": "3.0"},
             "http_version": "1.1",
             "scheme": "ws",
-            "path": "/api/trunkline/live",
-            "raw_path": b"/api/trunkline/live",
+            "path": path,
+            "raw_path": path.encode(),
             "root_path": "",
             "query_string": query.encode(),
             "headers": [],
@@ -249,6 +256,58 @@ class ConsoleSocket:
     async def leave(self) -> None:
         self.inbound.put_nowait({"type": "websocket.disconnect", "code": 1000})
         await self.task
+
+
+async def test_user_sockets_subscribe_only_to_the_authenticated_user(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent)
+    other = User(username="other")
+    sockets = [
+        ConsoleSocket(octomate, f"user_id={other.id}", path="/api/trunkline/live/user")
+        for _ in range(2)
+    ]
+    for socket in sockets:
+        assert (await socket.outbound.get())["type"] == "websocket.accept"
+    assert len(octomate.nerve.subscribers[UserTopic(CONSOLE_USER_ID)]) == 2
+
+    octomate.dependency_overrides[current_user] = lambda: other
+    other_socket = ConsoleSocket(octomate, path="/api/trunkline/live/user")
+    assert (await other_socket.outbound.get())["type"] == "websocket.accept"
+    event = ThreadTitleChangedEvent(
+        thread_id=uuid7(), title="Renamed", updated_at=datetime.now(UTC)
+    )
+    octomate.nerve.deliver(UserTopic(CONSOLE_USER_ID), Impulse(event))
+    for socket in sockets:
+        received = await asyncio.wait_for(socket.outbound.get(), 1)
+        assert received["type"] == "websocket.send"
+        assert json.loads(received["text"]) == event.model_dump(mode="json")
+    assert other_socket.outbound.empty()
+
+    octomate.nerve.deliver(UserTopic(other.id), Impulse(event))
+    assert (await other_socket.outbound.get())["type"] == "websocket.send"
+    for socket in sockets:
+        assert socket.outbound.empty()
+        await socket.leave()
+    await other_socket.leave()
+    assert octomate.nerve.subscribers == {}
+
+
+async def test_user_socket_requires_sign_in(in_memory_engine: AsyncEngine) -> None:
+    octomate = Octomate(config=OctomateConfig(auth=auth_config()))
+    octomate.connect(
+        TrunklineTentacle(
+            "trunkline", octomate, config=TrunklineChannelConfig(agents=["inkling"])
+        )
+    )
+    socket = ConsoleSocket(octomate, path="/api/trunkline/live/user")
+    refused = await asyncio.wait_for(socket.outbound.get(), 1)
+    await socket.task
+    assert refused["type"] == "websocket.http.response.start"
+    assert refused["status"] == 401
+    assert octomate.nerve.subscribers == {}
 
 
 async def test_a_console_watches_a_thread_over_its_live_socket(
@@ -288,6 +347,31 @@ async def test_a_console_watches_a_thread_over_its_live_socket(
     assert "part_start" in first
     assert first[-2:] == ["run_result", "run_ended"]
     assert second[-2:] == ["run_result", "run_ended"]
+
+
+async def test_a_directive_on_an_awake_thread_is_refused_and_leaves_no_row(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """A thread holds one reflex at a time. The directive is refused before
+    anything is written, so no later turn answers a message the console was told
+    did not go through."""
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["unused"])
+    await _register(octomate, agent)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=octomate),
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        async with awake_on(octomate, _console_address()):
+            refused = await client.post(
+                "/api/trunkline/threads/thread-1/messages", json={"text": "hi there"}
+            )
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == "A turn is still running in this thread."
+    assert await octomate.threads.list_threads(user_id=CONSOLE_USER_ID) == []
 
 
 async def test_a_live_socket_names_one_thread(in_memory_engine: AsyncEngine) -> None:
@@ -1556,7 +1640,18 @@ async def test_batch_resolve_resolves_and_streams(
         )
         assert missing.status_code == 404
 
-        with octomate.nerve.subscribe(thread.key) as live:
+        # Waiting out a turn running there would hold the request open: refused,
+        # and the batch stays answerable.
+        async with awake_on(octomate, _console_address("thread-2")):
+            busy = await client.post(
+                f"/api/trunkline/batches/{batch.id}/resolve",
+                json={"approvals": {str(approval_id): True}},
+            )
+        assert busy.status_code == 409
+        assert busy.json()["detail"] == "A turn is still running in this thread."
+        assert (await octomate.deferred_actions.get_batch(batch.id)).status == "pending"
+
+        with octomate.nerve.subscribe(ThreadTopic(thread.key)) as live:
             response = await client.post(
                 f"/api/trunkline/batches/{batch.id}/resolve",
                 json={"approvals": {str(approval_id): True}},
@@ -1648,3 +1743,51 @@ async def test_first_directive_refuses_a_mode_absent_from_its_agent(
         )
     assert response.status_code == 422
     assert "not one of inkling's modes" in response.json()["detail"]
+
+
+async def test_native_history_endpoints_page_by_message_id() -> None:
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent)
+    key = ThreadKey(CLAUDE_NATIVE_ID, "thread", "native-session")
+    thread = await octomate.threads.ensure(key)
+    conversation = await octomate.conversations.ensure(
+        thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+    )
+    for index, (run_id, minute) in enumerate((("first", 2), ("second", 1))):
+        at = datetime(2026, 10, 14, 9, minute, tzinfo=UTC)
+        await octomate.threads.record_inbound(
+            MessageEvent(
+                tentacle_id=CLAUDE_NATIVE_ID,
+                chat_type="thread",
+                chat_id=key.chat_id,
+                message_id=run_id,
+                timestamp=at.timestamp(),
+                sender=UserProfile(channel_user_id="operator", user_id=CONSOLE_USER_ID),
+                segments=[TextSegment(data={"text": run_id})],
+            )
+        )
+        await octomate.conversations.record_external_run(
+            conversation,
+            run_id=run_id,
+            native_session_id=key.chat_id,
+            messages=[ModelRequest(parts=[UserPromptPart(run_id)], timestamp=at)],
+            start_offset=index * 100,
+            end_offset=(index + 1) * 100,
+        )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=octomate), base_url="http://testserver"
+    ) as client:
+        for suffix, identity in (
+            ("messages", "platform_message_id"),
+            ("conversations/messages", "run_id"),
+        ):
+            url = f"/api/trunkline/threads/{thread.id}/{suffix}"
+            first = (await client.get(url, params={"limit": 1})).json()
+            rest = (
+                await client.get(url, params={"cursor": first["next_cursor"]})
+            ).json()
+            assert [m[identity] for m in first["items"] + rest["items"]] == [
+                "second",
+                "first",
+            ]

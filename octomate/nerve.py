@@ -1,6 +1,7 @@
 """The nerve: what a thread does, as it happens, for whoever is watching.
 
-In-process publish and subscribe, keyed by the thread, carrying wire events:
+In-process publish and subscribe, keyed by channel, thread or user topics, carrying
+wire events:
 the run's stream as a wire consumer sees it, and what the graph says around a
 run — its start and end, a move, a failure, the reflex waking and falling
 asleep, an authorization. Every way in and out is a stream end the nerve
@@ -20,6 +21,10 @@ process. Publishing is one way and knows nothing of who subscribed, and
 nothing is kept for a reader that is not there: an event published to a
 thread nobody subscribes to goes nowhere, and a console re-reads the thread
 ledger when it opens.
+
+`Nerve.deliver` reaches every subscriber of exactly one topic. A publisher sends
+user notifications by delivering separately to each authorized user's topic.
+`Nerve.publish` owns channel and thread routing for kicks and native tails.
 """
 
 from __future__ import annotations
@@ -34,27 +39,27 @@ from dataclasses import dataclass, replace
 import anyio
 from anyio.abc import ObjectReceiveStream, ObjectSendStream
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
+from pydantic import UUID7
 
 from octomate.capabilities.harness.events import WireEvent
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
 
-# How far a kick's own fiber may run ahead of the pump before the kick waits.
-FIBER_BUFFER = 256
+# How far a publisher's fiber may run ahead of the pump before it waits.
+FIBER_BUFFER = 1024
 
 
 @dataclass(frozen=True)
 class Impulse:
-    """One event on its way through the nerve, and the address it happens at;
-    None for one that happens nowhere but the thread the kick was asked on."""
+    """One wire event with an optional channel address and the routing metadata
+    used by `Nerve.publish`. Direct topic publication carries it unchanged."""
 
     event: WireEvent
     address: ChannelAddress | None = None
-    # A delivery to a person's private surface, heard on that thread alone and
-    # never on the thread the kick was asked on, which others may be watching.
+    # Whether Nerve.publish excludes the origin thread for a private delivery.
     private: bool = False
-    # The thread the kick was asked on, which the nerve stamps as it pumps; None
-    # outside a kick, or for a kick that names no thread.
+    # The thread Nerve.publish stamps on the event: the asking thread
+    # for a kick, the native thread for a tail, or None when neither names a thread.
     origin: ThreadKey | None = None
 
 
@@ -65,9 +70,21 @@ class ChannelTopic:
     channel_tentacle_id: str
 
 
-# What a reader subscribes to: a channel's addresses, or one thread — that
-# thread's own impulses and those of kicks asked on it, unless private.
-type Topic = ChannelTopic | ThreadKey
+@dataclass(frozen=True)
+class ThreadTopic:
+    """The impulses published to one thread."""
+
+    key: ThreadKey
+
+
+@dataclass(frozen=True)
+class UserTopic:
+    """Notifications explicitly published to one registered user."""
+
+    user_id: UUID7
+
+
+type Topic = ChannelTopic | ThreadTopic | UserTopic
 
 
 class Fiber[ItemT]:
@@ -86,7 +103,7 @@ class Fiber[ItemT]:
 
 
 class Nerve:
-    """The subscribers of each channel and of each thread, and what is
+    """The subscribers of each channel, thread and user, and what is
     published to them."""
 
     def __init__(self) -> None:
@@ -100,7 +117,13 @@ class Nerve:
         """The receive end of a stream of the topic's impulses, from now until
         the block ends. Nothing is dropped: a reader that falls more than
         `backlog` impulses behind reads what was held for it, and then its
-        stream ends."""
+        stream ends.
+
+        `ChannelTopic` names a channel's addresses, `ThreadTopic` wraps one
+        `ThreadKey`, and `UserTopic` wraps a registered user's UUID.
+        Publishers choose authorized topics before publishing; the nerve does
+        not filter subscribers within a topic.
+        """
         fiber = Fiber[Impulse](backlog)
         self.subscribers[topic].add(fiber)
         try:
@@ -115,16 +138,31 @@ class Nerve:
     async def publish(
         self, origin: ChannelAddress | None
     ) -> AsyncGenerator[ObjectSendStream[Impulse]]:
-        """The send end of a kick's stream, open for the block, asked on the
-        thread at `origin`. Each impulse sent is heard at the address it names,
-        and on the asking thread too unless it is private. Everything sent before
-        the block ends is delivered."""
+        """A buffered publisher for kicks and native tails, open for the block.
+
+        A kick names the thread it was asked on as `origin`; a native tail names
+        its native thread and scopes the stream to its connection. The publisher
+        stamps that origin on each impulse and publishes separately to its channel,
+        its destination thread, and its origin thread unless private. Each distinct
+        topic receives one publication.
+
+        Sending may wait for the pump, never for a subscriber. Everything sent before
+        the block ends is published; closing emits no lifecycle events of its own.
+        """
         fiber = Fiber[Impulse]()
         asked = ThreadKey.from_address(origin) if origin is not None else None
 
         async def pump() -> None:
-            async for impulse in fiber.receive:
-                self.deliver(replace(impulse, origin=asked))
+            async for sent in fiber.receive:
+                impulse = replace(sent, origin=asked)
+                topics: set[Topic] = set()
+                if impulse.address is not None:
+                    topics.add(ChannelTopic(impulse.address.channel_tentacle_id))
+                    topics.add(ThreadTopic(ThreadKey.from_address(impulse.address)))
+                if not impulse.private and asked is not None:
+                    topics.add(ThreadTopic(asked))
+                for topic in topics:
+                    self.deliver(topic, impulse)
 
         pumping = asyncio.create_task(pump())
         try:
@@ -134,22 +172,11 @@ class Nerve:
             await pumping
             fiber.close()
 
-    def deliver(self, impulse: Impulse) -> None:
-        """One impulse, now, waiting for none: to the subscribers of its channel,
-        of its thread, and of its asking thread unless it is private."""
-        address = impulse.address
-        topics: list[Topic] = []
-        if address is not None:
-            topics += [
-                ChannelTopic(address.channel_tentacle_id),
-                ThreadKey.from_address(address),
-            ]
-        if not impulse.private and impulse.origin is not None:
-            topics.append(impulse.origin)
-        fibers = set[Fiber[Impulse]]().union(
-            *(self.subscribers.get(topic, set()) for topic in topics)
-        )
-        for fiber in fibers:
+    def deliver(self, topic: Topic, impulse: Impulse) -> None:
+        """Deliver one impulse to every subscriber of exactly `topic`, waiting
+        for none. The impulse is delivered unchanged; its address, origin and
+        privacy flag do not select or exclude subscribers."""
+        for fiber in self.subscribers.get(topic, set()):
             try:
                 fiber.send.send_nowait(impulse)
             except anyio.WouldBlock:

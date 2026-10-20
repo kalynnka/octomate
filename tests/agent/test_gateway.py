@@ -23,6 +23,7 @@ from octomate.managers.gateway import (
 )
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
+from octomate.nerve import Nerve
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadKey
@@ -471,11 +472,12 @@ def test_move_spells_use_addresses_and_explicit_creation_intent() -> None:
     assert "ChannelAddress" in schema["$defs"]
     assert schema["properties"]["new_thread"]["default"] is True
     assert not any(key.endswith("Target") for key in schema["$defs"])
-    # A summon takes over where it is, so it names nowhere to go.
+    # A destination starts independent work; omitting it hands over in place.
     summon = capability.toolset.tools[
         GatewayTool.SUMMON
     ].tool_def.parameters_json_schema
-    assert not {"destination", "new_thread"} & set(summon["properties"])
+    assert summon["properties"]["destination"]["default"] is None
+    assert "new_thread" not in summon["properties"]
     assert _destination_kinds(capability, GatewayTool.SCHEME) == ["dm"]
     assert _destination_kinds(capability, GatewayTool.SEND) == ["dm", "here"]
 
@@ -1214,7 +1216,7 @@ async def test_a_native_call_binds_only_a_session_its_caller_wrote(
     else's session, or one never uploaded, finds nothing to move."""
     owner = await a_user("luhui")
     users = UserManager()
-    threads = ThreadManager(users=users)
+    threads = ThreadManager(nerve=Nerve(), users=users)
     profile = await users.native_profile(CLAUDE_NATIVE_ID, "luhui")
     assert profile is not None
     written = await threads.ensure(ThreadKey(CLAUDE_NATIVE_ID, "thread", "sess-1"))

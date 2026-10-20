@@ -18,8 +18,7 @@ from anyio.abc import ObjectSendStream
 from opentelemetry import trace
 from pydantic import UUID7
 from pydantic_ai import AgentCapability, AgentRunResult, AgentRunResultEvent
-from pydantic_ai.messages import ModelMessage, ModelResponse, UserContent
-from pydantic_ai.result import FinalResult
+from pydantic_ai.messages import UserContent
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_graph import BaseNode, End, GraphRunContext
 
@@ -28,9 +27,8 @@ from octomate.capabilities.harness.events import (
     MessageSentEvent,
     RunEndedEvent,
     RunErrorEvent,
-    RunResultEvent,
     RunStartedEvent,
-    WireEvent,
+    to_wire,
 )
 from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config.agents import AgentRouteModelName
@@ -46,7 +44,7 @@ from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.commands import CommandError, CommandOutcome
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MarkdownSegment, MessageSegment, TextSegment
-from octomate.schemas.thread import Thread, ThreadCommand, ThreadMessage
+from octomate.schemas.thread import Thread, ThreadMessage
 from octomate.schemas.triage import (
     AgentRoute,
     AgentRouteKey,
@@ -183,20 +181,6 @@ ReflexEntryT = TypeVar(
     "ReflexEntryT",
     bound="BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]",
 )
-
-
-def last_context_tokens(messages: Sequence[ModelMessage]) -> int | None:
-    """The input-side tokens of a run's last model request — the context its last
-    turn ran with, as the newest response that carried usage reported it. None
-    when no response did; the run's cost can still be known without it."""
-    for message in reversed(messages):
-        if isinstance(message, ModelResponse) and message.usage is not None:
-            return (
-                message.usage.input_tokens
-                + message.usage.cache_read_tokens
-                + message.usage.cache_write_tokens
-            )
-    return None
 
 
 @dataclass
@@ -367,7 +351,7 @@ class ReflexDeps:
         """
         parts: list[str] = []
         for message in messages:
-            if isinstance(message, ThreadCommand):
+            if message.kind != "message":
                 continue
             text = "\n".join(str(segment) for segment in message.segments)
             if not text:
@@ -412,33 +396,9 @@ class ReflexDeps:
         """Send a run's stream on the nerve at `address` as wire events, item by
         item, until it ends."""
         async for item in stream:
-            wire = self.to_wire(item)
+            wire = to_wire(item)
             if wire is not None:
                 await self.impulses.send(Impulse(wire, address))
-
-    @staticmethod
-    def to_wire(item: ReactStreamEvent[ChannelOutput]) -> WireEvent | None:
-        """One run stream item as its wire event, or None for the shapes the wire
-        replaces (see the wire module docstring)."""
-        match item:
-            case AgentRunResultEvent():
-                match item.result.output:
-                    case str() | None:
-                        output: str | list[MessageSegment] | None = item.result.output
-                    case DeferredToolRequests():
-                        # The suspension already went out as an ActionBatchEvent.
-                        output = None
-                    case segments:
-                        output = list(segments)
-                return RunResultEvent(
-                    output=output,
-                    usage=item.result.usage,
-                    context_tokens=last_context_tokens(item.result.all_messages()),
-                )
-            case FinalResult():
-                return None
-            case _:
-                return item
 
     async def record_move(
         self,

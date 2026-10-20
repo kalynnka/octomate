@@ -7,8 +7,9 @@ Inkling already has gateway and history tools in process, so it mounts only
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 import httpx2
 from fastmcp import FastMCP
@@ -39,6 +40,10 @@ from octomate.schemas.mcp import (
 )
 from octomate.schemas.user import User
 from octomate.types.oauth import HttpsUrl
+
+if TYPE_CHECKING:
+    # The reflex reaches this module at runtime, through the agent tentacles.
+    from octomate.reflex import ReflexGraphResult
 
 # The name every runtime mounts the server under. Claude and dsh name a server's
 # tools `mcp__<server>__<tool>`, Codex namespaces them `mcp__<server>`.
@@ -252,7 +257,9 @@ def tentacles_mcp(
     )
     async def list_tools(namespace: str) -> McpToolCatalog:
         try:
-            return await manager.catalog(await resolve_session(), namespace)
+            return await manager.catalog(
+                await resolve_session(), namespace, refresh=True
+            )
         except McpUnavailable as error:
             raise ToolError(str(error)) from error
         except (httpx2.HTTPError, MCPError, TimeoutError) as error:
@@ -272,13 +279,18 @@ def tentacles_mcp(
         arguments: dict[str, JsonValue],
     ) -> ToolResult:
         try:
-            async with manager.acquire(await resolve_session(), namespace) as client:
-                result = await client.call_tool_mcp(name, arguments)
-                return ToolResult(
-                    content=result.content,
-                    structured_content=result.structured_content,
-                    is_error=result.is_error,
-                )
+            result = await manager.call_tool(
+                await resolve_session(),
+                namespace,
+                name,
+                arguments,
+            )
+            return ToolResult(
+                content=result.content,
+                structured_content=result.structured_content,
+                is_error=result.is_error,
+                meta=result.meta,
+            )
         except McpUnavailable as error:
             raise ToolError(str(error)) from error
         except (httpx2.HTTPError, MCPError, TimeoutError) as error:
@@ -290,7 +302,10 @@ def tentacles_mcp(
 def octomate_mcp(
     resolve_session: Callable[[], Awaitable[OctomateSession]],
     thread_manager: ThreadManager,
-    kick: Callable[[NativeGatewaySignal], None] | None = None,
+    kick: Callable[
+        [NativeGatewaySignal], Awaitable[asyncio.Task[ReflexGraphResult] | None]
+    ]
+    | None = None,
     *,
     bearers: KnownBearers | None = None,
     manager: McpManager,

@@ -19,6 +19,7 @@ from octomate.tentacles.feelers.base import Feelers
 from octomate.tentacles.feelers.output import DefaultSegmentsFeeler
 from octomate.tentacles.lark import LarkChromo, LarkInk, LarkTentacle
 from octomate.tentacles.lark.feelers.approvals import LarkApprovalFeeler
+from octomate.tentacles.lark.feelers.artifacts import LarkArtifactFeeler
 from octomate.tentacles.lark.feelers.oauth import LarkOAuthFeeler
 from octomate.tentacles.lark.feelers.output import (
     LarkMarkdownFeeler,
@@ -26,6 +27,8 @@ from octomate.tentacles.lark.feelers.output import (
 )
 from octomate.tentacles.lark.feelers.questions import LarkAskQuestionFeeler
 from octomate.tentacles.lark.schema import LarkOutboundMessage, LarkStreamCard
+from octomate.tentacles.siphon import Siphon
+from tests.support.channels import FakeOctomate
 
 
 class FakeLarkInk(LarkInk):
@@ -175,6 +178,8 @@ def lark_channel(
 ) -> LarkTentacle:
     channel = object.__new__(LarkTentacle)
     channel.id = "lark"
+    channel.octomate = FakeOctomate()
+    channel.siphon = Siphon(channel)
     channel.ink = ink
     channel.chromo = LarkChromo()
     channel.config = LarkChannelConfig(
@@ -204,6 +209,11 @@ def compose_lark_feelers(
     actions = deferred_actions or DeferredActionManager()
     channel.feelers = Feelers(
         markdown=markdown_feeler,
+        artifacts=LarkArtifactFeeler(
+            artifacts=channel.octomate.artifacts,
+            users=channel.octomate.users,
+            ink=ink,
+        ),
         timeline=LarkTimelineFeeler(
             ink=ink,
             chromo=chromo,

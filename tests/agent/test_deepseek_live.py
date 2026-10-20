@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 import httpx
 import pytest
+from anyio.abc import ObjectSendStream
 from octomate_cli.streaming.deepseek import DshHistoryClient, new_entries
 from octomate_protocol.deepseek import (
     ErrResult,
@@ -30,7 +31,9 @@ from websockets.typing import Origin
 
 from octomate import Octomate
 from octomate.config.agents import DeepseekConfig
+from octomate.nerve import Impulse
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.thread import DEEPSEEK_NATIVE_ID, ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.deepseek.base import DeepseekBridgeContext
@@ -48,6 +51,7 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     in_memory_engine: AsyncEngine,
+    tail_impulses: ObjectSendStream[Impulse],
 ) -> None:
     executable = os.environ.get("DSH_TEST_EXECUTABLE")
     if executable is None:
@@ -186,9 +190,13 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
             home / "session.jsonl",
             str(tmp_path),
             UserProfile(channel_user_id="smoke", name="Smoke"),
+            address=ThreadKey(DEEPSEEK_NATIVE_ID, "thread", first_session).address(
+                "smoke"
+            ),
+            impulses=tail_impulses,
         )
         for record in records:
-            await tailer.feed_remote(state, None, json.dumps(record), 0, 0)
+            await tailer.feed_remote(state, json.dumps(record))
         assert state.conversation is not None
         assert state.conversation.name == conversation.name
         tailer.detach_remote(state)

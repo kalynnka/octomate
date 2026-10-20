@@ -15,13 +15,16 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
+from typing import Literal
 from unittest.mock import AsyncMock
 
 import opendal
 import pytest
 from anyio import Path as AsyncPath
+from anyio.abc import ObjectSendStream
 from fastapi import FastAPI, UploadFile
 from fastapi.testclient import TestClient
+from octomate_cli.streaming.codex import CodexSessionTail
 from octomate_cli.tentacles.codex import CODEX_HOOK_PATH, CODEX_STREAM_PATH
 from octomate_protocol.stream import (
     SESSION_FILE,
@@ -35,22 +38,34 @@ from octomate_protocol.stream import (
     StreamWelcome,
     server_message_adapter,
 )
-from pydantic import SecretStr
-from pydantic_ai.messages import ModelRequest, UserPromptPart
+from pydantic import AnyHttpUrl, SecretStr
+from pydantic_ai.messages import ModelRequest, PartEndEvent, TextPart, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.testclient import WebSocketDenialResponse, WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
+from octomate.auth import current_user
+from octomate.capabilities.harness.events import ArtifactAvailableEvent, RunEndedEvent
 from octomate.config import OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.database import async_session
 from octomate.managers.files import FileManager
+from octomate.nerve import Impulse, ThreadTopic
+from octomate.schemas.artifacts import HtmlArtifact, HtmlView
 from octomate.schemas.conversation import Conversation
+from octomate.schemas.files import Html
+from octomate.schemas.messages import ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
-from octomate.schemas.thread import CODEX_NATIVE_ID, Thread, ThreadKey
-from octomate.schemas.user import UserProfile
+from octomate.schemas.thread import (
+    CODEX_NATIVE_ID,
+    MessageBinding,
+    Thread,
+    ThreadArtifact,
+    ThreadKey,
+)
+from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer, TailState
 from tests.agent.test_codex_native_ingest import (
@@ -58,6 +73,7 @@ from tests.agent.test_codex_native_ingest import (
     CHILD_TURN_ONE,
     PARENT_TURN_ID,
     ROOT_THREAD_ID,
+    SESSION_ADDRESS,
     SESSION_ID,
     answer_item,
     child_metadata,
@@ -65,7 +81,9 @@ from tests.agent.test_codex_native_ingest import (
     parent_metadata,
     subagent_activity,
 )
-from tests.support.managers import a_thread
+from tests.agent.test_codex_native_ingest import impulses as impulses
+from tests.support.managers import a_loaded_thread, a_thread
+from tests.support.nerve import held
 from tests.support.users import a_api_key, a_user, auth_config
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
@@ -127,7 +145,9 @@ async def feed(
 
 def remote_tailer() -> tuple[Octomate, CodexTranscriptTailer]:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
-    return octomate, CodexTranscriptTailer(octomate.conversations, octomate.threads)
+    return octomate, CodexTranscriptTailer(
+        octomate.conversations, octomate.threads, octomate.files
+    )
 
 
 async def runs_of(octomate: Octomate) -> list[ExternalAgentRun]:
@@ -140,10 +160,14 @@ async def runs_of(octomate: Octomate) -> list[ExternalAgentRun]:
     return [run for run in conversation.runs if isinstance(run, ExternalAgentRun)]
 
 
-async def test_remote_feed_assembles_the_same_runs_as_a_local_pump() -> None:
+async def test_remote_feed_assembles_the_same_runs_as_a_local_pump(
+    impulses: ObjectSendStream[Impulse],
+) -> None:
     octomate, tailer = remote_tailer()
 
-    state, offsets = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
+    state, offsets = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+    )
     assert offsets == {SESSION_FILE: 0}
     assert tailer.sessions[SESSION_ID] is state  # so hooks see the session as covered
     await feed(tailer, state, frames([parent_metadata(), *TURN_A, *TURN_B]))
@@ -162,17 +186,23 @@ async def test_remote_feed_assembles_the_same_runs_as_a_local_pump() -> None:
     assert SESSION_ID not in tailer.sessions  # registry slot reclaimed
 
 
-async def test_a_reconnect_restreams_from_zero_and_committed_turns_dedup() -> None:
+async def test_a_reconnect_restreams_from_zero_and_committed_turns_dedup(
+    impulses: ObjectSendStream[Impulse],
+) -> None:
     """The dual of Claude's offset resume: a reconnect is told byte 0 — the head is
     load-bearing — and idempotency comes from the committed-turn guard instead."""
     octomate, tailer = remote_tailer()
 
     head = [parent_metadata(), *TURN_A]
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
+    state, _ = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+    )
     await feed(tailer, state, frames(head))
     tailer.detach_remote(state)
 
-    state, offsets = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
+    state, offsets = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+    )
     assert offsets == {SESSION_FILE: 0}
     await feed(tailer, state, frames([*head, *TURN_B]))
     tailer.detach_remote(state)
@@ -180,19 +210,25 @@ async def test_a_reconnect_restreams_from_zero_and_committed_turns_dedup() -> No
     assert [run.id for run in await runs_of(octomate)] == ["turn-a", "turn-b"]
 
 
-async def test_an_open_turn_never_commits_at_a_connection_boundary() -> None:
+async def test_an_open_turn_never_commits_at_a_connection_boundary(
+    impulses: ObjectSendStream[Impulse],
+) -> None:
     """A turn without its `task_complete` is mid-flight when the connection ends.
     Committing it would plant its id in the committed-turn guard, where the completed
     version the next connect re-streams could never replace it — so it is dropped,
     exactly as a local follow's idle exit drops one."""
     octomate, tailer = remote_tailer()
 
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
+    state, _ = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+    )
     await feed(tailer, state, frames([parent_metadata(), TURN_A[0], TURN_A[1]]))
     tailer.detach_remote(state)
     assert await runs_of(octomate) == []
 
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
+    state, _ = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+    )
     await feed(tailer, state, frames([parent_metadata(), *TURN_A]))
     tailer.detach_remote(state)
     [run] = await runs_of(octomate)
@@ -202,12 +238,16 @@ async def test_an_open_turn_never_commits_at_a_connection_boundary() -> None:
     )
 
 
-async def test_sibling_child_rollouts_stream_into_child_runs() -> None:
+async def test_sibling_child_rollouts_stream_into_child_runs(
+    impulses: ObjectSendStream[Impulse],
+) -> None:
     """The client keys a child file by its basename — a label in its own namespace —
     and the server classifies it from its opening `session_meta`, binding it to the
     child thread it names and linking its runs to the parent's spawning call."""
     octomate, tailer = remote_tailer()
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
+    state, _ = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+    )
 
     await feed(
         tailer,
@@ -253,11 +293,15 @@ async def test_sibling_child_rollouts_stream_into_child_runs() -> None:
     assert run.parent_tool_call_id == "call-spawn"
 
 
-async def test_a_foreign_sibling_rollout_is_classified_once_and_dropped() -> None:
+async def test_a_foreign_sibling_rollout_is_classified_once_and_dropped(
+    impulses: ObjectSendStream[Impulse],
+) -> None:
     """The tail ships every file the launcher spooled; one whose metadata is not a
     thread-spawned child of this session decides nothing and records nothing."""
     octomate, tailer = remote_tailer()
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
+    state, _ = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+    )
 
     await feed(tailer, state, frames([parent_metadata()]))
     await feed(
@@ -278,14 +322,20 @@ async def test_a_foreign_sibling_rollout_is_classified_once_and_dropped() -> Non
     assert await runs_of(octomate) == []
 
 
-async def test_a_new_attach_replaces_a_lingering_registration() -> None:
+async def test_a_new_attach_replaces_a_lingering_registration(
+    impulses: ObjectSendStream[Impulse],
+) -> None:
     """A client that died without a close leaves its registration behind; the next
     connect replaces it, and the dead route's detach must not evict the
     replacement."""
     _, tailer = remote_tailer()
-    stale, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
+    stale, _ = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+    )
 
-    fresh, offsets = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
+    fresh, offsets = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+    )
     assert offsets == {SESSION_FILE: 0}
     assert tailer.sessions[SESSION_ID] is fresh
     tailer.detach_remote(stale)
@@ -294,29 +344,57 @@ async def test_a_new_attach_replaces_a_lingering_registration() -> None:
     assert SESSION_ID not in tailer.sessions
 
 
-async def test_a_stop_waits_for_the_stopped_turn_then_asks_the_drain() -> None:
-    """`Stop` reaches a remote session as a per-turn drain, sequenced as a rescue
-    rather than a cutoff: `stop_turn` waits for the stopped turn's own
-    `task_complete` to commit it, and only then sets the `stop_event` the route's
-    finalize relay watches — the client's drain then ships whatever a missed watch
-    wake left behind, and the tail exits until the next prompt's launcher."""
+@pytest.mark.parametrize("terminal", ["task_complete", "turn_aborted"])
+async def test_a_stop_returns_before_the_late_reply_and_completion(
+    terminal: Literal["task_complete", "turn_aborted"],
+) -> None:
+    """Codex can flush its reply and terminal line only after Stop returns."""
     octomate, tailer = remote_tailer()
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
-    head = [parent_metadata(), *TURN_A[:-1]]
-    await feed(tailer, state, frames(head))
+    key = ThreadKey.from_address(SESSION_ADDRESS)
+    with octomate.nerve.subscribe(ThreadTopic(key)) as live:
+        async with octomate.nerve.publish(SESSION_ADDRESS) as impulses:
+            state, _ = await tailer.attach_remote(
+                SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+            )
+            head = [parent_metadata(), *TURN_A[:2]]
+            await feed(tailer, state, frames(head))
 
-    stopping = asyncio.create_task(tailer.stop_turn(SESSION_ID, "turn-a"))
-    await asyncio.sleep(0)
-    assert not state.stop_event.is_set()  # the drain waits for the commit
+            await asyncio.wait_for(tailer.stop_turn(SESSION_ID, "turn-a"), 0.5)
+            assert not state.stop_event.is_set()
 
-    start = sum(len(line_bytes(record)) for record in head)
-    await feed(tailer, state, frames([TURN_A[-1]], start=start))
-    await asyncio.wait_for(stopping, 2.0)
-    assert state.stop_event.is_set()
-    tailer.detach_remote(state)
+            start = sum(len(line_bytes(record)) for record in head)
+            await feed(
+                tailer,
+                state,
+                frames([TURN_A[2], event(3, terminal, turn_id="turn-a")], start=start),
+            )
+            assert state.stop_event.is_set()
+            tailer.detach_remote(state)
+        events = held(live)
 
     [run] = await runs_of(octomate)
     assert run.id == "turn-a"
+    assert [message.message_text for message in run.messages] == [
+        "first ask",
+        "first answer",
+    ]
+    assert [impulse.event.event_kind for impulse in events] == [
+        "run_started",
+        "enqueued_messages",
+        "part_start",
+        "part_end",
+        "run_ended",
+    ]
+    part = events[-2].event
+    assert isinstance(part, PartEndEvent)
+    assert isinstance(part.part, TextPart)
+    assert part.part.content == "first answer"
+    ended = events[-1].event
+    assert isinstance(ended, RunEndedEvent)
+    thread = await a_loaded_thread(octomate.threads, key)
+    assert ended.thread_message_id == next(
+        row.id for row in thread.messages if row.direction == "outbound"
+    )
 
 
 def stream_client(*, storage: Path | None = None) -> tuple[TestClient, CodexTentacle]:
@@ -410,6 +488,118 @@ def upload_transcript(
     stored = server_message_adapter.validate_json(websocket.receive_text())
     assert isinstance(stored, StreamSnapshotStored)
     assert stored.transfer_id == request.transfer_id
+
+
+@pytest.mark.parametrize("caption", ["Here is the counter. ", ""])
+def test_native_html_crosses_the_client_stream_and_reuses_the_owned_viewer(
+    tmp_path: Path, caption: str
+) -> None:
+    source = tmp_path / "counter.html"
+    html = "<button onclick=\"this.textContent='Updated ✓'\">Counter</button>"
+    source.write_text(html)
+    marker = (
+        "visualize"
+        + json.dumps(
+            {
+                "path": str(source),
+                "title": "Native counter",
+                "mode": "wide",
+            }
+        )
+        + ""
+    )
+    turn_id = str(uuid7())
+    records = [
+        parent_metadata(),
+        event(0, "task_started", turn_id=turn_id),
+        event(1, "user_message", message="Draw a counter"),
+        answer_item(2, caption + marker + marker),
+        event(3, "task_complete", turn_id=turn_id, last_agent_message=caption + marker),
+    ]
+    data = b"".join(map(line_bytes, records))
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_bytes(data)
+    tail = CodexSessionTail(SESSION_ID, transcript, cwd=str(tmp_path))
+    outgoing = [
+        asyncio.run(tail.frame(agent_id or SESSION_FILE, start, end, line.encode()))
+        for agent_id, start, end, line in frames(records)
+    ]
+    source.unlink()  # The server cannot open the client's file, even on this machine.
+    client, tentacle = stream_client(storage=tmp_path / "storage")
+    host = tentacle.octomate
+    host.config.artifacts.sandbox_origin = AnyHttpUrl("https://sandbox.example")
+    host.artifacts.files = host.files
+
+    async def inspect_capture() -> tuple[HtmlArtifact, ThreadArtifact]:
+        async with async_session() as session:
+            [artifact] = await session.list(HtmlArtifact, limit=None)
+            [entry] = await session.list(ThreadArtifact, limit=None)
+            [binding] = await session.list(
+                MessageBinding,
+                expressions=[
+                    MessageBinding["thread_message_id"] == entry.id,
+                ],
+            )
+            response = await session.get(ModelResponse, binding.model_message_id)
+            assert response is not None
+            assert response.message_text == (caption or None)
+            assert binding.run_id == turn_id
+            owner = await session.get(User, artifact.owner_id)
+        assert owner is not None
+        stored = await host.files.get(artifact.file_id, owner_id=owner.id)
+        assert isinstance(stored, Html)
+        assert await host.files.read(stored.id, owner_id=owner.id) == html.encode()
+        host.dependency_overrides[current_user] = lambda: owner
+        return artifact, entry
+
+    with (
+        host.nerve.subscribe(
+            ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
+        ) as live,
+        client,
+    ):
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            websocket.receive_text()
+            for message in outgoing:
+                websocket.send_text(message.model_dump_json())
+            upload_transcript(websocket, data)
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+        assert client.portal is not None
+        artifact, entry = client.portal.call(inspect_capture)
+        events = [impulse.event for impulse in held(live)]
+        available = [
+            item for item in events if isinstance(item, ArtifactAvailableEvent)
+        ]
+        assert len(available) == 1
+        assert available[0].artifact_id == artifact.id
+        assert available[0].message_id == entry.id
+        assert isinstance(events[-1], RunEndedEvent)
+        assert artifact.title == "Native counter"
+        assert artifact.mode == "wide"
+        for url in (
+            f"/api/artifacts/{artifact.id}",
+            f"/api/trunkline/threads/{entry.thread_id}/artifacts/{entry.id}",
+        ):
+            response = client.get(url)
+            assert response.status_code == 200, response.text
+            assert HtmlView.model_validate(response.json()).html == html
+
+        # Replaying the committed transcript needs no source file and adds no artifacts.
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            welcome = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(welcome, StreamWelcome)
+            assert welcome.offsets[SESSION_FILE] == len(data)
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+        assert client.portal.call(inspect_capture)[0].id == artifact.id
+        other = client.portal.call(a_user, "other")
+        host.dependency_overrides[current_user] = lambda: other
+        assert client.get(f"/api/artifacts/{artifact.id}").status_code == 404
 
 
 async def test_stale_upload_cannot_replace_a_newer_transcript(tmp_path: Path) -> None:

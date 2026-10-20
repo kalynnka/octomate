@@ -14,13 +14,14 @@ validates that every node is reachable from the entry.
 
 ```mermaid
 flowchart TD
-  START([kick]) -->|message, command or resume batch| Awake
+  START([kick]) -->|message, command, gateway or resume batch| Awake
   START -->|live batch| Live[Deliver to the owning request]
   Awake -->|user message| Route
   Awake -->|explicit command| Command
   Awake -->|resolved batch| ResumeDeferred
   Awake -->|native scheme| Scheme
   Awake -->|thread summon API| Summon
+  Awake -->|independent summon| React
   Awake -->|thread teleport API| Teleport
   Route --> React
   React -->|summon| Summon
@@ -35,8 +36,8 @@ flowchart TD
   Command -->|waiting on a batch| Deferred
   Summon --> React
   Scheme --> React
-  Teleport -->|resumed where it landed| React
-  Teleport -->|landed, not resumed| Done
+  Teleport -->|current thread bound or continuation requested| React
+  Teleport -->|new thread, no continuation requested| Done
   ResumeDeferred -->|batch still incomplete| Deferred
   ResumeDeferred -->|already resumed| Done
   ResumeDeferred -->|answers as tool results| React
@@ -44,16 +45,20 @@ flowchart TD
 
 ## The nodes
 
-**Awake** resolves the signal once and writes the source context into state. Five
+**Awake** resolves the signal once and writes the source context into state. Six
 signals enter here: a user message from a channel, a resolved action batch coming
 back from a card, a spell a native session cast over MCP, and an authenticated
-thread operation the console asked for, validated by the gateway, and an explicit command on a resolved conversation. A thread
+thread operation the console asked for, validated by the gateway, an explicit command
+on a resolved conversation, and independent work summoned into a newly opened thread. A thread
 operation, and a native session's teleport of its own thread, enter at the thread
 they act on and go to `Summon` or `Teleport` directly. `Awake` consumes its signal into resolved run context; downstream
 nodes do not retain the signal. A UI teleport opens a fresh turn with an address notice; it
 does not fabricate a deferred tool result. A message
 enters the thread its address names, or a fresh sub-thread when the address is a
-chat room. See [Threads and chat rooms](../usage/threads.md).
+chat room. Independent work gets its own ledger, opener and optional project
+workspace in `Awake`, then enters `React` with the selected agent and pending
+handoff. Its source conversation keeps running.
+See [Threads and chat rooms](../usage/threads.md).
 
 **Route** decides who runs this turn, in order: the agent a handoff already pinned
 on the chat; the channel's default agent when the message is already in a flat
@@ -105,8 +110,9 @@ Explicit command receipts stay in the visible ledger but are omitted from pendin
 chat input and automatic room recaps. Their arguments are not another chat turn.
 
 **Summon** hands the current conversation to the agent the decision names, where
-it is, then re-enters `React` with the brief as the new agent's prompt. Moving a
-conversation elsewhere is `Teleport`'s.
+it is, then re-enters `React` with the brief as the receiving agent's prompt.
+`React` records the pending handoff for both in-place transfers and independent
+work. Carrying existing history elsewhere is `Teleport`'s.
 
 **Scheme** opens the asking user's direct messages with the hint, finds who already
 owns that DM or falls back to that channel's default agent, and re-enters `React`
@@ -120,6 +126,8 @@ and re-enters `React` when there is more to do there: the console's prompt,
 recorded as the user's message, or, when the agent asked to carry on, the teleport
 call answered by a sentence saying where it now is. Otherwise the move ends there,
 with the handoff recorded and the workspace saved. A failed open refuses the move; it does not resume at the source.
+Binding a project workspace to the current thread always re-enters `React`, so
+the task continues as soon as the workspace is ready.
 For native history, `Awake` asks the receiving agent to validate the source before
 entering `Teleport`, so an unusable transcript cannot create or announce a destination.
 
@@ -135,7 +143,9 @@ The graph draws nothing. A kick opens a stream on the nerve, asked on the thread
 the signal came from, and everything the graph does goes out on it as it happens:
 
 - The reflex wakes before anything else and falls asleep last, whatever happened:
-  `reflex_awake` and `reflex_asleep` bracket the whole kick.
+  `reflex_awake` and `reflex_asleep` bracket the whole kick. A thread or chat
+  room holds one reflex at a time: a kick asked on one whose reflex is still
+  awake is refused before it wakes.
 - Each agent run is bracketed by `run_started`, which names the thread the run
   reports into, and `run_ended`. One kick can hold several runs: a summon runs the
   new agent after the first, and a teleport can resume where it landed.

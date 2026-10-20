@@ -62,7 +62,7 @@ turns. A transcript format change therefore never needs a client update.
 - One tail per session, guarded by a lock. A second launch during the previous
   turn's drain waits briefly, then yields.
 - A tail exits when the server finalizes the turn, when the session has been quiet
-  for 30 minutes, or when the server refuses it. A bad token or an old wire protocol
+  for 5 minutes, or when the server refuses it. A bad token or an old wire protocol
   is a refusal, printed once, with no retry.
 - Subagent transcripts beside the session file stream under their own ids.
 

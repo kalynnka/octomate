@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pydantic_ai.tools import DeferredToolResults
 from pydantic_graph import BaseNode, End, GraphRunContext
 
-from octomate.reflex.crossing import open_crossing
+from octomate.reflex.crossing import announce_crossing, open_crossing
 from octomate.reflex.nodes.react import React
 from octomate.reflex.state import (
     PendingHandoff,
@@ -29,8 +29,8 @@ from octomate.telemetry import reflex_logfire
 class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     """Create a thread at the prepared address, copy history and resume the agent.
 
-    An in-place move binds a project without creating a thread. A failed creation
-    refuses the move before any history is copied.
+    An in-place move binds a project without creating a thread and always resumes
+    the agent. A failed creation refuses the move before any history is copied.
     """
 
     request: TeleportRequest
@@ -53,6 +53,7 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         sentence = "Continuing the conversation here."
 
         new_target = origin
+        opened = None
         if self.request.new_thread:
             opened = await open_crossing(
                 ctx, self.request.destination, origin_address, hint, self.agent_id
@@ -115,6 +116,14 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 state.thread = landed
                 state.target = new_target
                 state.handoff = None
+                await announce_crossing(
+                    ctx,
+                    self.request.destination,
+                    new_address,
+                    origin_address,
+                    hint,
+                    self.agent_id,
+                )
                 if self.request.prompt is None and not self.request.resume:
                     return await self.land(ctx)
                 return await self.carry_on(ctx, sentence)
@@ -186,7 +195,20 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     conversation, external_id
                 )
             await agent.relocate(conversation, cwd=cwd)
-        if self.request.prompt is None and not self.request.resume:
+        if opened is not None:
+            await announce_crossing(
+                ctx,
+                self.request.destination,
+                opened,
+                origin_address,
+                hint,
+                self.agent_id,
+            )
+        if (
+            self.request.new_thread
+            and self.request.prompt is None
+            and not self.request.resume
+        ):
             return await self.land(ctx)
         return await self.carry_on(ctx, sentence)
 

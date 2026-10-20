@@ -5,14 +5,16 @@ from pathlib import Path
 from typing import Literal
 
 import pytest
+from anyio.abc import ObjectSendStream
 from octomate_protocol.stream import SESSION_FILE
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.database import async_session
+from octomate.nerve import Impulse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
-from octomate.schemas.thread import ThreadMessage
+from octomate.schemas.thread import ThreadKey, ThreadMessage
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.claude.ingest import ClaudeHookIngest
@@ -33,7 +35,10 @@ Runtime = Literal["claude", "codex", "deepseek"]
 @pytest.mark.parametrize("runtime", ["claude", "codex", "deepseek"])
 @pytest.mark.parametrize("restart", [False, True])
 async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
-    in_memory_engine: AsyncEngine, runtime: Runtime, restart: bool
+    in_memory_engine: AsyncEngine,
+    runtime: Runtime,
+    restart: bool,
+    tail_impulses: ObjectSendStream[Impulse],
 ) -> None:
     octomate = Octomate()
     native_id = f"{runtime}-native"
@@ -71,10 +76,11 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
                 prompt_id=old_turn,
                 prompt="same prompt",
             ),
-            SENDER,
         )
     elif runtime == "codex":
-        codex_tailer = CodexTranscriptTailer(octomate.conversations, octomate.threads)
+        codex_tailer = CodexTranscriptTailer(
+            octomate.conversations, octomate.threads, octomate.files
+        )
         codex_ingest = CodexHookIngest(
             codex_tailer,
             conversations=octomate.conversations,
@@ -88,7 +94,6 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
                 turn_id=old_turn,
                 prompt="same prompt",
             ),
-            SENDER,
         )
 
     async with async_session() as session:
@@ -110,7 +115,13 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
             ]
             tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
             state, offsets = await tailer.attach_remote(
-                SESSION_ID, Path("/client/session.jsonl"), SENDER
+                SESSION_ID,
+                Path("/client/session.jsonl"),
+                SENDER,
+                address=ThreadKey(native_id, "thread", SESSION_ID).address(
+                    SENDER.channel_user_id
+                ),
+                impulses=tail_impulses,
             )
             assert offsets == {SESSION_FILE: 0}
             offset = 0
@@ -122,10 +133,16 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
             await tailer.finish_remote(state)
         elif runtime == "codex":
             codex_tailer = CodexTranscriptTailer(
-                octomate.conversations, octomate.threads
+                octomate.conversations, octomate.threads, octomate.files
             )
             codex_state, offsets = await codex_tailer.attach_remote(
-                SESSION_ID, Path("/client/rollout.jsonl"), SENDER
+                SESSION_ID,
+                Path("/client/rollout.jsonl"),
+                SENDER,
+                ThreadKey(native_id, "thread", SESSION_ID).address(
+                    SENDER.channel_user_id
+                ),
+                tail_impulses,
             )
             assert offsets == {SESSION_FILE: 0}
             offset = 0
@@ -159,7 +176,14 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
                 octomate.conversations, octomate.threads
             )
             deepseek_state, offsets = await deepseek_tailer.attach_remote(
-                SESSION_ID, Path("/client/session.jsonl"), "", SENDER
+                SESSION_ID,
+                Path("/client/session.jsonl"),
+                "",
+                SENDER,
+                address=ThreadKey(native_id, "thread", SESSION_ID).address(
+                    SENDER.channel_user_id
+                ),
+                impulses=tail_impulses,
             )
             assert offsets == {SESSION_FILE: 0}
             events = [
@@ -171,7 +195,7 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
             ]
             for event in events:
                 await deepseek_tailer.feed_remote(
-                    deepseek_state, None, json.dumps({"event": event}), 0, 0
+                    deepseek_state, json.dumps({"event": event})
                 )
             deepseek_tailer.detach_remote(deepseek_state)
 

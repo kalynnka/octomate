@@ -20,6 +20,7 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.capabilities.harness.events import OAuthDeviceAuthorizationEvent
 from octomate.config import DiscordChannelConfig, OctomateConfig
+from octomate.schemas.artifacts import ArtifactOverview
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
@@ -84,6 +85,20 @@ async def discord_run_thread(
             run_banner("Discord replays follow in this thread."),
         )
         yield channel, thread_address
+
+
+async def test_discord_renders_artifact_card(
+    artifact_overview: ArtifactOverview,
+    discord_run_thread: tuple[DiscordTentacle, ChannelAddress],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channel, address = discord_run_thread
+
+    with caplog.at_level("WARNING"):
+        message_id = await channel.feelers.artifacts.send(address, artifact_overview)
+
+    assert message_id is not None
+    assert not [r for r in caplog.records if r.name.startswith("octomate")]
 
 
 async def test_discord_renders_final_text(

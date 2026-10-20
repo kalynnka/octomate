@@ -63,6 +63,13 @@ Model and effort are selected before each prompt, since dsh has no per-turn over
 and the posture is set through the `/permission` command. Run-level instructions
 are prepended to the prompt text; dsh has no separate instructions channel.
 
+The default workspace-write preset restricts writes outside the workspace, with
+native exceptions for temporary directories. It does not restrict outside reads
+or execution of outside programs. Octomate omits its own server settings from the
+child's inherited environment, but this does not prevent filesystem access to
+server data. The tested harness exposes no settings to close those read and
+temporary-directory gaps. See the [native sandbox matrix](../../contributing/agent-tentacle.md#native-sandbox-verification).
+
 Tool output and failures appear in driven turns and collected native history,
 including results from older session logs.
 
@@ -79,6 +86,10 @@ carries several picks. A commissioned run with no user rejects approvals and
 cancels questions at once.
 
 ## Native sessions
+
+A console with the thread open shows the turn as the tail folds it, a whole
+message at a time. Prompts sent during a turn stay between the replies they
+arrived between. When the turn finishes, it settles into the ledger in that order.
 
 `octomate deepseek hooks install --bridge <checkout>/packages/hooks/hooks-claude-code`
 links the bridge plugin that speaks Claude Code's hook dialect and mounts it through

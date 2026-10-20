@@ -142,6 +142,8 @@ export interface AskQuestion {
   answer?: AskAnswer
   /** live deferred-action id; present when the card answers a real batch */
   actionId?: string
+  /** The harness's question id, used to match a native tool result. */
+  nativeId?: string
 }
 
 export interface MessageReply {
@@ -150,6 +152,7 @@ export interface MessageReply {
 }
 
 export type LedgerItem =
+  | { kind: 'artifact'; uid: string; artifactId: string }
   | { kind: 'divider'; uid: string; label: string }
   | { kind: 'system'; uid: string; text: string; tone?: 'info' }
   | {
@@ -208,11 +211,15 @@ export type LedgerItem =
       tool: string
       /** e.g. "ask_human · answer resumes the run" */
       meta: string
-      state: 'waiting' | 'answered'
+      state: 'waiting' | 'answered' | 'failed'
       via?: string
       resolvedT?: string
       /** live deferred-action batch; present when the card answers a real batch */
       batchId?: string
+      /** An observed native question; answered in its harness, never through a deferred batch. */
+      nativeCallId?: string
+      /** The native runtime's display label, supplied by the run's context. */
+      nativeAgent?: string
     }
   | {
       kind: 'oauth'

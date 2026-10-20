@@ -30,6 +30,7 @@ from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.mcp.gateway import NATIVE_TELEPORT_STARTED, TELEPORT_RECORDED
 from octomate.mcp.server import octomate_mcp
+from octomate.nerve import Nerve, ThreadTopic
 from octomate.schemas.awakes import NativeGatewaySignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
@@ -122,16 +123,20 @@ async def a_native_call(
         user_profile=await users.native_profile(CLAUDE_NATIVE_ID, "luhui"),
         native=True,
     )
+
+    async def kick(signal: NativeGatewaySignal) -> None:
+        kicks.append(signal)
+
     server = octomate_mcp(
         fixed_session(session),
         threads,
-        kick=kicks.append,
+        kick=kick,
         manager=McpManager(users=threads.users, cipher=None),
     )
     return server, session, channel, threads, kicks
 
 
-async def test_the_server_offers_exactly_the_six_shared_spells() -> None:
+async def test_the_server_offers_the_shared_spells() -> None:
     # The accomplice spells are deliberately absent: external runtimes bring
     # their own subagent systems.
     server, session, _channel, _threads = a_turn()
@@ -196,7 +201,14 @@ def test_gateway_instructions_render_one_contract_under_each_naming() -> None:
     assert "### Writing a brief" in inkling
 
     mcp = gateway_instructions(gateway_tool)
-    for name in ("inspect", "summon", "teleport", "scheme", "send", "dismiss"):
+    for name in (
+        "inspect",
+        "summon",
+        "teleport",
+        "scheme",
+        "send",
+        "dismiss",
+    ):
         assert f"`gateway_{name}`" in mcp
     assert "{" not in mcp
     assert "commission" not in mcp
@@ -359,7 +371,7 @@ async def test_send_here_reaches_the_console_watching_a_trunkline_thread() -> No
         threads,
         manager=McpManager(users=threads.users, cipher=None),
     )
-    with octomate.nerve.subscribe(ThreadKey.from_address(address)) as live:
+    with octomate.nerve.subscribe(ThreadTopic(ThreadKey.from_address(address))) as live:
         async with Client(server) as client:
             result = await client.call_tool(
                 "gateway_send",
@@ -586,7 +598,7 @@ async def test_a_native_scheme_kicks_its_handoff_at_once(
 async def a_turn_of_alices(in_memory_engine: AsyncEngine) -> FastMCP:
     """A driven turn answering alice in a sub-thread. Her history is the chat she
     spoke in, bob's replies there included; bob's own direct messages are not."""
-    threads = ThreadManager(users=UserManager())
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
 
     def said(message_id: str, chat_id: str, user_id: str, text: str) -> MessageEvent:
         return MessageEvent(
@@ -658,7 +670,7 @@ async def test_a_native_session_reads_its_users_history(
     any turn."""
     await a_user("luhui", profiles={"im": "alice"})
     users = UserManager()
-    threads = ThreadManager(users=users)
+    threads = ThreadManager(nerve=Nerve(), users=users)
     await threads.record_inbound(
         MessageEvent(
             tentacle_id="im",

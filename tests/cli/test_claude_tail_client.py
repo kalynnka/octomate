@@ -6,12 +6,15 @@ from __future__ import annotations
 import fcntl
 import threading
 from pathlib import Path
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import octomate_cli.streaming.files as tail_mod
 import pytest
 from octomate_cli.config import CLISettings
 from octomate_cli.streaming.files import FileCursor, SessionTail, main, tail_path
+from octomate_protocol.stream import StreamLine, client_message_adapter
+from websockets.asyncio.client import ClientConnection
 
 
 @pytest.fixture(autouse=True)
@@ -129,6 +132,8 @@ def test_a_second_tail_for_the_same_session_is_a_no_op(
         cwd: str,
         secret: str,
         spool: Path | None = None,
+        *,
+        tail_type: type[SessionTail] = SessionTail,
     ) -> None:
         streamed.append(session_id)
 
@@ -175,6 +180,8 @@ def test_a_spawn_during_the_drain_waits_out_the_lock(
         cwd: str,
         secret: str,
         spool: Path | None = None,
+        *,
+        tail_type: type[SessionTail] = SessionTail,
     ) -> None:
         streamed.append(session_id)
 
@@ -229,3 +236,29 @@ def test_a_spool_handoff_reaches_a_running_tail_and_defers(
             agent_path=child,
         )
     assert spool.read_text() == f"{child}\n"
+
+
+async def test_file_pump_interleaves_parent_backlog_and_children(
+    tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text("parent1\nparent2\nparent3\n")
+    children = tmp_path / "session" / "subagents"
+    children.mkdir(parents=True)
+    (children / "agent-b.jsonl").write_text("b1\nb2\n")
+    (children / "agent-c.jsonl").write_text("c1\n")
+    socket = AsyncMock(spec=ClientConnection)
+    tail = SessionTail("session", transcript)
+    assert await tail.pump(socket)
+    lines = [
+        client_message_adapter.validate_json(call.args[0])
+        for call in socket.send.await_args_list
+    ]
+    assert [line.line for line in lines if isinstance(line, StreamLine)] == [
+        "parent1",
+        "b1",
+        "c1",
+        "parent2",
+        "b2",
+        "parent3",
+    ]

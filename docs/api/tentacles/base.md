@@ -13,3 +13,7 @@
 ::: octomate.tentacles.codex.base.CodexTentacle.token_usage_status
 
 ::: octomate.tentacles.codex.ink.CodexInk.account_status
+
+## Codex app resources
+
+::: octomate.tentacles.codex.ink.CodexInk.app_resource

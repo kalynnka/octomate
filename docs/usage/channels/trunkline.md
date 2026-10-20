@@ -60,15 +60,20 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
 - **Read any thread**: the chat ledger, each agent conversation and its runs, the
   handoffs, and the pending actions. A thread opens on its latest messages and
   the agent's work between them; earlier ones load as you scroll up.
+  Sending a new prompt scrolls the conversation to the bottom.
   Agent replies show the channel bot's name when available, followed by the
   agent's name in parentheses. Quoted replies use the same sender label.
   Native transcript replies show only the runtime's name, such as Codex or Claude.
+  Claude history preserves each transcript's message order.
+  Native turns received live stay in place when they finish.
 - **Resize the input** by dragging the composer's top edge up or down. The chosen
   height stays while you type or use commands. Double-click the edge to return to
   automatic sizing; when the handle has keyboard focus, ↑ and ↓ adjust it.
 - **Answer approvals and questions**, for driven conversations on any channel.
   A batch's questions are one card with a page per question, sent together. A batch
   already resolved is refused rather than resumed twice.
+  Questions asked in native sessions and their answers
+  are readable here; answer them in the original agent.
 - **Switch a conversation's permission mode** among the agent's modes.
 - **Set a conversation's reasoning effort** with `/effort`: a scale of the levels
   the thread's model takes, moved with ←→ or by dragging and applied with ↵. The
@@ -229,6 +234,33 @@ gets no extra chat message.
 The console's HTTP API, its request bodies and the events it streams are in the
 [API reference](../../api/tentacles/trunkline.md).
 
+## Artifacts
+
+MCP apps appear as interactive cards alongside tool output.
+[Codex conversations](../agents/codex.md#html-visualizations) can also show
+HTML visualizations directly in chat. Widgets fit the chat panel, with wider
+layouts available for visualizations. A loading placeholder appears while a widget
+opens and respects reduced-motion settings.
+The tool-style header stays above the widget. Text, tables, lists, quotes, forms,
+expandable sections, tabs, tooltips and dialogs follow Trunkline's theme.
+Widgets and MCP apps keep their own styles where specified.
+Dropdown menus follow the theme where the browser supports it.
+
+- **Open** shows the same viewer on its own page, always expanded.
+- **Reload** restores the saved result and discards local changes.
+- The left disclosure button folds the widget into a tool-style bar, preserving
+  its current state. Expanding brings the header and widget into view.
+  **Open** and **Reload** remain on the right.
+
+Sign in as the artifact's owner to open it. Apps from Octomate MCP connections
+require their original connection to remain enabled and authorized. Apps captured
+from driven Codex sessions and saved HTML visualizations remain available after
+the run ends. Native Codex HTML visualizations are captured with the updated
+Octomate CLI; native MCP apps are not captured yet.
+
+See [artifact settings](../../api/config/artifacts.md) for hosting setup and the
+[artifact reference](../../api/mcp/artifacts.md) for integration details.
+
 ## The console surface
 
 One screen: a threads sidebar with a channel rail, the chat ledger in the middle, a
@@ -239,6 +271,10 @@ over the channel rail to replace its initials with channel names and thread coun
 moving away restores the initials. Teleport continuation notices use information
 blue for the first line and gray for details, without trailing horizontal rules.
 Each paragraph has one bullet; wrapped lines stay within it.
+The thread list updates as activity is recorded, including threads on other
+channels and changes made in another tab. Titles and agent handoffs update in
+place, and newly visible threads appear without reloading. If list updates
+disconnect, the console asks you to reload to resume them.
 The open thread is watched live, whichever channel it is on: a run that starts
 there from somewhere else, from Slack or from another tab, streams into the panel
 as it happens, and the thread is read again once it settles. A card answered anywhere

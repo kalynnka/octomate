@@ -27,11 +27,16 @@ Thread                           a chat room, or a piece of work
  ├─ project_id                   only for a thread or a native thread
  ├─ ThreadMessage                the chat ledger, one row per visible message
  │    ├─ ThreadCommand           explicit command receipt and outcome
+ │    ├─ ThreadArtifact          reference to a separately owned artifact
  │    └─ MessageBinding ──▶ ModelMessage
  ├─ Handoff                      append-only ownership transfers
  └─ Conversation                 one per (agent, subagent) in the thread
       └─ AgentRun                one turn, driven or replayed from a transcript
            └─ ModelMessage       the transcript
+
+Artifact                         an owned deliverable, independent of any thread
+ ├─ McpAppArtifact               saved MCP invocation for an app viewer
+ └─ HtmlArtifact ──▶ Html         captured visualization in file storage
 ```
 
 Around it: users and their channel profiles, invitations, sessions and API keys;

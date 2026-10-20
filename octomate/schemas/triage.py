@@ -77,8 +77,7 @@ DIRECT_TARGET = DirectTarget()
 
 
 class SummonDecision(BaseModel):
-    """A handoff decision: continue this turn with another agent, from a brief, in the
-    conversation where it already is."""
+    """The selected agent and self-contained brief for a run or handoff."""
 
     action: Literal["summon"] = "summon"
     reason: str
@@ -157,8 +156,9 @@ class TeleportDecision(BaseModel):
     )
     resume: bool = Field(
         default=False,
-        description="Whether the agent carries on at once where it lands; false "
-        "leaves the conversation there for the next message.",
+        description="Whether the agent carries on at once in a new thread; false "
+        "waits for the next message there. Binding the current thread to a project "
+        "always resumes the agent, regardless of this flag.",
     )
     prompt: str | None = Field(
         default=None,

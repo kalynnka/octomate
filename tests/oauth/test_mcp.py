@@ -6,6 +6,7 @@ from urllib.parse import parse_qs
 
 import httpx2
 import pytest
+from arcanus import Relation
 from mcp.client.auth.exceptions import OAuthFlowError
 from mcp.shared.auth import InvalidRedirectUriError, OAuthClientMetadata
 from pydantic import AnyHttpUrl, SecretStr, TypeAdapter
@@ -472,7 +473,7 @@ async def test_pool_refreshes_tokens_and_keeps_grants_across_eviction(
     await authorize(host, user, first, "kalynnka")
     await authorize(host, user, second, "streamify")
     server, calls = an_upstream("answer")
-    scope = a_turn(UserProfile(user_id=user.id))
+    scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
     async with connected(host.mcp, server):
         async with host.mcp.acquire(scope, first.namespace) as original:
             await original.call_tool("answer", {})
@@ -852,7 +853,8 @@ async def test_shutdown_does_not_hold_the_oauth_lock(
     server, _ = an_upstream("answer")
     async with connected(host.mcp, server):
         async with host.mcp.acquire(
-            a_turn(UserProfile(user_id=user.id)), instance.namespace
+            a_turn(UserProfile(user_id=user.id, user=Relation(user))),
+            instance.namespace,
         ) as client:
             await client.call_tool("answer", {})
         original_close = client.close

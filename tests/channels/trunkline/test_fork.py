@@ -16,6 +16,7 @@ from pydantic_ai.messages import ToolCallPart
 from octomate.auth import current_user
 from octomate.config.channels import ChannelConfig, TrunklineChannelConfig
 from octomate.database import async_session
+from octomate.nerve import ThreadTopic
 from octomate.schemas.awakes import NativeGatewaySignal
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.runs import ExternalAgentRun
@@ -30,7 +31,7 @@ from tests.agent.test_codex_transcript_fork import case as case
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import a_project
-from tests.support.nerve import settled
+from tests.support.nerve import kick_and_wait, settled
 from tests.support.users import a_user
 
 
@@ -84,7 +85,7 @@ async def teleport_to_trunkline(case: ForkCase, client: httpx.AsyncClient) -> Th
         for one in options["teleport"]["destinations"]
         if one["channel_tentacle_id"] == "trunkline"
     ]
-    with app.nerve.subscribe(await source_key(case)) as live:
+    with app.nerve.subscribe(ThreadTopic(await source_key(case))) as live:
         response = await client.post(
             f"{path}/teleport", json={"destination": address, "hint": "Continue here"}
         )
@@ -228,7 +229,7 @@ async def test_a_native_session_lands_in_an_owned_thread_its_agent_carries_on(
         json={"text": "continue the work"},
     )
     assert sent.status_code == 202
-    await asyncio.gather(*app.background)
+    await asyncio.gather(*app.awakes.values())
     kick.assert_awaited_once()
     after = await app.threads.get(stored.id)
     assert after is not None
@@ -306,7 +307,7 @@ async def test_thread_access_does_not_grant_transcript_ownership(
     app.dependency_overrides[current_user] = lambda: other
     visible = await client.get(f"/api/trunkline/threads/{case.source.thread_id}")
     assert visible.status_code == 200
-    with app.nerve.subscribe(await source_key(case)) as live:
+    with app.nerve.subscribe(ThreadTopic(await source_key(case))) as live:
         response = await client.post(
             f"/api/trunkline/threads/{case.source.thread_id}/teleport",
             json={
@@ -381,7 +382,7 @@ async def test_native_teleport_imports_completed_history_before_resuming(
         if one["channel_tentacle_id"] == destination
     ]
     if asked_by == "console":
-        with app.nerve.subscribe(await source_key(case)) as live:
+        with app.nerve.subscribe(ThreadTopic(await source_key(case))) as live:
             response = await client.post(
                 f"{path}/teleport",
                 json={"destination": address, "hint": "Continue here"},
@@ -398,7 +399,8 @@ async def test_native_teleport_imports_completed_history_before_resuming(
         source = await app.threads.get(case.source.thread_id)
         assert owner is not None
         assert source is not None
-        await app.kick(
+        await kick_and_wait(
+            app,
             NativeGatewaySignal(
                 decision=TeleportDecision(
                     agent_id=case.tentacle.id,
@@ -408,7 +410,7 @@ async def test_native_teleport_imports_completed_history_before_resuming(
                 agent_id=CODEX_NATIVE_ID,
                 user_profile=owner,
                 source=source.key.address(owner.channel_user_id),
-            )
+            ),
         )
     listed = await app.threads.list_threads(user_id=case.owner_id)
     [landed] = [
@@ -458,7 +460,8 @@ async def test_a_native_session_that_asks_to_carry_on_runs_where_it_lands(
     assert owner is not None
     assert source is not None
 
-    await app.kick(
+    await kick_and_wait(
+        app,
         NativeGatewaySignal(
             decision=TeleportDecision(
                 agent_id=case.tentacle.id,
@@ -469,7 +472,7 @@ async def test_a_native_session_that_asks_to_carry_on_runs_where_it_lands(
             agent_id=CODEX_NATIVE_ID,
             user_profile=owner,
             source=source.key.address(owner.channel_user_id),
-        )
+        ),
     )
 
     [run] = runner.turns
@@ -494,7 +497,9 @@ async def test_a_native_session_with_a_prompt_answers_it_where_it_lands(
         if one["channel_tentacle_id"] == "trunkline"
     ]
 
-    with case.tentacle.octomate.nerve.subscribe(await source_key(case)) as live:
+    with case.tentacle.octomate.nerve.subscribe(
+        ThreadTopic(await source_key(case))
+    ) as live:
         response = await client.post(
             f"{path}/teleport",
             json={"destination": address, "hint": "Continue here", "prompt": "Ship it"},
@@ -575,7 +580,7 @@ async def test_native_teleport_validates_history_before_opening_destination(
             files=app.files,
             owner_id=case.owner_id,
         )
-    with app.nerve.subscribe(await source_key(case)) as live:
+    with app.nerve.subscribe(ThreadTopic(await source_key(case))) as live:
         response = await client.post(
             f"/api/trunkline/threads/{case.source.thread_id}/teleport",
             json={

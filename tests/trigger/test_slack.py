@@ -18,6 +18,7 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import OctomateConfig, SlackChannelConfig
+from octomate.schemas.artifacts import ArtifactOverview
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.slack import SlackTentacle
 from tests.support.channels import drive
@@ -85,6 +86,20 @@ def slack_channel(
     in_memory_engine: AsyncEngine,
 ) -> tuple[SlackTentacle, ChannelAddress]:
     return slack_run_thread
+
+
+async def test_slack_renders_artifact_card(
+    artifact_overview: ArtifactOverview,
+    slack_channel: tuple[SlackTentacle, ChannelAddress],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channel, address = slack_channel
+
+    with caplog.at_level("WARNING"):
+        message_id = await channel.feelers.artifacts.send(address, artifact_overview)
+
+    assert message_id is not None
+    assert not [r for r in caplog.records if r.name.startswith("octomate")]
 
 
 async def test_slack_renders_streamed_str_output(

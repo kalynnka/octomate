@@ -228,9 +228,23 @@ after `super().__init__`, keeping the defaults you do not replace.
   Refuse a press on a batch that is no longer pending.
 - **OAuth.** Subclass `OAuthFeeler` and implement `send`; the base decides the
   private address.
+- **Artifacts.** Keep the text overview or subclass `ArtifactFeeler` and implement
+  `send` for the platform's own layout. Ownership checks and delivery bookkeeping
+  stay in the base; see the [artifact feeler contract](../api/tentacles/feelers.md#octomate.tentacles.feelers.artifacts.ArtifactFeeler).
 - **Graph reports.** Present the events you are handed and never build one.
   Override `Feelers.present` only to draw a move or a failed turn as something
   other than a message.
+
+Readers can subscribe to a channel, one thread, or notifications explicitly
+published to a registered user's topic. Publishers establish who may receive a
+notification and publish separately to each user's topic. See the
+[nerve subscription contract](../api/tentacles/nerve.md#octomate.nerve.Nerve.subscribe).
+
+Thread listing changes notify registered participants after the change commits,
+with distinct events carrying the affected values.
+Inherited history does not grant notifications, and work sub-threads are excluded,
+just as they are from the listing. See the
+[thread notification contract](../api/managers/conversations.md#octomate.managers.thread.ThreadManager.publish).
 
 ## 7. Tests
 

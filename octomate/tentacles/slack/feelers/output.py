@@ -217,10 +217,12 @@ class SlackTimelineState(TimelineState):
     async def join_status(self) -> None:
         # Let the in-flight hints settle, then clear the status last so a late
         # hint can't leave the thread stuck on a stale label.
-        if self.status_tasks:
-            await asyncio.gather(*self.status_tasks, return_exceptions=True)
-        self.last_status = ""
-        await self.ink.set_assistant_status(self.channel, self.thread_ts, "")
+        try:
+            if self.status_tasks:
+                await asyncio.gather(*self.status_tasks, return_exceptions=True)
+        finally:
+            self.last_status = ""
+            await self.ink.set_assistant_status(self.channel, self.thread_ts, "")
 
     async def ensure_plan_stream(
         self, *, title: str = DEFAULT_PLAN_TITLE
@@ -508,6 +510,11 @@ class SlackTimelineState(TimelineState):
     async def answer_end(self) -> None:
         await self.finish_text()
 
+    async def rotate(self) -> None:
+        await self.complete_active_thinking()
+        await self.finish_text()
+        self.finish_plan()
+
     async def message_sent(self, event: MessageSentEvent) -> None:
         # A `send` delivery is output too: render its segments as a
         # discrete message and close it, rather than folding it into a plan.
@@ -665,14 +672,16 @@ class SlackTimelineFeeler(TimelineFeeler):
         try:
             yield state
         finally:
-            await state.complete_pending()
-            await state.finish_text()
-            state.finish_plan()
-            state.release_drained()
-            await state.join_stops()
-            # The last text message is the final reply.
-            state.message_id = state.last_message_id
-            await state.join_status()
+            try:
+                await state.complete_pending()
+                await state.finish_text()
+                state.finish_plan()
+                state.release_drained()
+                await state.join_stops()
+                # The last text message is the final reply.
+                state.message_id = state.last_message_id
+            finally:
+                await state.join_status()
 
 
 @dataclass
