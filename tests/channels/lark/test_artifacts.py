@@ -15,7 +15,7 @@ from octomate.capabilities.harness.events import (
 )
 from octomate.database import async_session
 from octomate.nerve import ChannelTopic, Impulse
-from octomate.schemas.artifacts import McpAppArtifact, McpAppOverview
+from octomate.schemas.artifacts import ArtifactOverview, McpAppArtifact
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.thread import ThreadArtifact, ThreadMessage
@@ -151,7 +151,7 @@ async def test_card_metadata_stays_plain_text(app_artifact: McpAppArtifact) -> N
     provider = '<a href="https://example.com">Provider</a>'
     await channel.feelers.artifacts.send(
         ChannelAddress("lark", "dm", "ou_user", "ou_user"),
-        McpAppOverview(
+        ArtifactOverview(
             artifact_id=app_artifact.id,
             title=title,
             provider_name=provider,

@@ -62,6 +62,7 @@ async def test_two_artifacts_and_the_reply_have_distinct_deliveries(
     second_artifact = McpAppArtifact(
         owner_id=app_artifact.owner_id,
         title="Second diagram",
+        source=app_artifact.source,
         invocation=app_artifact.invocation,
     )
     second = ThreadArtifact(
@@ -102,8 +103,8 @@ async def test_two_artifacts_and_the_reply_have_distinct_deliveries(
         message["text"] for _, _, messages, *_ in channel.sent for message in messages
     ]
     assert texts == [
-        f"Create diagram\nMCP app · Diagrams\nhttps://console.example/artifacts/{app_artifact.id}",
-        f"Second diagram\nMCP app · Diagrams\nhttps://console.example/artifacts/{second_artifact.id}",
+        f"Create diagram\nDiagrams · Interactive artifact\nhttps://console.example/artifacts/{app_artifact.id}",
+        f"Second diagram\nDiagrams · Interactive artifact\nhttps://console.example/artifacts/{second_artifact.id}",
         "done",
     ]
     assert channel.opened_dms == []

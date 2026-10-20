@@ -78,7 +78,9 @@ async def claude_session(octomate: Octomate, session_id: str, cwd: Path | str) -
 
 async def codex_session(octomate: Octomate, session_id: str, cwd: Path | str) -> str:
     """Ingest one native Codex turn, and answer with its thread's project."""
-    tailer = CodexTranscriptTailer(octomate.conversations, octomate.threads)
+    tailer = CodexTranscriptTailer(
+        octomate.conversations, octomate.threads, octomate.files
+    )
     ingest = CodexHookIngest(
         tailer,
         conversations=octomate.conversations,
@@ -366,7 +368,9 @@ def codex_rollout(path: Path, cwd: Path, workspace_roots: Sequence[Path]) -> Non
 async def tail_rollout(octomate: Octomate, rollout: Path) -> None:
     """Stream one rollout the way production reaches it: a tail attaches and feeds
     the file's framed lines."""
-    tailer = CodexTranscriptTailer(octomate.conversations, octomate.threads)
+    tailer = CodexTranscriptTailer(
+        octomate.conversations, octomate.threads, octomate.files
+    )
     await stream_rollout(tailer, "codex-ws", rollout)
 
 

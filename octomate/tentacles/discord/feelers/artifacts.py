@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import discord
 
-from octomate.schemas.artifacts import McpAppOverview
+from octomate.schemas.artifacts import ArtifactOverview
 from octomate.schemas.conversation import ChannelAddress
 from octomate.telemetry import channel_logfire
 from octomate.tentacles.channel import Ink
@@ -38,7 +38,7 @@ class DiscordArtifactFeeler(ArtifactFeeler):
 
     @channel_logfire.instrument("discord.artifact.send", extract_args=False)
     async def send(
-        self, address: ChannelAddress, overview: McpAppOverview
+        self, address: ChannelAddress, overview: ArtifactOverview
     ) -> IMMessageID | None:
         title = discord.utils.escape_markdown(
             discord.utils.escape_mentions(" ".join(overview.title.split())[:256]),

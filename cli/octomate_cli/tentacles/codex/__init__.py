@@ -65,9 +65,10 @@ def tail(
                 "names a url — one of them must say where Octomate is"
             )
         url = stream_url_for(base.rstrip("/") + CODEX_HOOK_PATH)
-    from octomate_cli.streaming.files import (  # watchfiles; only when tailing
-        main,
+    from octomate_cli.streaming.codex import (  # watchfiles; only when tailing
+        CodexSessionTail,
     )
+    from octomate_cli.streaming.files import main
 
     main(
         agent="codex",
@@ -76,6 +77,7 @@ def tail(
         url=url,
         cwd=cwd,
         agent_path=agent_path,
+        tail_type=CodexSessionTail,
     )
 
 

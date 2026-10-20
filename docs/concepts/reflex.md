@@ -36,8 +36,8 @@ flowchart TD
   Command -->|waiting on a batch| Deferred
   Summon --> React
   Scheme --> React
-  Teleport -->|resumed where it landed| React
-  Teleport -->|landed, not resumed| Done
+  Teleport -->|current thread bound or continuation requested| React
+  Teleport -->|new thread, no continuation requested| Done
   ResumeDeferred -->|batch still incomplete| Deferred
   ResumeDeferred -->|already resumed| Done
   ResumeDeferred -->|answers as tool results| React
@@ -134,6 +134,8 @@ and re-enters `React` when there is more to do there: the console's prompt,
 recorded as the user's message, or, when the agent asked to carry on, the teleport
 call answered by a sentence saying where it now is. Otherwise the move ends there,
 with the handoff recorded and the workspace saved. A failed open refuses the move; it does not resume at the source.
+Binding a project workspace to the current thread always re-enters `React`, so
+the task continues as soon as the workspace is ready.
 For native history, `Awake` asks the receiving agent to validate the source before
 entering `Teleport`, so an unusable transcript cannot create or announce a destination.
 

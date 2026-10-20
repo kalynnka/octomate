@@ -22,7 +22,7 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import NapcatChannelConfig, OctomateConfig
-from octomate.schemas.artifacts import McpAppOverview
+from octomate.schemas.artifacts import ArtifactOverview
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
     AtData,
@@ -96,7 +96,7 @@ def napcat_channel(
 
 
 async def test_napcat_renders_artifact_overview(
-    artifact_overview: McpAppOverview,
+    artifact_overview: ArtifactOverview,
     napcat_channel: tuple[NapcatTentacle, ChannelAddress],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -116,7 +116,7 @@ async def test_napcat_renders_artifact_overview(
     assert "".join(
         str(segment) for segment in received if isinstance(segment, TextSegment)
     ) == (
-        f"{artifact_overview.title}\nMCP app · {artifact_overview.provider_name}"
+        f"{artifact_overview.title}\n{artifact_overview.provider_name} · Interactive artifact"
         f"\n{artifact_overview.viewer_url}"
     )
 

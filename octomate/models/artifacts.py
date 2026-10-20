@@ -6,10 +6,11 @@ from typing import ClassVar
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import UUID7, JsonValue
 from sqlalchemy import JSON, ForeignKey, String, Uuid
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base, MapperArgs, UTCDateTime
+from octomate.models.files import Html
 
 
 class Artifact(Base, TransmuterProxiedMixin):
@@ -53,11 +54,36 @@ class McpAppArtifact(Artifact):
 
     __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "mcp_app"}
 
+    source: Mapped[JsonValue] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="MCP app content source: original installation identity and namespace, "
+        "or an owned captured HTML file and resource UI metadata.",
+    )
     invocation: Mapped[JsonValue] = mapped_column(
         JSON,
         nullable=True,
         comment=(
-            "MCP app invocation: original installation identity, tool declaration, "
+            "MCP app invocation: provider name, available tool declaration, "
             "UI resource URI, arguments, and complete result. Retained after uninstall."
         ),
     )
+
+
+class HtmlArtifact(Artifact):
+    """A captured HTML visualization independent of its source file."""
+
+    __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "html"}
+
+    mode: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment="Captured visualization layout hint; wide requests more inline space, null uses the default width.",
+    )
+    file_id: Mapped[UUID7] = mapped_column(
+        Uuid,
+        ForeignKey("files.id", name="fk_artifacts_file_id_files", ondelete="RESTRICT"),
+        nullable=True,
+        comment="Owned HTML file captured from the run workspace for isolated rendering.",
+    )
+    file: Mapped[Html] = relationship("Html", lazy="selectin")

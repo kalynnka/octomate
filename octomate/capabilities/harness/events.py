@@ -464,6 +464,7 @@ type StreamEvents[OutputT] = (
     | FinalResult[OutputT]
     | TodoEvent
     | MessageSentEvent
+    | ArtifactAvailableEvent
     | OAuthAuthorizationEvent
     | ActionBatchEvent
     | ActionBatchAnsweredEvent

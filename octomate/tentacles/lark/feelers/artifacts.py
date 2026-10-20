@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from octomate.schemas.artifacts import McpAppOverview
+from octomate.schemas.artifacts import ArtifactOverview
 from octomate.schemas.conversation import ChannelAddress
 from octomate.telemetry import lark_logfire
 from octomate.tentacles.channel import Ink
@@ -37,7 +37,7 @@ class LarkArtifactFeeler(ArtifactFeeler):
 
     @lark_logfire.instrument("lark.artifact.send", extract_args=False)
     async def send(
-        self, address: ChannelAddress, overview: McpAppOverview
+        self, address: ChannelAddress, overview: ArtifactOverview
     ) -> IMMessageID | None:
         header = cards.header(overview.title, template="blue")
         header["subtitle"] = {

@@ -858,6 +858,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     // directive, in sendNewThread.
     set({ running: true, composer: '' })
     push({ kind: 'user', t: nowClock(), who: operator(), text } as LedgerItem)
+    scrollChatBottom()
     void runLive(selId, { key: sendKey }, () => sendDirective(sendKey, { text }))
   }
 
@@ -1517,6 +1518,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         text: body || (hasC ? 'Fold these into the next rev.' : 'Pinned for reference.'),
         chips,
       } as LedgerItem)
+      scrollChatBottom()
       at(400, () => push({ kind: 'dots', label: 'SES-0530 · claude · opus[1m] · working' } as LedgerItem))
       if (hasC) {
         at(1500, () => {
@@ -1802,6 +1804,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         selThreadId: threadId,
       })
       push({ kind: 'user', t: nowClock(), who: operator(), text: body } as LedgerItem)
+      scrollChatBottom()
       // The pick is honored only on the first directive; after that the
       // thread's route is fixed.
       const routeId = started ? undefined : (s.ntRouteId ?? undefined)

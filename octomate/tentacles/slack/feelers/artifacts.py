@@ -5,7 +5,7 @@ from __future__ import annotations
 from html import escape
 from typing import TYPE_CHECKING
 
-from octomate.schemas.artifacts import McpAppOverview
+from octomate.schemas.artifacts import ArtifactOverview
 from octomate.schemas.conversation import ChannelAddress
 from octomate.telemetry import slack_logfire
 from octomate.tentacles.channel import Ink
@@ -38,7 +38,7 @@ class SlackArtifactFeeler(ArtifactFeeler):
 
     @slack_logfire.instrument("slack.artifact.send", extract_args=False)
     async def send(
-        self, address: ChannelAddress, overview: McpAppOverview
+        self, address: ChannelAddress, overview: ArtifactOverview
     ) -> IMMessageID | None:
         title = overview.title[:150]
         provider = f"{overview.provider_name} · Interactive artifact"[:150]

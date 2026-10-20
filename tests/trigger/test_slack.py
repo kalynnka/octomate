@@ -18,7 +18,7 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import OctomateConfig, SlackChannelConfig
-from octomate.schemas.artifacts import McpAppOverview
+from octomate.schemas.artifacts import ArtifactOverview
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.slack import SlackTentacle
 from tests.support.channels import drive
@@ -89,7 +89,7 @@ def slack_channel(
 
 
 async def test_slack_renders_artifact_card(
-    artifact_overview: McpAppOverview,
+    artifact_overview: ArtifactOverview,
     slack_channel: tuple[SlackTentacle, ChannelAddress],
     caplog: pytest.LogCaptureFixture,
 ) -> None:

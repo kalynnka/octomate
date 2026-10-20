@@ -4,37 +4,37 @@
     {
       "label": "Octomate: debug attachment on",
       "type": "process",
-      "command": "cp",
+      "command": "${workspaceFolder}/.venv/bin/python",
       "args": [
-        "-p",
-        "${workspaceFolder}/.octomate/cli.debug.toml",
-        "${workspaceFolder}/.octomate/cli.toml"
+        "${workspaceFolder}/scripts/debug_attachment.py",
+        "on"
       ],
+      "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": [],
       "presentation": {
-        "reveal": "never",
+        "reveal": "always",
         "echo": false,
         "panel": "dedicated",
         "showReuseMessage": false,
-        "close": true
+        "close": false
       }
     },
     {
       "label": "Octomate: debug attachment off",
       "type": "process",
-      "command": "cp",
+      "command": "${workspaceFolder}/.venv/bin/python",
       "args": [
-        "-p",
-        "${workspaceFolder}/.octomate/cli.macmini.toml",
-        "${workspaceFolder}/.octomate/cli.toml"
+        "${workspaceFolder}/scripts/debug_attachment.py",
+        "off"
       ],
+      "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": [],
       "presentation": {
-        "reveal": "never",
+        "reveal": "always",
         "echo": false,
         "panel": "dedicated",
         "showReuseMessage": false,
-        "close": true
+        "close": false
       }
     }
   ]

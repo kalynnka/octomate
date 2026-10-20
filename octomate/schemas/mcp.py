@@ -52,23 +52,22 @@ class McpAppToolMeta(BaseModel):
 
 
 class McpAppInvocation(BaseModel):
-    """A completed MCP app call, retained independently of its installation.
+    """A completed MCP app call, retained independently of its content source.
 
     The tool declaration and complete result are snapshots: replay needs neither
     another tool call nor a namespace lookup that could resolve a replacement
-    installation. The UI resource itself is fetched under the viewer's access.
+    installation. The artifact's source determines how its UI resource is loaded.
     """
 
-    installation_id: UUID7 = Field(
-        description="The original installation's identity, retained after uninstall."
-    )
-    namespace: str = Field(description="The installation's namespace at execution.")
     provider_name: str = Field(
-        description="The installation's display name at execution."
+        description="The installation's display name or runtime server name at execution."
     )
-    tool: Tool = Field(description="The upstream tool declaration at execution.")
+    tool: Tool | None = Field(
+        default=None,
+        description="The upstream tool declaration when supplied by the runtime.",
+    )
     resource_uri: Annotated[AnyUrl, UrlConstraints(allowed_schemes=["ui"])] = Field(
-        description="The UI resource declared by the tool, read through its installation.",
+        description="The UI resource declared by the tool.",
     )
     arguments: dict[str, JsonValue] = Field(
         description="Original arguments passed to the upstream tool, without clipping."
