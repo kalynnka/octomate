@@ -425,9 +425,7 @@ def test_map_usage_reads_counts_typed_as_floats_and_strings() -> None:
 def test_map_usage_warns_when_a_block_carries_no_counts(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    with caplog.at_level(
-        logging.WARNING, logger="octomate.tentacles.claude.adapter"
-    ):
+    with caplog.at_level(logging.WARNING, logger="octomate.tentacles.claude.adapter"):
         usage = map_usage({"service_tier": "standard", "server_tool_use": {}})
     assert usage.input_tokens == 0
     assert usage.details == {}
