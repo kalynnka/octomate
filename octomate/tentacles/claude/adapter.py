@@ -95,28 +95,6 @@ FINISH_REASON_MAP: dict[str, FinishReason] = {
 }
 
 
-def _count(value: object) -> int | None:
-    """A usage count as an int, however the wire typed it.
-
-    Relays fronting the Anthropic wire have been seen typing whole token counts
-    as floats or numeric strings, which read as real numbers everywhere else but
-    would vanish in an int-only filter. `bool` is an int subclass but never a
-    count.
-    """
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            return int(value.strip())
-        except ValueError:
-            return None
-    return None
-
-
 def map_usage(raw: dict[str, object] | None) -> RequestUsage:
     """Project a Claude usage block onto pydantic-ai's RequestUsage.
 
@@ -129,9 +107,21 @@ def map_usage(raw: dict[str, object] | None) -> RequestUsage:
         return RequestUsage()
     counts: dict[str, int] = {}
     for key, value in raw.items():
-        count = _count(value)
-        if count is not None:
-            counts[key] = count
+        # Relays fronting the Anthropic wire have been seen typing whole token
+        # counts as floats or numeric strings, which read as real numbers
+        # everywhere else but would vanish in an int-only filter. `bool` is an
+        # int subclass but never a count.
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            counts[key] = value
+        elif isinstance(value, float):
+            counts[key] = int(value)
+        elif isinstance(value, str):
+            try:
+                counts[key] = int(value.strip())
+            except ValueError:
+                pass
     if not counts:
         # A block with nothing countable in it is the wire shape that once zeroed
         # every thread's token stats — say so instead of passing silently.
