@@ -56,10 +56,12 @@ const said = (id: string, text: string, actor: 'human' | 'system'): ApiThreadMes
 })
 const notice = said('015', 'Forked from conversation elsewhere.', 'system')
 // The prompt as the model got it is dressed; the row it was built from is not.
+// The row's id predates the request that read it — rows are written when said,
+// requests when built — which is the order the ledger keys them by.
 const prompt: ApiModelMessage = {
   id: '020', run_id: 'run', kind: 'request', timestamp: null,
   parts: [{ part_kind: 'user-prompt', content: 'Ada (ada, user:ada) #msg:1: fix the build' }],
-  thread_messages: [said('m-1', 'fix the build', 'human')],
+  thread_messages: [said('018', 'fix the build', 'human')],
 }
 const narration: ApiModelMessage = {
   id: '030', run_id: 'run', kind: 'response', timestamp: at, thread_messages: [],
@@ -279,7 +281,7 @@ test('artifact references survive pagination with their row identity and no text
 
 for (const text of ['Here is the chart.', '']) {
   test(`captured HTML stays after its originating response on reload (${text ? 'caption' : 'reference only'})`, () => {
-    const artifact: ApiThreadMessage = { ...said('015', '', 'system'), direction: 'outbound', kind: 'artifact', artifact_id: 'saved-html' }
+    const artifact: ApiThreadMessage = { ...said('052', '', 'system'), direction: 'outbound', kind: 'artifact', artifact_id: 'saved-html' }
     const response: ApiModelMessage = { ...answer, parts: [{ part_kind: 'text', content: text }], thread_messages: [artifact] }
     const next: ApiModelMessage = { ...prompt, id: '060', thread_messages: [said('055', 'Next question', 'human')] }
     const detail = liveThreadDetail(reads([prompt, response, next], [], { model: null, unbound: null }))
