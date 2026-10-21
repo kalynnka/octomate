@@ -246,6 +246,44 @@ test('a run left streaming writes on while the reader is away, and is there on r
   assert.equal(useConsole.getState().running, false)
 })
 
+test('a message sent while the turn runs is posted as its next prompt, not dropped', async () => {
+  const live: ThreadDetail = { ...detail, key: 'running', live: true, sendKey: 'running-key' }
+  const getDetail = mock.method(api, 'getThreadDetail', async () => live)
+  const fetch = mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) =>
+    init?.method === 'POST' ? new Response(null, { status: 202 }) : Response.json([]))
+  queryClient.setQueryData(['thread-detail', 'running'], live)
+  const actions = useConsole.getState().actions
+  await actions.selectThread('trunkline', 'running')
+
+  actions.sendDirective('carry on')
+  const run = await socketOn('thread_key=running-key')
+  assert.equal(useConsole.getState().running, true)
+
+  // Mid-run, the composer's message is the run's next prompt: posted behind
+  // the running turn and shown where it was said — after what has streamed,
+  // before the reply still coming — with no second socket for the same run.
+  actions.sendDirective('and this too')
+  await tick()
+  const posts = fetch.mock.calls.filter((call) => call.arguments[1]?.method === 'POST')
+  assert.equal(posts.length, 2)
+  assert.ok(String(posts[1]?.arguments[0]).includes('/api/trunkline/threads/running-key/messages'))
+  assert.equal(useConsole.getState().composer, '')
+  assert.deepEqual(useConsole.getState().live.filter((item) => item.kind === 'user').map((item) => item.kind === 'user' && item.text), ['carry on', 'and this too'])
+  assert.deepEqual(useConsole.getState().live.filter((item) => item.kind === 'notice'), [])
+  assert.equal(LiveSocket.opened.filter((socket) => socket.url.includes('thread_key=running-key')).length, 1)
+
+  // The queued row shows in its recorded place once the run settles.
+  getDetail.mock.mockImplementation(async () => ({ ...live, ledger: [
+    { kind: 'user', uid: 'carry-row', text: 'carry on', t: '', who: 'operator' },
+    { kind: 'user', uid: 'queued-row', text: 'and this too', t: '', who: 'operator' },
+  ] } satisfies ThreadDetail))
+  run.deliver({ event_kind: 'reflex_awake' }, result, { event_kind: 'reflex_asleep' })
+  for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
+  await tick()
+  assert.deepEqual(useConsole.getState().detail?.ledger.map((item) => item.kind === 'user' && item.text), ['carry on', 'and this too'])
+  assert.deepEqual(useConsole.getState().live.filter((item) => item.kind === 'user'), [])
+})
+
 test('the open thread shows a run kicked elsewhere, and reads its ledger again once it settles', async () => {
   const settled: ThreadDetail = { ...detail, key: 'watched', ledger: [{ kind: 'user', uid: 'from-slack', text: 'asked on slack', t: '', who: 'someone' } as LedgerItem] }
   const opening: ThreadDetail = { ...detail, key: 'watched' }

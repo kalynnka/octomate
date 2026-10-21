@@ -1495,7 +1495,34 @@ export const useConsole = create<ConsoleState>()((set, get) => {
 
     sendDirective(text: string) {
       const s = get()
-      if (s.running) return
+      if (s.running) {
+        // A turn still running takes the message as its next prompt: it is
+        // recorded behind the run, and the next turn answers it. The local
+        // copy stands where it was said — after what has streamed, before the
+        // reply still coming — and when the run settles the ledger is read so
+        // the recorded row takes that place over.
+        const live = text.trim()
+        if (live && s.detail?.live && s.detail.sendKey) {
+          const thId = s.selThreadId
+          set({ composer: '' })
+          push({ kind: 'user', t: nowClock(), who: operator(), text: live } as LedgerItem)
+          scrollChatBottom()
+          void sendDirective(s.detail.sendKey, { text: live }).then(
+            () => {
+              const unsubscribe = useConsole.subscribe((state) => {
+                if (state.running) return
+                unsubscribe()
+                void reloadSettled(thId, () => true)
+              })
+            },
+            (error: unknown) => {
+              const reason = error instanceof Error ? error.message : String(error)
+              push({ kind: 'notice', text: `the message did not go through — ${reason}`, tone: 'warning' } as LedgerItem)
+            },
+          )
+        }
+        return
+      }
       if (s.ntOn) {
         actions.sendNewThread(text)
         return

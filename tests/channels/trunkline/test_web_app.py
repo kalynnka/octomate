@@ -349,12 +349,12 @@ async def test_a_console_watches_a_thread_over_its_live_socket(
     assert second[-2:] == ["run_result", "run_ended"]
 
 
-async def test_a_directive_on_an_awake_thread_is_refused_and_leaves_no_row(
+async def test_a_directive_on_an_awake_thread_is_its_next_prompt(
     in_memory_engine: AsyncEngine,
 ) -> None:
-    """A thread holds one reflex at a time. The directive is refused before
-    anything is written, so no later turn answers a message the console was told
-    did not go through."""
+    """A thread holds one reflex at a time, and a directive racing it is not a
+    refusal: it is recorded behind the running turn — the ingest contract, the
+    next turn there answers it — and the console is told it went through."""
     octomate = Octomate()
     agent, _ = build_scripted_agent(["unused"])
     await _register(octomate, agent)
@@ -365,13 +365,17 @@ async def test_a_directive_on_an_awake_thread_is_refused_and_leaves_no_row(
         headers={"X-Octomate-Request": "1"},
     ) as client:
         async with awake_on(octomate, _console_address()):
-            refused = await client.post(
+            taken = await client.post(
                 "/api/trunkline/threads/thread-1/messages", json={"text": "hi there"}
             )
 
-    assert refused.status_code == 409
-    assert refused.json()["detail"] == "A turn is still running in this thread."
-    assert await octomate.threads.list_threads(user_id=CONSOLE_USER_ID) == []
+    assert taken.status_code == 202
+    loaded = await a_loaded_thread(octomate.threads, _console_address())
+    assert [
+        message.message_text
+        for message in loaded.messages
+        if message.direction == "inbound"
+    ] == ["hi there"]
 
 
 async def test_a_live_socket_names_one_thread(in_memory_engine: AsyncEngine) -> None:
@@ -458,6 +462,32 @@ async def test_directive_records_chat_ledger(
     assert [message.message_text for message in inbound] == ["hi there"]
     assert [message.message_text for message in outbound] == ["all done!"]
     assert thread.active_agent_tentacle_id == "inkling"
+
+
+async def test_a_directive_racing_a_running_turn_is_its_next_prompt(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """A directive posted while the thread's reflex is still awake lands in the
+    ledger behind the run instead of being refused — the ingest contract: the
+    message is in the ledger, and the next turn there answers it."""
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    channel = await _register(octomate, agent)
+    address = _console_address("thread-1")
+    async with awake_on(octomate, address):
+        await channel.handle_directive(
+            TrunklineDirective(
+                user=console_user(), thread_id="thread-1", text="while it runs"
+            )
+        )
+        thread = await a_loaded_thread(octomate.threads, address)
+        assert [
+            message.message_text
+            for message in thread.messages
+            if message.direction == "inbound"
+        ] == ["while it runs"]
+        # Nothing kicked a second turn over it: the planted reflex still owns the thread.
+        assert ThreadKey.from_address(address) in octomate.awakes
 
 
 async def _register_routes(
