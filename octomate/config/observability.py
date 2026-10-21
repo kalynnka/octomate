@@ -53,11 +53,14 @@ class LogfireConfig(BaseModel):
     service_name: str = "octomate"
     environment: str = "development"
     send_to_logfire: bool = False
-    # Ingest base URL override: a Cloudflare Worker (or any reverse proxy) that
-    # forwards to the real logfire region host, for networks where logfire's own
-    # domains are unreachable. `generate_base_url` honours it over the token's
-    # region, so the served OTLP environment follows it too.
-    base_url: str | None = None
+    base_url: str | None = Field(
+        default=None,
+        description="Ingest base URL override: a reverse proxy (a Cloudflare "
+        "Worker, say) that forwards to the real logfire region host, for "
+        "networks where logfire's own domains are unreachable. "
+        "`generate_base_url` honours it over the token's region, so the served "
+        "OTLP environment follows it too.",
+    )
     console: bool = False
     scrub: bool = True
     instrument: LogfireInstrumentConfig = Field(
