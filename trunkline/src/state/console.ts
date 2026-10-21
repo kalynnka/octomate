@@ -28,6 +28,7 @@ import type {
   CommandStreamEvent,
   GatewayEvent,
   GatewayRequest,
+  RunResultEvent,
   WireEvent,
 } from '@/lib/api/events'
 import { queryClient } from '@/lib/queryClient'
@@ -713,6 +714,31 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       done: () => {},
     })
     let fold = turnFold()
+    // The bar's numbers read the thread's recording, which only exists once a
+    // run settles — so the result event itself says what the run spent and the
+    // context its last request ran with, and the open panel says the run that
+    // just ended rather than the thread as it stood when it was opened. A full
+    // re-read (a revisit, a run kicked elsewhere settling) trues them up.
+    const recordRunNumbers = (event: RunResultEvent) => {
+      const spent = event.usage
+      set((s) => {
+        if (!s.detail) return s
+        const usage = {
+          input: s.detail.usage.input + spent.input_tokens,
+          output: s.detail.usage.output + spent.output_tokens,
+          cacheRead: s.detail.usage.cacheRead + spent.cache_read_tokens,
+          cacheWrite: s.detail.usage.cacheWrite + spent.cache_write_tokens,
+        }
+        const read = usage.input + usage.cacheRead + usage.cacheWrite
+        return {
+          detail: {
+            ...s.detail,
+            usage: { ...usage, cacheRate: read > 0 ? usage.cacheRead / read : null },
+            ctxK: event.context_tokens == null ? s.detail.ctxK : Math.round(event.context_tokens / 1000),
+          },
+        }
+      })
+    }
     const feed = (event: CommandStreamEvent) => {
       received++
       if (event.event_kind === 'artifact_available') {
@@ -723,6 +749,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       if (event.event_kind === 'run_result' || event.event_kind === 'run_error' || event.event_kind === 'command_outcome') {
         terminal = true
       }
+      if (event.event_kind === 'run_result' && here()) recordRunNumbers(event)
       fold.feed(event)
     }
     // Opening the thread a run started in; what streams meanwhile waits for it.
@@ -1468,7 +1495,34 @@ export const useConsole = create<ConsoleState>()((set, get) => {
 
     sendDirective(text: string) {
       const s = get()
-      if (s.running) return
+      if (s.running) {
+        // A turn still running takes the message as its next prompt: it is
+        // recorded behind the run, and the next turn answers it. The local
+        // copy stands where it was said — after what has streamed, before the
+        // reply still coming — and when the run settles the ledger is read so
+        // the recorded row takes that place over.
+        const live = text.trim()
+        if (live && s.detail?.live && s.detail.sendKey) {
+          const thId = s.selThreadId
+          set({ composer: '' })
+          push({ kind: 'user', t: nowClock(), who: operator(), text: live } as LedgerItem)
+          scrollChatBottom()
+          void sendDirective(s.detail.sendKey, { text: live }).then(
+            () => {
+              const unsubscribe = useConsole.subscribe((state) => {
+                if (state.running) return
+                unsubscribe()
+                void reloadSettled(thId, () => true)
+              })
+            },
+            (error: unknown) => {
+              const reason = error instanceof Error ? error.message : String(error)
+              push({ kind: 'notice', text: `the message did not go through — ${reason}`, tone: 'warning' } as LedgerItem)
+            },
+          )
+        }
+        return
+      }
       if (s.ntOn) {
         actions.sendNewThread(text)
         return

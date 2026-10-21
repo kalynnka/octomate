@@ -72,6 +72,8 @@ async def test_dns_is_checked_again_and_socket_uses_checked_address(
 async def test_transport_rejects_redirects_before_credentials_can_follow(
     monkeypatch: pytest.MonkeyPatch, destination: str
 ) -> None:
+    for name in ("https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
+        monkeypatch.delenv(name, raising=False)
     upstream = AsyncMock(
         return_value=httpx2.Response(307, headers={"Location": destination})
     )
@@ -86,7 +88,20 @@ async def test_transport_rejects_redirects_before_credentials_can_follow(
     assert upstream.call_args.args[0].url.host == "mcp.example"
 
 
-async def test_mcp_client_installs_the_guarded_transport() -> None:
+async def test_mcp_client_installs_the_guarded_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"):
+        monkeypatch.delenv(name, raising=False)
     async with mcp_http_client() as client:
         assert isinstance(client._transport, PublicMcpTransport)
         assert client.trust_env is False
+
+
+async def test_mcp_client_routes_through_an_environment_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("https_proxy", "http://172.20.176.1:7890")
+    async with mcp_http_client() as client:
+        assert not isinstance(client._transport, PublicMcpTransport)
+        assert client.trust_env is True

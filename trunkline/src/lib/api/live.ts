@@ -371,7 +371,11 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         ? []
         : request.thread_messages
             .filter((message) => message.direction === 'inbound')
-            .map((message) => ({ key: request.id, message, session: ranIn.get(request.run_id)?.id })),
+            // Keyed by the row's own write, not the request that carried it: a
+            // row queued behind a run is written before that run's next request
+            // is, and standing at the request's would order it behind the newer
+            // rows the run is still collecting.
+            .map((message) => ({ key: message.id, message, session: ranIn.get(request.run_id)?.id })),
     ),
   ]
   const questionReplies: NativeQuestionReply[] = []
