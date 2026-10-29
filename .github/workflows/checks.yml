@@ -34,6 +34,11 @@ on:
       - ".github/checks/**"
       - ".github/workflows/checks.yml"
   workflow_dispatch:
+    inputs:
+      integration_tests:
+        description: Run native sandbox integration tests
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       ref:
@@ -86,6 +91,77 @@ jobs:
       - run: uv sync --locked
       - name: Run unit tests
         run: uv run --no-sync pytest -q -n 2 --dist worksteal --durations=25
+
+  integration-tests:
+    name: Integration tests (${{ matrix.harness }})
+    if: github.event_name == 'workflow_dispatch' && inputs.integration_tests
+    runs-on: macos-15
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        harness: [inkling, codex, claude, deepseek]
+    env:
+      NATIVE_HARNESS: ${{ matrix.harness }}
+      NATIVE_JUNIT: native-sandbox-results/${{ matrix.harness }}.xml
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: "0.8.13"
+          python-version: "3.13"
+          enable-cache: true
+          cache-suffix: native-sandbox-${{ matrix.harness }}
+      - run: uv sync --locked
+      - uses: actions/setup-node@v4
+        if: matrix.harness == 'deepseek'
+        with:
+          node-version: "22.23.2"
+      - name: Install DeepSeek runtime and scripted-provider API
+        if: matrix.harness == 'deepseek'
+        run: |
+          npm install --prefix "$RUNNER_TEMP/native-dsh" --no-audit --no-fund \
+            @deepseek-ai/dsh@0.2.1-alpha.2 @deepseek-ai/dsh-llm@0.2.1-alpha.2
+          echo "DSH_TEST_EXECUTABLE=$RUNNER_TEMP/native-dsh/node_modules/.bin/dsh" >> "$GITHUB_ENV"
+      - name: Run strict native integration tests
+        id: tests
+        run: >-
+          uv run --no-sync pytest tests/integration/native_sandbox
+          --native-sandbox -k "$NATIVE_HARNESS" -ra
+          --junitxml="$NATIVE_JUNIT"
+      - name: Summarize harness results
+        if: always() && steps.tests.outcome != 'skipped'
+        run: |
+          uv run --no-sync python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from collections import Counter
+
+          cases = list(ET.parse(os.environ["NATIVE_JUNIT"]).iter("testcase"))
+          counts = Counter(
+              "skipped" if case.find("skipped") is not None else
+              "failed" if case.find("failure") is not None else
+              "errors" if case.find("error") is not None else "passed"
+              for case in cases
+          )
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write(f"### {os.environ['NATIVE_HARNESS']} native sandbox\n\n")
+              summary.write("| Passed | Failed | Errors | Skipped |\n|---:|---:|---:|---:|\n")
+              summary.write(
+                  f"| {counts['passed']} | {counts['failed']} | "
+                  f"{counts['errors']} | {counts['skipped']} |\n"
+              )
+          if not cases or counts["skipped"] == len(cases):
+              raise SystemExit("No native integration cases executed; check runtime prerequisites.")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-sandbox-${{ matrix.harness }}
+          path: ${{ env.NATIVE_JUNIT }}
+          if-no-files-found: warn
 
   packages:
     name: Packages (Python ${{ matrix.python }})
