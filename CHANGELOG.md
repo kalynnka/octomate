@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.0.6](https://github.com/kalynnka/octomate/compare/octomate-v0.0.5...octomate-v0.0.6) (2026-10-29)
+
+
+### Features
+
+* **acp:** expose a unified channel and connect agent harnesses ([#142](https://github.com/kalynnka/octomate/issues/142)) ([f60084b](https://github.com/kalynnka/octomate/commit/f60084bb7ffd120468979007c3d38fc0661b0054))
+* **acp:** support form corrections and settle deferred cards ([#160](https://github.com/kalynnka/octomate/issues/160)) ([6049960](https://github.com/kalynnka/octomate/commit/6049960e372b58b00c33d5927a257409053fff35))
+* **artifacts:** capture Codex widgets and embed them in Trunkline ([#143](https://github.com/kalynnka/octomate/issues/143)) ([9fdb7a3](https://github.com/kalynnka/octomate/commit/9fdb7a3bf4a3be6bed597c9822312737210c31a7))
+* **gateway:** summon independent work in a new thread ([#140](https://github.com/kalynnka/octomate/issues/140)) ([7789a19](https://github.com/kalynnka/octomate/commit/7789a19d0580ec231ad8c5924bb93bf2498ff5db))
+
+
+### Bug Fixes
+
+* **agents:** harden native sandboxes and add manual integration tests ([#162](https://github.com/kalynnka/octomate/issues/162)) ([e47531d](https://github.com/kalynnka/octomate/commit/e47531d007bd14a3228376c35f4e0bcce278590c))
+* **codex:** import current-format native user prompts ([#154](https://github.com/kalynnka/octomate/issues/154)) ([447e7ea](https://github.com/kalynnka/octomate/commit/447e7ea22c7fe3389cbf1c735e275cc181e27ece))
+* normalize agent usage and persist context windows ([#159](https://github.com/kalynnka/octomate/issues/159)) ([f044d32](https://github.com/kalynnka/octomate/commit/f044d32339c1631ea70461197fbc35042f17460a))
+* settle IM cards and support async Codex questions ([#155](https://github.com/kalynnka/octomate/issues/155)) ([05e6735](https://github.com/kalynnka/octomate/commit/05e673507710ecb2790b25c5d3654a6c4fbea461))
+* support Logfire ingest overrides and preserve ledger order ([#161](https://github.com/kalynnka/octomate/issues/161)) ([1c13c4f](https://github.com/kalynnka/octomate/commit/1c13c4f9948834e7d51752b2e174353e68b6270c))
+
 ## [0.0.5](https://github.com/kalynnka/octomate/compare/octomate-v0.0.4...octomate-v0.0.5) (2026-10-17)
 
 
