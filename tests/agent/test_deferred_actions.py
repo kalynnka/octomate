@@ -268,6 +268,65 @@ async def test_resolve_batch_applies_answers_and_approvals(
     assert results.approvals["call_approval"] is True
 
 
+async def test_question_answers_can_change_until_the_batch_closes(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    manager = DeferredActionManager()
+    created = await _create_batch()
+    [question] = created.questions
+    [approval] = created.approvals
+
+    for answer in ("tonight", "tomorrow"):
+        saved = await manager.resolve_batch(
+            DeferredActionBatchResponse(
+                batch_id=created.id, answers={question.id: answer}
+            )
+        )
+        assert not saved.closed
+        assert saved.questions[0].status == "answered"
+        assert saved.questions[0].result == answer
+
+    resolved = await manager.resolve_batch(
+        DeferredActionBatchResponse(batch_id=created.id, approvals={approval.id: True})
+    )
+    assert resolved.closed
+    unchanged = await manager.resolve_batch(
+        DeferredActionBatchResponse(
+            batch_id=created.id, answers={question.id: "next week"}
+        )
+    )
+    assert unchanged.questions[0].result == "tomorrow"
+
+
+async def test_draft_answers_wait_for_the_owner_to_finalize_them(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    manager = DeferredActionManager()
+    created = await _create_batch("live")
+    [question] = created.questions
+    [approval] = created.approvals
+
+    draft = await manager.resolve_batch(
+        DeferredActionBatchResponse(
+            batch_id=created.id,
+            answers={question.id: "tonight"},
+            approvals={approval.id: True},
+        ),
+        finalize=False,
+    )
+    assert not draft.closed
+    assert draft.questions[0].status == "pending"
+    assert draft.questions[0].result == "tonight"
+    assert draft.questions[0].resolved_at is None
+    assert draft.approvals[0].status == "approved"
+
+    resolved = await manager.submit_questions(created.id)
+    assert resolved.closed
+    assert resolved.questions[0].status == "answered"
+    assert resolved.questions[0].result == "tonight"
+    assert resolved.questions[0].resolved_at is not None
+
+
 async def test_a_restart_expires_live_requests_and_keeps_suspended_ones(
     in_memory_engine: AsyncEngine,
 ) -> None:

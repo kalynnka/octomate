@@ -619,8 +619,8 @@ fixed routes. Outbound ACP harnesses mount no routes and may repeat.
 `tests/support/agents.py` has a scripted agent at the tentacle level and at the
 model level; the reflex graph tests drive both. A harness tentacle's own tests
 typically fake the SDK client and assert the launch options, the disabled
-customisation, and the approval bridge, as `tests/agent/test_claude_tentacle.py`
-and `test_codex_tentacle.py` do. Document the agent under `docs/usage/agents/`.
+customisation, and the approval bridge, as `tests/agent/claude/test_tentacle.py`
+and `tests/agent/codex/test_tentacle.py` do. Document the agent under `docs/usage/agents/`.
 
 For live native ingest, subscribe to the nerve in tests and verify that a parent
 turn reaches its native thread and settles only after its ledger rows are bound.

@@ -1200,10 +1200,8 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         agent_tentacle_id="codex", batch=FakePresentedBatch(approvals=[approval])
     )
     deferred_actions = RecordingDeferredActions(batch=suspender.batch)
-    octomate = Octomate(
-        conversations=FakeConversationManager(),
-        deferred_actions=cast(DeferredActionManager, deferred_actions),
-    )
+    octomate = Octomate(conversations=FakeConversationManager())
+    octomate.deferred_actions = cast(DeferredActionManager, deferred_actions)
     tentacle = CodexTentacle(
         "codex",
         octomate,
@@ -1261,9 +1259,8 @@ async def test_question_requests_bridge_to_cards() -> None:
     )
     deferred_actions = RecordingDeferredActions(batch=suspender.batch)
     conversation = FakeConversation(thread_id=_THREAD)
-    octomate = Octomate(
-        deferred_actions=cast(DeferredActionManager, deferred_actions),
-    )
+    octomate = Octomate()
+    octomate.deferred_actions = cast(DeferredActionManager, deferred_actions)
     tentacle = CodexTentacle(
         "codex",
         octomate,
@@ -1326,9 +1323,8 @@ async def test_an_mcp_tool_prompt_bridges_to_an_approval_card(approved: bool) ->
         agent_tentacle_id="codex", batch=FakePresentedBatch(approvals=[approval])
     )
     deferred_actions = RecordingDeferredActions(batch=suspender.batch)
-    octomate = Octomate(
-        deferred_actions=cast(DeferredActionManager, deferred_actions),
-    )
+    octomate = Octomate()
+    octomate.deferred_actions = cast(DeferredActionManager, deferred_actions)
     tentacle = CodexTentacle(
         "codex",
         octomate,
@@ -1399,10 +1395,8 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
     )
     deferred_actions = RecordingDeferredActions(batch=suspender.batch)
     conversation = FakeConversation(thread_id=_THREAD)
-    octomate = Octomate(
-        conversations=FakeConversationManager(),
-        deferred_actions=cast(DeferredActionManager, deferred_actions),
-    )
+    octomate = Octomate(conversations=FakeConversationManager())
+    octomate.deferred_actions = cast(DeferredActionManager, deferred_actions)
     tentacle = CodexTentacle(
         "codex",
         octomate,
@@ -1488,10 +1482,8 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
     deferred_actions = RecordingDeferredActions(batch=suspender.batch)
     conversation = FakeConversation(thread_id=_THREAD)
     conversations = FakeConversationManager()
-    octomate = Octomate(
-        conversations=conversations,
-        deferred_actions=cast(DeferredActionManager, deferred_actions),
-    )
+    octomate = Octomate(conversations=conversations)
+    octomate.deferred_actions = cast(DeferredActionManager, deferred_actions)
     tentacle = CodexTentacle(
         "codex",
         octomate,

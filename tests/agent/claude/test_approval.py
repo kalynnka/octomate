@@ -187,10 +187,8 @@ def _build(
     conversations = FakeConversationManager()
     if conversation is not None:
         conversations.store[(_THREAD, "claude", "")] = conversation
-    octomate = Octomate(
-        conversations=conversations,
-        deferred_actions=cast(DeferredActionManager, dam),
-    )
+    octomate = Octomate(conversations=conversations)
+    octomate.deferred_actions = cast(DeferredActionManager, dam)
     tentacle = ClaudeCodeTentacle(
         "claude",
         octomate,
@@ -421,6 +419,24 @@ async def test_approval_timeout_denies_and_expires(
     assert isinstance(decision, PermissionResultDeny)
     assert "expired" in decision.message
     assert not tentacle.pendings  # the parked future was cleaned up
+
+
+async def test_cancelling_a_claude_approval_expires_its_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval")
+    approval = DeferredApproval(
+        tool_name="Bash", tool_call_id="t1", args=ApprovalRequest(tool_name="Bash")
+    )
+    tentacle, manager, suspender = _build(FakePresentedBatch(approvals=[approval]))
+    task = asyncio.create_task(_drain(tentacle, suspender))
+    batch_id = await _wait_for_pending(tentacle, suspender)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert manager.marked == [(batch_id, "expired")]
+    assert not tentacle.pendings
 
 
 async def test_ask_user_question_hook_feeds_answer_back(

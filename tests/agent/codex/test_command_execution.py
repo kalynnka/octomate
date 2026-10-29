@@ -48,8 +48,8 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import ink as codex_ink
 from octomate.tentacles.codex.schemas import ThreadSettingsUpdateResponse
-from tests.agent.test_codex_adapter import token_breakdown
-from tests.agent.test_codex_tentacle import (
+from tests.agent.codex.test_adapter import token_breakdown
+from tests.agent.codex.test_tentacle import (
     KEY,
     FakeCodex,
     FakeThread,

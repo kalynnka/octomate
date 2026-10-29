@@ -22,7 +22,7 @@ from octomate.tentacles.deepseek.catalog import DeepseekCommandDescriptor
 from octomate.tentacles.deepseek.client import DeepseekApiClient
 from octomate.tentacles.deepseek.wire import MuxFrame, RemoteNotification
 from octomate.types.json import JsonObject
-from tests.agent.test_deepseek_tentacle import FakeDeepseekApi, patch_gateway
+from tests.agent.deepseek.test_tentacle import FakeDeepseekApi, patch_gateway
 
 
 @pytest.fixture

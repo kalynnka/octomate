@@ -1,6 +1,6 @@
 """Opt-in, keyless integration against an installed or built dsh.
 
-DSH_TEST_EXECUTABLE=/path/to/apps/cli/lib/bin.js pytest tests/agent/test_deepseek_live.py
+DSH_TEST_EXECUTABLE=/path/to/apps/cli/lib/bin.js pytest tests/agent/deepseek/test_live.py
 All settings, sessions, and tool execution are confined to pytest's temporary tree.
 """
 

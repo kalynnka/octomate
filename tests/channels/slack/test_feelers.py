@@ -34,6 +34,7 @@ from octomate.tentacles.slack.feelers.questions import (
     collect_answers,
     question_answer_block_id,
     question_choice_block_id,
+    submitted_blocks,
 )
 from octomate.tentacles.slack.ink import SlackInk
 from octomate.tentacles.slack.schema import (
@@ -304,7 +305,7 @@ def test_slack_question_card_holds_every_question_and_one_submit() -> None:
     assert typed == {actions[0].id: "teal"}
 
 
-async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> None:
+async def test_slack_callbacks_leave_card_updates_to_persisted_events() -> None:
     ink = FakeSlackBlocksInk()
     octomate = FakeOctomate()
     events: list[str] = []
@@ -332,11 +333,7 @@ async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> Non
         responder_id="U1",
         approvals={approval.id: True},
     )
-    assert ink.updates[0][0:3] == ("C1", "111.222", "Approvals handled")
-    approval_summary = _json_object(ink.updates[0][3][0]["text"])["text"]
-    assert isinstance(approval_summary, str)
-    assert "shell" in approval_summary
-    assert "*By:* <@U1>" in approval_summary
+    assert ink.updates == []
 
     question_buttons = _json_objects(ask_question_blocks(questions)[-1]["elements"])
     submit_state = _loaded_json_object(_json_string(question_buttons[0]["value"]))
@@ -360,8 +357,8 @@ async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> Non
         responder_id="U2",
         answers={questions[0].id: "yes"},
     )
-    assert ink.updates[1][0:3] == ("C1", "333.444", "Answers submitted")
-    assert events == ["kick", "update", "kick", "update"]
+    assert ink.updates == []
+    assert events == ["kick", "kick"]
 
 
 @pytest.mark.parametrize("approval", [True, False], ids=["approval", "question"])
@@ -440,10 +437,9 @@ async def test_slack_approval_blocks_advance_through_multiple_approvals() -> Non
         responder_id="U1",
         approvals={first.id: True},
     )
-    assert ink.updates[0][0:3] == ("C1", "111.222", "Octomate needs 2 approvals")
-    assert _json_object(ink.updates[0][3][0]["text"])["text"] == "*Approvals 2 of 2*"
-
-    deny_buttons = _json_objects(ink.updates[0][3][-1]["elements"])
+    assert ink.updates == []
+    next_blocks = approval_blocks([first, second], page=1, decisions={first.id: True})
+    deny_buttons = _json_objects(next_blocks[-1]["elements"])
     deny_value = _json_string(deny_buttons[1]["value"])
     await channel.on_approval_action(
         _ack,
@@ -458,11 +454,7 @@ async def test_slack_approval_blocks_advance_through_multiple_approvals() -> Non
         responder_id="U1",
         approvals={second.id: False},
     )
-    assert ink.updates[1][0:3] == ("C1", "111.222", "Approvals handled")
-    summary = _json_object(ink.updates[1][3][0]["text"])["text"]
-    assert isinstance(summary, str)
-    assert "Approved" in summary
-    assert "Denied" in summary
+    assert ink.updates == []
 
 
 async def test_slack_radio_choice_submits_selected_answer() -> None:
@@ -502,7 +494,9 @@ async def test_slack_radio_choice_submits_selected_answer() -> None:
         responder_id="U2",
         answers={question.id: "Kelp Forest"},
     )
-    submitted_text = _json_object(ink.updates[0][3][0]["text"])["text"]
+    assert ink.updates == []
+    blocks = submitted_blocks([question], octomate.kicks[0].answers)
+    submitted_text = _json_object(blocks[0]["text"])["text"]
     assert isinstance(submitted_text, str)
     assert "Ocean zone?" in submitted_text
     assert "Kelp Forest" in submitted_text
@@ -552,7 +546,9 @@ async def test_slack_multi_select_question_submits_its_checked_boxes() -> None:
         responder_id="U2",
         answers={question.id: ["Coral Reef", "Open Ocean"]},
     )
-    submitted_text = _json_object(ink.updates[0][3][0]["text"])["text"]
+    assert ink.updates == []
+    blocks = submitted_blocks([question], octomate.kicks[0].answers)
+    submitted_text = _json_object(blocks[0]["text"])["text"]
     assert isinstance(submitted_text, str)
     assert "Coral Reef, Open Ocean" in submitted_text
 
@@ -592,7 +588,9 @@ async def test_slack_submitted_question_summary_strips_stale_progress_suffix() -
         ),
     )
 
-    submitted_text = _json_object(ink.updates[0][3][0]["text"])["text"]
+    assert ink.updates == []
+    blocks = submitted_blocks([question], octomate.kicks[0].answers)
+    submitted_text = _json_object(blocks[0]["text"])["text"]
     assert isinstance(submitted_text, str)
     assert "1 question" in submitted_text
     assert "Question 3 of 3" not in submitted_text
@@ -648,7 +646,8 @@ async def test_slack_submit_reads_every_question_at_once() -> None:
             answers={first.id: "Coral Reef", second.id: "I like reefs"},
         )
     ]
-    [(_, _, _, blocks)] = ink.updates
+    assert ink.updates == []
+    blocks = submitted_blocks([first, second], octomate.kicks[0].answers)
     submitted_text = _json_object(blocks[0]["text"])["text"]
     assert isinstance(submitted_text, str)
     assert "Ocean zone?" in submitted_text

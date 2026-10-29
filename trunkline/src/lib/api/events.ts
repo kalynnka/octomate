@@ -277,6 +277,7 @@ export interface WireQuestionArgs {
   hint?: string
   /** several choices may be picked, and the answer lists the picks */
   multi_select?: boolean
+  error?: string
 }
 
 export interface WireApprovalArgs {
@@ -297,6 +298,7 @@ export interface WireDeferredAction {
 export interface WireDeferredQuestion extends WireDeferredAction {
   kind: 'question'
   args: WireQuestionArgs
+  result?: AskAnswer | null
 }
 
 export interface WireDeferredApproval extends WireDeferredAction {
@@ -369,6 +371,14 @@ export interface ActionBatchAnsweredEvent {
   batch_id: string
   approvals: Record<string, boolean>
   answers: Record<string, AskAnswer>
+}
+
+export interface ActionBatchUpdatedEvent {
+  event_kind: 'action_batch_updated'
+  batch_id: string
+  closed: boolean
+  questions: WireDeferredQuestion[]
+  approvals: WireDeferredApproval[]
 }
 
 /** A kick's first word: the reflex woken, before anything it does. */
@@ -447,6 +457,7 @@ export type WireEvent =
   | OAuthAuthorizationEvent
   | ActionBatchEvent
   | ActionBatchAnsweredEvent
+  | ActionBatchUpdatedEvent
   | SubagentStartedEvent
   | SubagentSettledEvent
   | RunStartedEvent

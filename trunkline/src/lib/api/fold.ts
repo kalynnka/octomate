@@ -185,6 +185,7 @@ export function batchFeelers(
   batchId: string,
   questions: WireDeferredQuestion[],
   approvals: WireDeferredApproval[],
+  closed = false,
 ): LedgerItemDraft[] {
   const items: LedgerItemDraft[] = []
   // A batch's questions are one card: answered together, they resume the run once.
@@ -203,10 +204,12 @@ export function batchFeelers(
           desc: '',
         })),
         actionId: q.id,
+        answer: q.result ?? undefined,
+        error: q.args.error,
       })),
       tool,
       meta: `${tool} · ${ordered.length === 1 ? 'answer resumes' : 'submitting every answer resumes'} the run`,
-      state: 'waiting',
+      state: closed ? ordered.every(q => q.status === 'answered') ? 'answered' : 'closed' : 'waiting',
       batchId,
     })
   }
@@ -218,7 +221,7 @@ export function batchFeelers(
       desc: [a.args.description, JSON.stringify(a.args.args ?? {})].filter(Boolean).join(' '),
       tool: a.args.tool_name,
       meta: `${a.args.tool_name} · approval resumes the run`,
-      state: 'waiting',
+      state: a.status === 'approved' ? 'approved' : a.status === 'denied' ? 'dismissed' : closed ? 'closed' : 'waiting',
       batchId,
       actionId: a.id,
     })

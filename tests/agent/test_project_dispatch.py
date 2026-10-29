@@ -39,12 +39,12 @@ from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import ink as codex_ink
-from tests.agent.test_codex_tentacle import (
+from tests.agent.codex.test_tentacle import (
     FakeCodex,
     reset_fake_codex,
     text_script,
 )
-from tests.agent.test_codex_tentacle import (
+from tests.agent.codex.test_tentacle import (
     native_thread_handles as native_thread_handles,
 )
 from tests.support.agents import RecordingClaudeClient

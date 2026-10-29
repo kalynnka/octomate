@@ -46,7 +46,7 @@ from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.types.json import JsonObject
-from tests.agent.test_claude_tentacle import KEY
+from tests.agent.claude.test_tentacle import KEY
 from tests.support.channels import FakeChannelTentacle
 from tests.support.users import a_user
 

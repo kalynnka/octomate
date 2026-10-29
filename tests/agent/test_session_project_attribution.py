@@ -31,7 +31,7 @@ from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
 from octomate.tentacles.codex.hooks import CodexHookInput
 from octomate.tentacles.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer
-from tests.agent.test_codex_native_ingest import stream_rollout
+from tests.agent.codex.test_native_ingest import stream_rollout
 from tests.support.managers import a_project, a_registry
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")

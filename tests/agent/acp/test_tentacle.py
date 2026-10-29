@@ -29,6 +29,7 @@ from octomate.reflex.state import ReflexResult
 from octomate.schemas.auth import UserApiKey
 from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSignal
 from octomate.schemas.conversation import Conversation
+from octomate.schemas.deferred import DeferredActionBatch
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelResponse
 from octomate.schemas.runs import AgentRun
@@ -38,8 +39,8 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.acp.base import AcpAgentTentacle
 from octomate.tentacles.acp.channel import AcpChannelTentacle
 from octomate.tentacles.acp.client import AcpProvider
-from tests.agent.test_acp_client import adapter_environment as adapter_environment
-from tests.agent.test_acp_routes import initialize, new_session, rpc
+from tests.agent.acp.test_client import adapter_environment as adapter_environment
+from tests.agent.acp.test_routes import initialize, new_session, rpc
 from tests.support.managers import a_project, a_registry
 from tests.support.nerve import held
 from tests.support.users import a_user, auth_config
@@ -555,6 +556,8 @@ async def test_cancel_settles_provider_and_keeps_partial_history(
         [run] = await session.list(AgentRun)
         assert run.messages[0].metadata is not None
         assert run.messages[0].metadata["stop_reason"] == "cancelled"
+        [batch] = await session.list(DeferredActionBatch)
+        assert batch.status == "expired"
         assert len(run.messages) == 2
         assert len(await session.list(ThreadMessage)) == 2
         assert all(key.revoked_at is not None for key in await session.list(UserApiKey))

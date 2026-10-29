@@ -68,7 +68,7 @@ from octomate.schemas.thread import (
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer, TailState
-from tests.agent.test_codex_native_ingest import (
+from tests.agent.codex.test_native_ingest import (
     CHILD_THREAD_ID,
     CHILD_TURN_ONE,
     PARENT_TURN_ID,
@@ -81,7 +81,7 @@ from tests.agent.test_codex_native_ingest import (
     parent_metadata,
     subagent_activity,
 )
-from tests.agent.test_codex_native_ingest import impulses as impulses
+from tests.agent.codex.test_native_ingest import impulses as impulses
 from tests.support.managers import a_loaded_thread, a_thread
 from tests.support.nerve import held
 from tests.support.users import a_api_key, a_user, auth_config

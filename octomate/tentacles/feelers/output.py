@@ -56,6 +56,7 @@ from octomate.capabilities.ask import ASK_QUESTIONS_TOOL_NAME
 from octomate.capabilities.harness.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
+    ActionBatchUpdatedEvent,
     ArtifactAvailableEvent,
     MessageSentEvent,
     OAuthAuthorizationEvent,
@@ -760,7 +761,7 @@ class TimelineState:
                     case ActionBatchEvent():
                         answered = answered or bool(event.questions or event.approvals)
                         await self.present_actions(event)
-                    case ActionBatchAnsweredEvent():
+                    case ActionBatchAnsweredEvent() | ActionBatchUpdatedEvent():
                         await self.approvals.settle(
                             self.address, event, action_manager=self.deferred_actions
                         )

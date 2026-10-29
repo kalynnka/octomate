@@ -23,8 +23,8 @@ from octomate.tentacles.codex.hooks import CodexHookInput
 from octomate.tentacles.codex.ingest import CodexHookIngest
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer
 from octomate.tentacles.deepseek.tailer import DeepseekEventTailer
-from tests.agent.test_claude_tailer import assistant_record, prompt_record
-from tests.agent.test_deepseek_native_ingest import turn_events
+from tests.agent.claude.test_tailer import assistant_record, prompt_record
+from tests.agent.deepseek.test_native_ingest import turn_events
 from tests.support.managers import a_thread
 
 SESSION_ID = "sess-tail"
