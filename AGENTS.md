@@ -88,11 +88,15 @@ Always generate UUIDs with `uuid7` from `uuid_utils.compat`, including in tests.
 1. The manual lives in `docs/` and is published by `.github/workflows/pages.yml`; its
    structure and the rules for changing it are in `docs/contributing/documentation.md`.
    Read that page before touching `docs/` or `mkdocs.yml`.
-2. A behaviour change ships with its page. The table on that page says which page a
-   kind of change lands on: a tentacle's behaviour on its usage page, a gateway spell
-   on `usage/gateway.md`, the graph on `concepts/reflex.md`, an extension point on
-   its Contributing page. A config field or CLI option needs no prose unless it
-   changes what a reader does; the API reference renders its description.
+2. Do not create or update documentation unless the user explicitly requests or
+   approves that documentation change. When documentation changes are appropriate
+   during other work, suggest the affected pages and intended edits first, then
+   wait for approval before editing. A code or behaviour change alone does not
+   authorize documentation edits. After approval, the table on that page says
+   which page a kind of change lands on: a tentacle's behaviour on its usage page,
+   a gateway spell on `usage/gateway.md`, the graph on `concepts/reflex.md`, an
+   extension point on its Contributing page. A config field or CLI option needs no
+   prose unless it changes what a reader does; the API reference renders its description.
 3. Every sentence about behaviour is checked against the code before it is written.
    Where an older note and the code disagree, the code wins and the note is fixed.
 4. A new page goes into `nav:` in `mkdocs.yml`, and `uv run --no-sync mkdocs build

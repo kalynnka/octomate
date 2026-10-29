@@ -39,6 +39,35 @@ class RolloutLine(BaseModel):
 rollout_line_adapter = TypeAdapter(RolloutLine)
 
 
+class UserMessageContent(BaseModel):
+    """A user-role content part; only input text is imported."""
+
+    type: str
+    text: str | None = None
+
+
+class UserMessageMetadata(BaseModel):
+    """Codex's provenance labels, aligned with the message's content parts."""
+
+    turn_id: str
+    content_item_kinds: list[str]
+
+
+class UserMessageItem(BaseModel):
+    """A current-format user message with explicit per-part provenance.
+
+    User-role records also carry injected context. Only parts labelled
+    `user.text` are human text; unlabelled records rely on the legacy event.
+    """
+
+    type: Literal["message"]
+    role: Literal["user"]
+    content: list[UserMessageContent]
+    metadata: UserMessageMetadata = Field(
+        alias="internal_chat_message_metadata_passthrough"
+    )
+
+
 class ThreadSpawnMetadata(BaseModel):
     """A child rollout's `thread_spawn` metadata, naming the parent thread."""
 

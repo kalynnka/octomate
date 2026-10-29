@@ -1,4 +1,4 @@
-"""Switch the VS Code debug profile and the CLI used by native agent hooks."""
+"""Switch the VS Code debug profile and native agent hooks and MCP entries."""
 
 import argparse
 import shutil
@@ -37,23 +37,12 @@ def main(mode: Literal["on", "off"]) -> None:
     if mode == "on":
         cli = (workspace / ".venv" / "bin" / "octomate").resolve(strict=True)
     else:
-        subprocess.run(
-            [
-                "uv",
-                "tool",
-                "install",
-                "--force",
-                "--upgrade",
-                "--no-sources",
-                "octomate-cli",
-            ],
-            check=True,
-        )
         installed = subprocess.run(
             ["uv", "tool", "dir", "--bin"], check=True, capture_output=True, text=True
         )
         cli = (Path(installed.stdout.strip()) / "octomate").resolve(strict=True)
 
+    shutil.copy2(profile, workspace / ".octomate" / "cli.toml")
     for agent in ("codex", "claude"):
         subprocess.run(
             [str(cli), agent, "hooks", "install", "--scope", "user"], check=True
@@ -62,8 +51,11 @@ def main(mode: Literal["on", "off"]) -> None:
         subprocess.run(
             [str(cli), agent, "hooks", "install", option, str(path)], check=True
         )
-    shutil.copy2(profile, workspace / ".octomate" / "cli.toml")
-    print(f"Debug attachment {mode}: hooks use {cli}")
+    subprocess.run([str(cli), "codex", "mcp", "install"], check=True)
+    subprocess.run(
+        [str(cli), "claude", "mcp", "install", "--scope", "user"], check=True
+    )
+    print(f"Debug attachment {mode}: hooks and MCP use {cli}")
 
 
 if __name__ == "__main__":
