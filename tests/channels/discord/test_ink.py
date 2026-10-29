@@ -407,15 +407,18 @@ async def test_edit_and_typing_use_the_resolved_destination(
     channel = a_text_channel()
     channel._state = client._connection
     edits: list[tuple[int, str | None, discord.AllowedMentions]] = []
+    views: list[discord.ui.View | discord.ui.LayoutView] = []
     typing = RecordingTyping()
 
     async def edit(
         message: discord.PartialMessage,
         *,
         content: str | None,
+        view: discord.ui.View | discord.ui.LayoutView,
         allowed_mentions: discord.AllowedMentions,
     ) -> discord.Message:
         edits.append((message.id, content, allowed_mentions))
+        views.append(view)
         return a_message(channel, message_id=message.id)
 
     monkeypatch.setattr(client, "get_channel", lambda channel_id: channel)
@@ -436,7 +439,15 @@ async def test_edit_and_typing_use_the_resolved_destination(
     assert message_id == "700"
     assert len(edits) == 1
     assert mentioned_user_ids(edits[0][2]) == [42]
+    assert views[0] is discord.utils.MISSING
     assert typing.exited
+
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(discord.ui.TextDisplay("Answers submitted"))
+    await ink.edit_message(str(channel.id), "701", None, view=view)
+    assert edits[-1][:2] == (701, None)
+    assert mentioned_user_ids(edits[-1][2]) == []
+    assert views[-1] is view
 
 
 async def test_typing_request_does_not_block_agent_start_and_is_cancelled_on_exit(
