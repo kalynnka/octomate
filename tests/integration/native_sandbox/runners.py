@@ -26,6 +26,7 @@ from pydantic_ai.models.function import (
     FunctionModel,
 )
 from pydantic_ai.tools import DeferredToolRequests
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.capabilities.harness.agent import Agent
@@ -117,7 +118,10 @@ async def codex_runner(
 ) -> AsyncIterator[NativeCall]:
     state = ScriptedProvider("responses")
     home = tmp_path / "codex-home"
-    await anyio.Path(home).mkdir()
+    await anyio.Path(home).mkdir(exist_ok=True)
+    config_path = anyio.Path(home / "config.toml")
+    if not await config_path.exists():
+        await config_path.write_text('sandbox_mode="danger-full-access"\n')
     with local_provider(state) as url:
         runtime = RuntimeConfig(
             env={"CODEX_HOME": str(home), "HOME": str(home), "OPENAI_API_KEY": ""},
@@ -162,6 +166,8 @@ async def codex_runner(
                     )
                 state.tool = "exec_command"
                 state.arguments = {"cmd": argument, "max_output_tokens": 4000}
+                state.call_id = str(uuid7())
+                state.outcome = None
                 await tentacle.run(
                     "Execute the synthetic probe once.",
                     conversation_address=ADDRESS,
@@ -213,6 +219,8 @@ async def claude_runner(
                 kind: Literal["shell", "file"], argument: str
             ) -> ToolOutcome:
                 state.tool = "Bash" if kind == "shell" else "Read"
+                state.call_id = str(uuid7())
+                state.outcome = None
                 state.arguments = (
                     {
                         "command": argument,

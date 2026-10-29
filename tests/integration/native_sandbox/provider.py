@@ -19,6 +19,8 @@ class ProviderItem(BaseModel):
     content: JsonValue = None
     output: JsonValue = None
     is_error: bool = False
+    call_id: str | None = None
+    tool_use_id: str | None = None
 
 
 class ProviderMessage(BaseModel):
@@ -36,6 +38,7 @@ class ScriptedProvider:
     tool: str = ""
     arguments: JsonObject = field(default_factory=dict)
     outcome: ToolOutcome | None = None
+    call_id: str = "call_audit"
 
     def events(self, request: ProviderRequest) -> list[JsonObject]:
         items = request.input + [
@@ -48,6 +51,8 @@ class ScriptedProvider:
             item
             for item in items
             if item.type in {"function_call_output", "tool_result"}
+            and (item.call_id if self.api == "responses" else item.tool_use_id)
+            == self.call_id
         ]
         if results:
             result = results[-1]
@@ -69,7 +74,7 @@ class ScriptedProvider:
                 "id": "fc_audit",
                 "type": "function_call",
                 "name": self.tool,
-                "call_id": "call_audit",
+                "call_id": self.call_id,
                 "arguments": json.dumps(self.arguments),
                 "status": "completed",
             }
@@ -98,7 +103,7 @@ class ScriptedProvider:
     def anthropic_events(self) -> list[JsonObject]:
         tool = self.outcome is None
         block: JsonObject = (
-            {"type": "tool_use", "id": "call_audit", "name": self.tool, "input": {}}
+            {"type": "tool_use", "id": self.call_id, "name": self.tool, "input": {}}
             if tool
             else {"type": "text", "text": ""}
         )

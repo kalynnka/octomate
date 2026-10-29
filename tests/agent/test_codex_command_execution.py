@@ -68,6 +68,11 @@ async def execution(
 ) -> AsyncGenerator[tuple[CodexTentacle, CommandContext, AsyncMock]]:
     monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     monkeypatch.setattr(codex_ink, "AsyncThread", lambda client, id: FakeThread(id))
+    monkeypatch.setattr(
+        codex_ink,
+        "AsyncTurnHandle",
+        lambda client, thread_id, turn_id, *, _subscription: _subscription,
+    )
     reset_fake_codex(text_script("reviewed", thread_id="thread-new"))
     app = Octomate()
     app.connect(
@@ -449,7 +454,7 @@ async def test_permission_update_applies_to_next_turn_on_the_same_thread(
                     "threadId": "thread-new",
                     "approvalPolicy": "never",
                     "approvalsReviewer": None,
-                    "sandboxPolicy": {"type": "dangerFullAccess"},
+                    "permissions": ":danger-full-access",
                 },
                 response_model=ThreadSettingsUpdateResponse,
             )
@@ -505,13 +510,7 @@ async def test_permission_update_resets_native_reviewer_on_an_idle_thread(
             "threadId": "thread-new",
             "approvalPolicy": "on-request",
             "approvalsReviewer": reviewer,
-            "sandboxPolicy": {
-                "type": "workspaceWrite",
-                "writableRoots": [],
-                "networkAccess": False,
-                "excludeTmpdirEnvVar": False,
-                "excludeSlashTmp": False,
-            },
+            "permissions": "octomate-workspace",
         },
         response_model=ThreadSettingsUpdateResponse,
     )
@@ -973,9 +972,8 @@ async def test_init_streams_and_records_one_real_run(
     ]
     assert isinstance(events[-1], AgentRunResultEvent)
     [call] = FakeCodex.turn_calls
-    assert isinstance(call.prompt, list)
-    assert isinstance(call.prompt[0], TextInput)
-    assert "AGENTS.md" in call.prompt[0].text
+    assert isinstance(call.prompt, str)
+    assert "AGENTS.md" in call.prompt
     stored = await agent.conversations.get(conversation.id)
     assert len(await stored.runs) == 1
 
@@ -1148,7 +1146,8 @@ async def test_review_streams_native_review_text_and_records_a_real_run(
     assert settings["effort"] == "medium"
     assert settings["model"] == model.partition(":")[2]
     assert settings["approvalsReviewer"] == "auto_review"
-    assert settings["sandboxPolicy"]["type"] == "workspaceWrite"
+    assert settings["permissions"] == "octomate-workspace"
+    assert "sandboxPolicy" not in settings
 
 
 @pytest.mark.parametrize("argument", ["--unknown", "main extra"])

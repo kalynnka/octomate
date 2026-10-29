@@ -341,6 +341,39 @@ def test_native_permission_presets(
     assert permissions.permission_mode == expected
 
 
+@pytest.mark.parametrize("reviewer", ["user", "auto_review"])
+def test_strict_native_profile_remains_forkable(reviewer: str) -> None:
+    permissions = TurnPermissions.model_validate(
+        {
+            "approval_policy": "on-request",
+            "approvals_reviewer": reviewer,
+            "sandbox_policy": {
+                "type": "workspace-write",
+                "exclude_tmpdir_env_var": True,
+                "exclude_slash_tmp": True,
+            },
+            "active_permission_profile": {"id": "octomate-workspace"},
+        }
+    )
+    assert permissions.permission_mode == (
+        "auto_review" if reviewer == "auto_review" else "user_review"
+    )
+
+
+@pytest.mark.parametrize(
+    "profile", ["unknown", "octomate-workspace", ":danger-full-access"]
+)
+def test_native_profiles_do_not_override_mismatched_legacy_policy(profile: str) -> None:
+    with pytest.raises(ValueError, match=r"active_permission_profile|sandbox_policy"):
+        TurnPermissions.model_validate(
+            {
+                "approval_policy": "on-request",
+                "sandbox_policy": {"type": "workspace-write"},
+                "active_permission_profile": {"id": profile},
+            }
+        )
+
+
 @pytest.mark.parametrize(
     "sandbox",
     [
