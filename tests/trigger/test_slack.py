@@ -72,7 +72,7 @@ def slack_run_thread(
         pytest.fail("could not open the slack run thread (no message ts returned)")
     address = ChannelAddress(
         channel_tentacle_id="slack",
-        chat_type=target.chat_type,
+        chat_type="thread",
         chat_id=target.chat_id,
         user_id=target.user_id,
         channel_thread_id=thread_ts,

@@ -662,3 +662,6 @@ class RecordingSuspender:
         self.batch.agent_tentacle_id = self.agent_tentacle_id
         self.put_up.set()
         return ActionBatchEvent.from_batch(cast(DeferredActionBatch, self.batch))
+
+    async def request(self, requests: DeferredToolRequests) -> ActionBatchEvent:
+        raise AssertionError("this suspender expects blocking requests")
