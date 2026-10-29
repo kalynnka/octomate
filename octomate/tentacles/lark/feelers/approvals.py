@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from pydantic import UUID7
 
+from octomate.capabilities.harness.events import ActionBatchAnsweredEvent
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredActionVariantAdapter,
@@ -20,6 +23,7 @@ from octomate.tentacles.lark.schema import LarkInteractiveCard, LarkOutboundMess
 from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
+    from octomate.managers.deferred import DeferredActionManager
     from octomate.tentacles.lark.ink import LarkInk
 
 
@@ -61,6 +65,36 @@ class LarkApprovalFeeler(ApprovalFeeler):
                 reply_in_thread=channel_thread_id is not None,
             )
         return message_ids
+
+    async def settle(
+        self,
+        address: ChannelAddress,
+        event: ActionBatchAnsweredEvent,
+        *,
+        action_manager: DeferredActionManager,
+    ) -> None:
+        if not event.approvals:
+            return
+        batch = await action_manager.get_batch(UUID(event.batch_id))
+        async with asyncio.TaskGroup() as tasks:
+            for action in batch.approvals:
+                if (
+                    action.id not in event.approvals
+                    or action.platform_message_id is None
+                    or action.status not in {"approved", "denied"}
+                ):
+                    continue
+                card = LarkInteractiveCard.model_validate(
+                    approval_resolution_card_data(
+                        tool_name=action.tool_name, approved=action.status == "approved"
+                    )
+                )
+                tasks.create_task(
+                    self.ink.patch_card(
+                        action.platform_message_id,
+                        card.model_dump_json(by_alias=True, exclude_unset=True),
+                    )
+                )
 
 
 def approval_card(action: DeferredApproval) -> str:

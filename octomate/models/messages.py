@@ -60,6 +60,16 @@ class ModelMessage(Base, TransmuterProxiedMixin):
         nullable=True,
         comment="The provider and identifier of the response's workspace, without credentials.",
     )
+    history_digest: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment="Digest of the response and preceding history used to validate server-side continuation.",
+    )
+    failed_attempts: Mapped[JsonValue] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="Earlier model request attempts that failed before this response was produced, in order.",
+    )
     finish_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     # `state` is response-only on pydantic-ai's side ('complete' | 'interrupted'),
     # but lives on the shared table since responses and requests share the same

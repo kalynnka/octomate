@@ -9,9 +9,10 @@ import pytest
 from cachetools import LRUCache
 from fastmcp import Client, Context, FastMCP
 from fastmcp.apps.config import UI_EXTENSION_ID, UI_MIME_TYPE
+from fastmcp.exceptions import ToolError
 from fastmcp.tools import ToolResult
 from mcp.types import ImageContent, TextContent
-from pydantic import AnyHttpUrl, JsonValue, ValidationError
+from pydantic import AnyHttpUrl, JsonValue
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
@@ -460,7 +461,7 @@ async def test_invalid_ui_declaration_is_rejected_before_execution(
 ) -> None:
     turn = app_turn
     async with connected(turn.host.mcp, turn.upstream):
-        with pytest.raises(ValidationError, match="URL scheme"):
+        with pytest.raises(ToolError, match="URL scheme"):
             await turn.server.call_tool(
                 CALL_MCP_TOOL,
                 {

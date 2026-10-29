@@ -108,6 +108,11 @@ class ReflexSuspender:
         return self.decision
 
     async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
+        """Record a deferral the caller ends its run on, for later continuation.
+
+        Human actions become a resumable batch recorded in suspended_batch_id;
+        a teleport is handed back to the graph without presenting a batch.
+        """
         self.continuation_decision()
         teleport = TeleportRequest.of(requests)
         if teleport is not None:
@@ -132,6 +137,11 @@ class ReflexSuspender:
     async def pause(
         self, requests: DeferredToolRequests, *, batch_id: UUID7
     ) -> ActionBatchEvent:
+        """Persist a live batch whose reply releases the caller's waiting run.
+
+        The caller owns the waiter for batch_id and waits after presenting the
+        returned event. The response continues that run without opening another.
+        """
         with reflex_logfire.span(
             "pause_for_review",
             run_name=self.run_name,
@@ -143,6 +153,16 @@ class ReflexSuspender:
             )
             span.set_attribute("batch_id", str(batch.id))
             return ActionBatchEvent.from_batch(batch)
+
+    async def request(self, requests: DeferredToolRequests) -> ActionBatchEvent:
+        """Persist a resumable batch while the caller keeps running.
+
+        Leave the current run unsuspended; the completed response opens a later
+        turn after this run finishes.
+        """
+        self.continuation_decision()
+        batch = await self.persist(requests, response_mode="resume")
+        return ActionBatchEvent.from_batch(batch)
 
     async def persist(
         self,

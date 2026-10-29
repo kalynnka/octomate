@@ -146,6 +146,19 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                     self.claims[model] = Claim(
                         abilities.get(model, self.description), efforts=session.efforts
                     )
+                capabilities = client.initialization.agent_capabilities
+                if (
+                    capabilities is not None
+                    and capabilities.session_capabilities is not None
+                    and capabilities.session_capabilities.close is not None
+                ):
+                    # Stop background session updates before closing the transport.
+                    await request_model(
+                        client.connection,
+                        acp.AGENT_METHODS["session_close"],
+                        schema.CloseSessionRequest(session_id=session.session_id),
+                        schema.CloseSessionResponse,
+                    )
         return await super().__aenter__()
 
     def resolve_model(

@@ -54,6 +54,7 @@ from pydantic_core import to_json
 
 from octomate.capabilities.ask import ASK_QUESTIONS_TOOL_NAME
 from octomate.capabilities.harness.events import (
+    ActionBatchAnsweredEvent,
     ActionBatchEvent,
     ArtifactAvailableEvent,
     MessageSentEvent,
@@ -759,6 +760,13 @@ class TimelineState:
                     case ActionBatchEvent():
                         answered = answered or bool(event.questions or event.approvals)
                         await self.present_actions(event)
+                    case ActionBatchAnsweredEvent():
+                        await self.approvals.settle(
+                            self.address, event, action_manager=self.deferred_actions
+                        )
+                        await self.ask_questions.settle(
+                            self.address, event, action_manager=self.deferred_actions
+                        )
                     case RunResultEvent():
                         final_output = event.output  # for the fallback below
                     case _:

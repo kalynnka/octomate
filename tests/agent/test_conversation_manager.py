@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 from unittest.mock import Mock
 
@@ -15,14 +15,15 @@ from pydantic_ai.messages import (
     ModelRequest as RawModelRequest,
 )
 from pydantic_ai.messages import (
-    ModelResponse as RawModelResponse,
-)
-from pydantic_ai.messages import (
+    ModelRequestAttempt,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
     WorkspaceRef,
+)
+from pydantic_ai.messages import (
+    ModelResponse as RawModelResponse,
 )
 from pydantic_ai.usage import RequestUsage
 from sqlalchemy import event
@@ -114,6 +115,52 @@ async def test_response_workspace_reference_survives_persistence(
     [message] = stored.runs[0].messages
     assert isinstance(message, ModelResponse)
     assert message.workspace_ref == workspace_ref
+
+
+@pytest.mark.parametrize("external", [False, True])
+@pytest.mark.parametrize("with_attempt", [False, True])
+async def test_response_continuation_and_failed_attempts_survive_persistence(
+    external: bool, with_attempt: bool
+) -> None:
+    manager = ConversationManager()
+    conversation = await manager.ensure(await a_thread(), agent_tentacle_id="inkling")
+    attempts = (
+        [
+            ModelRequestAttempt(
+                model_name="first-model",
+                provider_name="first-provider",
+                outcome="error",
+                error="TimeoutError: request timed out",
+                timestamp=datetime.now(UTC),
+                duration=timedelta(seconds=2),
+                usage=RequestUsage(input_tokens=10, output_tokens=2),
+            )
+        ]
+        if with_attempt
+        else None
+    )
+    digest = "stored-history-digest" if with_attempt else None
+    response = RawModelResponse(
+        parts=[TextPart("done")], history_digest=digest, failed_attempts=attempts
+    )
+    if external:
+        await manager.record_external_run(
+            conversation,
+            run_id=str(uuid7()),
+            messages=[response],
+            native_session_id="session",
+            end_offset=42,
+        )
+    else:
+        await manager.record_agent_run(
+            conversation, run_id=str(uuid7()), messages=[response]
+        )
+
+    stored = await manager.get(conversation.id)
+    [message] = stored.runs[0].messages
+    assert isinstance(message, ModelResponse)
+    assert message.history_digest == digest
+    assert message.failed_attempts == attempts
 
 
 @pytest.mark.parametrize(

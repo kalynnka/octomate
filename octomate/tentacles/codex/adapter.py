@@ -635,6 +635,22 @@ class CodexRunAccumulator:
         )
         text = visualization_text(text, final=True)[0]
         state = self.streaming_parts.pop(item.id, None)
+        if isinstance(item, AgentMessageThreadItem) and item.questions:
+            # The tentacle presents structured questions as a batch. Keep their
+            # text and notifications in history without also streaming prose.
+            self.messages.append(
+                ModelResponse(
+                    parts=[TextPart(content=text, id=item.id)],
+                    provider_name=CODEX_PROVIDER_NAME,
+                    provider_response_id=item.id,
+                    metadata=codex_metadata(
+                        self.take_message_events(
+                            [*(state.events if state else []), event]
+                        )
+                    ),
+                )
+            )
+            return
         if state is None or not isinstance(state.part, TextPart):
             part = TextPart(
                 content=text,

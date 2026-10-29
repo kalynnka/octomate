@@ -82,6 +82,9 @@ class StubSuspender:
     ) -> ActionBatchEvent:
         raise AssertionError("an Inkling run suspends; it never pauses live")
 
+    async def request(self, requests: DeferredToolRequests) -> ActionBatchEvent:
+        raise AssertionError("an Inkling run suspends; it never defers while running")
+
 
 def _key() -> ChannelAddress:
     return ChannelAddress(

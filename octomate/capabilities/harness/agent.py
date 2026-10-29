@@ -183,7 +183,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
             # graph's own iteration, which `AgentRun.__anext__` documents as calling
             # none of the node hooks, so a capability built on them would be silently
             # inert here while working on a plain agent. The order below is the one
-            # `run_stream_events` uses for the same reason we need it — `before_node_run`
+            # `run_stream` uses for the same reason we need it — `before_node_run`
             # may replace the node, so it has to fire before the node streams, and the
             # rest of the lifecycle can only run once the stream is drained.
             node = run.next_node
@@ -339,11 +339,11 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                 # `wrap_node_run` → `on_node_run_error` → `after_node_run`, around the
                 # step that advances the graph. The context is rebuilt so those hooks
                 # see the state the streaming above left behind (`run_step`), matching
-                # what `run_stream_events` does at the same point.
-                node = await run._wrap_and_advance(  # pyright: ignore[reportPrivateUsage]
+                # what `run_stream` does at the same point.
+                node = await run._wrap_and_advance_streaming(
                     build_run_context(run.ctx),
                     node,
-                    run._advance_graph,  # pyright: ignore[reportPrivateUsage]
+                    run._advance_graph,
                 )
             if run.result is not None:
                 yield AgentRunResultEvent(run.result)

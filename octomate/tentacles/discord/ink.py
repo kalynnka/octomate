@@ -191,13 +191,15 @@ class DiscordInk(Ink[DiscordOutboundMessage]):
         self,
         channel_id: str,
         message_id: str,
-        content: str,
+        content: str | None,
         *,
         mentioned_user_ids: tuple[str, ...] = (),
+        view: discord.ui.View | discord.ui.LayoutView = discord.utils.MISSING,
     ) -> IMMessageID:
         destination = await self.resolve_messageable(channel_id)
         message = await destination.get_partial_message(int(message_id)).edit(
             content=content,
+            view=view,
             allowed_mentions=discord.AllowedMentions(
                 everyone=False,
                 users=[

@@ -25,6 +25,7 @@ from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStre
 from pydantic import UUID7
 
 from octomate.capabilities.harness.events import (
+    ActionBatchAnsweredEvent,
     ActionBatchEvent,
     ArtifactAvailableEvent,
     GatewayEvent,
@@ -133,6 +134,17 @@ class Siphon:
                 await feelers.oauth.present(address, event)
             case ArtifactAvailableEvent() as event:
                 await feelers.artifacts.present(address, event)
+            case ActionBatchAnsweredEvent() as event:
+                await feelers.approvals.settle(
+                    address,
+                    event,
+                    action_manager=self.channel.octomate.deferred_actions,
+                )
+                await feelers.ask_questions.settle(
+                    address,
+                    event,
+                    action_manager=self.channel.octomate.deferred_actions,
+                )
             case _:
                 pass
 
@@ -183,6 +195,17 @@ class Siphon:
                     )
                 case ActionBatchEvent():
                     await feelers.present_actions(
+                        address,
+                        event,
+                        action_manager=self.channel.octomate.deferred_actions,
+                    )
+                case ActionBatchAnsweredEvent():
+                    await feelers.approvals.settle(
+                        address,
+                        event,
+                        action_manager=self.channel.octomate.deferred_actions,
+                    )
+                    await feelers.ask_questions.settle(
                         address,
                         event,
                         action_manager=self.channel.octomate.deferred_actions,

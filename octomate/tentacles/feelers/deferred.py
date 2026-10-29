@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 from pydantic import UUID7
 
+from octomate.capabilities.harness.events import ActionBatchAnsweredEvent
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredApproval,
@@ -15,6 +17,9 @@ from octomate.schemas.deferred import (
 )
 from octomate.telemetry import channel_logfire
 from octomate.tentacles.feelers.output import IMMessageID, MarkdownFeeler
+
+if TYPE_CHECKING:
+    from octomate.managers.deferred import DeferredActionManager
 
 QUESTION_PROGRESS_SUFFIX = re.compile(
     r"\s*\(?\s*Question\s+\d+\s+of\s+\d+\s*\)?\s*$",
@@ -46,6 +51,16 @@ class ApprovalFeeler(ABC):
         actions: list[DeferredApproval],
     ) -> dict[UUID7, IMMessageID | None]: ...
 
+    async def settle(
+        self,
+        address: ChannelAddress,
+        event: ActionBatchAnsweredEvent,
+        *,
+        action_manager: DeferredActionManager,
+    ) -> None:
+        """Update presented cards from accepted answers; plain text stays as sent."""
+        return None
+
 
 class QuestionFeeler(ABC):
     """Presents a card-based question wizard for one response target."""
@@ -56,6 +71,16 @@ class QuestionFeeler(ABC):
         address: ChannelAddress,
         actions: list[DeferredQuestion],
     ) -> dict[UUID7, IMMessageID | None]: ...
+
+    async def settle(
+        self,
+        address: ChannelAddress,
+        event: ActionBatchAnsweredEvent,
+        *,
+        action_manager: DeferredActionManager,
+    ) -> None:
+        """Update presented cards from accepted answers; plain text stays as sent."""
+        return None
 
 
 class PlainTextApprovalFeeler(ApprovalFeeler):
