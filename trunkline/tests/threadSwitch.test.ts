@@ -279,10 +279,39 @@ test('a card answered anywhere else stops waiting here', async () => {
   const watching = await socketOn('thread_id=asking')
 
   watching.deliver({ event_kind: 'action_batch_answered', batch_id: 'batch', approvals: {}, answers: { first: 'Yes' } })
+  const [open] = useConsole.getState().detail?.ledger ?? []
+  assert.equal(open.kind === 'ask' && open.state, 'waiting')
+  watching.deliver({ event_kind: 'action_batch_updated', batch_id: 'batch', closed: true, questions: [{ ...question, status: 'answered', result: 'Yes' }], approvals: [] })
 
   const [answered] = useConsole.getState().detail?.ledger ?? []
   assert.equal(answered.kind === 'ask' && answered.state, 'answered')
   assert.deepEqual(answered.kind === 'ask' && answered.questions.map((q) => q.answer), ['Yes'])
+})
+
+test('form drafts stay editable and a batch closure removes waiting cards', async () => {
+  const question: WireDeferredQuestion = {
+    id: 'field', kind: 'question', status: 'pending', tool_name: 'acp_elicitation', tool_call_id: 'q', position: 0,
+    args: { question: 'Count?' },
+  }
+  const cards = batchFeelers('form', [question], [{ id: 'permission', kind: 'approval', status: 'pending', tool_name: 'shell', tool_call_id: 'a', args: { tool_name: 'shell' } }])
+  const asking: ThreadDetail = { ...detail, key: 'form', ledger: cards.map((card, i) => ({ ...card, uid: `form-${i}` }) as LedgerItem) }
+  mock.method(api, 'getThreadDetail', async () => asking)
+  queryClient.setQueryData(['thread-detail', 'form'], asking)
+  await useConsole.getState().actions.selectThread('slack', 'form')
+  const watching = await socketOn('thread_id=form')
+
+  watching.deliver({ event_kind: 'action_batch_answered', batch_id: 'form', approvals: {}, answers: { field: '0' } })
+  const pending = useConsole.getState().detail?.ledger[0]
+  assert.equal(pending?.kind === 'ask' && pending.state, 'waiting')
+  watching.deliver({ event_kind: 'action_batch_updated', batch_id: 'form', closed: false, questions: [{ ...question, result: '0', args: { ...question.args, error: 'Must be positive' } }], approvals: [] })
+  const [draft] = useConsole.getState().detail?.ledger ?? []
+  assert.equal(draft.kind === 'ask' && draft.questions[0].answer, '0')
+  assert.equal(draft.kind === 'ask' && draft.questions[0].error, 'Must be positive')
+  assert.equal(draft.kind === 'ask' && draft.state, 'waiting')
+
+  watching.deliver({ event_kind: 'action_batch_updated', batch_id: 'form', closed: true, questions: [{ ...question, status: 'expired' }], approvals: [{ id: 'permission', kind: 'approval', status: 'expired', tool_name: 'shell', tool_call_id: 'a', args: { tool_name: 'shell' } }] })
+  const settled = useConsole.getState().detail?.ledger ?? []
+  assert.deepEqual(settled.map(item => 'state' in item && item.state), ['closed', 'closed'])
 })
 
 test('a run streaming on the open thread comes over its own socket alone, and the watch returns after', async () => {

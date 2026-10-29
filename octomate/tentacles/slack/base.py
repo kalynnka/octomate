@@ -34,9 +34,6 @@ from octomate.tentacles.slack.chromo import SlackChromo
 from octomate.tentacles.slack.feelers.actions import SlackBlockAction
 from octomate.tentacles.slack.feelers.approvals import (
     SlackApprovalFeeler,
-    approval_blocks,
-    approval_submitted_blocks,
-    approval_title,
 )
 from octomate.tentacles.slack.feelers.artifacts import SlackArtifactFeeler
 from octomate.tentacles.slack.feelers.oauth import (
@@ -46,7 +43,6 @@ from octomate.tentacles.slack.feelers.output import SlackTimelineFeeler
 from octomate.tentacles.slack.feelers.questions import (
     SlackAskQuestionFeeler,
     collect_answers,
-    submitted_blocks,
 )
 from octomate.tentacles.slack.ink import SlackInk
 from octomate.tentacles.slack.oauth import SlackOAuthConnector, SlackTokenExchange
@@ -291,45 +287,15 @@ class SlackTentacle(
         action_value = action_body["actions"][0]["value"]
         responder_id = action_body["user"]["id"]
         approved = action["action_id"] == SlackBlockAction.APPROVAL_APPROVE.value
-        channel = action_body["channel"]["id"]
-        message_ts = action_body["message"]["ts"]
         actions = action_value["approvals"]
         page = max(0, min(action_value["page"], len(actions) - 1))
         approved_action = actions[page]
-        decisions = dict(action_value["decisions"])
-        decisions[approved_action.id] = approved
-        next_page = next(
-            (
-                index
-                for index, candidate in enumerate(actions)
-                if candidate.id not in decisions
-            ),
-            None,
-        )
         await self.octomate.kick(
             DeferredActionBatchResponse(
                 batch_id=action_value["batch_id"],
                 responder_id=responder_id,
                 approvals={approved_action.id: approved},
             )
-        )
-        await self.ink.update_message(
-            channel,
-            message_ts,
-            text=(
-                approval_title(actions)
-                if next_page is not None
-                else "Approvals handled"
-            ),
-            blocks=(
-                approval_blocks(actions, page=next_page, decisions=decisions)
-                if next_page is not None
-                else approval_submitted_blocks(
-                    actions,
-                    decisions,
-                    responder_id=responder_id,
-                )
-            ),
         )
 
     async def on_question_submit(self, ack, body: SlackQuestionActionBody) -> None:
@@ -356,12 +322,6 @@ class SlackTentacle(
                 responder_id=action_body["user"]["id"],
                 answers={action.id: answers.get(action.id, "") for action in actions},
             )
-        )
-        await self.ink.update_message(
-            action_body["channel"]["id"],
-            action_body["message"]["ts"],
-            text="Answers submitted",
-            blocks=submitted_blocks(actions, answers),
         )
 
     async def open_dm(

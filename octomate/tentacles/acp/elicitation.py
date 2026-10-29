@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Annotated
 
 from acp import schema
-from pydantic import Field, JsonValue, TypeAdapter
+from pydantic import UUID7, Field, JsonValue, TypeAdapter, ValidationError
 
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
@@ -23,6 +23,16 @@ type FormProperty = (
     | schema.ElicitationBooleanPropertySchema
     | schema.ElicitationMultiSelectPropertySchema
 )
+
+
+class AcpFormValidationError(ValueError):
+    """Field-specific feedback that leaves the live form open for correction."""
+
+    errors: dict[UUID7, str]
+
+    def __init__(self, errors: dict[UUID7, str]) -> None:
+        super().__init__("Correct the highlighted fields before submitting.")
+        self.errors = errors
 
 
 @dataclass(frozen=True)
@@ -83,7 +93,7 @@ class AcpForm:
         questions.append(
             QuestionRequest(
                 question="Submit this form?",
-                choices=["Submit", "Decline", "Cancel"],
+                choices=["Save draft", "Submit", "Decline", "Cancel"],
                 hint=f"{self.agent_name}: {self.request.message}"
                 + "\nReview your answers before submitting. Decline or cancel to close without sending them.",
             )
@@ -155,6 +165,7 @@ class AcpForm:
         properties = self.request.requested_schema.properties or {}
         required = self.request.requested_schema.required or []
         content: JsonObject = {}
+        errors: dict[UUID7, str] = {}
         for (name, prop), action in zip(
             properties.items(),
             sorted(batch.questions, key=lambda action: action.position)[
@@ -162,10 +173,20 @@ class AcpForm:
             ],
             strict=True,
         ):
-            if not isinstance(action.result, str | list):
-                raise ValueError(f"Missing form answer: {name}")
-            if name not in required and action.result in ("", []):
+            if name not in required and action.result in (None, "", []):
                 continue
-            value = self.value(prop, action.result)
-            content[name] = list[JsonValue](value) if isinstance(value, list) else value
+            if not isinstance(action.result, str | list):
+                errors[action.id] = "An answer is required."
+                continue
+            try:
+                value = self.value(prop, action.result)
+                content[name] = (
+                    list[JsonValue](value) if isinstance(value, list) else value
+                )
+            except ValidationError as error:
+                errors[action.id] = str(error.errors(include_input=False)[0]["msg"])
+            except ValueError as error:
+                errors[action.id] = str(error)
+        if errors:
+            raise AcpFormValidationError(errors)
         return content

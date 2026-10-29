@@ -1326,8 +1326,14 @@ class CodexTentacle(AgentTentacle[str, None]):
                 response = await asyncio.wait_for(
                     asyncio.shield(future), self.config.approval_timeout
                 )
-            except TimeoutError:
-                await self.deferred_actions.mark_batch(batch_id, "expired")
+            except (TimeoutError, asyncio.CancelledError) as error:
+                cancelled = await drain_task(
+                    asyncio.create_task(
+                        self.deferred_actions.mark_batch(batch_id, "expired")
+                    )
+                )
+                if cancelled or isinstance(error, asyncio.CancelledError):
+                    raise asyncio.CancelledError from error
                 return batch, None
         finally:
             self.pendings.pop(batch_id, None)

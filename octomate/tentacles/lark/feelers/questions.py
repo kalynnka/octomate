@@ -8,13 +8,17 @@ from uuid import UUID
 
 from pydantic import UUID7, JsonValue, TypeAdapter
 
-from octomate.capabilities.harness.events import ActionBatchAnsweredEvent
+from octomate.capabilities.harness.events import (
+    ActionBatchAnsweredEvent,
+    ActionBatchUpdatedEvent,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion, QuestionAnswer
 from octomate.telemetry import lark_logfire
 from octomate.tentacles.feelers.deferred import (
     QuestionFeeler,
     answer_text,
+    closure_text,
     question_text,
 )
 from octomate.tentacles.feelers.output import IMMessageID
@@ -84,17 +88,20 @@ class LarkAskQuestionFeeler(QuestionFeeler):
     async def settle(
         self,
         address: ChannelAddress,
-        event: ActionBatchAnsweredEvent,
+        event: ActionBatchAnsweredEvent | ActionBatchUpdatedEvent,
         *,
         action_manager: DeferredActionManager,
     ) -> None:
-        if not event.answers:
+        if isinstance(event, ActionBatchAnsweredEvent) and not event.answers:
             return
         batch = await action_manager.get_batch(UUID(event.batch_id))
         message_ids = {
             action.platform_message_id
             for action in batch.questions
-            if action.id in event.answers and action.platform_message_id is not None
+            if action.platform_message_id is not None
+            and (
+                isinstance(event, ActionBatchUpdatedEvent) or action.id in event.answers
+            )
         }
         async with asyncio.TaskGroup() as tasks:
             for message_id in message_ids:
@@ -109,8 +116,16 @@ class LarkAskQuestionFeeler(QuestionFeeler):
                     if action.status == "answered"
                     and isinstance(action.result, str | list)
                 }
-                answered = [action for action in actions if action.id in answers]
-                pending = [action for action in actions if action.id not in answers]
+                answered = [
+                    action
+                    for action in actions
+                    if action.id in answers and batch.closed
+                ]
+                pending = [
+                    action
+                    for action in actions
+                    if action.status in {"pending", "answered"} and not batch.closed
+                ]
                 card = LarkLegacyCard.model_validate(
                     submitted_card_data(answered, answers)
                 )
@@ -118,8 +133,25 @@ class LarkAskQuestionFeeler(QuestionFeeler):
                     pending_card = LarkLegacyCard.model_validate(
                         ask_question_card_data(pending)
                     )
-                    pending_card.elements = [*card.elements, *pending_card.elements]
+                    pending_card.elements = [
+                        *(card.elements if answered else []),
+                        *pending_card.elements,
+                    ]
                     card = pending_card
+                elif batch.closed and any(
+                    action.status != "answered" for action in actions
+                ):
+                    closed_card = LarkLegacyCard.model_validate(
+                        cards.simple_card(
+                            [cards.markdown(closure_text(batch))],
+                            header=cards.header(closure_text(batch), template="grey"),
+                        )
+                    )
+                    closed_card.elements = [
+                        *(card.elements if answered else []),
+                        *closed_card.elements,
+                    ]
+                    card = closed_card
                 tasks.create_task(
                     self.ink.patch_card(
                         message_id,
@@ -142,6 +174,9 @@ def ask_question_card_data(actions: list[DeferredQuestion]) -> JsonObject:
     for index, action in enumerate(actions):
         choices = list(action.args.get("choices") or [])
         hint = str(action.args.get("hint") or "")
+        if error := action.args.get("error"):
+            hint = f"{error}\n{hint}"
+        answer = action.result if isinstance(action.result, str | list) else ""
         text = question_text(action)
         if len(actions) > 1:
             text = f"{index + 1}. {text}"
@@ -150,27 +185,35 @@ def ask_question_card_data(actions: list[DeferredQuestion]) -> JsonObject:
         )
         if choices:
             multi = action.args.get("multi_select", False)
-            elements.append(
-                {
-                    "tag": "multi_select_static" if multi else "select_static",
-                    "name": f"{'picks' if multi else 'choice'}_{index}",
-                    "placeholder": {
-                        "tag": "plain_text",
-                        "content": "Pick any" if multi else "Pick one",
-                    },
-                    "options": [
-                        {
-                            "text": {"tag": "plain_text", "content": choice},
-                            "value": choice,
-                        }
-                        for choice in choices
-                    ],
-                }
-            )
+            select: JsonObject = {
+                "tag": "multi_select_static" if multi else "select_static",
+                "name": f"{'picks' if multi else 'choice'}_{index}",
+                "placeholder": {
+                    "tag": "plain_text",
+                    "content": "Pick any" if multi else "Pick one",
+                },
+                "options": [
+                    {
+                        "text": {"tag": "plain_text", "content": choice},
+                        "value": choice,
+                    }
+                    for choice in choices
+                ],
+            }
+            if isinstance(answer, list):
+                select["selected_values"] = [
+                    value for value in answer if value in choices
+                ]
+            elif answer in choices:
+                select["initial_option"] = answer
+            elements.append(select)
         elements.append(
             {
                 "tag": "input",
                 "name": f"answer_{index}",
+                "default_value": answer
+                if isinstance(answer, str) and answer not in choices
+                else "",
                 "placeholder": {
                     "tag": "plain_text",
                     "content": "Or type another answer"

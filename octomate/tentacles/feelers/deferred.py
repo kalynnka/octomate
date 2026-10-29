@@ -8,9 +8,13 @@ from typing import TYPE_CHECKING
 
 from pydantic import UUID7
 
-from octomate.capabilities.harness.events import ActionBatchAnsweredEvent
+from octomate.capabilities.harness.events import (
+    ActionBatchAnsweredEvent,
+    ActionBatchUpdatedEvent,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
+    DeferredActionBatch,
     DeferredApproval,
     DeferredQuestion,
     QuestionAnswer,
@@ -41,6 +45,15 @@ def answer_text(answer: QuestionAnswer | None) -> str:
     return answer or ""
 
 
+def closure_text(batch: DeferredActionBatch) -> str:
+    """Explain why a card no longer accepts input without inventing a decision."""
+    return {
+        "expired": "Request expired or cancelled",
+        "failed": "Request failed",
+        "superseded": "Request replaced",
+    }.get(batch.status, "Request closed")
+
+
 class ApprovalFeeler(ABC):
     """Presents approval actions for one response target."""
 
@@ -54,7 +67,7 @@ class ApprovalFeeler(ABC):
     async def settle(
         self,
         address: ChannelAddress,
-        event: ActionBatchAnsweredEvent,
+        event: ActionBatchAnsweredEvent | ActionBatchUpdatedEvent,
         *,
         action_manager: DeferredActionManager,
     ) -> None:
@@ -75,7 +88,7 @@ class QuestionFeeler(ABC):
     async def settle(
         self,
         address: ChannelAddress,
-        event: ActionBatchAnsweredEvent,
+        event: ActionBatchAnsweredEvent | ActionBatchUpdatedEvent,
         *,
         action_manager: DeferredActionManager,
     ) -> None:

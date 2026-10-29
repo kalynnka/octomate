@@ -29,7 +29,7 @@ async def never() -> AsyncIterator[Notification]:
     yield cast(Notification, None)
 
 
-@pytest.mark.parametrize("answer", ["Accept", "Decline", "Cancel", None])
+@pytest.mark.parametrize("answer", ["Accept", "Decline", "Cancel", None, "cancel_run"])
 async def test_mcp_consent_rides_the_turn_and_returns_the_selected_answer(
     in_memory_engine: AsyncEngine, answer: str | None
 ) -> None:
@@ -126,10 +126,16 @@ async def test_mcp_consent_rides_the_turn_and_returns_the_selected_answer(
             assert not task.done()
             batch_id = question.batch_id
             assert batch_id is not None
-            if answer is None:
-                assert await task == {"answers": {}}
+            if answer in (None, "cancel_run"):
+                if answer == "cancel_run":
+                    task.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+                else:
+                    assert await task == {"answers": {}}
                 batch = await octomate.deferred_actions.get_batch(batch_id)
                 assert batch.status == "expired"
+                assert all(action.status == "expired" for action in batch.questions)
                 assert tentacle.pendings == {}
                 return
             await octomate.kick(
@@ -151,4 +157,5 @@ async def test_mcp_consent_rides_the_turn_and_returns_the_selected_answer(
             ]
             assert conversation.allowed_tools == []
         finally:
-            await asyncio.wait_for(task, timeout=6)
+            if not task.cancelled():
+                await asyncio.wait_for(task, timeout=6)

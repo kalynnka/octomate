@@ -8,14 +8,17 @@ from uuid import UUID
 
 from pydantic import UUID7, TypeAdapter
 
-from octomate.capabilities.harness.events import ActionBatchAnsweredEvent
+from octomate.capabilities.harness.events import (
+    ActionBatchAnsweredEvent,
+    ActionBatchUpdatedEvent,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredActionVariantAdapter,
     DeferredApproval,
 )
 from octomate.telemetry import slack_logfire
-from octomate.tentacles.feelers.deferred import ApprovalFeeler
+from octomate.tentacles.feelers.deferred import ApprovalFeeler, closure_text
 from octomate.tentacles.feelers.output import IMMessageID
 from octomate.tentacles.slack.feelers.actions import SlackBlockAction
 from octomate.tentacles.slack.schema import (
@@ -78,17 +81,21 @@ class SlackApprovalFeeler(ApprovalFeeler):
     async def settle(
         self,
         address: ChannelAddress,
-        event: ActionBatchAnsweredEvent,
+        event: ActionBatchAnsweredEvent | ActionBatchUpdatedEvent,
         *,
         action_manager: DeferredActionManager,
     ) -> None:
-        if not event.approvals:
+        if isinstance(event, ActionBatchAnsweredEvent) and not event.approvals:
             return
         batch = await action_manager.get_batch(UUID(event.batch_id))
         message_ids = {
             action.platform_message_id
             for action in batch.approvals
-            if action.id in event.approvals and action.platform_message_id is not None
+            if action.platform_message_id is not None
+            and (
+                isinstance(event, ActionBatchUpdatedEvent)
+                or action.id in event.approvals
+            )
         }
         async with asyncio.TaskGroup() as tasks:
             for message_id in message_ids:
@@ -106,10 +113,17 @@ class SlackApprovalFeeler(ApprovalFeeler):
                     (
                         index
                         for index, action in enumerate(actions)
-                        if action.id not in decisions
+                        if action.status == "pending" and not batch.closed
                     ),
                     None,
                 )
+                blocks = (
+                    approval_blocks(actions, page=page, decisions=decisions)
+                    if page is not None
+                    else approval_submitted_blocks(actions, decisions)
+                )
+                if batch.closed and len(decisions) < len(actions):
+                    blocks.append(approval_progress_block(closure_text(batch)))
                 tasks.create_task(
                     self.ink.update_message(
                         batch.target_address.chat_id or batch.target_address.user_id,
@@ -117,11 +131,7 @@ class SlackApprovalFeeler(ApprovalFeeler):
                         text=approval_title(actions)
                         if page is not None
                         else "Approvals handled",
-                        blocks=(
-                            approval_blocks(actions, page=page, decisions=decisions)
-                            if page is not None
-                            else approval_submitted_blocks(actions, decisions)
-                        ),
+                        blocks=blocks,
                     )
                 )
 

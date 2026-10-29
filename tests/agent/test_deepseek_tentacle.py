@@ -26,7 +26,7 @@ from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, use_s
 from pydantic import UUID7, HttpUrl, SecretStr, ValidationError
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.exceptions import AgentRunError
-from pydantic_ai.messages import ModelMessage, PartStartEvent, TextPart
+from pydantic_ai.messages import ModelMessage, PartStartEvent, TextPart, ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
@@ -368,10 +368,35 @@ def interaction_octomate(
     deferred_actions: RecordingDeferredActions,
     conversations: FakeConversationManager | None = None,
 ) -> Octomate:
-    return Octomate(
-        conversations=conversations or FakeConversationManager(),
-        deferred_actions=cast(DeferredActionManager, deferred_actions),
+    octomate = Octomate(conversations=conversations or FakeConversationManager())
+    octomate.deferred_actions = cast(DeferredActionManager, deferred_actions)
+    return octomate
+
+
+async def test_cancelled_deepseek_approval_expires_its_cards() -> None:
+    approval = DeferredApproval(
+        tool_name="shell", tool_call_id="edit", args=ApprovalRequest(tool_name="shell")
     )
+    suspender = RecordingSuspender(
+        agent_tentacle_id="deepseek", batch=FakePresentedBatch(approvals=[approval])
+    )
+    manager = RecordingDeferredActions(batch=suspender.batch)
+    octomate = interaction_octomate(manager)
+    tentacle = _tentacle(FakeConversationManager(), octomate=octomate)
+    task = asyncio.create_task(
+        tentacle._await_human(
+            context=bridge_context(FakeConversation(thread_id=_THREAD), suspender),
+            requests=DeferredToolRequests(
+                approvals=[ToolCallPart("shell", {}, "edit")]
+            ),
+        )
+    )
+    batch_id = await wait_for_pending(tentacle, suspender)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert manager.marked == [(batch_id, "expired")]
+    assert not tentacle.pendings
 
 
 @pytest.mark.parametrize("resumed", [False, True])

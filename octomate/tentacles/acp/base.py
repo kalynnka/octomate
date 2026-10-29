@@ -59,7 +59,7 @@ from octomate.schemas.segments import TextSegment
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.acp.adapter import json_value_adapter
 from octomate.tentacles.acp.client import AcpProvider, NativeAcpClient, NativeAcpSession
-from octomate.tentacles.acp.elicitation import AcpForm
+from octomate.tentacles.acp.elicitation import AcpForm, AcpFormValidationError
 from octomate.tentacles.acp.history import AcpHistory
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.utils import drain_task
@@ -612,7 +612,8 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         """Collect partial card replies without ending the provider's live request.
 
         Timeout or transport cancellation expires the batch so a late reply cannot
-        be delivered to another request. Each answered card settles immediately.
+        be delivered to another request. Forms keep draft answers editable until
+        an explicit submission passes validation.
         """
         batch_id = uuid7()
         future: asyncio.Future[DeferredActionBatchResponse] = (
@@ -622,19 +623,18 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         try:
             updates.put_nowait(await suspender.pause(requests, batch_id=batch_id))
             batch: DeferredActionBatch | None = None
+            complete = False
             async with asyncio.timeout(self.approval_timeout):
-                while batch is None or not (
-                    batch.completed
-                    or (
-                        form is not None
-                        and form.decision(batch) in {"Decline", "Cancel"}
-                    )
-                ):
+                while not complete:
                     response = await future
                     future = asyncio.get_running_loop().create_future()
                     self.pendings[batch_id] = future
-                    batch = await self.octomate.deferred_actions.resolve_batch(response)
-                    updates.put_nowait(ActionBatchAnsweredEvent.of(response))
+                    batch = await self.octomate.deferred_actions.resolve_batch(
+                        response, finalize=form is None
+                    )
+                    complete = await self.review_response(
+                        batch, response, form, updates
+                    )
             return batch
         except (TimeoutError, asyncio.CancelledError) as error:
             cancelled = await drain_task(
@@ -648,6 +648,36 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         finally:
             self.pendings.pop(batch_id, None)
             future.cancel()
+
+    async def review_response(
+        self,
+        batch: DeferredActionBatch,
+        response: DeferredActionBatchResponse,
+        form: AcpForm | None,
+        updates: asyncio.Queue[
+            StreamEvent | ActionBatchEvent | ActionBatchAnsweredEvent | None
+        ],
+    ) -> bool:
+        """Settle permission replies; keep form drafts open until a valid submission."""
+        if form is None:
+            updates.put_nowait(ActionBatchAnsweredEvent.of(response))
+            return batch.completed
+        decision = form.decision(batch)
+        if decision in {"Decline", "Cancel"}:
+            return True
+        if decision != "Submit":
+            await self.octomate.deferred_actions.publish_update(batch)
+            return False
+        try:
+            form.content(batch)
+        except AcpFormValidationError as error:
+            control = max(batch.questions, key=lambda action: action.position)
+            await self.octomate.deferred_actions.review_questions(
+                batch.id, errors=error.errors, reset=control.id
+            )
+            return False
+        await self.octomate.deferred_actions.submit_questions(batch.id)
+        return True
 
     @asynccontextmanager
     async def mcp_servers(

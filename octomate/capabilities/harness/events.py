@@ -437,6 +437,16 @@ class ActionBatchEvent(BaseModel):
         )
 
 
+class ActionBatchUpdatedEvent(BaseModel):
+    """Persisted draft feedback or closure changed; readers refresh existing cards."""
+
+    event_kind: Literal["action_batch_updated"] = "action_batch_updated"
+    batch_id: str
+    closed: bool
+    questions: list[DeferredQuestion]
+    approvals: list[DeferredApproval]
+
+
 class ActionBatchAnsweredEvent(BaseModel):
     """A batch's actions answered, from whichever surface answered them: every
     reader still showing the batch's cards marks them, so a card answered in one
@@ -468,6 +478,7 @@ type StreamEvents[OutputT] = (
     | OAuthAuthorizationEvent
     | ActionBatchEvent
     | ActionBatchAnsweredEvent
+    | ActionBatchUpdatedEvent
     | SubagentStartedEvent
     | SubagentSettledEvent
 )
@@ -500,6 +511,7 @@ type WireEvent = (
     | OAuthAuthorizationEvent
     | ActionBatchEvent
     | ActionBatchAnsweredEvent
+    | ActionBatchUpdatedEvent
     | SubagentStartedEvent
     | SubagentSettledEvent
     | RunResultEvent

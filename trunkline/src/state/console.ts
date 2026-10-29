@@ -20,6 +20,7 @@ import { api, resolveBatch, sendDirective } from '@/lib/api'
 import { castGateway, executeCommand, fetchThreads, watchThread } from '@/lib/api/client'
 import type {
   ActionBatchAnsweredEvent,
+  ActionBatchUpdatedEvent,
   ApiCommandDescriptor,
   BatchResponseBody,
   ChannelAddress,
@@ -31,7 +32,7 @@ import type {
   WireEvent,
 } from '@/lib/api/events'
 import { queryClient } from '@/lib/queryClient'
-import { TurnFold } from '@/lib/api/fold'
+import { batchFeelers, TurnFold } from '@/lib/api/fold'
 import { channelMeta, holdingBack, withOlderPage } from '@/lib/api/live'
 import { useAuth } from '@/state/auth'
 import { COMMAND_CONTROLS } from '@/features/chat/commands'
@@ -535,7 +536,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       return { ...it, state: event.approvals[it.actionId] ? 'approved' : 'dismissed', resolvedT: t }
     }
     const questions = it.questions.map((q) => (q.actionId !== undefined && q.actionId in event.answers ? { ...q, answer: event.answers[q.actionId] } : q))
-    return { ...it, state: 'answered', questions, resolvedT: t }
+    return { ...it, state: 'waiting', questions, resolvedT: t }
   }
   const markAnswered = (thId: string, event: ActionBatchAnsweredEvent) => {
     const mark = answeredBy(event)
@@ -544,6 +545,19 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     }
     const kept = parked.get(thId)
     if (kept) parked.set(thId, kept.map(mark))
+  }
+  const updateBatch = (thId: string, event: ActionBatchUpdatedEvent) => {
+    const cards = batchFeelers(event.batch_id, event.questions, event.approvals, event.closed)
+    const update = (item: LedgerItem): LedgerItem => {
+      if ((item.kind !== 'ask' && item.kind !== 'approval') || item.batchId !== event.batch_id) return item
+      const card = cards.find(card => card.kind === item.kind && (card.kind !== 'approval' || item.kind !== 'approval' || card.actionId === item.actionId))
+      return card ? { ...item, ...card } as LedgerItem : item
+    }
+    if (get().selThreadId === thId) {
+      set(s => ({ detail: s.detail && { ...s.detail, ledger: s.detail.ledger.map(update) }, live: s.live.map(update) }))
+    }
+    const kept = parked.get(thId)
+    if (kept) parked.set(thId, kept.map(update))
   }
 
   // The socket on the open thread, of whichever channel: it carries a run kicked
@@ -623,6 +637,8 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         reflex = false
       } else if (event.event_kind === 'action_batch_answered') {
         markAnswered(thId, event)
+      } else if (event.event_kind === 'action_batch_updated') {
+        updateBatch(thId, event)
       } else {
         fold?.feed(event)
       }
@@ -790,6 +806,10 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       if (event.event_kind === 'run_ended') return
       if (event.event_kind === 'action_batch_answered') {
         markAnswered(selId, event)
+        return
+      }
+      if (event.event_kind === 'action_batch_updated') {
+        updateBatch(selId, event)
         return
       }
       if (intercept?.(event)) return
@@ -1238,7 +1258,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       const questions = card.questions.map((q, index) => ({ ...q, answer: answers[index] }))
       const mark = (it: LedgerItem): LedgerItem =>
         it.uid === uid && it.kind === 'ask'
-          ? { ...it, state: 'answered' as const, questions, via, resolvedT: t }
+          ? { ...it, state: card.batchId ? 'waiting' : 'answered', questions, via, resolvedT: t }
           : it
       set((s) => ({
         detail: s.detail && { ...s.detail, ledger: s.detail.ledger.map(mark) },

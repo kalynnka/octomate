@@ -29,6 +29,7 @@ from pydantic import (
     Field,
     TypeAdapter,
 )
+from pydantic.json_schema import SkipJsonSchema
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from uuid_utils.compat import uuid7
 
@@ -72,6 +73,8 @@ class QuestionRequest(TypedDict):
         ]
     ]
     hint: NotRequired[str]
+    # Presentation state is supplied by the owner, never requested from an LLM.
+    error: NotRequired[SkipJsonSchema[str]]  # Feedback beside the editable answer.
     multi_select: NotRequired[
         Annotated[
             bool,
@@ -271,6 +274,11 @@ class DeferredActionBatch(BaseTransmuter):
 
     questions: RelationCollection[DeferredQuestion] = Relationships()
     approvals: RelationCollection[DeferredApproval] = Relationships()
+
+    @property
+    def closed(self) -> bool:
+        """Whether the batch can no longer accept user input."""
+        return self.status != "pending"
 
     @property
     def completed(self) -> bool:

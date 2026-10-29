@@ -6,14 +6,17 @@ import json
 import pytest
 from acp import schema
 from anyio import Path as AsyncPath
-from pydantic import SecretStr
+from pydantic import SecretStr, TypeAdapter
 
 from octomate.capabilities.harness.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
+    ActionBatchUpdatedEvent,
 )
+from octomate.nerve import ChannelTopic
 from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.awakes import DeferredActionBatchResponse
+from octomate.schemas.deferred import QuestionRequest
 from octomate.schemas.thread import Thread
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.acp.base import AcpAgentTentacle
@@ -21,6 +24,12 @@ from octomate.tentacles.acp.elicitation import AcpForm, FormProperty
 from octomate.types.json import JsonObject
 from tests.agent.test_acp_client import adapter_environment as adapter_environment
 from tests.agent.test_acp_tentacle import agent as agent
+
+
+def test_form_presentation_state_is_not_advertised_to_question_tools() -> None:
+    properties = TypeAdapter(QuestionRequest).json_schema()["properties"]
+    assert "editable" not in properties
+    assert "error" not in properties
 
 
 @pytest.fixture
@@ -40,7 +49,81 @@ def suspender(agent: tuple[AcpAgentTentacle, UserProfile, Thread]) -> ReflexSusp
     )
 
 
-async def test_form_roundtrip_collects_partial_answers(
+async def test_form_can_correct_invalid_answers_and_revise_drafts_before_submit(
+    agent: tuple[AcpAgentTentacle, UserProfile, Thread],
+    suspender: ReflexSuspender,
+) -> None:
+    tentacle, _, _ = agent
+    updates = asyncio.Queue()
+    request = schema.CreateFormSessionElicitationRequest.model_validate(
+        {
+            "sessionId": "native-1",
+            "mode": "form",
+            "message": "Choose settings",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "count": {"type": "integer", "minimum": 1},
+                    "note": {"type": "string"},
+                },
+                "required": ["count"],
+            },
+        }
+    )
+    task = asyncio.create_task(tentacle.elicit(request, suspender, updates))
+    async with asyncio.timeout(5):
+        event = await updates.get()
+        assert isinstance(event, ActionBatchEvent)
+        count, note, control = event.questions
+        assert count.batch_id is not None
+        manager = tentacle.octomate.deferred_actions
+        topic = ChannelTopic(suspender.target_address.channel_tentacle_id)
+        with tentacle.octomate.nerve.subscribe(topic) as changes:
+            await tentacle.octomate.kick(
+                DeferredActionBatchResponse(
+                    batch_id=count.batch_id,
+                    answers={count.id: "0", note.id: "keep this", control.id: "Submit"},
+                )
+            )
+            update = (await changes.receive()).event
+            assert isinstance(update, ActionBatchUpdatedEvent)
+            assert not update.closed
+            assert update.questions[0].args.get("error")
+            assert update.questions[-1].result is None
+            assert not task.done()
+
+            # A corrected field alone does not implicitly resubmit the form.
+            await tentacle.octomate.kick(
+                DeferredActionBatchResponse(
+                    batch_id=count.batch_id, answers={count.id: "2"}
+                )
+            )
+            update = (await changes.receive()).event
+            assert isinstance(update, ActionBatchUpdatedEvent)
+            assert not update.closed
+            saved = await manager.get_batch(count.batch_id)
+            assert saved.status == "pending"
+            assert saved.questions[0].result == "2"
+            assert "error" not in saved.questions[0].args
+            assert not task.done()
+
+            await tentacle.octomate.kick(
+                DeferredActionBatchResponse(
+                    batch_id=count.batch_id,
+                    answers={count.id: "3", control.id: "Submit"},
+                )
+            )
+            response = await task
+            assert isinstance(response, schema.AcceptElicitationResponse)
+            assert response.content == {"count": 3, "note": "keep this"}
+            update = (await changes.receive()).event
+            assert isinstance(update, ActionBatchUpdatedEvent)
+            assert update.closed
+            assert all(action.status == "answered" for action in update.questions)
+    assert not tentacle.pendings
+
+
+async def test_form_roundtrip_preserves_typed_answers(
     agent: tuple[AcpAgentTentacle, UserProfile, Thread],
     suspender: ReflexSuspender,
     adapter_environment: dict[str, str],
@@ -95,17 +178,22 @@ async def test_form_roundtrip_collects_partial_answers(
                 answered += 1
             else:
                 continue
-            if answered == 4:
+            if answered:
                 continue
             assert batch is not None
             assert batch.questions[0].batch_id is not None
             await tentacle.octomate.kick(
                 DeferredActionBatchResponse(
                     batch_id=batch.questions[0].batch_id,
-                    answers={batch.questions[answered].id: answers[answered]},
+                    answers={
+                        question.id: answer
+                        for question, answer in zip(
+                            batch.questions, answers, strict=True
+                        )
+                    },
                 )
             )
-    assert answered == 4
+    assert answered == 0
     assert not tentacle.pendings
     messages = [
         json.loads(line)["message"]

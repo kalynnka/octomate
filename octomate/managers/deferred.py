@@ -3,17 +3,19 @@ for a human — and their resolution from replies."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from arcanus import RelationCollection
 from arcanus.materia.sqlalchemy import noload
 from pydantic import UUID7
 from pydantic_ai.tools import DeferredToolRequests
-from sqlalchemy import update
 from uuid_utils.compat import uuid7
 
+from octomate.capabilities.harness.events import ActionBatchUpdatedEvent
 from octomate.database import async_session
 from octomate.managers.base import Manager
+from octomate.nerve import Impulse, Nerve
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
@@ -28,8 +30,26 @@ from octomate.telemetry import deferred_logfire
 from octomate.types.deferred import DeferredBatchStatus, DeferredResponseMode
 
 
+@dataclass
 class DeferredActionManager(Manager):
     """Persists deferred-action batches and resolves them from user replies."""
+
+    nerve: Nerve = field(default_factory=Nerve)
+
+    async def publish_update(self, batch: DeferredActionBatch) -> None:
+        """Announce committed state to every existing reader of this batch."""
+        async with self.nerve.publish(batch.source_address) as stream:
+            await stream.send(
+                Impulse(
+                    ActionBatchUpdatedEvent(
+                        batch_id=str(batch.id),
+                        closed=batch.closed,
+                        questions=list(batch.questions),
+                        approvals=list(batch.approvals),
+                    ),
+                    batch.target_address,
+                )
+            )
 
     async def create_batch(
         self,
@@ -129,7 +149,14 @@ class DeferredActionManager(Manager):
     async def resolve_batch(
         self,
         awake: DeferredActionBatchResponse,
+        *,
+        finalize: bool = True,
     ) -> DeferredActionBatch:
+        """Apply replies, allowing question answers to change while the batch is open.
+
+        With finalize=False, save question drafts without marking them answered;
+        the owner validates them before calling submit_questions.
+        """
         with deferred_logfire.span(
             "deferred.resolve_batch",
             batch_id=str(awake.batch_id),
@@ -142,10 +169,12 @@ class DeferredActionManager(Manager):
                     raise ValueError(f"unknown deferred action batch {awake.batch_id}")
                 await batch.questions
                 await batch.approvals
-                if batch.status in {"completed", "resuming"}:
+                if batch.status in {"resolved", "completed", "resuming"}:
                     span.set_attribute("batch.status", batch.status)
                     span.set_attribute("batch.completed", batch.completed)
                     return batch
+                if batch.status in {"expired", "superseded", "failed"}:
+                    raise ValueError(f"batch already {batch.status}")
                 questions_by_id = {action.id: action for action in batch.questions}
                 approvals_by_id = {action.id: action for action in batch.approvals}
                 now = datetime.now(UTC)
@@ -157,12 +186,15 @@ class DeferredActionManager(Manager):
                             f"unknown deferred action {action_id} in batch "
                             f"{awake.batch_id}"
                         )
-                    if action.status != "pending":
+                    if action.status not in {"pending", "answered"}:
                         continue
-                    action.status = "answered"
+                    action.status = "answered" if finalize else "pending"
+                    args = action.args.copy()
+                    args.pop("error", None)
+                    action.args = args
                     action.result = answer
                     action.responder_id = awake.responder_id or None
-                    action.resolved_at = now
+                    action.resolved_at = now if finalize else None
                     action.updated_at = now
 
                 for action_id, approved in awake.approvals.items():
@@ -190,7 +222,51 @@ class DeferredActionManager(Manager):
                 await session.commit()
                 span.set_attribute("batch.status", batch.status)
                 span.set_attribute("batch.completed", batch.completed)
-                return batch
+            if batch.closed:
+                await self.publish_update(batch)
+            return batch
+
+    async def review_questions(
+        self, batch_id: UUID7, *, errors: dict[UUID7, str], reset: UUID7
+    ) -> DeferredActionBatch:
+        """Keep invalid fields editable and require an explicit resubmission."""
+        async with async_session() as session:
+            batch = await session.one(DeferredActionBatch, id=batch_id)
+            if batch.closed:
+                raise ValueError(f"batch already {batch.status}")
+            await batch.questions
+            now = datetime.now(UTC)
+            for action in batch.questions:
+                args = action.args.copy()
+                args.pop("error", None)
+                if action.id in errors:
+                    args["error"] = errors[action.id]
+                action.args = args
+                action.updated_at = now
+                if action.id == reset:
+                    action.result = None
+            batch.updated_at = now
+            await session.commit()
+        await self.publish_update(batch)
+        return batch
+
+    async def submit_questions(self, batch_id: UUID7) -> DeferredActionBatch:
+        """Finalize an owner's validated draft answers, including omitted fields."""
+        async with async_session() as session:
+            batch = await session.one(DeferredActionBatch, id=batch_id)
+            if batch.closed:
+                raise ValueError(f"batch already {batch.status}")
+            await batch.questions
+            now = datetime.now(UTC)
+            for action in batch.questions:
+                action.status = "answered"
+                action.resolved_at = now
+                action.updated_at = now
+            batch.status = "resolved"
+            batch.updated_at = now
+            await session.commit()
+        await self.publish_update(batch)
+        return batch
 
     async def mark_action_presented(
         self,
@@ -206,6 +282,12 @@ class DeferredActionManager(Manager):
             action.platform_message_id = platform_message_id
             action.updated_at = datetime.now(UTC)
             await session.commit()
+            batch_id = action.batch_id
+        if batch_id is not None:
+            batch = await self.get_batch(batch_id)
+            # The request can close while its initial card is still being sent.
+            if batch.closed:
+                await self.publish_update(batch)
 
     async def mark_batch(
         self,
@@ -223,19 +305,33 @@ class DeferredActionManager(Manager):
             batch.updated_at = now
             if completed:
                 batch.completed_at = now
+            if status in {"completed", "expired", "superseded", "failed"}:
+                await batch.questions
+                await batch.approvals
+                pending = [
+                    action
+                    for action in [*batch.questions, *batch.approvals]
+                    if action.status == "pending"
+                ]
+                for action in pending:
+                    action.status = "failed" if status == "failed" else "expired"
+                    action.resolved_at = now
+                    action.updated_at = now
             await session.commit()
+        if batch.closed:
+            await self.publish_update(batch)
 
     async def expire_live(self) -> None:
         """Expire every live request still pending. Its waiter lived in the process
         that asked, so after a restart a reply has nowhere to go; expired, the reply
         is refused rather than accepted and lost."""
         async with async_session() as session:
-            await session.execute(
-                update(DeferredActionBatch)
-                .where(
+            batches = await session.list(
+                DeferredActionBatch,
+                expressions=[
                     DeferredActionBatch["response_mode"] == "live",
                     DeferredActionBatch["status"] == "pending",
-                )
-                .values(status="expired", updated_at=datetime.now(UTC))
+                ],
             )
-            await session.commit()
+        for batch in batches:
+            await self.mark_batch(batch.id, "expired")
