@@ -75,3 +75,14 @@ class AcpAgentConfig(AgentConfig):
     provider: AcpProvider = Field(
         description="Installed ACP harness to run as an agent.",
     )
+    permission_mode: str | None = Field(
+        default=None,
+        description="Default mode id advertised by the ACP provider. None preserves "
+        "the provider's mode; conversation selections override this default.",
+    )
+    approval_timeout: float | None = Field(
+        default=3600.0,
+        gt=0,
+        description="Seconds to wait for an ACP permission or form answer before "
+        "expiring its batch and cancelling the request. None waits indefinitely.",
+    )

@@ -161,6 +161,8 @@ def create_app() -> Octomate:
                     octomate=octomate,
                     provider=tentacle_config.provider,
                     gateway=tentacle_config.gateway,
+                    permission_mode=tentacle_config.permission_mode,
+                    approval_timeout=tentacle_config.approval_timeout,
                 )
             case InklingConfig():
                 tentacle = build_inkling(

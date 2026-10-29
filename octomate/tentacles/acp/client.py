@@ -24,6 +24,7 @@ from acp.utils import request_model
 from pydantic import JsonValue
 
 from octomate.config.acp import AcpProvider
+from octomate.types.permissions import PermissionMode
 
 type AcpClientHandler = Callable[
     [str, JsonValue | None, bool], Awaitable[JsonValue | None]
@@ -46,6 +47,79 @@ class NativeAcpSession[
     cwd: str  # Canonical server workspace path.
     session_id: str  # Native identity supplied by creation or an authorized reopen.
     response: ResponseT  # Includes provider modes and extensions.
+
+    @property
+    def mode_option(self) -> schema.SessionConfigOptionSelect | None:
+        """Prefer the mode config selector over the legacy session modes API."""
+        return next(
+            (
+                option
+                for option in self.response.config_options or []
+                if isinstance(option, schema.SessionConfigOptionSelect)
+                and option.category == "mode"
+            ),
+            None,
+        )
+
+    @property
+    def permission_modes(self) -> tuple[PermissionMode, ...]:
+        """Keep provider mode ids, labels, and scope descriptions intact."""
+        if (option := self.mode_option) is not None:
+            return tuple(
+                PermissionMode(
+                    value=value.value, name=value.name, description=value.description
+                )
+                for entry in option.options
+                for value in (
+                    entry.options
+                    if isinstance(entry, schema.SessionConfigSelectGroup)
+                    else [entry]
+                )
+            )
+        return (
+            tuple(
+                PermissionMode(
+                    value=mode.id, name=mode.name, description=mode.description
+                )
+                for mode in self.response.modes.available_modes
+            )
+            if self.response.modes is not None
+            else ()
+        )
+
+    @property
+    def permission_mode(self) -> str | None:
+        if (option := self.mode_option) is not None:
+            return option.current_value
+        return self.response.modes.current_mode_id if self.response.modes else None
+
+    async def select_mode(self, connection: Connection, mode: str | None) -> None:
+        """Apply an explicit provider mode before prompting, including on reload."""
+        if mode is None:
+            return
+        if mode not in {option.value for option in self.permission_modes}:
+            raise ValueError(f"The ACP session does not offer mode {mode!r}")
+        if mode == self.permission_mode:
+            return
+        if (option := self.mode_option) is not None:
+            response = await request_model(
+                connection,
+                acp.AGENT_METHODS["session_set_config_option"],
+                schema.SetSessionConfigOptionSelectRequest(
+                    session_id=self.session_id, config_id=option.id, value=mode
+                ),
+                schema.SetSessionConfigOptionResponse,
+            )
+            self.response.config_options = response.config_options
+            return
+        await request_model(
+            connection,
+            acp.AGENT_METHODS["session_set_mode"],
+            schema.SetSessionModeRequest(session_id=self.session_id, mode_id=mode),
+            schema.SetSessionModeResponse,
+        )
+        assert self.response.modes is not None
+        self.response.modes.current_mode_id = mode
 
     @property
     def model_option(self) -> schema.SessionConfigOptionSelect | None:
