@@ -140,6 +140,7 @@ export interface AskQuestion {
   /** several options may be picked together */
   multiSelect: boolean
   answer?: AskAnswer
+  error?: string
   /** live deferred-action id; present when the card answers a real batch */
   actionId?: string
   /** The harness's question id, used to match a native tool result. */
@@ -195,7 +196,7 @@ export type LedgerItem =
       tool: string
       /** e.g. "Edit · approval resumes the run" */
       meta: string
-      state: 'waiting' | 'approved' | 'dismissed'
+      state: 'waiting' | 'approved' | 'dismissed' | 'closed'
       resolvedT?: string
       /** live deferred-action ids; present when the card answers a real batch */
       batchId?: string
@@ -211,7 +212,7 @@ export type LedgerItem =
       tool: string
       /** e.g. "ask_human · answer resumes the run" */
       meta: string
-      state: 'waiting' | 'answered' | 'failed'
+      state: 'waiting' | 'answered' | 'failed' | 'closed'
       via?: string
       resolvedT?: string
       /** live deferred-action batch; present when the card answers a real batch */
@@ -356,6 +357,8 @@ export interface ThreadDetail {
   usage: ThreadUsage
   /** the context the last turn ran with, in kilotokens; 0 when none reported one */
   ctxK: number
+  /** harness-reported context capacity in tokens; null or absent when unknown */
+  contextWindow?: number | null
 }
 
 export interface ThreadUsage {

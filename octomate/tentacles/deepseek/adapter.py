@@ -109,13 +109,16 @@ class NativeToolState:
 
 
 def map_usage(usage: DeepseekUsage) -> RequestUsage:
+    """Include dsh's separate cache buckets in Pydantic AI's input total."""
     details = (
         {"reasoning_tokens": usage.reasoning_tokens}
         if usage.reasoning_tokens is not None
         else {}
     )
     return RequestUsage(
-        input_tokens=usage.input_tokens,
+        input_tokens=usage.input_tokens
+        + (usage.cache_read_tokens or 0)
+        + (usage.cache_write_tokens or 0),
         output_tokens=usage.output_tokens,
         cache_read_tokens=usage.cache_read_tokens or 0,
         cache_write_tokens=usage.cache_write_tokens or 0,
@@ -161,7 +164,7 @@ class DeepseekRunAccumulator:
     persisted `ModelMessage` history, mirroring `CodexRunAccumulator`.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, context_window: int | None = None) -> None:
         self.messages: list[ModelMessage] = []
         self.usage = RunUsage()
         self.result_text = ""
@@ -171,6 +174,10 @@ class DeepseekRunAccumulator:
         self.turn_error: str | None = None
         self.finish_reason: FinishReason | None = None
         self.route: ModelRoute | None = None
+        self.context_used: int | None = None  # Last request's input tokens.
+        self.context_window: int | None = (
+            context_window  # Persists until request/context changes it.
+        )
         self.part_index = 0
         # Parts of the in-flight assistant response: `current` is receiving
         # deltas, `closed_parts` have ended and await the message commit. dsh
@@ -211,10 +218,11 @@ class DeepseekRunAccumulator:
         elif event.type == "tool/result":
             yield from self.consume_tool_result(event, payload)
         elif event.type == "request/context":
-            route = request_route_of(event)
-            if route is not None:
-                self.route = route
             self.pending_events.append(payload)
+            context = request_route_of(event)
+            if context is not None:
+                self.route = context
+                self.context_window = context.context_window
         elif event.type == "turn/end":
             yield from self.consume_turn_end(event, payload)
         else:
@@ -467,6 +475,7 @@ class DeepseekRunAccumulator:
                 "model": self.route.model,
             }
         self.messages.append(response)
+        self.context_used = usage.input_tokens if usage is not None else None
         if usage is not None:
             self.usage.incr(usage)
         self.usage.requests += 1

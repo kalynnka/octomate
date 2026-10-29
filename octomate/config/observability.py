@@ -53,6 +53,12 @@ class LogfireConfig(BaseModel):
     service_name: str = "octomate"
     environment: str = "development"
     send_to_logfire: bool = False
+    base_url: str | None = Field(
+        default=None,
+        description="Ingest base URL override: a reverse proxy that forwards to "
+        "the Logfire region host. Native harness OTLP exporters use the same "
+        "destination. None uses the token's region.",
+    )
     console: bool = False
     scrub: bool = True
     instrument: LogfireInstrumentConfig = Field(

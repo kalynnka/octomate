@@ -595,6 +595,7 @@ async def test_consume_appends_todo_checklist_to_final_message(
 
 async def test_consume_renders_and_marks_action_batch(
     channel: FakeChannelTentacle,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     question = DeferredQuestion(
         tool_name="ask_questions",
@@ -607,8 +608,10 @@ async def test_consume_renders_and_marks_action_batch(
         args=ApprovalRequest(tool_name="do_thing"),
     )
     actions = RecordingDeferredActions()
-    channel = FakeChannelTentacle(
-        id="chan1", octomate=FakeOctomate(deferred_actions=actions)
+    monkeypatch.setattr(
+        channel.octomate.deferred_actions,
+        "mark_action_presented",
+        actions.mark_action_presented,
     )
 
     async def events() -> AsyncIterator[
@@ -632,6 +635,7 @@ async def test_consume_renders_and_marks_action_batch(
 
 async def test_consume_renders_streamed_deferred_requests_once(
     channel: FakeChannelTentacle,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     question = DeferredQuestion(
         tool_name="ask_questions",
@@ -644,8 +648,10 @@ async def test_consume_renders_streamed_deferred_requests_once(
         args=ApprovalRequest(tool_name="do_thing"),
     )
     actions = RecordingDeferredActions()
-    channel = FakeChannelTentacle(
-        id="chan1", octomate=FakeOctomate(deferred_actions=actions)
+    monkeypatch.setattr(
+        channel.octomate.deferred_actions,
+        "mark_action_presented",
+        actions.mark_action_presented,
     )
 
     await drive(

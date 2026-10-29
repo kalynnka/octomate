@@ -52,11 +52,8 @@ export function SessionBar() {
       ? 'Σ in 0 · cache 0 (—) · out 0'
       : '—'
   const ctxK = fresh ? 0 : detail?.ctxK
-  // The relay does not report the window a run had, and a run does not record
-  // its model. A turn carrying more than 200k was not on a 200k model, and the
-  // only larger one is 1M — so the reading picks between the two it can be.
-  const window = ctxK !== undefined && ctxK > 200 ? 1000 : 200
-  const ctxW = ctxK === undefined ? '0%' : `${Math.min(100, Math.round((ctxK / window) * 100))}%`
+  const contextWindow = fresh ? null : detail?.contextWindow
+  const ctxW = ctxK === undefined || !contextWindow ? '0%' : `${Math.min(100, Math.round((ctxK * 1000 / contextWindow) * 100))}%`
   const msgChip = `${detail?.msgCount ?? 0} msg`
 
   const chip = (title: string, children: React.ReactNode, extra?: React.CSSProperties) => (
@@ -127,7 +124,7 @@ export function SessionBar() {
             >
               <i style={{ width: ctxW, background: 'var(--color-ghost)' }} />
             </i>
-            {ctxK === undefined ? '—' : `${count(ctxK * 1000)}`}/{window === 1000 ? '1M' : '200k'}
+            {ctxK === undefined ? '—' : `${count(ctxK * 1000)}`}/{contextWindow ? count(contextWindow) : '—'}
           </>
         ))}
         {vline}

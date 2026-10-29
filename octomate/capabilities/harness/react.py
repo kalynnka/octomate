@@ -103,6 +103,7 @@ class RunPersistence:
     cwd: Path | None
     binds_prompt_sources: bool
     permission_mode: AgentPermissionMode | None
+    context_window: int | None = None  # Capacity of the last request's model.
 
     async def record(
         self,
@@ -111,12 +112,24 @@ class RunPersistence:
         *,
         model_name: str | None,
     ) -> PersistedAgentRun | None:
+        last_usage = next(
+            (
+                message.usage
+                for message in reversed(messages)
+                if isinstance(message, ModelResponse)
+            ),
+            None,
+        )
         recorded_run = await self.conversation_manager.record_agent_run(
             self.conversation,
             run_id=run_id,
             messages=messages,
             name=self.run_name,
             model_name=model_name,
+            context_window=self.context_window,
+            context_used=last_usage.input_tokens
+            if last_usage is not None and last_usage.has_values()
+            else None,
             permission_mode=self.permission_mode,
             cwd=self.cwd,
         )
@@ -159,6 +172,14 @@ class PersistRunFailure[ReactDepsT](AbstractCapability[ReactDepsT]):
     persistence: RunPersistence
     previous_message_count: int
     recorded: bool = False
+
+    async def before_model_request(
+        self,
+        ctx: RunContext[ReactDepsT],
+        request_context: ModelRequestContext,
+    ) -> ModelRequestContext:
+        self.persistence.context_window = ctx.model.context_window
+        return request_context
 
     async def record_failure(self, ctx: RunContext[ReactDepsT]) -> None:
         if self.recorded:

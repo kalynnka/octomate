@@ -21,6 +21,7 @@ from octomate.schemas.artifacts import ArtifactOverview
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.lark import LarkTentacle
 from tests.support.channels import drive
+from tests.support.deferred import CardUpdateScenario, replay_card_updates
 from tests.support.scenarios import (
     action_batch,
     agent_run,
@@ -147,6 +148,20 @@ async def test_lark_renders_action_batch(
         await drive(channel, address, play(script))
 
     assert "timeline render failed" not in caplog.text
+
+
+@pytest.mark.parametrize("scenario", ["answered", "corrected", "expired"])
+async def test_lark_renders_scripted_card_updates(
+    lark_channel: tuple[LarkTentacle, ChannelAddress],
+    scenario: CardUpdateScenario,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channel, address = lark_channel
+    with caplog.at_level("WARNING"):
+        batch = await replay_card_updates(channel, address, scenario)
+
+    assert batch.status == ("expired" if scenario == "expired" else "resolved")
+    assert not [r for r in caplog.records if r.name.startswith("octomate")]
 
 
 async def test_lark_renders_recorded_question_batch(

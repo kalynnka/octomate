@@ -1,0 +1,550 @@
+"""Phase 4 — the Claude approval/question bridge.
+
+A live Claude session blocks on `can_use_tool` (tool approvals) or a PreToolUse
+`AskUserQuestion` hook (questions); the tentacle presents cards through the
+channel, parks a future, and resolves it when the human response reaches
+`Octomate.kick`. These tests drive the run in a task and deliver the response
+out-of-band, the way a card button click would.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from typing import ClassVar, cast
+
+import pytest
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    HookContext,
+    HookInput,
+    PermissionResultAllow,
+    PermissionResultDeny,
+    ResultMessage,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
+)
+from claude_agent_sdk.types import Message, ToolPermissionContext
+from pydantic import UUID7, SecretStr
+from pydantic_ai.tools import DeferredToolRequests
+from uuid_utils.compat import uuid7
+
+from octomate import Octomate
+from octomate.capabilities.harness.events import ActionBatchEvent
+from octomate.capabilities.harness.react import ReactStreamEvent
+from octomate.config.agents import ClaudeCodeConfig
+from octomate.managers.deferred import DeferredActionManager
+from octomate.schemas.awakes import DeferredActionBatchResponse
+from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.deferred import (
+    MAX_QUESTION_CHOICES,
+    ApprovalRequest,
+    DeferredApproval,
+    DeferredQuestion,
+)
+from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import ink as claude_ink
+from tests.support.managers import (
+    FakeConversation,
+    FakeConversationManager,
+    FakePresentedBatch,
+    RecordingSuspender,
+)
+
+KEY = ChannelAddress(
+    channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
+)
+
+HOOK_SECRET = SecretStr("test-hook-secret")
+_THREAD = uuid7()
+
+
+@dataclass
+class RecordingDeferredActions:
+    batch: FakePresentedBatch
+
+    async def get_batch(self, batch_id: UUID7) -> FakePresentedBatch:
+        assert self.batch.id == batch_id
+        return self.batch
+
+    resolved: list[DeferredActionBatchResponse] = field(default_factory=list)
+    marked: list[tuple[UUID7, str]] = field(default_factory=list)
+
+    async def resolve_batch(self, awake: DeferredActionBatchResponse) -> None:
+        self.resolved.append(awake)
+
+    async def mark_batch(
+        self, batch_id: UUID7, status: str, *, completed: bool = False
+    ) -> None:
+        self.marked.append((batch_id, status))
+
+
+class ScriptedClaudeClient:
+    """Configurable `ClaudeSDKClient` stand-in. `mode="approval"` drives one
+    gated Bash call through `can_use_tool`; `mode="question"` drives the
+    AskUserQuestion PreToolUse hook. The SDK's decision is recorded for assertion."""
+
+    mode: str = "approval"
+    last_options: ClaudeAgentOptions | None = None
+    decisions: ClassVar[list[object]] = []
+    # Option labels the AskUserQuestion hook is fed; overridden to exercise
+    # truncation when a question offers more than the choice cap.
+    question_option_labels: ClassVar[list[str]] = ["A", "B"]
+    question_multi_select: ClassVar[bool] = False
+
+    def __init__(
+        self, options: ClaudeAgentOptions | None = None, transport: object = None
+    ) -> None:
+        ScriptedClaudeClient.last_options = options
+        ScriptedClaudeClient.decisions = []
+        self.options = options
+
+    async def __aenter__(self) -> ScriptedClaudeClient:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def query(self, prompt: str) -> None:
+        return None
+
+    async def receive_response(self) -> AsyncIterator[Message]:
+        assert self.options is not None
+        if ScriptedClaudeClient.mode in ("approval", "approval_twice"):
+            can_use_tool = self.options.can_use_tool
+            assert can_use_tool is not None
+            calls = 2 if ScriptedClaudeClient.mode == "approval_twice" else 1
+            for index in range(calls):
+                tool_use_id = f"t{index + 1}"
+                yield AssistantMessage(
+                    content=[
+                        ToolUseBlock(
+                            id=tool_use_id, name="Bash", input={"command": "ls"}
+                        )
+                    ],
+                    model="m",
+                )
+                result = await can_use_tool(
+                    "Bash",
+                    {"command": "ls"},
+                    ToolPermissionContext(tool_use_id=tool_use_id),
+                )
+                ScriptedClaudeClient.decisions.append(result)
+                denied = isinstance(result, PermissionResultDeny)
+                yield UserMessage(
+                    content=[
+                        ToolResultBlock(
+                            tool_use_id=tool_use_id, content="x", is_error=denied
+                        )
+                    ]
+                )
+        else:
+            assert self.options.hooks is not None
+            hook = self.options.hooks["PreToolUse"][0].hooks[0]
+            hook_input = cast(
+                HookInput,
+                {
+                    "tool_input": {
+                        "questions": [
+                            {
+                                "question": "Pick one",
+                                "options": [
+                                    {"label": label, "description": ""}
+                                    for label in self.question_option_labels
+                                ],
+                                "multiSelect": self.question_multi_select,
+                            }
+                        ]
+                    }
+                },
+            )
+            output = await hook(hook_input, "q1", cast(HookContext, {}))
+            ScriptedClaudeClient.decisions.append(output)
+        yield AssistantMessage(content=[TextBlock(text="done")], model="m")
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="s1",
+            result="done",
+        )
+
+
+def _build(
+    batch: FakePresentedBatch,
+    *,
+    config: ClaudeCodeConfig | None = None,
+    conversation: FakeConversation | None = None,
+) -> tuple[ClaudeCodeTentacle, RecordingDeferredActions, RecordingSuspender]:
+    suspender = RecordingSuspender(agent_tentacle_id="claude", batch=batch)
+    dam = RecordingDeferredActions(batch=suspender.batch)
+    conversations = FakeConversationManager()
+    if conversation is not None:
+        conversations.store[(_THREAD, "claude", "")] = conversation
+    octomate = Octomate(conversations=conversations)
+    octomate.deferred_actions = cast(DeferredActionManager, dam)
+    tentacle = ClaudeCodeTentacle(
+        "claude",
+        octomate,
+        config=config or ClaudeCodeConfig(),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        mcp=octomate.mcp,
+    )
+    octomate.connect(tentacle)
+    return tentacle, dam, suspender
+
+
+def _conversation(tentacle: ClaudeCodeTentacle) -> FakeConversation:
+    convs = cast(FakeConversationManager, tentacle.octomate.conversations)
+    return convs.store[(_THREAD, "claude", "")]
+
+
+async def _drain(
+    tentacle: ClaudeCodeTentacle, suspender: RecordingSuspender
+) -> list[ReactStreamEvent[str]]:
+    async with tentacle.run_stream_events(
+        "do it",
+        conversation_address=KEY,
+        thread_id=_THREAD,
+        run_name="react",
+        deferred_suspender=suspender,
+    ) as stream:
+        return [event async for event in stream]
+
+
+async def _wait_for_pending(
+    tentacle: ClaudeCodeTentacle, suspender: RecordingSuspender
+) -> UUID7:
+    await asyncio.wait_for(suspender.put_up.wait(), timeout=5)
+    return next(iter(tentacle.pendings))
+
+
+async def test_approval_allow_lets_the_tool_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval")
+    approval = DeferredApproval(
+        tool_name="Bash", tool_call_id="t1", args=ApprovalRequest(tool_name="Bash")
+    )
+    tentacle, dam, suspender = _build(FakePresentedBatch(approvals=[approval]))
+
+    task = asyncio.ensure_future(_drain(tentacle, suspender))
+    batch_id = await _wait_for_pending(tentacle, suspender)
+    await tentacle.octomate.kick(
+        DeferredActionBatchResponse(batch_id=batch_id, approvals={approval.id: True})
+    )
+    events = await task
+
+    assert len(suspender.paused) == 1
+    # The batch rides the run's own stream, for whoever draws the run to present.
+    assert [
+        event.batch_id for event in events if isinstance(event, ActionBatchEvent)
+    ] == [str(suspender.batch.id)]
+    assert dam.resolved  # the batch was persisted on resolution
+    assert isinstance(ScriptedClaudeClient.decisions[0], PermissionResultAllow)
+
+
+async def test_approval_deny_feeds_reason_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval")
+    approval = DeferredApproval(
+        tool_name="Bash", tool_call_id="t1", args=ApprovalRequest(tool_name="Bash")
+    )
+    tentacle, _dam, suspender = _build(FakePresentedBatch(approvals=[approval]))
+
+    task = asyncio.ensure_future(_drain(tentacle, suspender))
+    batch_id = await _wait_for_pending(tentacle, suspender)
+    await tentacle.octomate.kick(
+        DeferredActionBatchResponse(batch_id=batch_id, approvals={approval.id: False})
+    )
+    await task
+
+    decision = ScriptedClaudeClient.decisions[0]
+    assert isinstance(decision, PermissionResultDeny)
+    assert "Bash" in decision.message
+
+
+async def test_allow_session_suppresses_repeat_prompts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval_twice")
+    approval = DeferredApproval(
+        tool_name="Bash", tool_call_id="t1", args=ApprovalRequest(tool_name="Bash")
+    )
+    tentacle, _dam, suspender = _build(FakePresentedBatch(approvals=[approval]))
+
+    task = asyncio.ensure_future(_drain(tentacle, suspender))
+    batch_id = await _wait_for_pending(tentacle, suspender)
+    await tentacle.octomate.kick(
+        DeferredActionBatchResponse(
+            batch_id=batch_id, approvals={approval.id: True}, allow_session=True
+        )
+    )
+    await task
+
+    # The first Bash call raised a card; the second was auto-approved for the
+    # session, so only one batch was ever presented.
+    assert len(suspender.paused) == 1
+    assert len(ScriptedClaudeClient.decisions) == 2
+    assert all(
+        isinstance(d, PermissionResultAllow) for d in ScriptedClaudeClient.decisions
+    )
+    # The grant was persisted on the conversation for future turns.
+    assert _conversation(tentacle).allowed_tools == ["Bash"]
+
+
+async def test_persisted_allowed_tool_skips_the_card(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval")
+    seeded = FakeConversation(allowed_tools=["Bash"])
+    tentacle, _dam, suspender = _build(FakePresentedBatch(), conversation=seeded)
+
+    await _drain(tentacle, suspender)
+
+    # Bash was pre-granted for the conversation, so no card was presented.
+    assert suspender.paused == []
+    assert isinstance(ScriptedClaudeClient.decisions[0], PermissionResultAllow)
+
+
+async def test_permission_mode_drives_the_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(ScriptedClaudeClient, "mode", "question")  # no can_use_tool
+    seeded = FakeConversation(permission_mode="plan")
+    question = DeferredQuestion(
+        tool_name="AskUserQuestion",
+        tool_call_id="q1",
+        position=0,
+        args={"question": "Pick one", "choices": ["A"], "hint": "choose"},
+    )
+    tentacle, _dam, suspender = _build(
+        FakePresentedBatch(questions=[question]), conversation=seeded
+    )
+
+    task = asyncio.ensure_future(_drain(tentacle, suspender))
+    batch_id = await _wait_for_pending(tentacle, suspender)
+    await tentacle.octomate.kick(
+        DeferredActionBatchResponse(batch_id=batch_id, answers={question.id: "A"})
+    )
+    await task
+
+    options = ScriptedClaudeClient.last_options
+    assert options is not None
+    # Stored in the SDK's own vocabulary, so it arrives untranslated —
+    # `plan` included, which the retired unified scale could not say.
+    assert options.permission_mode == "plan"
+
+
+@pytest.mark.parametrize(
+    ("stored", "configured", "expected"),
+    [
+        # Stored in the SDK's own vocabulary, so every mode arrives untranslated —
+        # including the three the retired unified scale could not say.
+        ("dontAsk", "default", "dontAsk"),
+        ("auto", "default", "auto"),
+        ("bypassPermissions", "default", "bypassPermissions"),
+        # Nothing declared: the agent's configured posture decides.
+        (None, "acceptEdits", "acceptEdits"),
+        # A Codex posture is not Claude's to read. `Conversation` already refuses the
+        # pairing; the tentacle falls back rather than handing the SDK a word it has
+        # no meaning for.
+        ("auto_review", "plan", "plan"),
+    ],
+)
+async def test_the_conversations_posture_reaches_the_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+    stored: str | None,
+    configured: str,
+    expected: str,
+) -> None:
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval")
+    tentacle, _dam, suspender = _build(
+        FakePresentedBatch(),
+        config=ClaudeCodeConfig(permission_mode=configured),  # pyright: ignore[reportArgumentType]
+        # Pre-granted so the scripted gated call needs no card; the posture is what
+        # this asserts, not the gating.
+        conversation=FakeConversation(
+            permission_mode=stored,  # pyright: ignore[reportArgumentType]
+            allowed_tools=["Bash"],
+        ),
+    )
+
+    await _drain(tentacle, suspender)
+
+    assert suspender.paused == []
+    options = ScriptedClaudeClient.last_options
+    assert options is not None
+    assert options.permission_mode == expected
+
+
+async def test_approval_timeout_denies_and_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval")
+    approval = DeferredApproval(
+        tool_name="Bash", tool_call_id="t1", args=ApprovalRequest(tool_name="Bash")
+    )
+    tentacle, _dam, suspender = _build(
+        FakePresentedBatch(approvals=[approval]),
+        config=ClaudeCodeConfig(approval_timeout=0.01),
+    )
+
+    # No one ever answers; the wait times out and the tool is denied.
+    await _drain(tentacle, suspender)
+
+    decision = ScriptedClaudeClient.decisions[0]
+    assert isinstance(decision, PermissionResultDeny)
+    assert "expired" in decision.message
+    assert not tentacle.pendings  # the parked future was cleaned up
+
+
+async def test_cancelling_a_claude_approval_expires_its_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval")
+    approval = DeferredApproval(
+        tool_name="Bash", tool_call_id="t1", args=ApprovalRequest(tool_name="Bash")
+    )
+    tentacle, manager, suspender = _build(FakePresentedBatch(approvals=[approval]))
+    task = asyncio.create_task(_drain(tentacle, suspender))
+    batch_id = await _wait_for_pending(tentacle, suspender)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert manager.marked == [(batch_id, "expired")]
+    assert not tentacle.pendings
+
+
+async def test_ask_user_question_hook_feeds_answer_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(ScriptedClaudeClient, "mode", "question")
+    question = DeferredQuestion(
+        tool_name="AskUserQuestion",
+        tool_call_id="q1",
+        position=0,
+        args={"question": "Pick one", "choices": ["A", "B"], "hint": "choose"},
+    )
+    tentacle, _dam, suspender = _build(FakePresentedBatch(questions=[question]))
+
+    task = asyncio.ensure_future(_drain(tentacle, suspender))
+    batch_id = await _wait_for_pending(tentacle, suspender)
+    await tentacle.octomate.kick(
+        DeferredActionBatchResponse(batch_id=batch_id, answers={question.id: "A"})
+    )
+    await task
+
+    assert suspender.paused  # a question batch was presented
+    output = ScriptedClaudeClient.decisions[0]
+    reason = cast(dict[str, dict[str, str]], output)["hookSpecificOutput"][
+        "permissionDecisionReason"
+    ]
+    assert "A" in reason
+    assert "Pick one" in reason
+
+
+async def test_ask_user_question_keeps_every_option_under_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Claude's AskUserQuestion offers up to 4 options, all within octomate's cap, so
+    # the card presents every one of them.
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(ScriptedClaudeClient, "mode", "question")
+    monkeypatch.setattr(
+        ScriptedClaudeClient, "question_option_labels", ["A", "B", "C", "D"]
+    )
+    question = DeferredQuestion(
+        tool_name="AskUserQuestion",
+        tool_call_id="q1",
+        position=0,
+        args={"question": "Pick one", "choices": ["A", "B", "C", "D"], "hint": ""},
+    )
+    tentacle, _dam, suspender = _build(FakePresentedBatch(questions=[question]))
+
+    task = asyncio.ensure_future(_drain(tentacle, suspender))
+    batch_id = await _wait_for_pending(tentacle, suspender)
+    await tentacle.octomate.kick(
+        DeferredActionBatchResponse(batch_id=batch_id, answers={question.id: "A"})
+    )
+    await task
+
+    [presented] = suspender.paused
+    args = cast(DeferredToolRequests, presented).calls[0].args_as_dict()
+    choices = args["questions"][0]["choices"]
+    assert choices == ["A", "B", "C", "D"]
+    assert len(choices) <= MAX_QUESTION_CHOICES
+
+
+async def test_ask_user_question_keeps_a_multi_select(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(ScriptedClaudeClient, "mode", "question")
+    monkeypatch.setattr(ScriptedClaudeClient, "question_multi_select", True)
+    question = DeferredQuestion(
+        tool_name="AskUserQuestion",
+        tool_call_id="q1",
+        position=0,
+        args={"question": "Pick one", "choices": ["A", "B"], "multi_select": True},
+    )
+    tentacle, _dam, suspender = _build(FakePresentedBatch(questions=[question]))
+
+    task = asyncio.ensure_future(_drain(tentacle, suspender))
+    batch_id = await _wait_for_pending(tentacle, suspender)
+    await tentacle.octomate.kick(
+        DeferredActionBatchResponse(
+            batch_id=batch_id, answers={question.id: ["A", "B"]}
+        )
+    )
+    await task
+
+    [presented] = suspender.paused
+    [asked] = cast(DeferredToolRequests, presented).calls[0].args_as_dict()["questions"]
+    assert asked["multi_select"] is True
+    reason = cast(dict[str, dict[str, str]], ScriptedClaudeClient.decisions[0])[
+        "hookSpecificOutput"
+    ]["permissionDecisionReason"]
+    assert reason == "Pick one: A, B"
+
+
+async def test_kick_routes_response_to_live_waiter() -> None:
+    tentacle, _dam, suspender = _build(FakePresentedBatch())
+
+    batch_id = suspender.batch.id
+    suspender.batch.response_mode = "live"
+    suspender.batch.agent_tentacle_id = tentacle.id
+    future: asyncio.Future[DeferredActionBatchResponse] = (
+        asyncio.get_running_loop().create_future()
+    )
+    tentacle.pendings[batch_id] = future
+
+    response = DeferredActionBatchResponse(batch_id=batch_id, approvals={})
+    await tentacle.octomate.kick(response)
+
+    assert future.done()
+    assert future.result() is response

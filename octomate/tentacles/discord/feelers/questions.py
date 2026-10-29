@@ -10,7 +10,10 @@ from typing import Literal, Self
 import discord
 from pydantic import UUID7
 
-from octomate.capabilities.harness.events import ActionBatchAnsweredEvent
+from octomate.capabilities.harness.events import (
+    ActionBatchAnsweredEvent,
+    ActionBatchUpdatedEvent,
+)
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion, QuestionAnswer
@@ -25,6 +28,7 @@ from octomate.tentacles.discord.schema import DiscordOutboundMessage
 from octomate.tentacles.feelers.deferred import (
     QuestionFeeler,
     answer_text,
+    closure_text,
     question_text,
 )
 from octomate.tentacles.feelers.output import IMMessageID
@@ -329,27 +333,9 @@ class DiscordQuestionNavButton(
         router = DiscordComponentRouter.for_client(interaction.client)
         try:
             if self.operation == "submit":
-
-                async def settle_message(
-                    actions: list[DeferredQuestion],
-                    answers: dict[UUID7, QuestionAnswer],
-                ) -> None:
-                    await interaction.edit_original_response(
-                        content=None,
-                        view=question_summary_view(
-                            question_summary_content(
-                                actions,
-                                answers,
-                                responder_id=str(interaction.user.id),
-                            )
-                        ),
-                        allowed_mentions=discord.AllowedMentions.none(),
-                    )
-
                 await router.submit_questions(
                     batch_id=self.batch_id,
                     responder_id=str(interaction.user.id),
-                    settle_message=settle_message,
                 )
                 return
             actions, answers = await router.load_questions(self.batch_id)
@@ -442,11 +428,11 @@ class DiscordAskQuestionFeeler(QuestionFeeler):
     async def settle(
         self,
         address: ChannelAddress,
-        event: ActionBatchAnsweredEvent,
+        event: ActionBatchAnsweredEvent | ActionBatchUpdatedEvent,
         *,
         action_manager: DeferredActionManager,
     ) -> None:
-        if not event.answers:
+        if isinstance(event, ActionBatchAnsweredEvent) and not event.answers:
             return
         batch = await action_manager.get_batch(uuid.UUID(event.batch_id))
         target = batch.target_address
@@ -459,7 +445,10 @@ class DiscordAskQuestionFeeler(QuestionFeeler):
         message_ids = {
             action.platform_message_id
             for action in batch.questions
-            if action.id in event.answers and action.platform_message_id is not None
+            if action.platform_message_id is not None
+            and (
+                isinstance(event, ActionBatchUpdatedEvent) or action.id in event.answers
+            )
         }
         async with asyncio.TaskGroup() as tasks:
             for message_id in message_ids:
@@ -474,14 +463,29 @@ class DiscordAskQuestionFeeler(QuestionFeeler):
                     if action.status == "answered"
                     and isinstance(action.result, str | list)
                 }
-                answered = [action for action in actions if action.id in answers]
-                pending = [action for action in actions if action.id not in answers]
-                view = question_summary_view(
-                    question_summary_content(answered, answers)
-                )
+                answered = [
+                    action
+                    for action in actions
+                    if action.id in answers and batch.closed
+                ]
+                pending = [
+                    action
+                    for action in actions
+                    if action.status in {"pending", "answered"} and not batch.closed
+                ]
+                view = discord.ui.LayoutView(timeout=None)
+                if answered:
+                    summary = question_summary_view(
+                        question_summary_content(answered, answers)
+                    )
+                    view.add_item(summary.children[0])
                 if pending:
                     pending_view = question_view(pending)
                     view.add_item(pending_view.children[0])
+                elif batch.closed and any(
+                    action.status != "answered" for action in actions
+                ):
+                    view.add_item(discord.ui.TextDisplay(closure_text(batch)))
                 tasks.create_task(
                     self.ink.edit_message(channel_id, message_id, None, view=view)
                 )
@@ -517,6 +521,8 @@ def question_page_content(
     body = f"{heading}\n{question_text(action)[:1000]}"
     if hint := action.args.get("hint"):
         body = f"{body}\n\n*Hint: {hint[:400]}*"
+    if error := action.args.get("error"):
+        body = f"{body}\n\n**{error[:400]}**"
     if action.id in answers:
         answer_prefix = "\n\n**Answer:** "
         answer_limit = 2000 - len(body) - len(answer_prefix)
@@ -533,7 +539,11 @@ def question_view(
     *,
     page: int = 0,
 ) -> discord.ui.LayoutView:
-    answers = answers or {}
+    answers = {
+        action.id: action.result
+        for action in actions
+        if isinstance(action.result, str | list)
+    } | (answers or {})
     page = max(0, min(page, len(actions) - 1))
     action = actions[page]
     if action.batch_id is None:
@@ -597,7 +607,6 @@ def question_view(
             action.batch_id,
             page,
             "next" if page < len(actions) - 1 else "submit",
-            disabled=action.id not in answers,
         )
     )
     container.add_item(navigation_row)

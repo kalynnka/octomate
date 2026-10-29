@@ -68,20 +68,19 @@ async def drawing(*channels: ChannelTentacle) -> AsyncGenerator[None]:
 
 async def drained(*channels: ChannelTentacle) -> None:
     """Returns once each started channel's siphon has drawn everything handed to
-    it so far."""
-    with anyio.fail_after(5):
-        # A started siphon tells no one it is done; what it still holds shows it.
-        while any(  # noqa: ASYNC110
-            channel.siphon.lanes
-            or any(
-                fiber.receive.statistics().current_buffer_used
-                for fiber in channel.octomate.nerve.subscribers.get(
-                    ChannelTopic(channel.id), set()
-                )
+    it so far. The caller owns the deadline, including any test-wide timeout."""
+    # A started siphon tells no one it is done; what it still holds shows it.
+    while any(  # noqa: ASYNC110
+        channel.siphon.lanes
+        or any(
+            fiber.receive.statistics().current_buffer_used
+            for fiber in channel.octomate.nerve.subscribers.get(
+                ChannelTopic(channel.id), set()
             )
-            for channel in channels
-        ):
-            await asyncio.sleep(0)
+        )
+        for channel in channels
+    ):
+        await asyncio.sleep(0)
 
 
 @asynccontextmanager

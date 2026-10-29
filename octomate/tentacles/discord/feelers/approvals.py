@@ -10,7 +10,10 @@ from typing import Self
 import discord
 from pydantic import UUID7
 
-from octomate.capabilities.harness.events import ActionBatchAnsweredEvent
+from octomate.capabilities.harness.events import (
+    ActionBatchAnsweredEvent,
+    ActionBatchUpdatedEvent,
+)
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredApproval
@@ -21,7 +24,7 @@ from octomate.tentacles.discord.feelers.actions import (
 )
 from octomate.tentacles.discord.ink import DiscordInk
 from octomate.tentacles.discord.schema import DiscordOutboundMessage
-from octomate.tentacles.feelers.deferred import ApprovalFeeler
+from octomate.tentacles.feelers.deferred import ApprovalFeeler, closure_text
 from octomate.tentacles.feelers.output import IMMessageID
 
 APPROVAL_CUSTOM_ID_TEMPLATE = re.compile(
@@ -141,11 +144,11 @@ class DiscordApprovalFeeler(ApprovalFeeler):
     async def settle(
         self,
         address: ChannelAddress,
-        event: ActionBatchAnsweredEvent,
+        event: ActionBatchAnsweredEvent | ActionBatchUpdatedEvent,
         *,
         action_manager: DeferredActionManager,
     ) -> None:
-        if not event.approvals:
+        if isinstance(event, ActionBatchAnsweredEvent) and not event.approvals:
             return
         batch = await action_manager.get_batch(uuid.UUID(event.batch_id))
         target = batch.target_address
@@ -158,9 +161,12 @@ class DiscordApprovalFeeler(ApprovalFeeler):
         async with asyncio.TaskGroup() as tasks:
             for action in batch.approvals:
                 if (
-                    action.id not in event.approvals
+                    (
+                        isinstance(event, ActionBatchAnsweredEvent)
+                        and action.id not in event.approvals
+                    )
                     or action.platform_message_id is None
-                    or action.status not in {"approved", "denied"}
+                    or (action.status == "pending" and not batch.closed)
                 ):
                     continue
                 tasks.create_task(
@@ -169,7 +175,9 @@ class DiscordApprovalFeeler(ApprovalFeeler):
                         action.platform_message_id,
                         approval_resolution_content(
                             action, approved=action.status == "approved"
-                        ),
+                        )
+                        if action.status in {"approved", "denied"}
+                        else f"**{action.tool_name}** — {closure_text(batch)}",
                         view=approval_view(action, disabled=True),
                     )
                 )

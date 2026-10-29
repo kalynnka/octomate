@@ -606,7 +606,11 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         """
         conversation = context.conversation
         assert conversation is not None
-        accumulator = DeepseekRunAccumulator()
+        accumulator = DeepseekRunAccumulator(
+            context_window=await self.conversations.latest_context_window(
+                conversation.id
+            )
+        )
         entered = False
         settled = False
         run_id = str(uuid7())
@@ -659,6 +663,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 model_name=accumulator.route.model
                 if accumulator.route is not None
                 else None,
+                context_window=accumulator.context_window,
+                context_used=accumulator.context_used,
                 permission_mode=conversation.permission_mode or context.permission_mode,
                 cwd=context.cwd,
                 external_id=conversation.external_id,
@@ -934,8 +940,14 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 response = await asyncio.wait_for(
                     asyncio.shield(future), self.config.approval_timeout
                 )
-            except TimeoutError:
-                await self.deferred_actions.mark_batch(batch_id, "expired")
+            except (TimeoutError, asyncio.CancelledError) as error:
+                cancelled = await drain_task(
+                    asyncio.create_task(
+                        self.deferred_actions.mark_batch(batch_id, "expired")
+                    )
+                )
+                if cancelled or isinstance(error, asyncio.CancelledError):
+                    raise asyncio.CancelledError from error
                 return batch, None
         finally:
             self.pendings.pop(batch_id, None)
@@ -1034,7 +1046,11 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 agent_tentacle_id=self.id,
                 with_history=False,
             )
-        accumulator = DeepseekRunAccumulator()
+        accumulator = DeepseekRunAccumulator(
+            context_window=await self.conversations.latest_context_window(
+                conversation.id
+            )
+        )
         accumulator.begin(user_prompt)
 
         if isinstance(user_prompt, str):
@@ -1190,6 +1206,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     model_name=accumulator.route.model
                     if accumulator.route is not None
                     else deepseek_model,
+                    context_window=accumulator.context_window,
+                    context_used=accumulator.context_used,
                     permission_mode=permission_mode,
                     cwd=Path(run_cwd),
                     external_id=session_id,

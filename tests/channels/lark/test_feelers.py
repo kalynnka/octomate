@@ -266,7 +266,8 @@ async def test_lark_card_callbacks_emit_deferred_responses() -> None:
 
     approval_toast = approval_response.toast
     assert approval_toast is not None
-    assert approval_toast.content == "Approved"
+    assert approval_toast.content == "Response received"
+    assert approval_response.card is None
     assert octomate.kicks[0] == DeferredActionBatchResponse(
         batch_id=_batch_id(approval),
         responder_id="ou_user",
@@ -296,7 +297,8 @@ async def test_lark_card_callbacks_emit_deferred_responses() -> None:
 
     submit_toast = submit_response.toast
     assert submit_toast is not None
-    assert submit_toast.content == "Answers submitted"
+    assert submit_toast.content == "Response received"
+    assert submit_response.card is None
     assert octomate.kicks[1] == DeferredActionBatchResponse(
         batch_id=_batch_id(question),
         responder_id="ou_user",
@@ -355,7 +357,8 @@ async def test_lark_submit_sends_every_question_in_one_response() -> None:
 
     toast = response.toast
     assert toast is not None
-    assert toast.content == "Answers submitted"
+    assert toast.content == "Response received"
+    assert response.card is None
     assert octomate.kicks == [
         DeferredActionBatchResponse(
             batch_id=_batch_id(first),

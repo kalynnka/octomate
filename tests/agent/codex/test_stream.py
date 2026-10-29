@@ -1,0 +1,984 @@
+"""Remote Codex ingest and incremental transcript uploads.
+
+Each fresh tailer replays the parent history from byte zero to restore metadata
+and child-call links. The endpoint supplies the stored prefix locally, so only
+new parent lines and bytes cross the socket. Child files still replay from zero.
+Committed-turn guards prevent replay from duplicating runs.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from io import BytesIO
+from pathlib import Path
+from typing import Literal
+from unittest.mock import AsyncMock
+
+import opendal
+import pytest
+from anyio import Path as AsyncPath
+from anyio.abc import ObjectSendStream
+from fastapi import FastAPI, UploadFile
+from fastapi.testclient import TestClient
+from octomate_cli.streaming.codex import CodexSessionTail
+from octomate_cli.tentacles.codex import CODEX_HOOK_PATH, CODEX_STREAM_PATH
+from octomate_protocol.stream import (
+    SESSION_FILE,
+    STREAM_PROTOCOL,
+    StreamEof,
+    StreamFinalize,
+    StreamHello,
+    StreamLine,
+    StreamSnapshotStart,
+    StreamSnapshotStored,
+    StreamWelcome,
+    server_message_adapter,
+)
+from pydantic import AnyHttpUrl, SecretStr
+from pydantic_ai.messages import ModelRequest, PartEndEvent, TextPart, UserPromptPart
+from sqlalchemy.ext.asyncio import AsyncEngine
+from starlette.testclient import WebSocketDenialResponse, WebSocketTestSession
+from starlette.websockets import WebSocketDisconnect
+from uuid_utils.compat import uuid7
+
+from octomate import Octomate
+from octomate.auth import current_user
+from octomate.capabilities.harness.events import ArtifactAvailableEvent, RunEndedEvent
+from octomate.config import OctomateConfig
+from octomate.config.agents import CodexConfig
+from octomate.database import async_session
+from octomate.managers.files import FileManager
+from octomate.nerve import Impulse, ThreadTopic
+from octomate.schemas.artifacts import HtmlArtifact, HtmlView
+from octomate.schemas.conversation import Conversation
+from octomate.schemas.files import Html
+from octomate.schemas.messages import ModelResponse
+from octomate.schemas.runs import ExternalAgentRun
+from octomate.schemas.thread import (
+    CODEX_NATIVE_ID,
+    MessageBinding,
+    Thread,
+    ThreadArtifact,
+    ThreadKey,
+)
+from octomate.schemas.user import User, UserProfile
+from octomate.tentacles.codex import CodexTentacle
+from octomate.tentacles.codex.tailer import CodexTranscriptTailer, TailState
+from tests.agent.codex.test_native_ingest import (
+    CHILD_THREAD_ID,
+    CHILD_TURN_ONE,
+    PARENT_TURN_ID,
+    ROOT_THREAD_ID,
+    SESSION_ADDRESS,
+    SESSION_ID,
+    answer_item,
+    child_metadata,
+    event,
+    parent_metadata,
+    subagent_activity,
+)
+from tests.agent.codex.test_native_ingest import impulses as impulses
+from tests.support.managers import a_loaded_thread, a_thread
+from tests.support.nerve import held
+from tests.support.users import a_api_key, a_user, auth_config
+
+SENDER = UserProfile(channel_user_id="lu", name="lu")
+
+SECRET = SecretStr("the-hook-secret")
+AUTH = {"Authorization": f"Bearer {SECRET.get_secret_value()}"}
+# The rollout in the *client's* namespace: a label the server records, never opens.
+CLIENT_PATH = Path("/laptop/.codex/sessions/2026/07/16") / (
+    f"rollout-2026-07-16T10-00-00-{ROOT_THREAD_ID}.jsonl"
+)
+# The client's key for a sibling child rollout: its basename.
+CHILD_KEY = f"rollout-2026-07-16T10-00-02-{CHILD_THREAD_ID}.jsonl"
+
+TURN_A = [
+    event(0, "task_started", turn_id="turn-a"),
+    event(1, "user_message", message="first ask"),
+    answer_item(2, "first answer"),
+    event(3, "task_complete", turn_id="turn-a"),
+]
+TURN_B = [
+    event(4, "task_started", turn_id="turn-b"),
+    event(5, "user_message", message="second ask"),
+    answer_item(6, "second answer"),
+    event(7, "task_complete", turn_id="turn-b"),
+]
+
+Frame = tuple[str | None, int, int, str]
+
+
+@pytest.fixture(autouse=True)
+async def db(in_memory_engine: AsyncEngine) -> None:
+    return
+
+
+def line_bytes(record: dict[str, object]) -> bytes:
+    return json.dumps(record).encode() + b"\n"
+
+
+def frames(
+    records: list[dict[str, object]], *, agent_id: str | None = None, start: int = 0
+) -> list[Frame]:
+    """Frame records exactly as the client does: complete lines with the byte range
+    each occupies in its own file, `end` past the framing newline."""
+    framed: list[Frame] = []
+    offset = start
+    for record in records:
+        raw = line_bytes(record)
+        framed.append((agent_id, offset, offset + len(raw), raw[:-1].decode()))
+        offset += len(raw)
+    return framed
+
+
+async def feed(
+    tailer: CodexTranscriptTailer, state: TailState, framed: list[Frame]
+) -> None:
+    for agent_id, start, end, line in framed:
+        await tailer.feed_remote(state, agent_id, line, start, end)
+
+
+def remote_tailer() -> tuple[Octomate, CodexTranscriptTailer]:
+    octomate = Octomate(config=OctomateConfig(auth=auth_config()))
+    return octomate, CodexTranscriptTailer(
+        octomate.conversations, octomate.threads, octomate.files
+    )
+
+
+async def runs_of(octomate: Octomate) -> list[ExternalAgentRun]:
+    thread = await octomate.threads.ensure(
+        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+    )
+    conversation = await octomate.conversations.ensure(
+        thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+    )
+    return [run for run in conversation.runs if isinstance(run, ExternalAgentRun)]
+
+
+async def test_remote_feed_assembles_the_same_runs_as_a_local_pump(
+    impulses: ObjectSendStream[Impulse],
+) -> None:
+    octomate, tailer = remote_tailer()
+
+    state, offsets = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+    )
+    assert offsets == {SESSION_FILE: 0}
+    assert tailer.sessions[SESSION_ID] is state  # so hooks see the session as covered
+    await feed(tailer, state, frames([parent_metadata(), *TURN_A, *TURN_B]))
+    tailer.detach_remote(state)
+
+    runs = await runs_of(octomate)
+    assert [run.id for run in runs] == ["turn-a", "turn-b"]
+    a, b = runs
+    # The client's offsets land as the runs' byte ranges: contiguous and gapless.
+    assert a.start_offset == len(line_bytes(parent_metadata()))
+    assert a.end_offset == b.start_offset
+    assert [message.message_text for message in a.messages] == [
+        "first ask",
+        "first answer",
+    ]
+    assert SESSION_ID not in tailer.sessions  # registry slot reclaimed
+
+
+async def test_a_reconnect_restreams_from_zero_and_committed_turns_dedup(
+    impulses: ObjectSendStream[Impulse],
+) -> None:
+    """The dual of Claude's offset resume: a reconnect is told byte 0 — the head is
+    load-bearing — and idempotency comes from the committed-turn guard instead."""
+    octomate, tailer = remote_tailer()
+
+    head = [parent_metadata(), *TURN_A]
+    state, _ = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+    )
+    await feed(tailer, state, frames(head))
+    tailer.detach_remote(state)
+
+    state, offsets = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+    )
+    assert offsets == {SESSION_FILE: 0}
+    await feed(tailer, state, frames([*head, *TURN_B]))
+    tailer.detach_remote(state)
+
+    assert [run.id for run in await runs_of(octomate)] == ["turn-a", "turn-b"]
+
+
+async def test_an_open_turn_never_commits_at_a_connection_boundary(
+    impulses: ObjectSendStream[Impulse],
+) -> None:
+    """A turn without its `task_complete` is mid-flight when the connection ends.
+    Committing it would plant its id in the committed-turn guard, where the completed
+    version the next connect re-streams could never replace it — so it is dropped,
+    exactly as a local follow's idle exit drops one."""
+    octomate, tailer = remote_tailer()
+
+    state, _ = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+    )
+    await feed(tailer, state, frames([parent_metadata(), TURN_A[0], TURN_A[1]]))
+    tailer.detach_remote(state)
+    assert await runs_of(octomate) == []
+
+    state, _ = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+    )
+    await feed(tailer, state, frames([parent_metadata(), *TURN_A]))
+    tailer.detach_remote(state)
+    [run] = await runs_of(octomate)
+    assert run.id == "turn-a"
+    assert run.end_offset == sum(
+        len(line_bytes(record)) for record in [parent_metadata(), *TURN_A]
+    )
+
+
+async def test_sibling_child_rollouts_stream_into_child_runs(
+    impulses: ObjectSendStream[Impulse],
+) -> None:
+    """The client keys a child file by its basename — a label in its own namespace —
+    and the server classifies it from its opening `session_meta`, binding it to the
+    child thread it names and linking its runs to the parent's spawning call."""
+    octomate, tailer = remote_tailer()
+    state, _ = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+    )
+
+    await feed(
+        tailer,
+        state,
+        frames(
+            [
+                parent_metadata(),
+                event(0, "task_started", turn_id=PARENT_TURN_ID),
+                subagent_activity(2, "call-spawn", kind="started"),
+            ]
+        ),
+    )
+    await feed(
+        tailer,
+        state,
+        frames(
+            [
+                child_metadata(),
+                event(3, "task_started", turn_id=CHILD_TURN_ONE),
+                answer_item(4, "child answer"),
+                event(5, "task_complete", turn_id=CHILD_TURN_ONE),
+            ],
+            agent_id=CHILD_KEY,
+        ),
+    )
+    tailer.detach_remote(state)
+
+    thread = await octomate.threads.ensure(
+        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+    )
+    parent = await octomate.conversations.ensure(
+        thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+    )
+    child = await octomate.conversations.ensure(
+        thread.id,
+        agent_tentacle_id=CODEX_NATIVE_ID,
+        subagent_id=CHILD_THREAD_ID,
+        parent_conversation_id=parent.id,
+    )
+    [run] = child.runs
+    assert run.id == CHILD_TURN_ONE
+    assert run.parent_run_id == PARENT_TURN_ID
+    assert run.parent_tool_call_id == "call-spawn"
+
+
+async def test_a_foreign_sibling_rollout_is_classified_once_and_dropped(
+    impulses: ObjectSendStream[Impulse],
+) -> None:
+    """The tail ships every file the launcher spooled; one whose metadata is not a
+    thread-spawned child of this session decides nothing and records nothing."""
+    octomate, tailer = remote_tailer()
+    state, _ = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+    )
+
+    await feed(tailer, state, frames([parent_metadata()]))
+    await feed(
+        tailer,
+        state,
+        frames(
+            [
+                child_metadata(source="fork"),
+                event(3, "task_started", turn_id=CHILD_TURN_ONE),
+                event(4, "task_complete", turn_id=CHILD_TURN_ONE),
+            ],
+            agent_id="rollout-foreign.jsonl",
+        ),
+    )
+    tailer.detach_remote(state)
+
+    assert state.subagents == {}
+    assert await runs_of(octomate) == []
+
+
+async def test_a_new_attach_replaces_a_lingering_registration(
+    impulses: ObjectSendStream[Impulse],
+) -> None:
+    """A client that died without a close leaves its registration behind; the next
+    connect replaces it, and the dead route's detach must not evict the
+    replacement."""
+    _, tailer = remote_tailer()
+    stale, _ = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+    )
+
+    fresh, offsets = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+    )
+    assert offsets == {SESSION_FILE: 0}
+    assert tailer.sessions[SESSION_ID] is fresh
+    tailer.detach_remote(stale)
+    assert tailer.sessions[SESSION_ID] is fresh
+    tailer.detach_remote(fresh)
+    assert SESSION_ID not in tailer.sessions
+
+
+@pytest.mark.parametrize("terminal", ["task_complete", "turn_aborted"])
+async def test_a_stop_returns_before_the_late_reply_and_completion(
+    terminal: Literal["task_complete", "turn_aborted"],
+) -> None:
+    """Codex can flush its reply and terminal line only after Stop returns."""
+    octomate, tailer = remote_tailer()
+    key = ThreadKey.from_address(SESSION_ADDRESS)
+    with octomate.nerve.subscribe(ThreadTopic(key)) as live:
+        async with octomate.nerve.publish(SESSION_ADDRESS) as impulses:
+            state, _ = await tailer.attach_remote(
+                SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+            )
+            head = [parent_metadata(), *TURN_A[:2]]
+            await feed(tailer, state, frames(head))
+
+            await asyncio.wait_for(tailer.stop_turn(SESSION_ID, "turn-a"), 0.5)
+            assert not state.stop_event.is_set()
+
+            start = sum(len(line_bytes(record)) for record in head)
+            await feed(
+                tailer,
+                state,
+                frames([TURN_A[2], event(3, terminal, turn_id="turn-a")], start=start),
+            )
+            assert state.stop_event.is_set()
+            tailer.detach_remote(state)
+        events = held(live)
+
+    [run] = await runs_of(octomate)
+    assert run.id == "turn-a"
+    assert [message.message_text for message in run.messages] == [
+        "first ask",
+        "first answer",
+    ]
+    assert [impulse.event.event_kind for impulse in events] == [
+        "run_started",
+        "enqueued_messages",
+        "part_start",
+        "part_end",
+        "run_ended",
+    ]
+    part = events[-2].event
+    assert isinstance(part, PartEndEvent)
+    assert isinstance(part.part, TextPart)
+    assert part.part.content == "first answer"
+    ended = events[-1].event
+    assert isinstance(ended, RunEndedEvent)
+    thread = await a_loaded_thread(octomate.threads, key)
+    assert ended.thread_message_id == next(
+        row.id for row in thread.messages if row.direction == "outbound"
+    )
+
+
+def stream_client(*, storage: Path | None = None) -> tuple[TestClient, CodexTentacle]:
+    octomate = Octomate(config=OctomateConfig(auth=auth_config()))
+    if storage is not None:
+        octomate.files = FileManager(
+            storage=opendal.AsyncOperator("fs", root=str(storage))
+        )
+    tentacle = octomate.connect(
+        CodexTentacle(
+            "codex",
+            octomate,
+            config=CodexConfig(permission_mode="auto_review"),
+            commands=octomate.commands,
+            projects=octomate.projects,
+            threads=octomate.threads,
+            files=octomate.files,
+            conversations=octomate.conversations,
+            deferred_actions=octomate.deferred_actions,
+            workspaces=octomate.workspaces,
+            users=octomate.users,
+            bearers=octomate.bearers,
+            auth=octomate.auth,
+            gateway_manager=octomate.gateway,
+        )
+    )
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+        user = await a_user()
+        await a_api_key(user, SECRET.get_secret_value())
+        yield
+
+    octomate.router.lifespan_context = lifespan
+    return TestClient(octomate), tentacle
+
+
+def hello_json(session_id: str = SESSION_ID, protocol: int = STREAM_PROTOCOL) -> str:
+    return StreamHello(
+        protocol=protocol,
+        session_id=session_id,
+        transcript_path=str(CLIENT_PATH),
+        cwd="/repo",
+    ).model_dump_json()
+
+
+def test_the_stream_authenticates_like_the_hook_routers() -> None:
+    """Reachability is not a credential on the socket either: the router's
+    `hook_guard` dependency runs at the handshake, so no bearer means the same 401
+    the hook routes answer, before any socket opens."""
+    client, _ = stream_client()
+    with pytest.raises(WebSocketDenialResponse) as denial:
+        with client.websocket_connect(CODEX_STREAM_PATH):
+            pass
+    assert denial.value.status_code == 401
+
+
+@pytest.mark.parametrize("failure", ["attach_remote", "feed_remote"])
+def test_stream_failure_closes_socket_and_releases_session(
+    failure: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client, tentacle = stream_client()
+    monkeypatch.setattr(
+        tentacle.session_tailer,
+        failure,
+        AsyncMock(side_effect=RuntimeError("storage failed")),
+    )
+    with client, client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+        websocket.send_text(hello_json())
+        if failure != "attach_remote":
+            websocket.receive_text()
+            websocket.send_text(StreamLine(start=0, end=1, line="{}").model_dump_json())
+        with pytest.raises(WebSocketDisconnect) as disconnect:
+            websocket.receive_text()
+        assert disconnect.value.code == 1011
+        assert disconnect.value.reason == "transcript sync failed"
+
+    assert tentacle.session_tailer.sessions == {}
+    assert tentacle.native_sessions == {}
+    assert "storage failed" in caplog.text
+
+
+def upload_transcript(
+    websocket: WebSocketTestSession, data: bytes, *, start: int = 0
+) -> None:
+    request = StreamSnapshotStart(
+        transfer_id=uuid7(), start=start, end=start + len(data)
+    )
+    websocket.send_text(request.model_dump_json())
+    websocket.send_bytes(data)
+    stored = server_message_adapter.validate_json(websocket.receive_text())
+    assert isinstance(stored, StreamSnapshotStored)
+    assert stored.transfer_id == request.transfer_id
+
+
+@pytest.mark.parametrize("caption", ["Here is the counter. ", ""])
+def test_native_html_crosses_the_client_stream_and_reuses_the_owned_viewer(
+    tmp_path: Path, caption: str
+) -> None:
+    source = tmp_path / "counter.html"
+    html = "<button onclick=\"this.textContent='Updated ✓'\">Counter</button>"
+    source.write_text(html)
+    marker = (
+        "visualize"
+        + json.dumps(
+            {
+                "path": str(source),
+                "title": "Native counter",
+                "mode": "wide",
+            }
+        )
+        + ""
+    )
+    turn_id = str(uuid7())
+    records = [
+        parent_metadata(),
+        event(0, "task_started", turn_id=turn_id),
+        event(1, "user_message", message="Draw a counter"),
+        answer_item(2, caption + marker + marker),
+        event(3, "task_complete", turn_id=turn_id, last_agent_message=caption + marker),
+    ]
+    data = b"".join(map(line_bytes, records))
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_bytes(data)
+    tail = CodexSessionTail(SESSION_ID, transcript, cwd=str(tmp_path))
+    outgoing = [
+        asyncio.run(tail.frame(agent_id or SESSION_FILE, start, end, line.encode()))
+        for agent_id, start, end, line in frames(records)
+    ]
+    source.unlink()  # The server cannot open the client's file, even on this machine.
+    client, tentacle = stream_client(storage=tmp_path / "storage")
+    host = tentacle.octomate
+    host.config.artifacts.sandbox_origin = AnyHttpUrl("https://sandbox.example")
+    host.artifacts.files = host.files
+
+    async def inspect_capture() -> tuple[HtmlArtifact, ThreadArtifact]:
+        async with async_session() as session:
+            [artifact] = await session.list(HtmlArtifact, limit=None)
+            [entry] = await session.list(ThreadArtifact, limit=None)
+            [binding] = await session.list(
+                MessageBinding,
+                expressions=[
+                    MessageBinding["thread_message_id"] == entry.id,
+                ],
+            )
+            response = await session.get(ModelResponse, binding.model_message_id)
+            assert response is not None
+            assert response.message_text == (caption or None)
+            assert binding.run_id == turn_id
+            owner = await session.get(User, artifact.owner_id)
+        assert owner is not None
+        stored = await host.files.get(artifact.file_id, owner_id=owner.id)
+        assert isinstance(stored, Html)
+        assert await host.files.read(stored.id, owner_id=owner.id) == html.encode()
+        host.dependency_overrides[current_user] = lambda: owner
+        return artifact, entry
+
+    with (
+        host.nerve.subscribe(
+            ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
+        ) as live,
+        client,
+    ):
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            websocket.receive_text()
+            for message in outgoing:
+                websocket.send_text(message.model_dump_json())
+            upload_transcript(websocket, data)
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+        assert client.portal is not None
+        artifact, entry = client.portal.call(inspect_capture)
+        events = [impulse.event for impulse in held(live)]
+        available = [
+            item for item in events if isinstance(item, ArtifactAvailableEvent)
+        ]
+        assert len(available) == 1
+        assert available[0].artifact_id == artifact.id
+        assert available[0].message_id == entry.id
+        assert isinstance(events[-1], RunEndedEvent)
+        assert artifact.title == "Native counter"
+        assert artifact.mode == "wide"
+        for url in (
+            f"/api/artifacts/{artifact.id}",
+            f"/api/trunkline/threads/{entry.thread_id}/artifacts/{entry.id}",
+        ):
+            response = client.get(url)
+            assert response.status_code == 200, response.text
+            assert HtmlView.model_validate(response.json()).html == html
+
+        # Replaying the committed transcript needs no source file and adds no artifacts.
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            welcome = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(welcome, StreamWelcome)
+            assert welcome.offsets[SESSION_FILE] == len(data)
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+        assert client.portal.call(inspect_capture)[0].id == artifact.id
+        other = client.portal.call(a_user, "other")
+        host.dependency_overrides[current_user] = lambda: other
+        assert client.get(f"/api/artifacts/{artifact.id}").status_code == 404
+
+
+async def test_stale_upload_cannot_replace_a_newer_transcript(tmp_path: Path) -> None:
+    octomate, _ = remote_tailer()
+    files = FileManager(storage=opendal.AsyncOperator("fs", root=str(tmp_path)))
+    owner = await a_user()
+    conversation = await octomate.conversations.ensure(
+        await a_thread(), agent_tentacle_id=CODEX_NATIVE_ID
+    )
+    first = await octomate.conversations.store_transcript(
+        UploadFile(BytesIO(b"first\n"), filename="rollout.jsonl"),
+        0,
+        conversation=conversation,
+        files=files,
+        owner_id=owner.id,
+    )
+
+    with pytest.raises(ValueError, match="Append offset"):
+        await octomate.conversations.store_transcript(
+            UploadFile(BytesIO(b"stale\n"), filename="rollout.jsonl"),
+            0,
+            conversation=conversation,
+            files=files,
+            owner_id=owner.id,
+        )
+
+    current = await octomate.conversations.get(conversation.id, with_history=False)
+    assert current.transcript_file_id == first.id
+    assert await files.read(first.id, owner_id=owner.id) == b"first\n"
+    assert conversation.transcript_file_id is None
+    assert len([path async for path in AsyncPath(tmp_path).glob("users/*/*")]) == 1
+
+
+def test_transcript_is_persisted_during_a_turn_and_appended_on_the_same_socket(
+    tmp_path: Path,
+) -> None:
+    client, _ = stream_client(storage=tmp_path)
+    batches = [[parent_metadata(), *TURN_A[:2]], TURN_A[2:]]
+    content = b""
+
+    with client, client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+        websocket.send_text(hello_json())
+        websocket.receive_text()
+        for batch in batches:
+            for agent_id, start, end, line in frames(batch, start=len(content)):
+                websocket.send_text(
+                    StreamLine(
+                        agent_id=agent_id, start=start, end=end, line=line
+                    ).model_dump_json()
+                )
+            delta = b"".join(map(line_bytes, batch))
+            upload_transcript(websocket, delta, start=len(content))
+            content += delta
+            assert [path.read_bytes() for path in tmp_path.glob("users/*/*")] == [
+                content
+            ]
+        websocket.send_text(StreamEof().model_dump_json())
+        with pytest.raises(WebSocketDisconnect):
+            websocket.receive_text()
+
+
+def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly(tmp_path: Path) -> None:
+    """A reconnect sends only the suffix; an unchanged transcript needs no upload."""
+    client, tentacle = stream_client(storage=tmp_path)
+    prefix = b"".join(map(line_bytes, [parent_metadata(), *TURN_A]))
+    suffix = b"".join(map(line_bytes, TURN_B))
+
+    # One entered client, so both connects share a portal loop — the in-memory
+    # database's connection is loop-bound, and two portals would strand it.
+    with client:
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            welcome = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(welcome, StreamWelcome)
+            assert welcome.offsets == {SESSION_FILE: 0}
+            assert welcome.transcript is not None
+            assert welcome.transcript.offset == 0
+            assert tentacle.native_sessions == {SESSION_ID: 1}
+            for agent_id, start, end, line in frames([parent_metadata(), *TURN_A]):
+                websocket.send_text(
+                    StreamLine(
+                        agent_id=agent_id, start=start, end=end, line=line
+                    ).model_dump_json()
+                )
+            upload_transcript(
+                websocket, b"".join(map(line_bytes, [parent_metadata(), *TURN_A]))
+            )
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+
+        assert tentacle.native_sessions == {}
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            websocket.receive_text()
+            for agent_id, start, end, line in frames(TURN_B, start=len(prefix)):
+                websocket.send_text(
+                    StreamLine(
+                        agent_id=agent_id, start=start, end=end, line=line
+                    ).model_dump_json()
+                )
+            posted = client.post(
+                CODEX_HOOK_PATH,
+                json={
+                    "hook_event_name": "Stop",
+                    "session_id": SESSION_ID,
+                    "turn_id": "turn-b",
+                },
+                headers=AUTH,
+            )
+            assert posted.status_code == 200
+            assert isinstance(
+                server_message_adapter.validate_json(websocket.receive_text()),
+                StreamFinalize,
+            )
+            websocket.send_text(
+                StreamSnapshotStart(
+                    transfer_id=uuid7(), start=len(prefix), end=len(prefix + suffix)
+                ).model_dump_json()
+            )
+            websocket.send_bytes(suffix[: len(suffix) // 2])
+        # An interrupted delta leaves the durable prefix unchanged.
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            welcome = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(welcome, StreamWelcome)
+            assert welcome.offsets == {SESSION_FILE: len(prefix)}
+            assert welcome.transcript is not None
+            assert welcome.transcript.sha256 == hashlib.sha256(prefix).hexdigest()
+            assert tentacle.native_sessions == {SESSION_ID: 1}
+            for agent_id, start, end, line in frames(TURN_B, start=len(prefix)):
+                websocket.send_text(
+                    StreamLine(
+                        agent_id=agent_id, start=start, end=end, line=line
+                    ).model_dump_json()
+                )
+            upload_transcript(websocket, suffix, start=len(prefix))
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+        assert tentacle.native_sessions == {}
+        stored_contents = [
+            path.read_bytes() for path in tmp_path.glob("users/*/*") if path.is_file()
+        ]
+        assert stored_contents == [prefix + suffix]
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            welcome = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(welcome, StreamWelcome)
+            assert welcome.offsets == {SESSION_FILE: len(prefix + suffix)}
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+        assert [
+            path.read_bytes() for path in tmp_path.glob("users/*/*") if path.is_file()
+        ] == stored_contents
+
+
+def test_a_stop_over_the_hook_pipe_drains_the_socket(tmp_path: Path) -> None:
+    """End to end: the `Stop` hook's POST waits for the streamed turn to commit,
+    reaches the open socket as `finalize`, and the client's `eof` closes the
+    connection. The next welcome resumes after the durably uploaded prefix."""
+    client, _ = stream_client(storage=tmp_path)
+
+    with client:
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            websocket.receive_text()  # welcome
+            for agent_id, start, end, line in frames([parent_metadata(), *TURN_A]):
+                websocket.send_text(
+                    StreamLine(
+                        agent_id=agent_id, start=start, end=end, line=line
+                    ).model_dump_json()
+                )
+            posted = client.post(
+                CODEX_HOOK_PATH,
+                json={
+                    "hook_event_name": "Stop",
+                    "session_id": SESSION_ID,
+                    "turn_id": "turn-a",
+                },
+                headers=AUTH,
+            )
+            assert posted.status_code == 200
+            relayed = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(relayed, StreamFinalize)
+            upload_transcript(
+                websocket, b"".join(map(line_bytes, [parent_metadata(), *TURN_A]))
+            )
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            welcome = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(welcome, StreamWelcome)
+            assert welcome.offsets == {
+                SESSION_FILE: sum(
+                    map(len, map(line_bytes, [parent_metadata(), *TURN_A]))
+                )
+            }
+
+
+def test_a_stale_protocol_is_refused_loudly() -> None:
+    client, tentacle = stream_client()
+    with client, client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+        websocket.send_text(hello_json(protocol=99))
+        with pytest.raises(WebSocketDisconnect) as disconnect:
+            websocket.receive_text()
+    assert disconnect.value.code == 1008
+    assert "protocol" in (disconnect.value.reason or "")
+    assert tentacle.native_sessions == {}
+
+
+def test_a_session_already_used_by_the_sdk_streams_as_external() -> None:
+    client, tentacle = stream_client()
+
+    async def register_sdk_session() -> Conversation:
+        octomate = tentacle.octomate
+        sdk_conversation = await octomate.conversations.ensure(
+            await a_thread(), agent_tentacle_id="codex"
+        )
+        await octomate.conversations.record_agent_run(
+            sdk_conversation,
+            run_id="sdk-run",
+            messages=[ModelRequest(parts=[UserPromptPart(content="SDK prompt")])],
+            external_id=SESSION_ID,
+        )
+        return sdk_conversation
+
+    with client:
+        assert client.portal is not None
+        sdk = client.portal.call(register_sdk_session)
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            welcome = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(welcome, StreamWelcome)
+            [state] = tentacle.session_tailer.sessions.values()
+            assert state.conversation is not None
+            assert state.conversation.id != sdk.id
+            assert state.conversation.agent_tentacle_id == "codex-native"
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+
+
+@pytest.mark.parametrize("other_tentacle", [False, True])
+async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
+    other_tentacle: bool,
+) -> None:
+    client, tentacle = stream_client()
+    driver = (
+        tentacle.octomate.connect(
+            CodexTentacle(
+                "other-codex",
+                tentacle.octomate,
+                config=CodexConfig(),
+                commands=tentacle.octomate.commands,
+                projects=tentacle.octomate.projects,
+                threads=tentacle.octomate.threads,
+                conversations=tentacle.octomate.conversations,
+                deferred_actions=tentacle.octomate.deferred_actions,
+                workspaces=tentacle.octomate.workspaces,
+                users=tentacle.octomate.users,
+                bearers=tentacle.octomate.bearers,
+                auth=tentacle.octomate.auth,
+                gateway_manager=tentacle.octomate.gateway,
+                files=tentacle.octomate.files,
+            )
+        )
+        if other_tentacle
+        else tentacle
+    )
+
+    async def native_threads() -> list[Thread]:
+        async with async_session() as session:
+            return list(await session.list(Thread, limit=None, order_bys=[]))
+
+    with client:
+        assert client.portal is not None
+        async with driver.driving(SESSION_ID):
+            assert driver.driven_sessions == {SESSION_ID: 1}
+            posted = client.post(
+                CODEX_HOOK_PATH,
+                json={
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": SESSION_ID,
+                    "turn_id": "turn-a",
+                    "prompt": "SDK prompt",
+                },
+                headers=AUTH,
+            )
+            assert posted.status_code == 200
+            assert posted.json() == {}
+            with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+                websocket.send_text(hello_json())
+                welcome = server_message_adapter.validate_json(websocket.receive_text())
+                assert isinstance(welcome, StreamWelcome)
+                websocket.send_text(StreamEof().model_dump_json())
+                with pytest.raises(WebSocketDisconnect):
+                    websocket.receive_text()
+            assert tentacle.native_sessions == {}
+            assert len(client.portal.call(native_threads)) == 1
+
+        assert driver.driven_sessions == {}
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            welcome = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(welcome, StreamWelcome)
+            assert tentacle.native_sessions == {SESSION_ID: 1}
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+        assert tentacle.native_sessions == {}
+
+
+@pytest.mark.parametrize("eof", [False, True])
+async def test_an_accepted_stream_continues_when_octomate_starts_driving(
+    monkeypatch: pytest.MonkeyPatch, eof: bool, tmp_path: Path
+) -> None:
+    client, tentacle = stream_client(storage=tmp_path)
+    feed_remote = AsyncMock()
+    monkeypatch.setattr(tentacle.session_tailer, "feed_remote", feed_remote)
+
+    with client:
+        assert client.portal is not None
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            welcome = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(welcome, StreamWelcome)
+            assert tentacle.native_sessions == {SESSION_ID: 1}
+            async with tentacle.driving(SESSION_ID):
+                if not eof:
+                    websocket.send_text(
+                        StreamLine(start=0, end=3, line="{}").model_dump_json()
+                    )
+                    upload_transcript(websocket, b"{}\n")
+                websocket.send_text(StreamEof().model_dump_json())
+                with pytest.raises(WebSocketDisconnect) as disconnect:
+                    websocket.receive_text()
+                assert disconnect.value.code == 1000
+        assert tentacle.session_tailer.sessions == {}
+        assert tentacle.native_sessions == {}
+        assert feed_remote.await_count == int(not eof)
+
+
+@pytest.mark.parametrize("clean", [False, True])
+def test_native_session_counts_overlapping_streams_and_cleans_up(clean: bool) -> None:
+    client, tentacle = stream_client()
+    with client, client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as first:
+        first.send_text(hello_json())
+        first.receive_text()
+        assert tentacle.native_sessions == {SESSION_ID: 1}
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as second:
+            second.send_text(hello_json())
+            second.receive_text()
+            assert tentacle.native_sessions == {SESSION_ID: 2}
+            if clean:
+                second.send_text(StreamEof().model_dump_json())
+                with pytest.raises(WebSocketDisconnect):
+                    second.receive_text()
+        assert tentacle.native_sessions == {SESSION_ID: 1}
+        first.send_text(StreamEof().model_dump_json())
+        with pytest.raises(WebSocketDisconnect):
+            first.receive_text()
+    assert tentacle.native_sessions == {}
+
+
+def test_an_offset_gap_closes_for_resync() -> None:
+    """A gap means frames were lost; the close makes the client reconnect and re-ask
+    where to resume, instead of the server assembling a mis-framed turn."""
+    client, tentacle = stream_client()
+    with client, client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+        websocket.send_text(hello_json())
+        websocket.receive_text()  # welcome
+        websocket.send_text(StreamLine(start=5, end=20, line="{}").model_dump_json())
+        with pytest.raises(WebSocketDisconnect) as disconnect:
+            websocket.receive_text()
+    assert disconnect.value.code == 4000
+    assert "offset gap" in (disconnect.value.reason or "")
+    assert tentacle.native_sessions == {}

@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from typing import Self, cast
 from urllib.parse import parse_qs
 
+import anyio
 import httpx
 import httpx2
 import pytest
@@ -199,7 +200,8 @@ async def connected(app: Octomate, ink: FakeSlackInk, client: Client) -> None:
     assert result.data == (
         "The authorization link is on its way to this user's direct messages."
     )
-    await drained(*app.channels.values())
+    with anyio.fail_after(5):
+        await drained(*app.channels.values())
     async with browser(app) as http:
         opened = await http.get(button_url(ink))
         assert opened.status_code == 307
@@ -382,7 +384,8 @@ async def test_the_link_goes_to_their_direct_messages_and_nowhere_else() -> None
         session = await a_slack_turn(octomate, channel, a_slack_thread())
         async with over(octomate, app, naming(session)) as client:
             result = await client.call_tool(CONNECT_TOOL, SLACK)
-        await drained(channel)
+        with anyio.fail_after(5):
+            await drained(channel)
 
     # Asked from a shared thread, so the card went to `U1`'s own DM, and the
     # model was given nothing it could repeat into the thread.

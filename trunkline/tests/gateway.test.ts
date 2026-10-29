@@ -86,6 +86,7 @@ beforeEach(() => {
   Object.defineProperty(globalThis, 'document', { configurable: true, value: { getElementById: () => null } })
   Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: () => 0 })
   installLiveSocket()
+  mock.method(api, 'getThreadDetail', async () => sourceDetail)
   useConsole.setState({ selThreadId: 'source', detail: null, ntOn: false, running: false, gatewayPending: null, gatewayMode: null, live: [], notices: [] })
 })
 afterEach(() => {

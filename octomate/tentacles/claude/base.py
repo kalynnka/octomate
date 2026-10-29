@@ -140,6 +140,7 @@ from octomate.types.permissions import (
     PermissionMode,
     is_claude_mode,
 )
+from octomate.utils import drain_task
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -639,8 +640,14 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 response = await asyncio.wait_for(
                     asyncio.shield(future), self.config.approval_timeout
                 )
-            except TimeoutError:
-                await self.deferred_actions.mark_batch(batch_id, "expired")
+            except (TimeoutError, asyncio.CancelledError) as error:
+                cancelled = await drain_task(
+                    asyncio.create_task(
+                        self.deferred_actions.mark_batch(batch_id, "expired")
+                    )
+                )
+                if cancelled or isinstance(error, asyncio.CancelledError):
+                    raise asyncio.CancelledError from error
                 return batch, None
         finally:
             self.pendings.pop(batch_id, None)
@@ -1261,6 +1268,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     messages=accumulator.messages,
                     name=run_name,
                     model_name=accumulator.model_name or cli_model,
+                    context_window=accumulator.context_window,
+                    context_used=accumulator.context_used,
                     permission_mode=options.permission_mode,
                     cwd=Path(run_cwd),
                     external_id=accumulator.session_id,

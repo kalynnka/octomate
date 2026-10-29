@@ -54,12 +54,15 @@ from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
+from octomate.schemas.deferred import MAX_QUESTION_CHOICES, DeferredActionBatch
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.acp.adapter import json_value_adapter
 from octomate.tentacles.acp.client import AcpProvider, NativeAcpClient, NativeAcpSession
+from octomate.tentacles.acp.elicitation import AcpForm, AcpFormValidationError
 from octomate.tentacles.acp.history import AcpHistory
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
+from octomate.utils import drain_task
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -80,6 +83,9 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
 
     in_process: ClassVar[bool] = True
     provider: AcpProvider
+    configured_permission_mode: str | None
+    provider_permission_mode: str | None = None
+    approval_timeout: float | None
 
     def __init__(
         self,
@@ -88,6 +94,8 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         *,
         provider: AcpProvider,
         gateway: bool = True,
+        permission_mode: str | None = None,
+        approval_timeout: float | None = 3600.0,
     ) -> None:
         super().__init__(
             id=id,
@@ -99,6 +107,8 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         )
         self.provider = provider
         self.gateway = gateway
+        self.configured_permission_mode = permission_mode
+        self.approval_timeout = approval_timeout
         self.pendings = {}
         self.conversations = octomate.conversations
         self.workspaces = octomate.workspaces
@@ -126,6 +136,10 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                 session = await client.new_session(
                     schema.NewSessionRequest(cwd=cwd, mcp_servers=[])
                 )
+                self.permission_modes = session.permission_modes
+                self.provider_permission_mode = session.permission_mode
+                if self.configured_permission_mode is not None:
+                    self.check_permission_mode(self.configured_permission_mode)
                 self.models = (
                     {option.value: option.value for option in session.models}
                     if session.model_option is not None
@@ -160,6 +174,10 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                         schema.CloseSessionResponse,
                     )
         return await super().__aenter__()
+
+    @property
+    def default_permission_mode(self) -> str | None:
+        return self.configured_permission_mode or self.provider_permission_mode
 
     def resolve_model(
         self, model: AgentRouteModelName | None = None
@@ -354,12 +372,29 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         ) -> JsonValue | None:
             if notification:
                 return None
-            if method != "session/request_permission":
+            if method == "session/request_permission":
+                request = schema.RequestPermissionRequest.model_validate(params)
+            elif method == "elicitation/create":
+                if suspender is None:
+                    raise acp.RequestError.invalid_params(
+                        {"reason": "Form elicitation was not negotiated"}
+                    )
+                request = schema.CreateFormSessionElicitationRequest.model_validate(
+                    params
+                )
+                if request.requested_schema.type != "object":
+                    raise acp.RequestError.invalid_params(
+                        {"reason": "ACP forms require an object schema"}
+                    )
+            else:
                 raise acp.RequestError.method_not_found(method)
-            request = schema.RequestPermissionRequest.model_validate(params)
             if request.session_id != session_id:
                 raise acp.RequestError.invalid_params({"reason": "Unknown session"})
-            response = await self.permission(request, suspender, updates)
+            response = (
+                await self.permission(request, suspender, updates)
+                if isinstance(request, schema.RequestPermissionRequest)
+                else await self.elicit(request, suspender, updates)
+            )
             return json_value_adapter.validate_python(
                 response.model_dump(mode="json", by_alias=True, exclude_none=True)
             )
@@ -372,7 +407,13 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                 handle,
                 schema.InitializeRequest(
                     protocol_version=acp.PROTOCOL_VERSION,
-                    client_capabilities=schema.ClientCapabilities(),
+                    client_capabilities=schema.ClientCapabilities(
+                        elicitation=schema.ElicitationCapabilities(
+                            form=schema.ElicitationFormCapabilities()
+                        )
+                        if suspender is not None
+                        else None,
+                    ),
                 ),
             ) as client,
         ):
@@ -407,6 +448,10 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                 )
             selected_model = await native.select_model(client.connection, model)
             await native.select_effort(client.connection, effort)
+            await native.select_mode(
+                client.connection,
+                conversation.permission_mode or self.configured_permission_mode,
+            )
             request = schema.PromptRequest(
                 session_id=session_id, prompt=[acp.text_block(text)]
             )
@@ -444,37 +489,58 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             return schema.RequestPermissionResponse(
                 outcome=schema.DeniedOutcome(outcome="cancelled")
             )
-        batch_id = uuid7()
-        future: asyncio.Future[DeferredActionBatchResponse] = (
-            asyncio.get_running_loop().create_future()
+        # A boolean card cannot express a provider's remembered scope or distinguish
+        # several options of the same kind. Present its exact options in that case.
+        simple = len({option.kind for option in request.options}) == len(
+            request.options
+        ) and all(
+            option.kind in {"allow_once", "reject_once"} for option in request.options
         )
-        self.pendings[batch_id] = future
-        try:
-            batch = await suspender.pause(
-                DeferredToolRequests(
-                    approvals=[
-                        ToolCallPart(
-                            tool_name=request.tool_call.title or "ACP tool",
-                            tool_call_id=request.tool_call.tool_call_id,
-                            args=request.tool_call.model_dump_json(
-                                by_alias=True, exclude_none=True
-                            ),
+        names = [option.name for option in request.options]
+        labels = {
+            option.name
+            if names.count(option.name) == 1
+            else f"{option.name} ({option.option_id})": option
+            for option in request.options
+        }
+        call = ToolCallPart(
+            tool_name=request.tool_call.title or "ACP tool",
+            tool_call_id=request.tool_call.tool_call_id,
+            args=request.tool_call.model_dump_json(by_alias=True, exclude_none=True)
+            if simple
+            else {
+                "questions": [
+                    {
+                        "question": f"Permission: {request.tool_call.title or 'ACP tool'}",
+                        "choices": list(labels)[:MAX_QUESTION_CHOICES],
+                        "hint": request.tool_call.model_dump_json(
+                            by_alias=True, exclude_none=True
                         )
-                    ]
-                ),
-                batch_id=batch_id,
-            )
-            updates.put_nowait(batch)
-            answer = await future
-            await self.octomate.deferred_actions.resolve_batch(answer)
-            updates.put_nowait(ActionBatchAnsweredEvent.of(answer))
-        finally:
-            self.pendings.pop(batch_id, None)
-        allowed = answer.approvals.get(batch.approvals[0].id, False)
-        kind = "allow_once" if allowed else "reject_once"
-        option = next(
-            (option for option in request.options if option.kind == kind), None
+                        + "\nOptions: "
+                        + "; ".join(labels),
+                    }
+                ]
+            },
         )
+        batch = await self.await_human(
+            DeferredToolRequests(approvals=[call])
+            if simple
+            else DeferredToolRequests(calls=[call]),
+            suspender,
+            updates,
+        )
+        option: schema.PermissionOption | None = None
+        if batch is not None and simple:
+            action = batch.approvals[0]
+            # ACP's allow_always has provider-defined scope, not allow_session scope.
+            if not action.metadata.get("allow_session"):
+                kind = "allow_once" if action.result else "reject_once"
+                option = next(
+                    (option for option in request.options if option.kind == kind), None
+                )
+        elif batch is not None:
+            answer = batch.questions[0].result
+            option = labels.get(answer) if isinstance(answer, str) else None
         if option is None:
             return schema.RequestPermissionResponse(
                 outcome=schema.DeniedOutcome(outcome="cancelled")
@@ -484,6 +550,134 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                 outcome="selected", option_id=option.option_id
             )
         )
+
+    async def elicit(
+        self,
+        request: schema.CreateFormSessionElicitationRequest,
+        suspender: DeferredSuspender | None,
+        updates: asyncio.Queue[
+            StreamEvent | ActionBatchEvent | ActionBatchAnsweredEvent | None
+        ],
+    ) -> schema.CreateElicitationResponse:
+        """Answer a negotiated form on its live ACP request, preserving field types."""
+        if suspender is None:
+            return schema.CancelElicitationResponse(action="cancel")
+        form = AcpForm(request, self.id)
+        batch = await self.await_human(
+            DeferredToolRequests(
+                calls=[
+                    ToolCallPart(
+                        tool_name="acp_elicitation",
+                        tool_call_id=request.tool_call_id or str(uuid7()),
+                        args={"questions": form.questions()},
+                    )
+                ]
+            ),
+            suspender,
+            updates,
+            form=form,
+        )
+        if batch is None:
+            return schema.CancelElicitationResponse(action="cancel")
+        decision = form.decision(batch)
+        if decision in {"Decline", "Cancel"}:
+            await self.octomate.deferred_actions.mark_batch(
+                batch.id, "completed", completed=True
+            )
+            return (
+                schema.DeclineElicitationResponse(action="decline")
+                if decision == "Decline"
+                else schema.CancelElicitationResponse(action="cancel")
+            )
+        if decision != "Submit":
+            await self.octomate.deferred_actions.mark_batch(batch.id, "failed")
+            raise ValueError("Select Submit, Decline, or Cancel for the ACP form")
+        try:
+            content = form.content(batch)
+        except ValueError:
+            await self.octomate.deferred_actions.mark_batch(batch.id, "failed")
+            raise
+        return schema.AcceptElicitationResponse(action="accept", content=content)
+
+    async def await_human(
+        self,
+        requests: DeferredToolRequests,
+        suspender: DeferredSuspender,
+        updates: asyncio.Queue[
+            StreamEvent | ActionBatchEvent | ActionBatchAnsweredEvent | None
+        ],
+        *,
+        form: AcpForm | None = None,
+    ) -> DeferredActionBatch | None:
+        """Collect partial card replies without ending the provider's live request.
+
+        Timeout or transport cancellation expires the batch so a late reply cannot
+        be delivered to another request. Forms keep draft answers editable until
+        an explicit submission passes validation.
+        """
+        batch_id = uuid7()
+        future: asyncio.Future[DeferredActionBatchResponse] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self.pendings[batch_id] = future
+        try:
+            updates.put_nowait(await suspender.pause(requests, batch_id=batch_id))
+            batch: DeferredActionBatch | None = None
+            complete = False
+            async with asyncio.timeout(self.approval_timeout):
+                while not complete:
+                    response = await future
+                    future = asyncio.get_running_loop().create_future()
+                    self.pendings[batch_id] = future
+                    batch = await self.octomate.deferred_actions.resolve_batch(
+                        response, finalize=form is None
+                    )
+                    complete = await self.review_response(
+                        batch, response, form, updates
+                    )
+            return batch
+        except (TimeoutError, asyncio.CancelledError) as error:
+            cancelled = await drain_task(
+                asyncio.create_task(
+                    self.octomate.deferred_actions.mark_batch(batch_id, "expired")
+                )
+            )
+            if cancelled or isinstance(error, asyncio.CancelledError):
+                raise asyncio.CancelledError from error
+            return None
+        finally:
+            self.pendings.pop(batch_id, None)
+            future.cancel()
+
+    async def review_response(
+        self,
+        batch: DeferredActionBatch,
+        response: DeferredActionBatchResponse,
+        form: AcpForm | None,
+        updates: asyncio.Queue[
+            StreamEvent | ActionBatchEvent | ActionBatchAnsweredEvent | None
+        ],
+    ) -> bool:
+        """Settle permission replies; keep form drafts open until a valid submission."""
+        if form is None:
+            updates.put_nowait(ActionBatchAnsweredEvent.of(response))
+            return batch.completed
+        decision = form.decision(batch)
+        if decision in {"Decline", "Cancel"}:
+            return True
+        if decision != "Submit":
+            await self.octomate.deferred_actions.publish_update(batch)
+            return False
+        try:
+            form.content(batch)
+        except AcpFormValidationError as error:
+            control = max(batch.questions, key=lambda action: action.position)
+            await self.octomate.deferred_actions.review_questions(
+                batch.id, errors=error.errors, reset=control.id
+            )
+            return False
+        await self.octomate.deferred_actions.submit_questions(batch.id)
+        return True
 
     @asynccontextmanager
     async def mcp_servers(
@@ -596,6 +790,12 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             response = await asyncio.shield(prompt)
             assert history.request.metadata is not None
             history.request.metadata["stop_reason"] = response.stop_reason
+            if response.usage is not None:
+                assert history.response.metadata is not None
+                # ACP agents disagree on whether these totals cover a turn or a session.
+                history.response.metadata["usage"] = json_value_adapter.validate_json(
+                    response.usage.model_dump_json(by_alias=True, exclude_none=True)
+                )
         except (asyncio.CancelledError, GeneratorExit):
             failed = True
             assert history.request.metadata is not None
@@ -679,6 +879,8 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             history.messages,
             name=run_name,
             model_name=model,
+            context_window=history.context_window,
+            context_used=history.context_used,
             cwd=cwd,
             external_id=history.prompt.session_id,
             native_id=self.id,

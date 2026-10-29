@@ -41,8 +41,8 @@ from octomate.tentacles.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer
 from octomate.tentacles.locks import SessionLocks
 from octomate.types.json import JsonObject
-from tests.agent.test_codex_native_ingest import stream_rollout
-from tests.agent.test_codex_tentacle import (
+from tests.agent.codex.test_native_ingest import stream_rollout
+from tests.agent.codex.test_tentacle import (
     FakeCodex,
     FakeThread,
     reset_fake_codex,

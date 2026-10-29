@@ -150,9 +150,7 @@ class Octomate(FastAPI):
     threads: ThreadManager = field(init=False)
     conversations: ConversationManager = field(default_factory=ConversationManager)
     commands: CommandManager = field(init=False)
-    deferred_actions: DeferredActionManager = field(
-        default_factory=DeferredActionManager
-    )
+    deferred_actions: DeferredActionManager = field(init=False)
     gateway: GatewayManager = field(default_factory=GatewayManager)
     workspaces: WorkspaceManager = field(default_factory=WorkspaceManager)
     nerve: Nerve = field(default_factory=Nerve)
@@ -181,6 +179,7 @@ class Octomate(FastAPI):
             lifespan=self.lifespan,
         )
         self.threads = ThreadManager(users=self.users, nerve=self.nerve)
+        self.deferred_actions = DeferredActionManager(nerve=self.nerve)
         self.commands = CommandManager(
             tentacles=self.tentacles,
             users=self.users,

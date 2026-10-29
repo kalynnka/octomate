@@ -134,6 +134,7 @@ test('a new thread adopts its saved identity without a transition or replacing i
   })
   mock.method(api, 'getThreadDetail', async () => ({
     ...detail, key: 'saved-thread', live: true, sendKey,
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheRate: 0 },
     sessions: [{ n: '1', id: 'session', conversationId: 'conversation', route: 'codex', agent: 'codex', model: null, effort: 'high', mode: null, kind: 'entry', t: '', reason: '', status: 'active', tone: 'accent' }],
     ledger: [{ kind: 'user', uid: 'persisted-prompt', text: 'hello', t: '', who: 'operator' }],
   } satisfies ThreadDetail))
@@ -149,6 +150,7 @@ test('a new thread adopts its saved identity without a transition or replacing i
   assert.equal(useConsole.getState().selThreadId, saved.id)
   assert.equal(useConsole.getState().detail?.sessions[0].conversationId, 'conversation')
   assert.equal(useConsole.getState().detail?.sessions[0].effort, 'high')
+  assert.equal(useConsole.getState().detail?.usage.input, 1)
   assert.deepEqual(useConsole.getState().detail?.ledger, [])
   assert.equal(useConsole.getState().live.find((item) => item.kind === 'user'), prompt)
   assert.equal(useConsole.getState().live.filter((item) => item.kind === 'stream').length, 1)
@@ -279,10 +281,39 @@ test('a card answered anywhere else stops waiting here', async () => {
   const watching = await socketOn('thread_id=asking')
 
   watching.deliver({ event_kind: 'action_batch_answered', batch_id: 'batch', approvals: {}, answers: { first: 'Yes' } })
+  const [open] = useConsole.getState().detail?.ledger ?? []
+  assert.equal(open.kind === 'ask' && open.state, 'waiting')
+  watching.deliver({ event_kind: 'action_batch_updated', batch_id: 'batch', closed: true, questions: [{ ...question, status: 'answered', result: 'Yes' }], approvals: [] })
 
   const [answered] = useConsole.getState().detail?.ledger ?? []
   assert.equal(answered.kind === 'ask' && answered.state, 'answered')
   assert.deepEqual(answered.kind === 'ask' && answered.questions.map((q) => q.answer), ['Yes'])
+})
+
+test('form drafts stay editable and a batch closure removes waiting cards', async () => {
+  const question: WireDeferredQuestion = {
+    id: 'field', kind: 'question', status: 'pending', tool_name: 'acp_elicitation', tool_call_id: 'q', position: 0,
+    args: { question: 'Count?' },
+  }
+  const cards = batchFeelers('form', [question], [{ id: 'permission', kind: 'approval', status: 'pending', tool_name: 'shell', tool_call_id: 'a', args: { tool_name: 'shell' } }])
+  const asking: ThreadDetail = { ...detail, key: 'form', ledger: cards.map((card, i) => ({ ...card, uid: `form-${i}` }) as LedgerItem) }
+  mock.method(api, 'getThreadDetail', async () => asking)
+  queryClient.setQueryData(['thread-detail', 'form'], asking)
+  await useConsole.getState().actions.selectThread('slack', 'form')
+  const watching = await socketOn('thread_id=form')
+
+  watching.deliver({ event_kind: 'action_batch_answered', batch_id: 'form', approvals: {}, answers: { field: '0' } })
+  const pending = useConsole.getState().detail?.ledger[0]
+  assert.equal(pending?.kind === 'ask' && pending.state, 'waiting')
+  watching.deliver({ event_kind: 'action_batch_updated', batch_id: 'form', closed: false, questions: [{ ...question, result: '0', args: { ...question.args, error: 'Must be positive' } }], approvals: [] })
+  const [draft] = useConsole.getState().detail?.ledger ?? []
+  assert.equal(draft.kind === 'ask' && draft.questions[0].answer, '0')
+  assert.equal(draft.kind === 'ask' && draft.questions[0].error, 'Must be positive')
+  assert.equal(draft.kind === 'ask' && draft.state, 'waiting')
+
+  watching.deliver({ event_kind: 'action_batch_updated', batch_id: 'form', closed: true, questions: [{ ...question, status: 'expired' }], approvals: [{ id: 'permission', kind: 'approval', status: 'expired', tool_name: 'shell', tool_call_id: 'a', args: { tool_name: 'shell' } }] })
+  const settled = useConsole.getState().detail?.ledger ?? []
+  assert.deepEqual(settled.map(item => 'state' in item && item.state), ['closed', 'closed'])
 })
 
 test('a run streaming on the open thread comes over its own socket alone, and the watch returns after', async () => {
@@ -303,6 +334,72 @@ test('a run streaming on the open thread comes over its own socket alone, and th
 
   assert.ok(run.closed)
   assert.notEqual(await socketOn('thread_id=solo'), watching)
+})
+
+test('a driven run reads its persisted usage when it settles and after reopening', async () => {
+  const live: ThreadDetail = { ...detail, key: 'solo', live: true, sendKey: 'solo-key' }
+  const recorded: ThreadDetail = {
+    ...live,
+    usage: { input: 500000, output: 4588, cacheRead: 464192, cacheWrite: 0, cacheRate: 464192 / 500000 },
+    ctxK: 24,
+    contextWindow: 262144,
+  }
+  const getDetail = mock.method(api, 'getThreadDetail', async () => live)
+  mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) =>
+    init?.method === 'POST' ? new Response(null, { status: 202 }) : Response.json([]))
+  queryClient.setQueryData(['thread-detail', 'solo'], live)
+  const actions = useConsole.getState().actions
+  await actions.selectThread('trunkline', 'solo')
+
+  actions.sendDirective('carry on')
+  const run = await socketOn('thread_key=solo-key')
+  run.deliver(
+    { event_kind: 'reflex_awake' },
+    { ...result, output: 'done' },
+  )
+  assert.deepEqual(useConsole.getState().detail?.usage, live.usage)
+  assert.equal(getDetail.mock.callCount(), 1)
+  getDetail.mock.mockImplementation(async () => recorded)
+  run.deliver({ event_kind: 'reflex_asleep' })
+  for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
+
+  assert.deepEqual(useConsole.getState().detail?.usage, recorded.usage)
+  assert.equal(useConsole.getState().detail?.ctxK, recorded.ctxK)
+  assert.equal(useConsole.getState().detail?.contextWindow, recorded.contextWindow)
+  assert.equal(getDetail.mock.callCount(), 2)
+  assert.ok(useConsole.getState().live.some((item) => item.kind === 'stream' && item.text === 'done'))
+
+  await actions.selectThread('trunkline', 'solo')
+  assert.deepEqual(useConsole.getState().detail?.usage, recorded.usage)
+  assert.equal(useConsole.getState().detail?.ctxK, recorded.ctxK)
+  assert.equal(useConsole.getState().detail?.contextWindow, recorded.contextWindow)
+})
+
+test('a persisted usage read cannot update the thread selected while it was pending', async () => {
+  const live: ThreadDetail = { ...detail, key: 'refreshing', live: true, sendKey: 'refreshing-key' }
+  const other: ThreadDetail = { ...detail, key: 'other', ctxK: 12 }
+  const getDetail = mock.method(api, 'getThreadDetail', async (id: string) => id === 'refreshing' ? live : other)
+  mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) =>
+    init?.method === 'POST' ? new Response(null, { status: 202 }) : Response.json([]))
+  queryClient.setQueryData(['thread-detail', 'refreshing'], live)
+  const actions = useConsole.getState().actions
+  await actions.selectThread('trunkline', 'refreshing')
+  actions.sendDirective('carry on')
+  const run = await socketOn('thread_key=refreshing-key')
+
+  let resolve!: (value: ThreadDetail) => void
+  const reading = new Promise<ThreadDetail>((done) => { resolve = done })
+  getDetail.mock.mockImplementation((id: string) => id === 'refreshing' ? reading : Promise.resolve(other))
+  run.deliver({ event_kind: 'reflex_awake' }, result, { event_kind: 'reflex_asleep' })
+  for (let at = 0; at < 200 && getDetail.mock.callCount() < 2; at++) await tick()
+  assert.equal(getDetail.mock.callCount(), 2)
+
+  await actions.selectThread('trunkline', 'other')
+  resolve({ ...live, ctxK: 99 })
+  await tick()
+
+  assert.equal(useConsole.getState().selThreadId, 'other')
+  assert.deepEqual(useConsole.getState().detail, other)
 })
 
 test('a run follows the first reflex its socket sees wake, not the end of one already awake', async () => {

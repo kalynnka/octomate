@@ -34,6 +34,31 @@ before(async () => {
 afterEach(() => mock.restoreAll())
 after(async () => { await server?.close() })
 
+test('closed batches have no controls and invalid forms retain their draft and feedback', () => {
+  const field = { ...question('field', 0, 'Count?'), result: '0', args: { question: 'Count?', error: 'Must be positive' } }
+  const [draft] = batchFeelers('form', [field], [])
+  const draftHtml = renderToStaticMarkup(createElement(LedgerRow, { item: { ...draft, uid: 'form' } as LedgerItem, cardMax: '100%' }))
+  assert.ok(draftHtml.includes('Must be positive'))
+  assert.ok(draftHtml.includes('0'))
+  const cards = batchFeelers('form', [{ ...field, status: 'expired' }], [{ id: 'approval', kind: 'approval', status: 'expired', tool_name: 'shell', tool_call_id: 'call', args: { tool_name: 'shell' } }], true)
+  for (const card of cards) {
+    const html = renderToStaticMarkup(createElement(LedgerRow, { item: { ...card, uid: 'closed' } as LedgerItem, cardMax: '100%' }))
+    assert.match(html, /request closed/i)
+    assert.ok(!html.includes('aria-pressed') && !html.includes('Submit') && !html.includes('Approve') && !html.includes('Deny'))
+  }
+})
+
+test('answered questions remain editable while their batch is open', () => {
+  const [card] = batchFeelers('batch', [{ ...question('first', 0, 'Region?'), status: 'answered', result: 'Yes' }], [{ id: 'approval', kind: 'approval', status: 'pending', tool_name: 'shell', tool_call_id: 'a', args: { tool_name: 'shell' } }])
+  assert.equal(card.kind, 'ask')
+  if (card.kind !== 'ask') return
+  assert.equal(card.state, 'waiting')
+  assert.equal(card.questions[0].answer, 'Yes')
+  const html = renderToStaticMarkup(createElement(LedgerRow, { item: { ...card, uid: 'card' } as LedgerItem, cardMax: '100%' }))
+  assert.ok(html.includes('aria-pressed="true"'))
+  assert.ok(html.includes('aria-pressed="false"'))
+})
+
 test('native async questions wait for the human reply, not the tool acknowledgement', () => {
   let items: LedgerItem[] = []
   const fold = new TurnFold({
@@ -244,7 +269,7 @@ test('answering a batch sends every answer in one response, so the run resumes o
   // A multi-select question's picks travel as a list, never as joined text.
   assert.deepEqual(JSON.parse(String(init?.body)), { answers: { first: 'Yes', second: ['lint', 'tests'] } })
   const [answered] = useConsole.getState().live
-  assert.equal(answered.kind === 'ask' && answered.state, 'answered')
+  assert.equal(answered.kind === 'ask' && answered.state, 'waiting')
 })
 
 test('answering a run still streaming sends the answer alone, over the socket already folding it', async () => {
@@ -263,5 +288,5 @@ test('answering a run still streaming sends the answer alone, over the socket al
   assert.deepEqual(LiveSocket.opened, [])
   assert.equal(useConsole.getState().running, true)
   const [answered] = useConsole.getState().live
-  assert.equal(answered.kind === 'ask' && answered.state, 'answered')
+  assert.equal(answered.kind === 'ask' && answered.state, 'waiting')
 })
