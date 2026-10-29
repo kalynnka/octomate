@@ -8,6 +8,7 @@ way it claims, and that the harness behaves the way the config's wording promise
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -23,6 +24,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai_harness.tool_output_limits import (
     READ_TOOL_NAME,
     Band,
+    LocalFileStore,
     Spill,
     Summarize,
     ToolOutputLimits,
@@ -159,7 +161,7 @@ def test_empty_bands_is_rejected() -> None:
     ],
 )
 async def test_the_largest_band_a_return_reaches_claims_it(
-    size: int, expected: str
+    size: int, expected: str, tmp_path: Path
 ) -> None:
     """What the config means by "largest band wins" — bands declared smallest-first
     still route by size, so the order written in yaml carries no meaning."""
@@ -169,7 +171,8 @@ async def test_the_largest_band_a_return_reaches_claims_it(
             Band(over=5_000, action=Truncate(max_chars=500)),
             Band(over=20_000, action=Summarize()),
             Band(over=100_000, action=Spill()),
-        ]
+        ],
+        store=LocalFileStore(base_dir=tmp_path),
     )
 
     returned = await fetch_through(limits, size)
