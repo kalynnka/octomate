@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import uuid
 from typing import Self
@@ -9,6 +10,8 @@ from typing import Self
 import discord
 from pydantic import UUID7
 
+from octomate.capabilities.harness.events import ActionBatchAnsweredEvent
+from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredApproval
 from octomate.telemetry import channel_logfire
@@ -135,6 +138,42 @@ class DiscordApprovalFeeler(ApprovalFeeler):
             )
         return message_ids
 
+    async def settle(
+        self,
+        address: ChannelAddress,
+        event: ActionBatchAnsweredEvent,
+        *,
+        action_manager: DeferredActionManager,
+    ) -> None:
+        if not event.approvals:
+            return
+        batch = await action_manager.get_batch(uuid.UUID(event.batch_id))
+        target = batch.target_address
+        chat_id = target.chat_id or target.user_id
+        channel_id = (
+            (target.channel_thread_id or chat_id)
+            if target.chat_type == "thread"
+            else chat_id
+        )
+        async with asyncio.TaskGroup() as tasks:
+            for action in batch.approvals:
+                if (
+                    action.id not in event.approvals
+                    or action.platform_message_id is None
+                    or action.status not in {"approved", "denied"}
+                ):
+                    continue
+                tasks.create_task(
+                    self.ink.edit_message(
+                        channel_id,
+                        action.platform_message_id,
+                        approval_resolution_content(
+                            action, approved=action.status == "approved"
+                        ),
+                        view=approval_view(action, disabled=True),
+                    )
+                )
+
 
 def approval_content(action: DeferredApproval) -> str:
     request = action.args.model_dump_json(indent=2, exclude_defaults=True)
@@ -181,8 +220,9 @@ def approval_resolution_content(
     action: DeferredApproval,
     *,
     approved: bool,
-    responder_id: str,
+    responder_id: str = "",
 ) -> str:
     status = "Approved" if approved else "Denied"
     tool_name = action.args.tool_name[:APPROVAL_HEADING_LIMIT]
-    return f"**{tool_name}** — {status} by <@{responder_id}>"
+    responder = f" by <@{responder_id}>" if responder_id else ""
+    return f"**{tool_name}** — {status}{responder}"

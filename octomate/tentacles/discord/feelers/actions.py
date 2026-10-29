@@ -123,11 +123,10 @@ class DiscordComponentRouter:
             raise DiscordActionUnavailable(
                 "These questions are no longer available."
             ) from error
-        if batch.status != "pending" or any(
-            action.status != "pending" for action in batch.questions
-        ):
+        actions = [action for action in batch.questions if action.status == "pending"]
+        if batch.status != "pending" or not actions:
             raise DiscordActionUnavailable("These questions were already submitted.")
-        return sorted(batch.questions), self.question_answers.setdefault(batch_id, {})
+        return sorted(actions), self.question_answers.setdefault(batch_id, {})
 
     async def save_question_answer(
         self,

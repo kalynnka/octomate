@@ -1365,6 +1365,33 @@ class CodexTentacle(AgentTentacle[str, None]):
             return {}
         return await asyncio.create_task(answer, context=context.task_context.copy())
 
+    async def present_async_questions(
+        self, item: AgentMessageThreadItem, *, suspender: DeferredSuspender | None
+    ) -> ActionBatchEvent:
+        """Async question items have no RPC to answer; replies continue the thread."""
+        if suspender is None:
+            raise RuntimeError("a Codex async question needs a suspender to present it")
+        questions = [
+            QuestionRequest(
+                question=question.title,
+                choices=(question.options or [])[:MAX_QUESTION_CHOICES] or None,
+            )
+            for question in item.questions or []
+        ]
+        return await suspender.request(
+            DeferredToolRequests(
+                calls=[
+                    ToolCallPart(
+                        tool_name="codex_async_user_input",
+                        tool_call_id=item.id,
+                        args={"questions": questions},
+                        provider_name=CODEX_PROVIDER_NAME,
+                    )
+                ],
+                metadata={item.id: {"kind": "codex_async_user_input"}},
+            )
+        )
+
     async def answer_sdk_user_input_request(
         self,
         *,
@@ -1674,6 +1701,17 @@ class CodexTentacle(AgentTentacle[str, None]):
             # A resumed run. The app-server takes no tool result back, so the graph's
             # resolution of the deferral is this turn's prompt, ledgered as one.
             user_prompt = self.resumed_prompt(deferred_tool_results)
+            async_requests = [
+                call_id
+                for call_id in deferred_tool_results.calls
+                if deferred_tool_results.metadata.get(call_id, {}).get("kind")
+                == "codex_async_user_input"
+            ]
+            if async_requests:
+                user_prompt = (
+                    f"Answers to request_user_input_async {', '.join(async_requests)} "
+                    f"(in question order):\n{user_prompt}"
+                )
         accumulator = CodexRunAccumulator()
         artifact_messages: dict[str, list[UUID7]] = {}
         accumulator.begin(user_prompt)
@@ -1867,6 +1905,16 @@ class CodexTentacle(AgentTentacle[str, None]):
                     ]
                 for event in chain(accumulator.consume(notification), artifacts):
                     yield event
+                if (
+                    isinstance(notification.payload, ItemCompletedNotification)
+                    and isinstance(
+                        item := notification.payload.item.root, AgentMessageThreadItem
+                    )
+                    and item.questions
+                ):
+                    yield await self.present_async_questions(
+                        item, suspender=deferred_suspender
+                    )
                 if (
                     not interrupted
                     and session is not None
