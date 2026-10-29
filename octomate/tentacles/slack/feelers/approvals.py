@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from pydantic import UUID7, TypeAdapter
 
+from octomate.capabilities.harness.events import ActionBatchAnsweredEvent
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredActionVariantAdapter,
@@ -22,6 +25,7 @@ from octomate.tentacles.slack.schema import (
 )
 
 if TYPE_CHECKING:
+    from octomate.managers.deferred import DeferredActionManager
     from octomate.tentacles.slack.ink import SlackInk
 
 
@@ -70,6 +74,56 @@ class SlackApprovalFeeler(ApprovalFeeler):
             ),
         )
         return {action.id: message_id for action in actions}
+
+    async def settle(
+        self,
+        address: ChannelAddress,
+        event: ActionBatchAnsweredEvent,
+        *,
+        action_manager: DeferredActionManager,
+    ) -> None:
+        if not event.approvals:
+            return
+        batch = await action_manager.get_batch(UUID(event.batch_id))
+        message_ids = {
+            action.platform_message_id
+            for action in batch.approvals
+            if action.id in event.approvals and action.platform_message_id is not None
+        }
+        async with asyncio.TaskGroup() as tasks:
+            for message_id in message_ids:
+                actions = [
+                    action
+                    for action in batch.approvals
+                    if action.platform_message_id == message_id
+                ]
+                decisions = {
+                    action.id: action.status == "approved"
+                    for action in actions
+                    if action.status in {"approved", "denied"}
+                }
+                page = next(
+                    (
+                        index
+                        for index, action in enumerate(actions)
+                        if action.id not in decisions
+                    ),
+                    None,
+                )
+                tasks.create_task(
+                    self.ink.update_message(
+                        batch.target_address.chat_id or batch.target_address.user_id,
+                        message_id,
+                        text=approval_title(actions)
+                        if page is not None
+                        else "Approvals handled",
+                        blocks=(
+                            approval_blocks(actions, page=page, decisions=decisions)
+                            if page is not None
+                            else approval_submitted_blocks(actions, decisions)
+                        ),
+                    )
+                )
 
 
 def approval_blocks(

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
-from pydantic_ai.capabilities import Toolset
+from pydantic_ai.capabilities import LocalWorkspace, Toolset
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.function import (
     AgentInfo,
@@ -207,8 +207,12 @@ def test_every_capability_is_rooted_at_the_workspace(tmp_path: Path) -> None:
     workspace = tmp_path / "workspaces" / "t1"
     tentacle = InklingTentacle("inkling", Octomate(), agent=Scripted().agent())
 
-    repo_context, files, shell = tentacle.workspace_capabilities(workspace)
+    local_workspace, repo_context, files, shell = tentacle.workspace_capabilities(
+        workspace
+    )
 
+    assert isinstance(local_workspace, LocalWorkspace)
+    assert Path(local_workspace.working_dir) == workspace.resolve()
     assert isinstance(repo_context, RepoContext)
     assert isinstance(files, Toolset)
     assert isinstance(files.toolset, ApprovalRequiredToolset)
@@ -216,10 +220,8 @@ def test_every_capability_is_rooted_at_the_workspace(tmp_path: Path) -> None:
     assert isinstance(shell, Toolset)
     assert isinstance(shell.toolset, ApprovalRequiredToolset)
     assert isinstance(shell.toolset.wrapped, ShellToolset)
-    assert repo_context.workspace_dir == workspace
     assert repo_context.home_dir is None
-    assert vars(files.toolset.wrapped)["_root"] == workspace
-    assert vars(shell.toolset.wrapped)["_initial_cwd"] == workspace
+    assert vars(files.toolset.wrapped)["_root_spelling"] == str(workspace)
     # The repo's own instructions reach the model, and the model has a shell — the
     # provider keys this process runs on are not the project's to spend.
     assert "ANTHROPIC_*" in vars(shell.toolset.wrapped)["_denied_env_patterns"]

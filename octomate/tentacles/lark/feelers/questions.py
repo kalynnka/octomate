@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from pydantic import UUID7, JsonValue, TypeAdapter
 
+from octomate.capabilities.harness.events import ActionBatchAnsweredEvent
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion, QuestionAnswer
 from octomate.telemetry import lark_logfire
@@ -19,6 +22,7 @@ from octomate.tentacles.lark.feelers import cards
 from octomate.tentacles.lark.feelers.actions import LarkCardAction
 from octomate.tentacles.lark.schema import (
     LarkInteractiveCard,
+    LarkLegacyCard,
     LarkOutboundMessage,
     LarkQuestionActionValue,
     LarkQuestionFormValue,
@@ -26,6 +30,7 @@ from octomate.tentacles.lark.schema import (
 from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
+    from octomate.managers.deferred import DeferredActionManager
     from octomate.tentacles.lark.ink import LarkInk
 
 
@@ -75,6 +80,52 @@ class LarkAskQuestionFeeler(QuestionFeeler):
             reply_in_thread=channel_thread_id is not None,
         )
         return {action.id: message_id for action in actions}
+
+    async def settle(
+        self,
+        address: ChannelAddress,
+        event: ActionBatchAnsweredEvent,
+        *,
+        action_manager: DeferredActionManager,
+    ) -> None:
+        if not event.answers:
+            return
+        batch = await action_manager.get_batch(UUID(event.batch_id))
+        message_ids = {
+            action.platform_message_id
+            for action in batch.questions
+            if action.id in event.answers and action.platform_message_id is not None
+        }
+        async with asyncio.TaskGroup() as tasks:
+            for message_id in message_ids:
+                actions = [
+                    action
+                    for action in batch.questions
+                    if action.platform_message_id == message_id
+                ]
+                answers = {
+                    action.id: action.result
+                    for action in actions
+                    if action.status == "answered"
+                    and isinstance(action.result, str | list)
+                }
+                answered = [action for action in actions if action.id in answers]
+                pending = [action for action in actions if action.id not in answers]
+                card = LarkLegacyCard.model_validate(
+                    submitted_card_data(answered, answers)
+                )
+                if pending:
+                    pending_card = LarkLegacyCard.model_validate(
+                        ask_question_card_data(pending)
+                    )
+                    pending_card.elements = [*card.elements, *pending_card.elements]
+                    card = pending_card
+                tasks.create_task(
+                    self.ink.patch_card(
+                        message_id,
+                        card.model_dump_json(by_alias=True, exclude_unset=True),
+                    )
+                )
 
 
 def ask_question_card(actions: list[DeferredQuestion]) -> str:

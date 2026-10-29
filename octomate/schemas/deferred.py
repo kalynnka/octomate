@@ -22,7 +22,6 @@ from arcanus import (
 from arcanus.base import Identity
 from pydantic import (
     UUID7,
-    AliasChoices,
     AwareDatetime,
     BaseModel,
     BeforeValidator,
@@ -143,7 +142,8 @@ class DeferredAction(BaseTransmuter):
     position: int = 0
     metadata: JsonObject = Field(
         default_factory=dict,
-        validation_alias=AliasChoices("meta", "metadata"),
+        alias="meta",
+        serialization_alias="metadata",
     )
     result: DeferredQuestionResult | DeferredApprovalResult = None
     platform_message_id: str | None = None

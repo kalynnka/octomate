@@ -3,8 +3,8 @@
 Two complementary hooks (keep both):
 
 - `DeferredResolver`: resolve deferred calls in-process and let the loop continue.
-- `DeferredSuspender`: persist + present the requests out-of-band; the run ends and
-  is resumed later by feeding the collected results back through a fresh run.
+- `DeferredSuspender`: persist requests for a human response, with the caller
+  choosing whether the run continues, waits, or ends until it can be resumed.
 
 Which of the two a deferral gets is `ResolverChoice`'s answer, and the loop asks it
 anew every time round rather than once per run.
@@ -131,29 +131,40 @@ class PostureResolver:
 
 
 class DeferredSuspender(Protocol):
-    """Human-in-the-loop hook for deferred tool calls the agent cannot resolve
-    in process. Unlike `DeferredResolver`, which returns results and lets the
-    react loop continue, a suspender persists + presents the requests for an
-    out-of-band response and the run ends; it is resumed later by feeding the
-    collected `DeferredToolResults` back through a fresh agent run.
+    """Persist actions for a human response. The caller controls the run's
+    lifecycle: `request` lets it continue, `pause` keeps it waiting for a live
+    reply, and `suspend` ends it for later continuation.
 
     Returning an `ActionBatchEvent` asks the react loop to put the batch *on the
     stream*, for whoever draws the run to present; returning `None` means there
     is nothing to present, as for a deferral the graph performs itself.
-
-    `pause` is the same for a run that stays live while a human answers, as a
-    runtime's in-process approval does: the event of the batch it waits on, for
-    the run's own stream. The caller names the batch, so it is already waiting on
-    that id when the cards go up and a quick reply finds it.
     """
 
-    async def suspend(
-        self, requests: DeferredToolRequests
-    ) -> ActionBatchEvent | None: ...
+    async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
+        """Persist actions for a run that ends until its deferral is resolved.
+
+        The caller ends the current run; resolution starts a later run with the
+        collected results. Return None for a deferral handled by the graph itself.
+        """
+        ...
 
     async def pause(
         self, requests: DeferredToolRequests, *, batch_id: UUID7
-    ) -> ActionBatchEvent: ...
+    ) -> ActionBatchEvent:
+        """Persist actions whose response unblocks the same live run.
+
+        The caller registers a waiter for batch_id before presenting the event,
+        then awaits the response within the current run. This method does not wait.
+        """
+        ...
+
+    async def request(self, requests: DeferredToolRequests) -> ActionBatchEvent:
+        """Persist actions while the current run continues without waiting.
+
+        The caller presents the event and keeps running. The completed response
+        starts a later turn after the current run finishes.
+        """
+        ...
 
 
 @dataclass(frozen=True)

@@ -24,6 +24,7 @@ from openai_codex.generated.v2_all import (
     ConfigReadResponse,
     DangerFullAccessSandboxPolicy,
     ItemCompletedNotification,
+    ItemStartedNotification,
     MessagePhase,
     Personality,
     ReasoningEffort,
@@ -69,7 +70,7 @@ from octomate.managers.gateway import OctomateSession
 from octomate.managers.workspaces.base import ChatWorkspace, Workspace
 from octomate.reflex.nodes.teleport import Teleport
 from octomate.reflex.state import ReflexDeps, ReflexState, ResponseTarget
-from octomate.reflex.suspender import TeleportRequest
+from octomate.reflex.suspender import ReflexSuspender, TeleportRequest
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
@@ -84,6 +85,9 @@ from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import base as codex_base
 from octomate.tentacles.codex import ink as codex_ink
 from octomate.tentacles.codex.client import RequestHandler, SharedCodex
+from octomate.tentacles.slack.feelers.questions import SlackAskQuestionFeeler
+from octomate.tentacles.slack.ink import SlackInk
+from octomate.tentacles.slack.schema import SlackOutboundMessage
 from octomate.types.json import JsonObject
 from tests.support.channels import FakeChannelTentacle, RecordingTimeline, carried
 from tests.support.managers import (
@@ -2999,6 +3003,172 @@ async def test_a_resumed_turn_opens_from_what_the_graph_resolved(
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.kind == "resume"
     assert thread_call.thread_id == "thread-prev"
+
+
+@pytest.mark.parametrize("final_text", ["I will keep working.", ""])
+async def test_async_questions_continue_and_answers_resume_the_same_thread(
+    monkeypatch: pytest.MonkeyPatch,
+    in_memory_engine: AsyncEngine,
+    final_text: str,
+) -> None:
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    item = ThreadItem.model_validate(
+        {
+            "id": "call-async-questions",
+            "type": "agentMessage",
+            "delivery": "async",
+            "phase": "final_answer",
+            "text": "Which region?\nAnything else?",
+            "questions": [
+                {"title": "Which region?", "options": ["us", "eu"]},
+                {"title": "Anything else?"},
+            ],
+        }
+    )
+    reset_fake_codex(
+        [
+            notification(
+                "item/started",
+                ItemStartedNotification(
+                    item=item, started_at_ms=1, thread_id="thread-new", turn_id="turn-1"
+                ),
+            ),
+            notification(
+                "item/completed",
+                ItemCompletedNotification(
+                    item=item,
+                    completed_at_ms=2,
+                    thread_id="thread-new",
+                    turn_id="turn-1",
+                ),
+            ),
+            *(
+                text_script(final_text, thread_id="thread-new")
+                if final_text
+                else text_script("", thread_id="thread-new")[-1:]
+            ),
+        ]
+    )
+    octomate = Octomate(config=OctomateConfig(auth=auth_config()))
+    await a_user(profiles={"im": "alice"})
+    channel = FakeChannelTentacle(
+        "im", octomate, config=ChannelConfig(type="fake", agents=["codex"])
+    )
+    octomate.connect(channel)
+    thread_id = (await octomate.threads.ensure(KEY)).id
+    tentacle = CodexTentacle(
+        "codex",
+        octomate,
+        config=CodexConfig(permission_mode="auto_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
+    )
+    octomate.connect(tentacle)
+    suspender = ReflexSuspender(
+        action_manager=octomate.deferred_actions,
+        conversation_manager=octomate.conversations,
+        agent_tentacle_id="codex",
+        run_name="react",
+        source_address=KEY,
+        target_address=KEY,
+        target_mode="main",
+        decision=None,
+        thread_id=thread_id,
+    )
+    async with tentacle:
+        async with tentacle.run_stream_events(
+            "Ask me two questions and keep working.",
+            conversation_address=KEY,
+            thread_id=thread_id,
+            deferred_suspender=suspender,
+        ) as stream:
+            with anyio.fail_after(5):
+                events = [event async for event in stream]
+        [card] = [event for event in events if isinstance(event, ActionBatchEvent)]
+        assert isinstance(events[-1], AgentRunResultEvent)
+        assert events[-1].result.output == final_text
+        assert suspender.suspended_batch_id is None
+        assert tentacle.pendings == {}
+        assert not FakeCodex.turns[0].interrupted
+        first, second = sorted(card.questions)
+        assert first.args == {"question": "Which region?", "choices": ["us", "eu"]}
+        assert second.args == {"question": "Anything else?", "choices": None}
+        assert first.batch_id is not None
+        batch = await octomate.deferred_actions.get_batch(first.batch_id)
+        assert batch.response_mode == "resume"
+        assert batch.status == "pending"
+        assert batch.build_results().metadata == {
+            "call-async-questions": {"kind": "codex_async_user_input"}
+        }
+        assert sorted(batch.questions)[0].model_dump(by_alias=True)["metadata"] == {
+            "kind": "codex_async_user_input"
+        }
+        ink = SlackInk(SecretStr("unused"))
+        sends = AsyncMock(return_value="question-ts")
+        monkeypatch.setattr(ink, "send_message", sends)
+        presented = await SlackAskQuestionFeeler(ink).present(KEY, card.questions)
+        assert presented == {first.id: "question-ts", second.id: "question-ts"}
+        [message] = sends.call_args.args[2]
+        assert isinstance(message, SlackOutboundMessage)
+        assert message.blocks is not None
+        input_types = []
+        for block in message.blocks:
+            if block["type"] != "input":
+                continue
+            element = block["element"]
+            assert isinstance(element, dict)
+            input_types.append(element["type"])
+        assert input_types == ["radio_buttons", "plain_text_input", "plain_text_input"]
+        assert all(
+            not isinstance(event, PartStartEvent)
+            or not isinstance(event.part, TextPart)
+            or "Which region?" not in event.part.content
+            for event in events
+        )
+        conversation = await octomate.conversations.get(batch.conversation_id)
+        assert conversation.external_id == "thread-new"
+        assert any(
+            "Which region?" in (message.message_text or "")
+            for message in conversation.messages
+        )
+
+        # Partial replies settle their cards without starting a premature turn.
+        task = await octomate.kick(
+            DeferredActionBatchResponse(
+                batch_id=batch.id, answers={second.id: "Use staging"}
+            )
+        )
+        assert task is not None
+        await task
+        assert len(FakeCodex.turn_calls) == 1
+        FakeCodex.script = text_script("Continuing in eu.", thread_id="thread-new")
+        task = await octomate.kick(
+            DeferredActionBatchResponse(batch_id=batch.id, answers={first.id: "eu"})
+        )
+        assert task is not None
+        await task
+
+        assert len(FakeCodex.turn_calls) == 2
+        assert FakeCodex.turn_calls[-1].prompt == (
+            "Answers to request_user_input_async call-async-questions "
+            "(in question order):\neu\nUse staging"
+        )
+        assert FakeCodex.loaded_threads == {"thread-new"}
+        assert (
+            await octomate.deferred_actions.get_batch(batch.id)
+        ).status == "completed"
+        resumed = await octomate.conversations.get(batch.conversation_id)
+        assert resumed.external_id == "thread-new"
+        assert len(resumed.runs) == 2
 
 
 @pytest.mark.parametrize("resume", [False, True])

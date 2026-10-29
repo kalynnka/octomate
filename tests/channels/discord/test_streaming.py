@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+import discord
 import pytest
 from uuid_utils.compat import uuid7
 
@@ -82,10 +83,13 @@ class RecordingDiscordInk(DiscordInk):
         self,
         channel_id: str,
         message_id: str,
-        content: str,
+        content: str | None,
         *,
         mentioned_user_ids: tuple[str, ...] = (),
+        view: discord.ui.View | discord.ui.LayoutView = discord.utils.MISSING,
     ) -> str:
+        assert content is not None
+        assert view is discord.utils.MISSING
         self.edits.append(
             DiscordEdit(
                 channel_id=channel_id,
@@ -119,9 +123,10 @@ class SlowFirstEditInk(RecordingDiscordInk):
         self,
         channel_id: str,
         message_id: str,
-        content: str,
+        content: str | None,
         *,
         mentioned_user_ids: tuple[str, ...] = (),
+        view: discord.ui.View | discord.ui.LayoutView = discord.utils.MISSING,
     ) -> str:
         self.active_edits += 1
         self.max_active_edits = max(self.max_active_edits, self.active_edits)
@@ -134,6 +139,7 @@ class SlowFirstEditInk(RecordingDiscordInk):
                 message_id,
                 content,
                 mentioned_user_ids=mentioned_user_ids,
+                view=view,
             )
         finally:
             self.active_edits -= 1

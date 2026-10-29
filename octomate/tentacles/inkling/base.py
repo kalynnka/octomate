@@ -32,7 +32,7 @@ from pydantic_ai.agent.abstract import (
     AgentMetadata,
     RunOutputDataT,
 )
-from pydantic_ai.capabilities import Toolset
+from pydantic_ai.capabilities import LocalWorkspace, Toolset
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import ModelRequest, UserContent, UserPromptPart
 from pydantic_ai.models import KnownModelName, Model
@@ -310,7 +310,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         that protects.
         """
         return [
-            RepoContext[None](workspace_dir=workspace),
+            LocalWorkspace[None](workspace),
+            RepoContext[None](expose_inventory_tool=True),
             Toolset(
                 ApprovalRequiredToolset(
                     wrapped=FileSystem[None](root_dir=workspace).get_toolset()
@@ -319,7 +320,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             Toolset(
                 ApprovalRequiredToolset(
                     wrapped=Shell[None](
-                        cwd=workspace,
                         # A repo's own `AGENTS.md` reaches this agent as instructions,
                         # and now those instructions have a shell. The provider keys
                         # this process runs on are not the project's to spend.
