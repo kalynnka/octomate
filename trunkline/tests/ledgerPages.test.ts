@@ -57,10 +57,12 @@ const said = (id: string, text: string, actor: 'human' | 'system'): ApiThreadMes
 })
 const notice = said('015', 'Forked from conversation elsewhere.', 'system')
 // The prompt as the model got it is dressed; the row it was built from is not.
+// The row's id predates the request that read it — rows are written when said,
+// requests when built — which is the order the ledger keys them by.
 const prompt: ApiModelMessage = {
   id: '020', run_id: 'run', kind: 'request', timestamp: null,
   parts: [{ part_kind: 'user-prompt', content: 'Ada (ada, user:ada) #msg:1: fix the build' }],
-  thread_messages: [said('m-1', 'fix the build', 'human')],
+  thread_messages: [said('018', 'fix the build', 'human')],
 }
 const narration: ApiModelMessage = {
   id: '030', run_id: 'run', kind: 'response', timestamp: at, thread_messages: [],
@@ -88,6 +90,18 @@ const reads = (
 })
 const page = <T>(items: T[]) => ({ items: [...items].reverse(), total: 4, next_cursor: 'end', has_more: false })
 const kinds = (ledger: LedgerItem[]) => ledger.map((item) => item.kind)
+
+test('binding an inbound row preserves its position in the saved conversation', () => {
+  const inbound = said('035', 'also check lint', 'human')
+  const next = { ...prompt, id: '060', thread_messages: [inbound] }
+  const before = liveThreadDetail(reads([prompt, narration, built, answer], [inbound], { model: null, unbound: null }))
+  const after = liveThreadDetail(reads([prompt, narration, built, answer, next], [], { model: null, unbound: null }))
+  assert.deepEqual(after.ledger.map(item => item.uid), before.ledger.map(item => item.uid))
+  const inboundAt = after.ledger.findIndex(item => item.uid === inbound.id)
+  const replyAt = after.ledger.findIndex(item => item.kind === 'agent')
+  assert.ok(inboundAt >= 0 && inboundAt < replyAt)
+  assert.equal(after.ledger.filter(item => item.uid === inbound.id).length, 1)
+})
 
 for (const [agent, bound] of [['codex-native', true], ['codex-native', false], ['deepseek-native', true], ['deepseek-native', false]] as const) {
   test(`${agent} question replies remain readable ${bound ? 'after binding' : 'before their run commits'}`, () => {
@@ -296,7 +310,7 @@ test('artifact references survive pagination with their row identity and no text
 
 for (const text of ['Here is the chart.', '']) {
   test(`captured HTML stays after its originating response on reload (${text ? 'caption' : 'reference only'})`, () => {
-    const artifact: ApiThreadMessage = { ...said('015', '', 'system'), direction: 'outbound', kind: 'artifact', artifact_id: 'saved-html' }
+    const artifact: ApiThreadMessage = { ...said('052', '', 'system'), direction: 'outbound', kind: 'artifact', artifact_id: 'saved-html' }
     const response: ApiModelMessage = { ...answer, parts: [{ part_kind: 'text', content: text }], thread_messages: [artifact] }
     const next: ApiModelMessage = { ...prompt, id: '060', thread_messages: [said('055', 'Next question', 'human')] }
     const detail = liveThreadDetail(reads([prompt, response, next], [], { model: null, unbound: null }))
