@@ -80,8 +80,18 @@ async def test_launches_with_patch_before_web_app_options(
         assert dsh.runtime_home is not None
         owned_home = Path(dsh.runtime_home.name)
         assert owned_home != dsh.dsh_home
-        patches = json.loads((owned_home / "shared-data.json").read_text())
-        assert {patch["id"]: patch["config"] for patch in patches} == {
+        patches = json.loads((owned_home / "driven.json").read_text())
+        assert {
+            patch["id"]: patch["config"]
+            for patch in patches
+            if patch["id"]
+            in {
+                "settings",
+                "credentials",
+                "session-persistence-jsonl",
+                "attachment-local",
+            }
+        } == {
             "settings": {"path": str(dsh.dsh_home / "settings.yaml")},
             "credentials": {"path": str(dsh.dsh_home / ".credentials.yaml")},
             "session-persistence-jsonl": {"root": str(dsh.dsh_home / "sessions")},
@@ -95,9 +105,9 @@ async def test_launches_with_patch_before_web_app_options(
         [
             "web",
             "--patch",
-            str(owned_home / "shared-data.json"),
-            "--patch",
             "overlay.yml",
+            "--patch",
+            str(owned_home / "driven.json"),
             "--host",
             "127.0.0.1",
             "--port",

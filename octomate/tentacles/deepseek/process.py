@@ -28,7 +28,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import HttpUrl, SecretStr
 
-from octomate.tentacles.deepseek.schema import SharedDataPatch
+from octomate.tentacles.deepseek.schema import DrivenConfigPatch
 
 logger = logging.getLogger(__name__)
 
@@ -186,10 +186,10 @@ class DeepseekProcess:
             TemporaryDirectory, prefix="octomate-dsh-"
         )
         shared_home = await asyncio.to_thread(self.dsh_home.resolve)
-        patch = Path(self.runtime_home.name) / "shared-data.json"
+        patch = Path(self.runtime_home.name) / "driven.json"
         await asyncio.to_thread(
             patch.write_text,
-            SharedDataPatch(
+            DrivenConfigPatch(
                 [
                     {
                         "id": "settings",
@@ -204,15 +204,75 @@ class DeepseekProcess:
                         "config": {"root": shared_home / "sessions"},
                     },
                     {"id": "attachment-local", "config": {"dshHome": shared_home}},
+                    {
+                        "id": "sandbox",
+                        "name": "@deepseek-ai/dsh-sandbox-local",
+                        "disabled": False,
+                        "config": {
+                            "runnerCommand": [],
+                            "runnerFailureSignatures": [],
+                        },
+                    },
+                    {
+                        "id": "sandbox-policy",
+                        "name": "@deepseek-ai/dsh-sandbox-policy",
+                        "disabled": False,
+                        "config": {"mode": "workspace-write"},
+                    },
+                    {
+                        "id": "bash-sandbox",
+                        "name": "@deepseek-ai/dsh-bash-sandbox",
+                        "disabled": os.name == "nt",
+                    },
+                    {
+                        "id": "pwsh-sandbox",
+                        "name": "@deepseek-ai/dsh-pwsh-sandbox",
+                        "disabled": os.name != "nt",
+                    },
+                    {
+                        "id": "fs-sandbox",
+                        "name": "@deepseek-ai/dsh-fs-sandbox",
+                        "disabled": False,
+                    },
+                    {
+                        "id": "approval",
+                        "name": "@deepseek-ai/dsh-user-approval",
+                        "disabled": False,
+                        "config": {"policy": "ask"},
+                    },
+                    {
+                        "id": "permission",
+                        "name": "@deepseek-ai/dsh-permission-presets",
+                        "disabled": False,
+                        "config": {
+                            "presets": {
+                                "read-only": {
+                                    "sandbox": "read-only",
+                                    "approval": "ask",
+                                },
+                                "workspace-write": {
+                                    "sandbox": "workspace-write",
+                                    "approval": "ask",
+                                },
+                                "danger-full-access": {
+                                    "sandbox": "danger-full-access",
+                                    "approval": "never",
+                                },
+                            },
+                        },
+                    },
+                    {"id": "hmr", "disabled": True},
+                    {"id": "plugin-manager", "disabled": True},
+                    {"id": "tool-plugin-manager", "disabled": True},
                 ]
             ).model_dump_json(),
         )
         process = await asyncio.create_subprocess_exec(
             self.executable,
             "web",
+            *self.extra_args,
             "--patch",
             str(patch),
-            *self.extra_args,
             "--host",
             "127.0.0.1",
             "--port",
