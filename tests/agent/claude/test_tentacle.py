@@ -6,10 +6,12 @@ import json
 from collections.abc import AsyncIterator, Callable
 from dataclasses import asdict
 from pathlib import Path
+from tempfile import gettempdir
 from types import SimpleNamespace, TracebackType
 from typing import ClassVar, Literal, cast
 from unittest.mock import Mock
 
+import anyio
 import pytest
 from claude_agent_sdk import (
     AssistantMessage,
@@ -352,6 +354,7 @@ async def test_sdk_ingest_claim_brackets_client_lifetime(
         assert (options.session_id is None) == (external_id is not None)
         assert tentacle.driven_sessions == {session_id: 1}
         assert options.settings is not None
+        temp_root = str(await anyio.Path(options.env["CLAUDE_CODE_TMPDIR"]).resolve())
         assert json.loads(options.settings) == {
             "permissions": {"blockReadsOutsideWorkingDirectories": True},
             "sandbox": {
@@ -361,6 +364,11 @@ async def test_sdk_ingest_claim_brackets_client_lifetime(
                 "allowUnsandboxedCommands": False,
                 "excludedCommands": [],
                 "enableWeakerNestedSandbox": False,
+                "filesystem": {
+                    "denyRead": ["/tmp", gettempdir()],
+                    "allowRead": [str(options.cwd), temp_root],
+                    "allowWrite": [temp_root],
+                },
             },
         }
         assert options.setting_sources == []
@@ -369,6 +377,7 @@ async def test_sdk_ingest_claim_brackets_client_lifetime(
             "thinking-display": "summarized",
         }
         assert options.strict_mcp_config is True
+        assert await anyio.Path(options.env["CLAUDE_CODE_TMPDIR"]).is_dir()
         lifecycle.append("enter")
         if connect_fails:
             raise RuntimeError("SDK connect failed")
@@ -409,6 +418,10 @@ async def test_sdk_ingest_claim_brackets_client_lifetime(
         else ["workspace-enter", "enter", "exit", "workspace-exit"]
     )
     assert tentacle.driven_sessions == {}
+
+    options = FakeClaudeClient.last_options
+    assert isinstance(options, ClaudeAgentOptions)
+    assert not await anyio.Path(options.env["CLAUDE_CODE_TMPDIR"]).exists()
 
 
 async def test_instructions_land_in_the_system_prompt(

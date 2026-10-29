@@ -44,7 +44,6 @@ from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
     QuestionRequestedFrame,
 )
-from tests.support.managers import a_thread
 
 
 async def test_real_harness_drives_resumes_and_reads_native_history(
@@ -132,9 +131,9 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
     monkeypatch.setattr(tentacle, "answer_approval", approve)
     monkeypatch.setattr(tentacle, "answer_questions", answer)
     address = ChannelAddress(
-        channel_tentacle_id="im", chat_type="dm", chat_id="smoke", user_id="smoke"
+        channel_tentacle_id="im", chat_type="thread", chat_id="smoke", user_id="smoke"
     )
-    thread = await a_thread()
+    thread = (await octomate.threads.enter(address)).id
     async with asyncio.timeout(90), tentacle:
         async with tentacle.run_stream_events(
             "Test integration",
@@ -226,13 +225,12 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
                     )
                     assert shared_records == records
                 busy = await reader_client.remote(
-                    "session/create",
+                    "session/selectModel",
                     {
                         "request": {
                             "sessionId": first_session,
-                            "cwd": str(
-                                tentacle.octomate.workspaces.open(thread, None).path
-                            ),
+                            "provider": "octomate-test",
+                            "model": "mock",
                         }
                     },
                 )

@@ -152,6 +152,50 @@ computer/browser authorization were not verified in this pass. MCP servers and
 remote-device tools need their own user-bound authorization; the shell sandbox
 does not confine them. Stronger isolation remains a separate deployment decision.
 
+### Run the strict native integration tests manually
+
+From the repository root, run:
+
+```sh
+uv run --no-sync pytest tests/integration/native_sandbox --native-sandbox -ra --junitxml=/tmp/native-sandbox.xml
+```
+
+Ordinary pytest collection excludes this suite. Add `-k inkling`, `-k codex`,
+`-k claude`, or `-k deepseek` to work on one harness at a time locally.
+DeepSeek requires `DSH_TEST_EXECUTABLE` to name an installed or built CLI supporting
+Octomate's Remote API and `--no-open`. Missing prerequisites are reported as skips.
+Codex's separate file-tool cases are skipped because its file access is exercised
+through native command execution.
+
+For CI, open **Actions → Checks → Run workflow**, select the branch to test, and
+enable `integration_tests`. Results appear under **Integration tests** for each
+harness. These jobs run only when that option is selected on a manual Checks run;
+pushes, pull requests, and reusable release checks skip them.
+See [GitHub's manual workflow instructions](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow).
+
+The workflow runs separate macOS 15 jobs for Inkling, Codex, Claude, and DeepSeek.
+It installs the locked Python dependencies and the pinned DeepSeek CLI and
+scripted-provider API. Each job runs only its harness, publishes a result summary,
+and uploads a JUnit report even when assertions fail. A failing harness does not
+cancel the others. Strict boundary failures fail the job; a run that skips every
+case also fails so missing prerequisites cannot produce a green result.
+
+The tests execute the 16 strict shell checks and four file-tool checks above,
+plus a synthetic server-environment canary, through the actual tentacles and
+workspace manager. Model responses are scripted locally; no paid model service or
+IM channel is used. Each shell probe first succeeds outside the tested runtime,
+so a broken fixture or enclosing sandbox cannot count as successful confinement.
+Run from an ordinary terminal outside another agent sandbox.
+
+The suite creates and removes disposable canaries under the current user's home
+and temporary directory, and uses only databases created by pytest. Outside user
+data is deliberately placed outside system temporary storage to distinguish the
+two policies. Known native limitations remain failing assertions; these tests do
+not redefine a permitted escape as a pass. Skill checks read the fixture's skill
+and execute its CLI; they do not establish automatic skill discovery or model
+instruction-following. This baseline does not yet test policy overrides,
+unavailable-sandbox startup, approval interactions, or permission-mode changes.
+
 ## Runtime commands
 
 Permission changes belong to the agent tentacle. Channels use its permission

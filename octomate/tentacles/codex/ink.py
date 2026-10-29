@@ -20,7 +20,6 @@ from octomate_protocol.gateway import GatewayTool, gateway_tool
 from openai_codex import AsyncThread, AsyncTurnHandle, InputItem
 from openai_codex._approval_mode import _approval_mode_settings
 from openai_codex._inputs import _normalize_run_input, _to_wire_input
-from openai_codex._sandbox import _sandbox_mode, _sandbox_policy
 from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.errors import CodexError
 from openai_codex.generated.v2_all import (
@@ -60,10 +59,7 @@ from openai_codex.generated.v2_all import (
     ThreadApproveGuardianDeniedActionResponse,
     ThreadClosedNotification,
     ThreadForkParams,
-    ThreadResumeParams,
-    ThreadStartParams,
     ThreadUnsubscribeResponse,
-    TurnStartParams,
 )
 from pydantic import AnyUrl, SecretStr, TypeAdapter
 from pydantic.alias_generators import to_snake
@@ -76,14 +72,35 @@ from octomate.tentacles.codex.adapter import json_object_adapter
 from octomate.tentacles.codex.client import RequestHandler, SharedCodex
 from octomate.tentacles.codex.schemas import (
     CodexModelCatalog,
+    PermissionProfile,
+    ThreadResumeParams,
     ThreadSettingsUpdateResponse,
+    ThreadStartParams,
+    TurnStartParams,
 )
 from octomate.types.json import JsonObject
 from octomate.utils import acquire_in_thread
 
 logger = logging.getLogger(__name__)
 
+config_tables_adapter = TypeAdapter(dict[str, JsonObject])
+rate_limit_snapshots_adapter = TypeAdapter(dict[str, RateLimitSnapshot])
+
 DRIVEN_MCP_SERVER_NAME = "octomate_driven"
+WORKSPACE_PROFILE_NAME: PermissionProfile = (
+    "octomate-workspace"  # Installed by the child's CLI overrides.
+)
+WORKSPACE_PROFILE: JsonObject = {
+    "filesystem": {
+        ":minimal": "read",
+        ":workspace_roots": {".": "write"},
+    }
+}
+PERMISSION_PROFILES: dict[Sandbox, PermissionProfile] = {
+    Sandbox.read_only: ":read-only",
+    Sandbox.workspace_write: WORKSPACE_PROFILE_NAME,
+    Sandbox.full_access: ":danger-full-access",
+}
 DRIVEN_CONFIG_OVERRIDES = (
     "features.hooks=false",
     "features.plugins=false",
@@ -91,6 +108,9 @@ DRIVEN_CONFIG_OVERRIDES = (
     "notify=[]",
     'shell_environment_policy.inherit="core"',
     'shell_environment_policy.exclude=["OCTOMATE_*"]',
+    f"default_permissions={json.dumps(WORKSPACE_PROFILE_NAME)}",
+    f"permissions.{WORKSPACE_PROFILE_NAME}="
+    + json.dumps(WORKSPACE_PROFILE, separators=(",", ": ")).replace(": ", "="),
 )
 
 
@@ -306,7 +326,22 @@ class CodexInk:
             {"cwd": cwd, "includeLayers": False},
             response_model=ConfigReadResponse,
         )
-        local_servers = TypeAdapter(dict[str, JsonObject]).validate_python(
+        profiles = config_tables_adapter.validate_python(
+            (settings.config.model_extra or {}).get("permissions", {})
+        )
+        profile = profiles.get(WORKSPACE_PROFILE_NAME)
+        if profile is not None:
+            profile = {
+                key: value for key, value in profile.items() if value is not None
+            }
+            filesystem = profile.get("filesystem")
+            if isinstance(filesystem, dict):
+                profile["filesystem"] = {
+                    key: value for key, value in filesystem.items() if value is not None
+                }
+        if profile != WORKSPACE_PROFILE:
+            raise ValueError("The native workspace permission profile was overridden")
+        local_servers = config_tables_adapter.validate_python(
             (settings.config.model_extra or {}).get("mcp_servers", {})
         )
         # Codex merges tables recursively; an empty map does not clear local servers.
@@ -364,7 +399,7 @@ class CodexInk:
                 model=model,
                 model_provider=model_provider,
                 personality=personality,
-                sandbox=_sandbox_mode(sandbox),
+                permissions=PERMISSION_PROFILES[sandbox],
             )
         )
         return AsyncThread(self.client, started.thread.id), started.model
@@ -405,7 +440,7 @@ class CodexInk:
                 model=model,
                 model_provider=model_provider,
                 personality=personality,
-                sandbox=_sandbox_mode(sandbox),
+                permissions=PERMISSION_PROFILES[sandbox],
             ),
         )
         return AsyncThread(self.client, resumed.thread.id), resumed.model
@@ -495,16 +530,13 @@ class CodexInk:
                 ApprovalsReviewer.user,
             )
         )
-        sandbox_policy = _sandbox_policy(sandbox)
         await self.client._client.request(
             "thread/settings/update",
             {
                 "threadId": thread_id,
                 "approvalPolicy": approval_policy.model_dump(mode="json"),
                 "approvalsReviewer": reviewer.value if reviewer is not None else None,
-                "sandboxPolicy": sandbox_policy.model_dump(mode="json", by_alias=True)
-                if sandbox_policy is not None
-                else None,
+                "permissions": PERMISSION_PROFILES[sandbox],
             },
             response_model=ThreadSettingsUpdateResponse,
         )
@@ -553,7 +585,7 @@ class CodexInk:
             "account/rateLimits/read", None, response_model=GetAccountRateLimitsResponse
         )
         buckets = (
-            TypeAdapter(dict[str, RateLimitSnapshot]).validate_python(
+            rate_limit_snapshots_adapter.validate_python(
                 response.rate_limits_by_limit_id
             )
             if response.rate_limits_by_limit_id is not None
@@ -704,16 +736,15 @@ class CodexInk:
         review: ReviewTarget | None = None,
     ) -> AsyncTurnHandle:
         # Apply both axes every turn, including on warm threads after a mode change.
-        if review is not None:
-            policy, reviewer = (
-                _approval_mode_settings(approval_mode)
-                if approval_mode is not None
-                else (
-                    AskForApproval(root=AskForApprovalValue.on_request),
-                    ApprovalsReviewer.user,
-                )
+        policy, reviewer = (
+            _approval_mode_settings(approval_mode)
+            if approval_mode is not None
+            else (
+                AskForApproval(root=AskForApprovalValue.on_request),
+                ApprovalsReviewer.user,
             )
-            sandbox_policy = _sandbox_policy(sandbox)
+        )
+        if review is not None:
             # review/start inherits thread settings instead of accepting turn overrides.
             await self.client._client.request(
                 "thread/settings/update",
@@ -722,11 +753,7 @@ class CodexInk:
                     "cwd": cwd,
                     "approvalPolicy": policy.model_dump(mode="json"),
                     "approvalsReviewer": reviewer.value if reviewer else None,
-                    "sandboxPolicy": sandbox_policy.model_dump(
-                        mode="json", by_alias=True
-                    )
-                    if sandbox_policy is not None
-                    else None,
+                    "permissions": PERMISSION_PROFILES[sandbox],
                     "model": model,
                     "effort": effort.value if effort is not None else None,
                     "personality": personality.value
@@ -739,19 +766,7 @@ class CodexInk:
                 response_model=ThreadSettingsUpdateResponse,
             )
             return await self.start_command(thread.id, review)
-        if approval_mode is not None:
-            return await thread.turn(
-                prompt,
-                approval_mode=approval_mode,
-                sandbox=sandbox,
-                cwd=cwd,
-                effort=effort,
-                model=model,
-                output_schema=output_schema,
-                personality=personality,
-                summary=summary,
-            )
-        # The public SDK cannot reset an auto reviewer back to the user.
+        # The public SDK cannot select native permission profiles.
         inputs = _to_wire_input(_normalize_run_input(prompt))
         turn, subscription = await self.client._client._start_turn(
             thread.id,
@@ -760,11 +775,9 @@ class CodexInk:
                 {
                     "thread_id": thread.id,
                     "input": inputs,
-                    "approval_policy": AskForApproval(
-                        root=AskForApprovalValue.on_request
-                    ),
-                    "approvals_reviewer": ApprovalsReviewer.user,
-                    "sandbox_policy": _sandbox_policy(sandbox),
+                    "approval_policy": policy,
+                    "approvals_reviewer": reviewer,
+                    "permissions": PERMISSION_PROFILES[sandbox],
                     "cwd": cwd,
                     "effort": effort,
                     "model": model,

@@ -44,9 +44,11 @@ from octomate.types.json import JsonObject
 from tests.agent.codex.test_native_ingest import stream_rollout
 from tests.agent.codex.test_tentacle import (
     FakeCodex,
-    FakeThread,
     reset_fake_codex,
     text_script,
+)
+from tests.agent.codex.test_tentacle import (
+    native_thread_handles as native_thread_handles,
 )
 from tests.support.agents import RecordingClaudeClient
 from tests.support.managers import a_project, a_registry
@@ -72,9 +74,6 @@ async def _db(in_memory_engine: AsyncEngine) -> None:
 def _fake_runtimes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", RecordingClaudeClient)
     monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
-    monkeypatch.setattr(
-        codex_ink, "AsyncThread", lambda _client, thread_id: FakeThread(thread_id)
-    )
     reset_fake_codex(text_script("done"))
 
 

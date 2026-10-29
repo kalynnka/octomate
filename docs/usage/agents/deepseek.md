@@ -11,11 +11,11 @@ running one.
 
 ## Enable
 
-This integration is tested with DSH `0.2.1-alpha.2`. Install it as the server
+This integration is tested with DSH `0.2.1-rc.2`. Install it as the server
 account, from any directory, then configure its models and credentials:
 
 ```sh
-npm install --global @deepseek-ai/dsh@0.2.1-alpha.2
+npm install --global @deepseek-ai/dsh@0.2.1-rc.2
 ```
 
 Add the block below to `tentacles.yaml`, set `executable` if `dsh` is not on the
