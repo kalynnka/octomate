@@ -16,7 +16,7 @@ from octomate.config.agents import CodexConfig, DeepseekConfig
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
-from tests.agent.test_deepseek_tentacle import FakeDeepseekApi, patch_gateway
+from tests.agent.deepseek.test_tentacle import FakeDeepseekApi, patch_gateway
 
 
 async def test_permission_discovery_keeps_custom_names_and_descriptions(

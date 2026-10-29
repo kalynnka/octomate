@@ -1,10 +1,10 @@
 """Live replay against a real Discord bot (`pytest tests/trigger/test_discord.py`).
 
 The test opens one public thread under the text channel configured in
-`trigger.discord`, then replays every Discord output surface there. OAuth is the
-exception: it deliberately lands in the configured user's DM. Pass/fail checks
-message ids, render warnings, and a forced Gateway reconnect; a human inspects the
-rendering in Discord.
+`trigger.discord`, then replays every Discord output surface there, including the
+synthetic OAuth preview. All selected tests share that thread. Pass/fail checks
+message ids, render warnings, and a forced Gateway reconnect; a human inspects
+the rendering in Discord.
 """
 
 from __future__ import annotations
@@ -15,12 +15,14 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.capabilities.harness.events import OAuthDeviceAuthorizationEvent
 from octomate.config import DiscordChannelConfig, OctomateConfig
 from octomate.schemas.artifacts import ArtifactOverview
+from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
@@ -36,6 +38,7 @@ from octomate.schemas.segments import (
 )
 from octomate.tentacles.discord import DiscordTentacle
 from tests.support.channels import drive
+from tests.support.deferred import CardUpdateScenario, replay_card_updates
 from tests.support.scenarios import (
     agent_run,
     mid_run_notice,
@@ -79,12 +82,13 @@ async def discord_run_thread(
         user_id=target.user_id,
         shared=True,
     )
-    async with channel:
-        thread_address = await channel.start_sub_thread(
-            main_address,
-            run_banner("Discord replays follow in this thread."),
-        )
-        yield channel, thread_address
+    with sqlalchemy_materia():
+        async with channel:
+            thread_address = await channel.start_sub_thread(
+                main_address,
+                run_banner("Discord replays follow in this thread."),
+            )
+            yield channel, thread_address
 
 
 async def test_discord_renders_artifact_card(
@@ -266,6 +270,21 @@ async def test_discord_renders_action_controls(
     assert "timeline render failed" not in caplog.text
 
 
+@pytest.mark.parametrize("scenario", ["answered", "corrected", "expired"])
+async def test_discord_renders_scripted_card_updates(
+    discord_run_thread: tuple[DiscordTentacle, ChannelAddress],
+    in_memory_engine: AsyncEngine,
+    scenario: CardUpdateScenario,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channel, address = discord_run_thread
+    with caplog.at_level("WARNING"):
+        batch = await replay_card_updates(channel, address, scenario)
+
+    assert batch.status == ("expired" if scenario == "expired" else "resolved")
+    assert not [r for r in caplog.records if r.name.startswith("octomate")]
+
+
 async def test_discord_renders_recorded_question_batch(
     discord_run_thread: tuple[DiscordTentacle, ChannelAddress],
     caplog: pytest.LogCaptureFixture,
@@ -283,14 +302,15 @@ async def test_discord_renders_recorded_question_batch(
     assert "timeline render failed" not in caplog.text
 
 
-async def test_discord_renders_oauth_in_dm(
+async def test_discord_renders_oauth_card_in_thread(
     discord_run_thread: tuple[DiscordTentacle, ChannelAddress],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """Render the fixed demo code in the run thread; no authorization is started."""
     channel, address = discord_run_thread
 
     with caplog.at_level("WARNING"):
-        message_id = await channel.feelers.oauth.present(
+        message_id = await channel.feelers.oauth.send(
             address,
             OAuthDeviceAuthorizationEvent(
                 connector_id="github",

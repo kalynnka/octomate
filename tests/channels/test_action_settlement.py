@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack
 from typing import Literal
 from unittest.mock import AsyncMock
 
@@ -18,6 +19,7 @@ from pydantic_ai.tools import DeferredToolRequests
 from octomate.capabilities.harness.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
+    ActionBatchUpdatedEvent,
     RunEndedEvent,
     RunStartedEvent,
 )
@@ -37,8 +39,11 @@ from octomate.tentacles.lark.ink import LarkInk
 from octomate.tentacles.slack.feelers.approvals import SlackApprovalFeeler
 from octomate.tentacles.slack.feelers.questions import SlackAskQuestionFeeler
 from octomate.tentacles.slack.ink import SlackInk
+from octomate.tentacles.slack.schema import SlackBlock
+from octomate.types.deferred import DeferredBatchStatus
 from octomate.types.json import JsonObject
 from tests.support.channels import FakeChannelTentacle
+from tests.support.deferred import CardUpdateScenario, replay_card_updates
 from tests.support.managers import a_thread
 from tests.support.nerve import drawing
 
@@ -133,7 +138,7 @@ async def batch(
 async def publish(
     channel: FakeChannelTentacle,
     address: ChannelAddress,
-    event: ActionBatchAnsweredEvent,
+    event: ActionBatchAnsweredEvent | ActionBatchUpdatedEvent,
     mode: Mode,
 ) -> None:
     channel.config.stream.enabled = mode == "streaming"
@@ -160,6 +165,234 @@ def rendered(channel: FakeChannelTentacle, edits: AsyncMock) -> list[str]:
         else:
             payloads.append(call.args[1])
     return payloads
+
+
+@pytest.mark.parametrize("surface", ["slack", "discord", "lark"], indirect=True)
+@pytest.mark.parametrize("scenario", ["answered", "corrected", "expired"])
+async def test_scripted_card_updates_reach_every_posted_card(
+    surface: tuple[FakeChannelTentacle, AsyncMock],
+    in_memory_engine,
+    scenario: CardUpdateScenario,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channel, edits = surface
+    address = ChannelAddress(channel.id, "thread", "400", "100", "500")
+    async with AsyncExitStack() as stack:
+        if channel.id == "discord":
+            await stack.enter_async_context(drawing(channel))
+        batch = await replay_card_updates(channel, address, scenario)
+        if channel.id == "discord":
+            assert channel.siphon.reading is not None
+            assert not channel.siphon.reading.done()
+
+    assert {
+        call.args[0 if channel.id == "lark" else 1] for call in edits.await_args_list
+    } == {action.platform_message_id for action in [*batch.questions, *batch.approvals]}
+    payloads = rendered(channel, edits)
+    if scenario == "expired":
+        assert batch.status == "expired"
+        assert {action.status for action in batch.questions} == {"expired"}
+        assert {action.status for action in batch.approvals} == {"expired"}
+        assert "Request expired" in payloads[-1]
+    else:
+        assert batch.status == "resolved"
+        assert [action.status for action in batch.approvals] == ["approved", "denied"]
+        assert [action.result for action in sorted(batch.questions)] == [
+            ["us" if scenario == "corrected" else "eu"],
+            "Submit",
+        ]
+        assert "Approved" in " ".join(payloads)
+        assert "Denied" in " ".join(payloads)
+    if scenario == "corrected":
+        assert "Scripted validation" in " ".join(payloads[:-1])
+        assert "Scripted validation" not in payloads[-1]
+        assert all("error" not in action.args for action in batch.questions)
+    assert "custom_id" not in payloads[-1]
+    assert '"button"' not in payloads[-1]
+    assert '"form"' not in payloads[-1]
+    assert not [r for r in caplog.records if r.name.startswith("octomate")]
+
+
+@pytest.mark.parametrize("surface", ["slack"], indirect=True)
+async def test_scripted_correction_waits_for_a_slow_card_update(
+    surface: tuple[FakeChannelTentacle, AsyncMock],
+    in_memory_engine,
+) -> None:
+    channel, edits = surface
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def update_message(
+        channel_id: str, message_id: str, *, text: str, blocks: list[SlackBlock]
+    ) -> bool:
+        assert channel_id == "400"
+        assert message_id
+        assert text
+        assert blocks
+        if not started.is_set():
+            started.set()
+            await release.wait()
+        return True
+
+    edits.side_effect = update_message
+    address = ChannelAddress(channel.id, "thread", "400", "100", "500")
+    async with asyncio.TaskGroup() as tasks:
+        replay = tasks.create_task(replay_card_updates(channel, address, "corrected"))
+        await started.wait()
+        try:
+            # A platform response can exceed the unit-test drain budget.
+            await asyncio.sleep(6)
+            assert edits.await_count == 1
+        finally:
+            release.set()
+
+    batch = replay.result()
+    assert batch.status == "resolved"
+    assert sorted(batch.questions)[0].result == ["us"]
+    assert edits.await_count == 4
+
+
+@pytest.mark.parametrize("mode", ["outside", "streaming", "quiet"])
+@pytest.mark.parametrize("status", ["expired", "failed", "superseded", "completed"])
+async def test_closure_settles_every_card_and_preserves_accepted_decisions(
+    surface: tuple[FakeChannelTentacle, AsyncMock],
+    batch: DeferredActionBatch,
+    mode: Mode,
+    status: DeferredBatchStatus,
+) -> None:
+    channel, edits = surface
+    manager = channel.octomate.deferred_actions
+    approved, pending = batch.approvals
+    await manager.resolve_batch(
+        DeferredActionBatchResponse(batch_id=batch.id, approvals={approved.id: True})
+    )
+    channel.config.stream.enabled = mode == "streaming"
+    topic = ChannelTopic(channel.id)
+    async with drawing(channel):
+        if mode != "outside":
+            channel.octomate.nerve.deliver(
+                topic,
+                Impulse(
+                    RunStartedEvent(address=batch.target_address), batch.target_address
+                ),
+            )
+        await manager.mark_batch(batch.id, status)
+        if mode != "outside":
+            channel.octomate.nerve.deliver(
+                topic, Impulse(RunEndedEvent(), batch.target_address)
+            )
+    stored = await manager.get_batch(batch.id)
+    assert stored.closed
+    assert [action.status for action in stored.approvals] == [
+        "approved",
+        "failed" if status == "failed" else "expired",
+    ]
+    if status != "completed":
+        with pytest.raises(ValueError, match="batch already"):
+            await manager.resolve_batch(
+                DeferredActionBatchResponse(
+                    batch_id=batch.id, approvals={pending.id: True}
+                )
+            )
+    if channel.id == "plaintext":
+        edits.assert_not_awaited()
+        return
+    payloads = rendered(channel, edits)
+    assert len(payloads) == (2 if channel.id == "slack" else 3)
+    assert "Approved" in " ".join(payloads)
+    assert "Denied" not in " ".join(payloads)
+    assert "Request" in payloads[-1]
+    assert "custom_id" not in payloads[-1]
+    assert '"button"' not in payloads[-1]
+    assert '"form"' not in payloads[-1]
+    if channel.id == "discord":
+        assert all(
+            item.item.disabled
+            for call in edits.await_args_list[:2]
+            for item in call.kwargs["view"].children
+        )
+
+
+async def test_the_last_approval_closes_previously_answered_questions(
+    surface: tuple[FakeChannelTentacle, AsyncMock],
+    batch: DeferredActionBatch,
+) -> None:
+    channel, edits = surface
+    first, last = batch.approvals
+    manager = channel.octomate.deferred_actions
+    await manager.resolve_batch(
+        DeferredActionBatchResponse(
+            batch_id=batch.id,
+            answers={action.id: "done" for action in batch.questions},
+            approvals={first.id: True},
+        )
+    )
+    async with drawing(channel):
+        await manager.resolve_batch(
+            DeferredActionBatchResponse(batch_id=batch.id, approvals={last.id: True})
+        )
+    if channel.id == "plaintext":
+        edits.assert_not_awaited()
+        return
+    questions = rendered(channel, edits)[-1]
+    assert "done" in questions
+    assert "custom_id" not in questions
+    assert '"button"' not in questions
+    assert '"form"' not in questions
+
+
+async def test_invalid_drafts_stay_editable_with_values_and_feedback(
+    surface: tuple[FakeChannelTentacle, AsyncMock],
+    batch: DeferredActionBatch,
+) -> None:
+    channel, edits = surface
+    region, other = sorted(batch.questions)
+    manager = channel.octomate.deferred_actions
+    await manager.resolve_batch(
+        DeferredActionBatchResponse(
+            batch_id=batch.id, answers={region.id: ["eu"], other.id: "draft"}
+        ),
+        finalize=False,
+    )
+    async with drawing(channel):
+        await manager.review_questions(
+            batch.id, errors={region.id: "Choose another region"}, reset=other.id
+        )
+    if channel.id == "plaintext":
+        edits.assert_not_awaited()
+        return
+    payloads = rendered(channel, edits)
+    assert len(payloads) == (2 if channel.id == "slack" else 1)
+    text = payloads[-1]
+    assert "Choose another region" in text
+    if channel.id == "slack":
+        assert '"initial_options"' in text
+    elif channel.id == "lark":
+        assert '"selected_values":["eu"]' in text
+    else:
+        assert '"default": true' in text
+        _, answers = await DiscordComponentRouter(channel.octomate).load_questions(
+            batch.id
+        )
+        assert answers == {region.id: ["eu"]}
+
+
+async def test_a_card_sent_after_closure_is_settled_when_its_id_arrives(
+    surface: tuple[FakeChannelTentacle, AsyncMock],
+    batch: DeferredActionBatch,
+) -> None:
+    channel, edits = surface
+    manager = channel.octomate.deferred_actions
+    await manager.mark_batch(batch.id, "expired")
+    async with drawing(channel):
+        await manager.mark_action_presented(batch.approvals[0].id, "late-card")
+    if channel.id == "plaintext":
+        edits.assert_not_awaited()
+        return
+    assert "late-card" in [
+        call.args[0 if channel.id == "lark" else 1] for call in edits.await_args_list
+    ]
+    assert "Request expired" in " ".join(rendered(channel, edits))
 
 
 @pytest.mark.parametrize("mode", ["outside", "streaming", "quiet"])
@@ -235,21 +468,22 @@ async def test_partial_answers_keep_the_remaining_controls(
     assert len(payloads) == 2
     assert "Region?" in payloads[1]
     assert "eu" in payloads[1]
-    assert "Anything else?" in payloads[1]
     if channel.id == "slack":
+        assert "Anything else?" in payloads[1]
         blocks = edits.await_args_list[0].kwargs["blocks"]
         value = json.loads(blocks[-1]["elements"][0]["value"])
         assert value["page"] == 1
         assert value["decisions"] == {str(first.id): True}
         assert '"button"' in payloads[1]
     elif channel.id == "discord":
-        assert str(other.id.hex) in payloads[1]
-        assert region.id.hex not in payloads[1]
+        assert "Question 1 of 2" in payloads[1]
+        assert region.id.hex in payloads[1]
         actions, _ = await DiscordComponentRouter(channel.octomate).load_questions(
             batch.id
         )
-        assert [action.id for action in actions] == [other.id]
+        assert [action.id for action in actions] == [region.id, other.id]
     else:
+        assert "Anything else?" in payloads[1]
         assert '"tag":"form"' in payloads[1]
 
     edits.reset_mock()

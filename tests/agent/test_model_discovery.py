@@ -27,7 +27,7 @@ from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.trunkline import TrunklineTentacle
-from tests.agent.test_deepseek_tentacle import (
+from tests.agent.deepseek.test_tentacle import (
     KEY,
     FakeDeepseekApi,
     patch_gateway,

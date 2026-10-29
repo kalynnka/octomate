@@ -115,6 +115,48 @@ async def test_native_session_preserves_workspace_mcp_and_extensions(
         os.kill(records[0]["pid"], 0)
 
 
+@pytest.mark.parametrize("config_selector", [True, False])
+async def test_mode_uses_config_selector_or_advertised_legacy_modes(
+    adapter_environment: dict[str, str], config_selector: bool
+) -> None:
+    async with NativeAcpClient.connect(
+        AcpProvider(command="codex-acp"),
+        Callbacks(),
+        schema.InitializeRequest(protocol_version=1),
+        env=adapter_environment,
+    ) as client:
+        session = await client.new_session(
+            schema.NewSessionRequest(cwd="/project", mcp_servers=[])
+        )
+        if not config_selector:
+            session.response.config_options = []
+        assert session.permission_mode == "default"
+        assert [(mode.value, mode.name) for mode in session.permission_modes] == [
+            ("default", "Default"),
+            ("plan", "Plan"),
+        ]
+        await session.select_mode(client.connection, "plan")
+        assert session.permission_mode == "plan"
+        await session.select_mode(client.connection, "plan")
+        with pytest.raises(ValueError, match="does not offer mode"):
+            await session.select_mode(client.connection, "unknown")
+    messages = [
+        json.loads(line)["message"]
+        for line in (
+            await AsyncPath(adapter_environment["ACP_TEST_LOG"]).read_text()
+        ).splitlines()
+    ]
+    selections = [
+        message
+        for message in messages
+        if message.get("method") in {"session/set_mode", "session/set_config_option"}
+    ]
+    assert len(selections) == 1
+    assert selections[0]["method"] == (
+        "session/set_config_option" if config_selector else "session/set_mode"
+    )
+
+
 @pytest.mark.parametrize(
     "provider",
     [AcpProvider(command="claude-agent-acp"), AcpProvider(command="codex-acp")],

@@ -39,7 +39,7 @@ from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import ink as codex_ink
-from tests.agent.test_codex_tentacle import (
+from tests.agent.codex.test_tentacle import (
     FakeCodex,
     FakeThread,
     reset_fake_codex,

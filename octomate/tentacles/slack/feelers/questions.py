@@ -8,7 +8,10 @@ from uuid import UUID
 
 from pydantic import UUID7, JsonValue, TypeAdapter
 
-from octomate.capabilities.harness.events import ActionBatchAnsweredEvent
+from octomate.capabilities.harness.events import (
+    ActionBatchAnsweredEvent,
+    ActionBatchUpdatedEvent,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
@@ -19,6 +22,7 @@ from octomate.telemetry import slack_logfire
 from octomate.tentacles.feelers.deferred import (
     QuestionFeeler,
     answer_text,
+    closure_text,
     question_text,
 )
 from octomate.tentacles.feelers.output import IMMessageID
@@ -83,17 +87,20 @@ class SlackAskQuestionFeeler(QuestionFeeler):
     async def settle(
         self,
         address: ChannelAddress,
-        event: ActionBatchAnsweredEvent,
+        event: ActionBatchAnsweredEvent | ActionBatchUpdatedEvent,
         *,
         action_manager: DeferredActionManager,
     ) -> None:
-        if not event.answers:
+        if isinstance(event, ActionBatchAnsweredEvent) and not event.answers:
             return
         batch = await action_manager.get_batch(UUID(event.batch_id))
         message_ids = {
             action.platform_message_id
             for action in batch.questions
-            if action.id in event.answers and action.platform_message_id is not None
+            if action.platform_message_id is not None
+            and (
+                isinstance(event, ActionBatchUpdatedEvent) or action.id in event.answers
+            )
         }
         async with asyncio.TaskGroup() as tasks:
             for message_id in message_ids:
@@ -108,17 +115,36 @@ class SlackAskQuestionFeeler(QuestionFeeler):
                     if action.status == "answered"
                     and isinstance(action.result, str | list)
                 }
-                answered = [action for action in actions if action.id in answers]
-                pending = [action for action in actions if action.id not in answers]
+                answered = [
+                    action
+                    for action in actions
+                    if action.id in answers and batch.closed
+                ]
+                pending = [
+                    action
+                    for action in actions
+                    if action.status in {"pending", "answered"} and not batch.closed
+                ]
                 blocks = submitted_blocks(answered, answers) if answered else []
                 if pending:
                     blocks.extend(ask_question_blocks(pending))
+                elif batch.closed and any(
+                    action.status != "answered" for action in actions
+                ):
+                    blocks.append(
+                        {
+                            "type": "section",
+                            "text": {"type": "plain_text", "text": closure_text(batch)},
+                        }
+                    )
                 tasks.create_task(
                     self.ink.update_message(
                         batch.target_address.chat_id or batch.target_address.user_id,
                         message_id,
                         text=question_title(pending)
                         if pending
+                        else closure_text(batch)
+                        if not answered
                         else "Answers submitted",
                         blocks=blocks,
                     )
@@ -132,6 +158,9 @@ def ask_question_blocks(actions: list[DeferredQuestion]) -> list[SlackBlock]:
     for index, action in enumerate(actions, start=1):
         choices = list(action.args.get("choices") or [])[:MAX_QUESTION_CHOICES]
         hint = action.args.get("hint") or ""
+        if error := action.args.get("error"):
+            hint = f"{error}\n{hint}"
+        answer = action.result if isinstance(action.result, str | list) else ""
         question = question_text(action)
         label = f"{index}. {question}" if len(actions) > 1 else question
         if choices:
@@ -140,7 +169,9 @@ def ask_question_blocks(actions: list[DeferredQuestion]) -> list[SlackBlock]:
                     block_id=question_choice_block_id(action),
                     label=label,
                     element=choice_element(
-                        choices, multi=action.args.get("multi_select", False)
+                        choices,
+                        multi=action.args.get("multi_select", False),
+                        answer=answer,
                     ),
                     hint=hint,
                 )
@@ -158,6 +189,8 @@ def ask_question_blocks(actions: list[DeferredQuestion]) -> list[SlackBlock]:
         }
         if choices:
             input_element["max_length"] = 160
+        if isinstance(answer, str) and answer and answer not in choices:
+            input_element["initial_value"] = answer
         blocks.append(
             question_input_block(
                 block_id=question_answer_block_id(action),
@@ -244,17 +277,29 @@ def collect_answers(
     return answers
 
 
-def choice_element(choices: list[str], *, multi: bool) -> SlackBlock:
+def choice_element(
+    choices: list[str], *, multi: bool, answer: QuestionAnswer = ""
+) -> SlackBlock:
     """A radio list, or checkboxes for a multi-select question."""
     options: list[JsonValue] = [
         {"text": {"type": "plain_text", "text": str(choice)}, "value": str(choice)}
         for choice in choices
     ]
-    return {
+    element: SlackBlock = {
         "type": "checkboxes" if multi else "radio_buttons",
         "action_id": SlackBlockAction.ASK_QUESTION_CHOICE.value,
         "options": options,
     }
+    selected = [
+        option
+        for choice, option in zip(choices, options, strict=True)
+        if choice in (answer if isinstance(answer, list) else [answer])
+    ]
+    if selected:
+        element["initial_options" if multi else "initial_option"] = (
+            selected if multi else selected[0]
+        )
+    return element
 
 
 def submit_button(actions: list[DeferredQuestion]) -> SlackBlock:

@@ -696,7 +696,7 @@ function ApprovalRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: '
         >
           <span style={{ ...mono(10, 700), color, lineHeight: 1 }}>{approved ? '✓' : '○'}</span>
           <span style={{ ...label(8.5, '.12em'), color: 'var(--fg-1)' }}>
-            {approved
+            {item.state === 'closed' ? `request closed — ${item.tool}` : approved
               ? `approved by ${operator} — ${item.tool} dispatched`
               : `dismissed by ${operator} — ${item.tool} dropped, run resumes`}
           </span>
@@ -762,10 +762,22 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
     if (el) setBodyLong(el.scrollHeight > ASK_BODY_CLAMP + 4)
   }, [q.body])
   const [otherOpen, setOtherOpen] = useState(false)
-  const [otherText, setOtherText] = useState<string[]>([])
-  const [picked, setPicked] = useState<(AskAnswer | undefined)[]>([])
+  const [otherText, setOtherText] = useState<string[]>(() => item.questions.map(q => typeof q.answer === 'string' ? q.answer : ''))
+  const [picked, setPicked] = useState<(AskAnswer | undefined)[]>(() => item.questions.map(q => q.answer))
+  const [previousQuestions, setPreviousQuestions] = useState(item.questions)
   const [ansOpen, setAnsOpen] = useState(false)
   const operator = useAuth((s) => s.user?.username ?? 'operator')
+  if (previousQuestions !== item.questions) {
+    setPreviousQuestions(item.questions)
+    setPicked(item.questions.map(q => q.answer))
+    setOtherText(item.questions.map(q => typeof q.answer === 'string' ? q.answer : ''))
+    const invalid = item.questions.findIndex(q => q.error)
+    if (invalid >= 0) setPage(invalid)
+  }
+
+  if (item.state === 'closed') {
+    return <div className="lt-entry" style={{ maxWidth: cardMax, ...microMeta }}>Request closed · {item.title}</div>
+  }
 
   if (item.nativeCallId) {
     return (
@@ -868,15 +880,12 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
     setOtherOpen(false)
   }
   const answeredCount = item.questions.filter((_, qi) => picked[qi] !== undefined).length
-  const complete = answeredCount === item.questions.length
   const submit = () => {
-    if (complete) {
-      answerAsk(item.uid, item.questions.map((_, qi) => picked[qi] ?? ''), single ? 'picked several options' : `answered ${item.questions.length} questions`)
-    }
+    answerAsk(item.uid, item.questions.map((_, qi) => picked[qi] ?? ''), single ? 'picked several options' : `answered ${item.questions.length} questions`)
   }
   const sendOther = () => {
     const t = (otherText[page] ?? '').trim()
-    if (t) pick(t, `free-text answer · ${t.length} chars`)
+    pick(t, `free-text answer · ${t.length} chars`)
   }
   const answer = picked[page]
   // A typed answer is marked on the "Other" row, as a pick is on its option.
@@ -911,6 +920,7 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
               style={{ flex: 1, minWidth: 0, position: 'relative', overflow: 'hidden', maxHeight: bodyMore || !bodyLong ? 'none' : ASK_BODY_CLAMP }}
             >
               <p style={{ margin: 0, ...serif(13), lineHeight: 1.7, color: single ? 'var(--fg-2)' : 'var(--fg-1)' }}>{q.body}</p>
+              {q.error && <p role="alert" style={{ margin: '6px 0 0', color: 'var(--color-gold)' }}>{q.error}</p>}
               {bodyLong && !bodyMore && (
                 <span style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 20, background: 'linear-gradient(transparent, var(--card-bg))', pointerEvents: 'none' }} />
               )}
@@ -1037,9 +1047,8 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
           {!immediate && (
             <span
               onClick={submit}
-              aria-disabled={!complete}
-              className={complete ? 'hov-panel' : undefined}
-              style={{ ...label(8.5, '.12em'), color: 'var(--trk-on-fill)', background: 'var(--color-accent)', padding: '4px 10px', cursor: complete ? 'pointer' : 'not-allowed', opacity: complete ? 1 : 0.45, whiteSpace: 'nowrap', flexShrink: 0 }}
+              className="hov-panel"
+              style={{ ...label(8.5, '.12em'), color: 'var(--trk-on-fill)', background: 'var(--color-accent)', padding: '4px 10px', cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0 }}
             >
               Submit {answeredCount}/{item.questions.length}
             </span>

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from typing import cast
+from unittest.mock import AsyncMock
 
 import discord
 import pytest
@@ -50,6 +51,7 @@ from octomate.tentacles.discord.feelers.questions import (
 )
 from octomate.tentacles.discord.ink import DiscordInk
 from octomate.tentacles.discord.schema import DiscordOutboundMessage
+from octomate.types.deferred import DeferredResponseMode
 from tests.channels.discord.fakes import a_user
 from tests.support.managers import a_thread
 
@@ -198,6 +200,7 @@ async def create_batch(
     *,
     questions: list[QuestionRequest] | None = None,
     approval: bool = False,
+    response_mode: DeferredResponseMode = "resume",
 ) -> DeferredActionBatch:
     address = discord_address()
     conversation = await ConversationManager().ensure(
@@ -229,7 +232,7 @@ async def create_batch(
         ),
     )
     return await DeferredActionManager().create_batch(
-        response_mode="resume",
+        response_mode=response_mode,
         conversation=conversation,
         agent_tentacle_id="inkling",
         run_name="react",
@@ -346,7 +349,7 @@ async def test_discord_feelers_render_one_question_navigator_per_batch() -> None
     assert other_button.item.label == "Other…"
     assert isinstance(next_button, DiscordQuestionNavButton)
     assert next_button.operation == "next"
-    assert next_button.item.disabled
+    assert not next_button.item.disabled
 
 
 def test_discord_action_content_stays_within_message_limit() -> None:
@@ -575,6 +578,33 @@ async def test_approval_callback_rejects_unknown_and_mismatched_actions(
     await client.close()
 
 
+async def test_live_question_submission_leaves_validation_to_the_owner(
+    in_memory_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch = await create_batch(
+        questions=[{"question": "Optional note?"}], response_mode="live"
+    )
+    octomate = Octomate()
+    kick = AsyncMock()
+    monkeypatch.setattr(octomate, "kick", kick)
+    router = DiscordComponentRouter(octomate)
+
+    await router.submit_questions(batch_id=batch.id, responder_id="100")
+
+    kick.assert_awaited_once_with(
+        DeferredActionBatchResponse(
+            batch_id=batch.id,
+            answers={batch.questions[0].id: ""},
+            responder_id="100",
+        )
+    )
+    saved = await octomate.deferred_actions.get_batch(batch.id)
+    assert not saved.closed
+    assert saved.questions[0].status == "pending"
+    assert saved.questions[0].result is None
+
+
 async def test_question_navigator_preserves_drafts_and_submits_the_batch(
     in_memory_engine: AsyncEngine,
 ) -> None:
@@ -623,12 +653,12 @@ async def test_question_navigator_preserves_drafts_and_submits_the_batch(
     second_page_content = layout_text(second_page.view)
     assert "Question 2 of 2" in second_page_content
     assert "Why?" in second_page_content
-    blocked_submit = next(
+    submit = next(
         item
         for item in second_page.view.walk_children()
         if isinstance(item, DiscordQuestionNavButton) and item.operation == "submit"
     )
-    assert blocked_submit.item.disabled
+    assert not submit.item.disabled
     write_answer = next(
         item
         for item in second_page.view.walk_children()
@@ -643,23 +673,6 @@ async def test_question_navigator_preserves_drafts_and_submits_the_batch(
     assert router.question_answers == {batch.id: {first.id: exact_choice}}
     assert original_choice.item.label is not None
     assert len(original_choice.item.label) == 80
-
-    blocked_submit_match = QUESTION_NAV_CUSTOM_ID_TEMPLATE.fullmatch(
-        blocked_submit.custom_id
-    )
-    assert blocked_submit_match is not None
-    blocked_submit_interaction = FakeInteraction(client, events)
-    restored_blocked_submit = await DiscordQuestionNavButton.from_custom_id(
-        cast("discord.Interaction[discord.Client]", blocked_submit_interaction),
-        discord.ui.Button(label="Submit", custom_id=blocked_submit.custom_id),
-        blocked_submit_match,
-    )
-    await restored_blocked_submit.callback(
-        cast("discord.Interaction[discord.Client]", blocked_submit_interaction)
-    )
-    assert blocked_submit_interaction.followup.messages == [
-        ("Answer every question before submitting.", True)
-    ]
 
     original_answer = DiscordQuestionAnswerButton(batch.id, second.id)
     answer_match = QUESTION_ANSWER_CUSTOM_ID_TEMPLATE.fullmatch(
@@ -742,13 +755,7 @@ async def test_question_navigator_preserves_drafts_and_submits_the_batch(
         cast("discord.Interaction[discord.Client]", submit_interaction)
     )
 
-    [summary] = submit_interaction.edits
-    assert isinstance(summary.view, discord.ui.LayoutView)
-    summary_content = layout_text(summary.view)
-    assert "Answers submitted" in summary_content
-    assert exact_choice in summary_content
-    assert exact_text in summary_content
-    assert "Answered by <@101>" in summary_content
+    assert submit_interaction.edits == []
     assert [kick.answers for kick in octomate.kicks] == [
         {first.id: exact_choice, second.id: exact_text},
     ]

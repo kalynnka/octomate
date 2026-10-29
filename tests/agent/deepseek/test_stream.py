@@ -40,7 +40,7 @@ from octomate.schemas.conversation import Conversation
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.types.json import JsonObject
-from tests.agent.test_deepseek_native_ingest import (
+from tests.agent.deepseek.test_native_ingest import (
     LOG_LABEL,
     SESSION_ADDRESS,
     SESSION_ID,

@@ -30,14 +30,14 @@ from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import ink as codex_ink
 from octomate.tentacles.codex.adapter import CodexRunAccumulator
 from octomate.tentacles.codex.html import HtmlReference, visualization_text
-from tests.agent.test_codex_tentacle import (
+from tests.agent.codex.test_tentacle import (
     KEY,
     FakeCodex,
     notification,
     reset_fake_codex,
     text_script,
 )
-from tests.agent.test_codex_tentacle import (
+from tests.agent.codex.test_tentacle import (
     native_thread_handles as native_thread_handles,
 )
 from tests.support.channels import FakeChannelTentacle

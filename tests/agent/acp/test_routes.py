@@ -35,7 +35,7 @@ from octomate.tentacles.acp.channel import AcpChannelTentacle
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.inkling.base import InklingTentacle
-from tests.agent.test_claude_tentacle import FakeClaudeClient
+from tests.agent.claude.test_tentacle import FakeClaudeClient
 from tests.support.agents import ScriptedStream, ScriptedTurn
 from tests.support.managers import a_project, a_registry
 from tests.support.users import a_user, auth_config

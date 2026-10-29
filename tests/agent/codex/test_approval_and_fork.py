@@ -30,8 +30,8 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.trunkline import TrunklineTentacle
 from octomate.types.json import JsonObject
-from tests.agent.test_codex_command_execution import execution as execution
-from tests.agent.test_codex_tentacle import FakeCodex, failed_script, text_script
+from tests.agent.codex.test_command_execution import execution as execution
+from tests.agent.codex.test_tentacle import FakeCodex, failed_script, text_script
 from tests.support.managers import a_project
 
 

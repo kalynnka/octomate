@@ -24,9 +24,9 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.claude.transcript import transcripts_dir
-from tests.agent.test_claude_stream import AUTH, CLIENT_PATH, frames, hello_json
-from tests.agent.test_claude_stream import stream_client as a_stream_client
-from tests.agent.test_claude_tailer import (
+from tests.agent.claude.test_stream import AUTH, CLIENT_PATH, frames, hello_json
+from tests.agent.claude.test_stream import stream_client as a_stream_client
+from tests.agent.claude.test_tailer import (
     SESSION_ID,
     SESSION_KEY,
     TURN_ONE,

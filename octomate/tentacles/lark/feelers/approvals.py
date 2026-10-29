@@ -8,14 +8,17 @@ from uuid import UUID
 
 from pydantic import UUID7
 
-from octomate.capabilities.harness.events import ActionBatchAnsweredEvent
+from octomate.capabilities.harness.events import (
+    ActionBatchAnsweredEvent,
+    ActionBatchUpdatedEvent,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredActionVariantAdapter,
     DeferredApproval,
 )
 from octomate.telemetry import lark_logfire
-from octomate.tentacles.feelers.deferred import ApprovalFeeler
+from octomate.tentacles.feelers.deferred import ApprovalFeeler, closure_text
 from octomate.tentacles.feelers.output import IMMessageID
 from octomate.tentacles.lark.feelers import cards
 from octomate.tentacles.lark.feelers.actions import LarkCardAction
@@ -69,24 +72,36 @@ class LarkApprovalFeeler(ApprovalFeeler):
     async def settle(
         self,
         address: ChannelAddress,
-        event: ActionBatchAnsweredEvent,
+        event: ActionBatchAnsweredEvent | ActionBatchUpdatedEvent,
         *,
         action_manager: DeferredActionManager,
     ) -> None:
-        if not event.approvals:
+        if isinstance(event, ActionBatchAnsweredEvent) and not event.approvals:
             return
         batch = await action_manager.get_batch(UUID(event.batch_id))
         async with asyncio.TaskGroup() as tasks:
             for action in batch.approvals:
                 if (
-                    action.id not in event.approvals
+                    (
+                        isinstance(event, ActionBatchAnsweredEvent)
+                        and action.id not in event.approvals
+                    )
                     or action.platform_message_id is None
-                    or action.status not in {"approved", "denied"}
+                    or (action.status == "pending" and not batch.closed)
                 ):
                     continue
                 card = LarkInteractiveCard.model_validate(
                     approval_resolution_card_data(
                         tool_name=action.tool_name, approved=action.status == "approved"
+                    )
+                    if action.status in {"approved", "denied"}
+                    else cards.simple_card(
+                        [
+                            cards.markdown(
+                                f"**{action.tool_name}**\n\n{closure_text(batch)}"
+                            )
+                        ],
+                        header=cards.header(closure_text(batch), template="grey"),
                     )
                 )
                 tasks.create_task(

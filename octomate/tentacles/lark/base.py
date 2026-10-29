@@ -1,7 +1,7 @@
 """Lark channel tentacle.
 
 Runs the lark-oapi WebSocket client, hands received messages to the ingest
-pipeline and answers card-action callbacks with the redrawn card.
+pipeline and acknowledges card replies; persisted events redraw the cards.
 """
 
 from __future__ import annotations
@@ -38,7 +38,6 @@ from octomate.tentacles.lark.chromo import LarkChromo
 from octomate.tentacles.lark.feelers.actions import LarkCardAction
 from octomate.tentacles.lark.feelers.approvals import (
     LarkApprovalFeeler,
-    approval_resolution_card_data,
 )
 from octomate.tentacles.lark.feelers.artifacts import LarkArtifactFeeler
 from octomate.tentacles.lark.feelers.oauth import (
@@ -51,7 +50,6 @@ from octomate.tentacles.lark.feelers.output import (
 from octomate.tentacles.lark.feelers.questions import (
     LarkAskQuestionFeeler,
     collect_answers,
-    submitted_card_data,
 )
 from octomate.tentacles.lark.ink import LarkInk, LarkWebSocketClient
 from octomate.tentacles.lark.oauth import LarkOAuthConnector
@@ -312,19 +310,7 @@ class LarkTentacle(
             )
             task.add_done_callback(lambda task: log_card_action_result(self.id, task))
             return P2CardActionTriggerResponse(
-                {
-                    "toast": {
-                        "type": "success",
-                        "content": "Approved" if approved else "Denied",
-                    },
-                    "card": {
-                        "type": "raw",
-                        "data": approval_resolution_card_data(
-                            tool_name=action_value.get("tool_name", "Tool call"),
-                            approved=approved,
-                        ),
-                    },
-                }
+                {"toast": {"type": "info", "content": "Response received"}}
             )
 
         if action == LarkCardAction.ASK_QUESTION_SUBMIT:
@@ -351,13 +337,7 @@ class LarkTentacle(
             )
             task.add_done_callback(lambda task: log_card_action_result(self.id, task))
             return P2CardActionTriggerResponse(
-                {
-                    "toast": {"type": "success", "content": "Answers submitted"},
-                    "card": {
-                        "type": "raw",
-                        "data": submitted_card_data(question_actions, answers),
-                    },
-                }
+                {"toast": {"type": "info", "content": "Response received"}}
             )
 
         return P2CardActionTriggerResponse({})

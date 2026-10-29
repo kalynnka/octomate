@@ -14,7 +14,7 @@ from octomate.tentacles.codex.hooks import CodexHookInput
 from octomate.tentacles.codex.tailer import OpenTurn
 from octomate.tentacles.codex.transcript import RolloutLine
 from octomate.types.json import JsonObject
-from tests.agent.test_codex_native_ingest import (
+from tests.agent.codex.test_native_ingest import (
     CHILD_THREAD_ID,
     CHILD_TURN_ONE,
     CODEX_NATIVE_ID,
@@ -29,9 +29,9 @@ from tests.agent.test_codex_native_ingest import (
     parent_metadata,
     wired,
 )
-from tests.agent.test_codex_native_ingest import db as db
-from tests.agent.test_codex_native_ingest import event as event
-from tests.agent.test_codex_native_ingest import impulses as impulses
+from tests.agent.codex.test_native_ingest import db as db
+from tests.agent.codex.test_native_ingest import event as event
+from tests.agent.codex.test_native_ingest import impulses as impulses
 from tests.support.managers import a_loaded_thread
 
 

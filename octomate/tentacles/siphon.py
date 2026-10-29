@@ -27,6 +27,7 @@ from pydantic import UUID7
 from octomate.capabilities.harness.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
+    ActionBatchUpdatedEvent,
     ArtifactAvailableEvent,
     GatewayEvent,
     MessageSentEvent,
@@ -134,7 +135,7 @@ class Siphon:
                 await feelers.oauth.present(address, event)
             case ArtifactAvailableEvent() as event:
                 await feelers.artifacts.present(address, event)
-            case ActionBatchAnsweredEvent() as event:
+            case ActionBatchAnsweredEvent() | ActionBatchUpdatedEvent() as event:
                 await feelers.approvals.settle(
                     address,
                     event,
@@ -199,7 +200,7 @@ class Siphon:
                         event,
                         action_manager=self.channel.octomate.deferred_actions,
                     )
-                case ActionBatchAnsweredEvent():
+                case ActionBatchAnsweredEvent() | ActionBatchUpdatedEvent():
                     await feelers.approvals.settle(
                         address,
                         event,

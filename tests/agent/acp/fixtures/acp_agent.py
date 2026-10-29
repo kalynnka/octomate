@@ -40,6 +40,18 @@ def main() -> None:
     session_count = len(sessions)
     boolean_options = False
     configurations: dict[str, list[dict[str, JsonValue]]] = {}
+    mode_option: dict[str, JsonValue] = {
+        "id": "mode",
+        "name": "Mode",
+        "category": "mode",
+        "type": "select",
+        "currentValue": "default",
+        "options": [
+            {"value": "default", "name": "Default"},
+            {"value": "plan", "name": "Plan"},
+        ],
+        "_meta": {"providerOption": True},
+    }
     model_options: list[dict[str, JsonValue]] = []
     if os.getenv("ACP_TEST_MODELS"):
         choices: list[JsonValue] = [
@@ -129,18 +141,7 @@ def main() -> None:
                     configurations[session_id] = [
                         *model_options,
                         *effort_options("fast"),
-                        {
-                            "id": "mode",
-                            "name": "Mode",
-                            "category": "mode",
-                            "type": "select",
-                            "currentValue": "default",
-                            "options": [
-                                {"value": "default", "name": "Default"},
-                                {"value": "plan", "name": "Plan"},
-                            ],
-                            "_meta": {"providerOption": True},
-                        },
+                        mode_option,
                         *(
                             [
                                 {
@@ -218,6 +219,7 @@ def main() -> None:
                     configurations[session_id] = [
                         *model_options,
                         *effort_options("fast"),
+                        mode_option,
                     ]
                     if message["method"] == "session/load":
                         send(
@@ -300,10 +302,10 @@ def main() -> None:
                 case "session/prompt":
                     pending = message["id"]
                     session_id = message["params"]["sessionId"]
-                    callback_method = (
-                        message["params"]
-                        .get("_meta", {})
-                        .get("callbackMethod", "session/request_permission")
+                    callback_method = os.getenv("ACP_TEST_CALLBACK") or message[
+                        "params"
+                    ].get("_meta", {}).get(
+                        "callbackMethod", "session/request_permission"
                     )
                     send(
                         {
@@ -330,13 +332,21 @@ def main() -> None:
                                 "session/request_permission": {
                                     "sessionId": session_id,
                                     "toolCall": {"toolCallId": "edit", "title": "Edit"},
-                                    "options": [
+                                    "options": json.loads(
+                                        os.environ["ACP_TEST_OPTIONS"]
+                                    )
+                                    if os.getenv("ACP_TEST_OPTIONS")
+                                    else [
                                         {
                                             "optionId": "yes",
                                             "name": "Allow",
                                             "kind": "allow_once",
                                         }
                                     ],
+                                },
+                                "elicitation/create": {
+                                    **json.loads(os.getenv("ACP_TEST_FORM", "{}")),
+                                    "sessionId": session_id,
                                 },
                                 "fs/read_text_file": {
                                     "sessionId": session_id,
