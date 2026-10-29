@@ -1268,6 +1268,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     messages=accumulator.messages,
                     name=run_name,
                     model_name=accumulator.model_name or cli_model,
+                    context_window=accumulator.context_window,
+                    context_used=accumulator.context_used,
                     permission_mode=options.permission_mode,
                     cwd=Path(run_cwd),
                     external_id=accumulator.session_id,

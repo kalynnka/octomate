@@ -35,6 +35,16 @@ class AgentRun(BaseTransmuter):
     conversation_id: UUID7
     name: str | None = None
     model_name: str | None = None
+    context_window: int | None = Field(
+        default=None,
+        gt=0,
+        description="Context capacity in tokens reported by the harness for this run; None when unknown.",
+    )
+    context_used: int | None = Field(
+        default=None,
+        ge=0,
+        description="Context tokens used, from the harness occupancy snapshot or the last model request's input usage; None when unavailable.",
+    )
     permission_mode: str | None = None
     cwd: Path | None = Field(
         default=None,

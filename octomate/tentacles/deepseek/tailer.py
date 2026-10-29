@@ -42,6 +42,7 @@ from octomate.tentacles.deepseek.wire import (
     SessionTitle,
     history_entry_adapter,
     permission_preset_of,
+    request_route_of,
     text_of,
     turn_end_of,
     user_message_of,
@@ -154,6 +155,7 @@ class TailState:
     floor: int = -1
     prompts: list[PendingPrompt] = field(default_factory=list)
     open_turn: OpenTurn | None = None
+    context_window: int | None = None  # Latest request/context capacity across turns.
     # Pulses on every committed turn; a relayed `Stop` clears it and waits so
     # the finalize goes out only once the stopped turn is durable (or the
     # bounded wait ran out).
@@ -211,6 +213,9 @@ class DeepseekEventTailer:
             thread.id, agent_tentacle_id=DEEPSEEK_NATIVE_ID
         )
         state.recorded = state.conversation.native_run_ids
+        state.context_window = await self.conversation_manager.latest_context_window(
+            state.conversation.id
+        )
         state.floor = committed_floor(state.conversation)
         self.sessions[session_id] = state
         logger.info("session %s: remote tail attached", session_id)
@@ -267,6 +272,10 @@ class DeepseekEventTailer:
         event = entry.event
         if event.seq <= state.floor:
             return
+        if event.type == "request/context":
+            context = request_route_of(event)
+            if context is not None:
+                state.context_window = context.context_window
         if event.type == "session/title":
             try:
                 name = SessionTitle.model_validate(event.data).title
@@ -311,6 +320,9 @@ class DeepseekEventTailer:
                         state.conversation.permission_mode
                         if state.conversation is not None
                         else None
+                    ),
+                    accumulator=DeepseekRunAccumulator(
+                        context_window=state.context_window
                     ),
                 )
                 state.open_turn.native = await NativeTurn.open(
@@ -412,6 +424,8 @@ class DeepseekEventTailer:
                         if turn.accumulator.route is not None
                         else None
                     ),
+                    context_window=turn.accumulator.context_window,
+                    context_used=turn.accumulator.context_used,
                     permission_mode=turn.permission_mode,
                     cwd=Path(state.cwd) if state.cwd else None,
                     native_session_id=session_id,

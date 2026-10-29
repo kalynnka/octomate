@@ -689,6 +689,10 @@ export interface ApiAgentRun {
   conversation_id: string
   name: string | null
   model_name: string | null
+  /** context capacity reported by this run's harness; null when unknown */
+  context_window?: number | null
+  /** context occupancy reported by the harness or copied from its last request */
+  context_used?: number | null
   permission_mode: string | null
   /** the directory this run ran in; null when its source reported none */
   cwd: string | null

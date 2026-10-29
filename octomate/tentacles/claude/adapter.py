@@ -8,6 +8,7 @@ alike, projecting each into stream events for the channel feelers and persisted
 from __future__ import annotations
 
 import base64
+import logging
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, TypeVar, cast
@@ -30,6 +31,7 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import ContentBlock, Message
 from pydantic import TypeAdapter
+from pydantic.types import OnErrorOmit
 from pydantic_ai import AgentRunResult
 
 # GraphAgentState is private pydantic-ai internals. A Claude run produces no real
@@ -73,6 +75,8 @@ from octomate.tentacles.claude.transcript import (
 
 StructuredOutputT = TypeVar("StructuredOutputT")
 
+logger = logging.getLogger(__name__)
+
 # The Claude Agent SDK runs against Anthropic; naming the provider lets pydantic-ai
 # round-trip the thinking `signature` and keep the provenance fields honest.
 CLAUDE_PROVIDER_NAME = "anthropic"
@@ -91,17 +95,28 @@ FINISH_REASON_MAP: dict[str, FinishReason] = {
     "refusal": "content_filter",
 }
 
+usage_counts_adapter: TypeAdapter[dict[str, int]] = TypeAdapter(
+    dict[str, OnErrorOmit[int]]
+)
+
 
 def map_usage(raw: dict[str, object] | None) -> RequestUsage:
     """Project a Claude usage block onto pydantic-ai's RequestUsage.
 
-    Anthropic names its cache counts differently (`cache_creation`/`cache_read` →
-    RequestUsage's `cache_write`/`cache_read`); any other integer counts are kept
-    verbatim in `details` so nothing is silently dropped.
+    Anthropic reports uncached input separately; RequestUsage includes cache
+    reads and writes in its input total. Whole counts typed as floats or numeric
+    strings are read as ints, and other counts are preserved in `details`.
     """
     if not raw:
         return RequestUsage()
-    counts = {key: value for key, value in raw.items() if isinstance(value, int)}
+    # Pydantic accepts booleans as integers, but they are never token counts.
+    counts = usage_counts_adapter.validate_python(
+        {key: value for key, value in raw.items() if not isinstance(value, bool)}
+    )
+    if not counts:
+        # A block with nothing countable in it is the wire shape that once zeroed
+        # every thread's token stats — say so instead of passing silently.
+        logger.warning("usage block carried no counts; raw keys: %s", sorted(raw))
     primary = {
         "input_tokens",
         "output_tokens",
@@ -109,7 +124,9 @@ def map_usage(raw: dict[str, object] | None) -> RequestUsage:
         "cache_read_input_tokens",
     }
     return RequestUsage(
-        input_tokens=counts.get("input_tokens", 0),
+        input_tokens=counts.get("input_tokens", 0)
+        + counts.get("cache_creation_input_tokens", 0)
+        + counts.get("cache_read_input_tokens", 0),
         output_tokens=counts.get("output_tokens", 0),
         cache_write_tokens=counts.get("cache_creation_input_tokens", 0),
         cache_read_tokens=counts.get("cache_read_input_tokens", 0),
@@ -246,6 +263,8 @@ class ClaudeRunAccumulator:
     result_text: str = ""
     session_id: str | None = None
     model_name: str | None = None
+    context_window: int = 1_000_000  # Default until the harness reports capacity.
+    context_used: int | None = None  # Input tokens of the last measured request.
     # Set when the run was driven with an `output_format` schema: the SDK's
     # validated structured result (a JSON-able object), used by
     # `build_structured_result` instead of the freeform text.
@@ -304,6 +323,36 @@ class ClaudeRunAccumulator:
                 self.result_text = message.result
             if message.structured_output is not None:
                 self.structured_output = message.structured_output
+            model_usage = (message.model_usage or {}).get(self.model_name or "")
+            if model_usage is not None and model_usage["contextWindow"] > 0:
+                self.context_window = model_usage["contextWindow"]
+            # Result usage covers the whole turn; use it only when every response
+            # lacked token counts.
+            turn = map_usage(message.usage)
+            spent = self.usage
+            if not any(
+                (
+                    turn.input_tokens,
+                    turn.output_tokens,
+                    turn.cache_read_tokens,
+                    turn.cache_write_tokens,
+                )
+            ):
+                return
+            if any(
+                (
+                    spent.input_tokens,
+                    spent.output_tokens,
+                    spent.cache_read_tokens,
+                    spent.cache_write_tokens,
+                )
+            ):
+                return
+            spent.incr(turn)
+            for response in reversed(self.messages):
+                if isinstance(response, ModelResponse):
+                    response.usage = turn
+                    break
 
     def build_result(self, run_id: str, conversation_id: str) -> AgentRunResult[str]:
         state = GraphAgentState(
@@ -511,6 +560,9 @@ class ClaudeRunAccumulator:
             if message.error:
                 provider_details["error"] = message.error
             response_usage = map_usage(message.usage)
+            self.context_used = (
+                response_usage.input_tokens if response_usage.has_values() else None
+            )
             # Match native pydantic-ai run accounting (see _agent_graph): sum each
             # response's usage into the run usage, one request counted per response.
             self.usage.incr(response_usage)

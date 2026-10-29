@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import cast
 
+import pytest
 from pydantic import UUID7
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -58,7 +59,6 @@ from octomate.tentacles.slack.ink import SLACK_MARKDOWN_TEXT_LIMIT
 from tests.support.channels import (
     FakeChannelTentacle,
     FakeOAuthInk,
-    FakeOctomate,
     NoopSegmentsFeeler,
     NoopTimeline,
     RecordingApprovalFeeler,
@@ -347,13 +347,16 @@ def plain_feelers() -> Feelers:
     )
 
 
-async def present_one_approval(timeline: NoopTimeline) -> list[tuple[str, object]]:
+async def present_one_approval(
+    timeline: NoopTimeline, monkeypatch: pytest.MonkeyPatch
+) -> list[tuple[str, object]]:
     """Drive one approval batch through `timeline`, as a live run's stream does
     when it pauses on a human; answers what the channel's approval feeler drew."""
-    channel = FakeChannelTentacle(
-        octomate=FakeOctomate(
-            deferred_actions=cast(DeferredActionManager, FakeActionManager())
-        )
+    channel = FakeChannelTentacle()
+    monkeypatch.setattr(
+        channel.octomate.deferred_actions,
+        "mark_action_presented",
+        FakeActionManager().mark_action_presented,
     )
     approvals = RecordingApprovalFeeler()
     channel.feelers.approvals = approvals
@@ -367,21 +370,25 @@ async def present_one_approval(timeline: NoopTimeline) -> list[tuple[str, object
     return [(str(address), actions) for address, actions in approvals.presented]
 
 
-async def test_a_presented_batch_settles_the_timeline() -> None:
+async def test_a_presented_batch_settles_the_timeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A drawn batch tells the timeline once, so a surface with live status can say
     input was requested."""
     timeline = SettlingTimeline()
 
-    drawn = await present_one_approval(timeline)
+    drawn = await present_one_approval(timeline, monkeypatch)
 
     assert len(drawn) == 1
     assert timeline.settled == 1
 
 
-async def test_a_settle_hiccup_does_not_fail_the_presentation() -> None:
+async def test_a_settle_hiccup_does_not_fail_the_presentation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # The cards are the load-bearing part; the surface settle is a UI hint,
     # and its failure must not cancel the approval riding on the batch.
-    drawn = await present_one_approval(HiccupTimeline())
+    drawn = await present_one_approval(HiccupTimeline(), monkeypatch)
 
     assert len(drawn) == 1
 

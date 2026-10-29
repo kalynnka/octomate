@@ -751,7 +751,8 @@ def test_adapter_does_not_render_message_items_as_tools() -> None:
     assert not [m for m in acc.messages if isinstance(m, ModelResponse)]
 
 
-def test_adapter_maps_usage_and_turn_completion() -> None:
+@pytest.mark.parametrize("window", [None, 0, 200000])
+def test_adapter_maps_usage_and_turn_completion(window: int | None) -> None:
     acc = CodexRunAccumulator()
 
     list(
@@ -768,7 +769,7 @@ def test_adapter_maps_usage_and_turn_completion() -> None:
                             cached_input_tokens=5,
                         ),
                         total=token_breakdown(input_tokens=11, output_tokens=7),
-                        model_context_window=200000,
+                        model_context_window=window,
                     ),
                 ),
             )
@@ -798,11 +799,15 @@ def test_adapter_maps_usage_and_turn_completion() -> None:
     assert acc.usage.input_tokens == 11
     assert acc.usage.output_tokens == 7
     assert acc.usage.cache_read_tokens == 5
-    assert acc.usage.details == {
+    assert acc.context_window == (window or None)
+    assert acc.context_used == 11
+    expected = {
         "reasoning_output_tokens": 3,
         "total_tokens": 18,
-        "model_context_window": 200000,
     }
+    if window is not None:
+        expected["model_context_window"] = window
+    assert acc.usage.details == expected
 
 
 def test_adapter_attaches_usage_and_finish_reason_to_last_response() -> None:

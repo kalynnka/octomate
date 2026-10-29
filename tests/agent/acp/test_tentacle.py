@@ -31,6 +31,7 @@ from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSign
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.deferred import DeferredActionBatch
 from octomate.schemas.events import MessageEvent
+from octomate.schemas.messages import ModelResponse
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import MessageBinding, Thread, ThreadKey, ThreadMessage
@@ -103,6 +104,7 @@ async def test_custom_harness_discovers_selects_and_reopens(
             "env": {
                 **custom_provider.env,
                 "ACP_TEST_MODELS": "" if catalog == "none" else catalog,
+                "ACP_TEST_USAGE": "1",
             },
         }
     )
@@ -144,6 +146,19 @@ async def test_custom_harness_discovers_selects_and_reopens(
             [None, None] if catalog == "none" else ["careful", "fast"]
         )
         assert all(run.native_id == agent.id for run in runs)
+        for run in runs:
+            assert run.context_used == 32000
+            assert run.context_window == 128000
+            await run.messages
+            response = run.messages[-1]
+            assert isinstance(response, ModelResponse)
+            assert response.usage.input_tokens == 0
+            assert response.metadata is not None
+            assert response.metadata["usage"] == {
+                "inputTokens": 9999,
+                "outputTokens": 1,
+                "totalTokens": 10000,
+            }
         assert all(key.revoked_at is not None for key in await session.list(UserApiKey))
     messages = [
         json.loads(line)["message"]
@@ -583,7 +598,7 @@ async def test_provider_failure_preserves_partial_run_and_revokes_key(
     source = await executable.read_text()
     await executable.write_text(
         source.replace(
-            'send({"id": pending, "result": {"stopReason": "end_turn"}})',
+            'send({"id": pending, "result": result})',
             'send({"id": pending, "error": {"code": -32603, "message": "provider failed"}})',
         )
     )
