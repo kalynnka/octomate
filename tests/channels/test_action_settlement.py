@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack
 from typing import Literal
 from unittest.mock import AsyncMock
 
@@ -38,9 +39,11 @@ from octomate.tentacles.lark.ink import LarkInk
 from octomate.tentacles.slack.feelers.approvals import SlackApprovalFeeler
 from octomate.tentacles.slack.feelers.questions import SlackAskQuestionFeeler
 from octomate.tentacles.slack.ink import SlackInk
+from octomate.tentacles.slack.schema import SlackBlock
 from octomate.types.deferred import DeferredBatchStatus
 from octomate.types.json import JsonObject
 from tests.support.channels import FakeChannelTentacle
+from tests.support.deferred import CardUpdateScenario, replay_card_updates
 from tests.support.managers import a_thread
 from tests.support.nerve import drawing
 
@@ -162,6 +165,91 @@ def rendered(channel: FakeChannelTentacle, edits: AsyncMock) -> list[str]:
         else:
             payloads.append(call.args[1])
     return payloads
+
+
+@pytest.mark.parametrize("surface", ["slack", "discord", "lark"], indirect=True)
+@pytest.mark.parametrize("scenario", ["answered", "corrected", "expired"])
+async def test_scripted_card_updates_reach_every_posted_card(
+    surface: tuple[FakeChannelTentacle, AsyncMock],
+    in_memory_engine,
+    scenario: CardUpdateScenario,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channel, edits = surface
+    address = ChannelAddress(channel.id, "thread", "400", "100", "500")
+    async with AsyncExitStack() as stack:
+        if channel.id == "discord":
+            await stack.enter_async_context(drawing(channel))
+        batch = await replay_card_updates(channel, address, scenario)
+        if channel.id == "discord":
+            assert channel.siphon.reading is not None
+            assert not channel.siphon.reading.done()
+
+    assert {
+        call.args[0 if channel.id == "lark" else 1] for call in edits.await_args_list
+    } == {action.platform_message_id for action in [*batch.questions, *batch.approvals]}
+    payloads = rendered(channel, edits)
+    if scenario == "expired":
+        assert batch.status == "expired"
+        assert {action.status for action in batch.questions} == {"expired"}
+        assert {action.status for action in batch.approvals} == {"expired"}
+        assert "Request expired" in payloads[-1]
+    else:
+        assert batch.status == "resolved"
+        assert [action.status for action in batch.approvals] == ["approved", "denied"]
+        assert [action.result for action in sorted(batch.questions)] == [
+            ["us" if scenario == "corrected" else "eu"],
+            "Submit",
+        ]
+        assert "Approved" in " ".join(payloads)
+        assert "Denied" in " ".join(payloads)
+    if scenario == "corrected":
+        assert "Scripted validation" in " ".join(payloads[:-1])
+        assert "Scripted validation" not in payloads[-1]
+        assert all("error" not in action.args for action in batch.questions)
+    assert "custom_id" not in payloads[-1]
+    assert '"button"' not in payloads[-1]
+    assert '"form"' not in payloads[-1]
+    assert not [r for r in caplog.records if r.name.startswith("octomate")]
+
+
+@pytest.mark.parametrize("surface", ["slack"], indirect=True)
+async def test_scripted_correction_waits_for_a_slow_card_update(
+    surface: tuple[FakeChannelTentacle, AsyncMock],
+    in_memory_engine,
+) -> None:
+    channel, edits = surface
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def update_message(
+        channel_id: str, message_id: str, *, text: str, blocks: list[SlackBlock]
+    ) -> bool:
+        assert channel_id == "400"
+        assert message_id
+        assert text
+        assert blocks
+        if not started.is_set():
+            started.set()
+            await release.wait()
+        return True
+
+    edits.side_effect = update_message
+    address = ChannelAddress(channel.id, "thread", "400", "100", "500")
+    async with asyncio.TaskGroup() as tasks:
+        replay = tasks.create_task(replay_card_updates(channel, address, "corrected"))
+        await started.wait()
+        try:
+            # A platform response can exceed the unit-test drain budget.
+            await asyncio.sleep(6)
+            assert edits.await_count == 1
+        finally:
+            release.set()
+
+    batch = replay.result()
+    assert batch.status == "resolved"
+    assert sorted(batch.questions)[0].result == ["us"]
+    assert edits.await_count == 4
 
 
 @pytest.mark.parametrize("mode", ["outside", "streaming", "quiet"])
