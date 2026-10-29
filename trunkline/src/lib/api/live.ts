@@ -360,10 +360,8 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     own.flatMap((conversation) => conversation.runs.map((run) => [run.id, conversation] as const)),
   )
 
-  // What was said: a row no model message carries stands at its own place, and
-  // the rows a request was built from stand at the request's — in their senders'
-  // own words, not the prompt's dressing. A row an agent said is answered by its
-  // own response, so only what came in is read off a request.
+  // Inbound rows keep their own write order and words after binding to a request.
+  // An agent's outbound row is already represented by its model response.
   const said = [
     ...unbound.map((message) => ({ key: message.id, message, session: undefined })),
     ...modelMessages.flatMap((request) =>
@@ -371,7 +369,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         ? []
         : request.thread_messages
             .filter((message) => message.direction === 'inbound')
-            .map((message) => ({ key: request.id, message, session: ranIn.get(request.run_id)?.id })),
+            .map((message) => ({ key: message.id, message, session: ranIn.get(request.run_id)?.id })),
     ),
   ]
   const questionReplies: NativeQuestionReply[] = []
