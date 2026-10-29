@@ -42,7 +42,7 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer, TailState
 from octomate.types.json import JsonObject
-from tests.agent.test_claude_tailer import (
+from tests.agent.claude.test_tailer import (
     AGENT_ID,
     SESSION_ADDRESS,
     SESSION_ID,

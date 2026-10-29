@@ -4,7 +4,7 @@ import pytest
 from octomate_cli.tentacles.claude import CLAUDE_STREAM_PATH
 from octomate_protocol.stream import StreamHello, StreamWelcome, server_message_adapter
 
-from tests.agent.test_claude_stream import AUTH, hello_json, stream_client
+from tests.agent.claude.test_stream import AUTH, hello_json, stream_client
 
 
 @pytest.mark.usefixtures("in_memory_engine")

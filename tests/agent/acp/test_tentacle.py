@@ -38,8 +38,8 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.acp.base import AcpAgentTentacle
 from octomate.tentacles.acp.channel import AcpChannelTentacle
 from octomate.tentacles.acp.client import AcpProvider
-from tests.agent.test_acp_client import adapter_environment as adapter_environment
-from tests.agent.test_acp_routes import initialize, new_session, rpc
+from tests.agent.acp.test_client import adapter_environment as adapter_environment
+from tests.agent.acp.test_routes import initialize, new_session, rpc
 from tests.support.managers import a_project, a_registry
 from tests.support.nerve import held
 from tests.support.users import a_user, auth_config

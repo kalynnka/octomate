@@ -33,7 +33,7 @@ from octomate.tentacles.deepseek.wire import (
     StreamErrorFrame,
 )
 from octomate.types.json import JsonObject
-from tests.agent.test_deepseek_tentacle import (
+from tests.agent.deepseek.test_tentacle import (
     FakeDeepseekApi,
     calls_of,
     patch_gateway,

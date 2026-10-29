@@ -20,16 +20,16 @@ from octomate.schemas.thread import ThreadCommand
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude.transcript import transcripts_dir
 from octomate.types.json import JsonObject
-from tests.agent.test_claude_command_execution import (
+from tests.agent.claude.test_command_execution import (
     execution as execution,
 )
-from tests.agent.test_claude_command_execution import (
+from tests.agent.claude.test_command_execution import (
     fixture as fixture,
 )
-from tests.agent.test_claude_command_execution import (
+from tests.agent.claude.test_command_execution import (
     native_messages,
 )
-from tests.agent.test_claude_command_execution import (
+from tests.agent.claude.test_command_execution import (
     streams as streams,
 )
 

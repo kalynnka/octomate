@@ -22,8 +22,8 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.acp.base import AcpAgentTentacle
 from octomate.tentacles.acp.elicitation import AcpForm, FormProperty
 from octomate.types.json import JsonObject
-from tests.agent.test_acp_client import adapter_environment as adapter_environment
-from tests.agent.test_acp_tentacle import agent as agent
+from tests.agent.acp.test_client import adapter_environment as adapter_environment
+from tests.agent.acp.test_tentacle import agent as agent
 
 
 def test_form_presentation_state_is_not_advertised_to_question_tools() -> None:

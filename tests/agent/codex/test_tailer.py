@@ -36,8 +36,8 @@ from octomate.tentacles.codex.adapter import CodexRunAccumulator
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer, OpenTurn
 from octomate.tentacles.codex.transcript import RolloutLine
 from octomate.types.json import JsonObject, JsonValue
-from tests.agent.test_codex_adapter import command_item, notification
-from tests.agent.test_codex_native_ingest import (
+from tests.agent.codex.test_adapter import command_item, notification
+from tests.agent.codex.test_native_ingest import (
     ROLLOUT_LABEL,
     SENDER,
     SESSION_ADDRESS,

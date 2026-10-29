@@ -26,8 +26,8 @@ from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.trunkline import TrunklineTentacle
-from tests.agent.test_codex_transcript_fork import ForkCase
-from tests.agent.test_codex_transcript_fork import case as case
+from tests.agent.codex.test_transcript_fork import ForkCase
+from tests.agent.codex.test_transcript_fork import case as case
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import a_project
