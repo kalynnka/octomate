@@ -354,6 +354,9 @@ export interface RunResultEvent {
   event_kind: 'run_result'
   output: string | WireSegment[] | null
   usage: RunUsage
+  /** The input-side tokens of the run's last model request — the context its
+   *  last turn ran with; null when no response reported usage. */
+  context_tokens?: number | null
 }
 
 export interface RunErrorEvent {

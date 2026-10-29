@@ -4,6 +4,7 @@ refuses redirects."""
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 import ssl
 from collections.abc import Iterable
@@ -76,12 +77,24 @@ def mcp_http_client(
     auth: httpx2.Auth | None = None,
     follow_redirects: bool = False,
 ) -> httpx2.AsyncClient:
+    # Some hosts reach the internet only through an environment proxy and
+    # cannot resolve public endpoints themselves. httpx applies environment
+    # proxies only to its own transport, never alongside a custom one, so proxy
+    # egress uses the stock transport — the proxy's resolver, not ours, then
+    # sees the endpoint — while every direct connection keeps the guarded one.
+    proxy = (
+        os.environ.get("https_proxy")
+        or os.environ.get("HTTPS_PROXY")
+        or os.environ.get("all_proxy")
+        or os.environ.get("ALL_PROXY")
+    )
     return httpx2.AsyncClient(
         headers=headers,
         timeout=timeout or httpx2.Timeout(30),
         auth=auth,
-        transport=PublicMcpTransport(),
-        trust_env=False,
+        transport=None if proxy else PublicMcpTransport(),
+        proxy=proxy,
+        trust_env=proxy is not None,
         # A redirect must never carry an instance's credential to another
         # endpoint. Users install the final MCP URL explicitly.
         follow_redirects=False,

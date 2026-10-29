@@ -38,7 +38,7 @@ from octomate.capabilities.harness.events import (
 )
 from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
 from octomate.nerve import Topic
-from octomate.schemas.awakes import StillAwake, UserMessageSignal
+from octomate.schemas.awakes import UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.project import Project
@@ -424,10 +424,16 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             channel_thread_id=event.channel_thread_id,
             shared=event.shared,
         )
-        # Refused before anything is written, so the next turn has no row of it to
-        # answer. A directive racing past this is refused by the kick itself.
+        # A directive racing a run still awake is that run's next prompt, not a
+        # refusal — the ingest contract: the message is in the ledger, and the
+        # next turn there answers it. Route, posture and effort belong to the
+        # running turn and are left alone.
         if ThreadKey.from_address(address) in self.octomate.awakes:
-            raise StillAwake()
+            await self.octomate.threads.ensure(
+                address, project=self.chosen_project(directive.project)
+            )
+            await self.octomate.threads.record_inbound(event)
+            return
         thread = await self.octomate.threads.ensure(
             address, project=self.chosen_project(directive.project)
         )

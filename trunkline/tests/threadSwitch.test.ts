@@ -246,6 +246,44 @@ test('a run left streaming writes on while the reader is away, and is there on r
   assert.equal(useConsole.getState().running, false)
 })
 
+test('a message sent while the turn runs is posted as its next prompt, not dropped', async () => {
+  const live: ThreadDetail = { ...detail, key: 'running', live: true, sendKey: 'running-key' }
+  const getDetail = mock.method(api, 'getThreadDetail', async () => live)
+  const fetch = mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) =>
+    init?.method === 'POST' ? new Response(null, { status: 202 }) : Response.json([]))
+  queryClient.setQueryData(['thread-detail', 'running'], live)
+  const actions = useConsole.getState().actions
+  await actions.selectThread('trunkline', 'running')
+
+  actions.sendDirective('carry on')
+  const run = await socketOn('thread_key=running-key')
+  assert.equal(useConsole.getState().running, true)
+
+  // Mid-run, the composer's message is the run's next prompt: posted behind
+  // the running turn and shown where it was said — after what has streamed,
+  // before the reply still coming — with no second socket for the same run.
+  actions.sendDirective('and this too')
+  await tick()
+  const posts = fetch.mock.calls.filter((call) => call.arguments[1]?.method === 'POST')
+  assert.equal(posts.length, 2)
+  assert.ok(String(posts[1]?.arguments[0]).includes('/api/trunkline/threads/running-key/messages'))
+  assert.equal(useConsole.getState().composer, '')
+  assert.deepEqual(useConsole.getState().live.filter((item) => item.kind === 'user').map((item) => item.kind === 'user' && item.text), ['carry on', 'and this too'])
+  assert.deepEqual(useConsole.getState().live.filter((item) => item.kind === 'notice'), [])
+  assert.equal(LiveSocket.opened.filter((socket) => socket.url.includes('thread_key=running-key')).length, 1)
+
+  // The queued row shows in its recorded place once the run settles.
+  getDetail.mock.mockImplementation(async () => ({ ...live, ledger: [
+    { kind: 'user', uid: 'carry-row', text: 'carry on', t: '', who: 'operator' },
+    { kind: 'user', uid: 'queued-row', text: 'and this too', t: '', who: 'operator' },
+  ] } satisfies ThreadDetail))
+  run.deliver({ event_kind: 'reflex_awake' }, result, { event_kind: 'reflex_asleep' })
+  for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
+  await tick()
+  assert.deepEqual(useConsole.getState().detail?.ledger.map((item) => item.kind === 'user' && item.text), ['carry on', 'and this too'])
+  assert.deepEqual(useConsole.getState().live.filter((item) => item.kind === 'user'), [])
+})
+
 test('the open thread shows a run kicked elsewhere, and reads its ledger again once it settles', async () => {
   const settled: ThreadDetail = { ...detail, key: 'watched', ledger: [{ kind: 'user', uid: 'from-slack', text: 'asked on slack', t: '', who: 'someone' } as LedgerItem] }
   const opening: ThreadDetail = { ...detail, key: 'watched' }
@@ -305,6 +343,39 @@ test('a run streaming on the open thread comes over its own socket alone, and th
   assert.notEqual(await socketOn('thread_id=solo'), watching)
 })
 
+test('a run the console drove says its cost on the open panel when it ends', async () => {
+  const live: ThreadDetail = { ...detail, key: 'solo', live: true, sendKey: 'solo-key' }
+  const getDetail = mock.method(api, 'getThreadDetail', async () => live)
+  mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) =>
+    init?.method === 'POST' ? new Response(null, { status: 202 }) : Response.json([]))
+  queryClient.setQueryData(['thread-detail', 'solo'], live)
+  const actions = useConsole.getState().actions
+  await actions.selectThread('trunkline', 'solo')
+
+  actions.sendDirective('carry on')
+  const run = await socketOn('thread_key=solo-key')
+  run.deliver(
+    { event_kind: 'reflex_awake' },
+    {
+      event_kind: 'run_result', output: 'done',
+      usage: { requests: 44, tool_calls: 0, input_tokens: 5707, output_tokens: 4588, cache_read_tokens: 464192, cache_write_tokens: 0 },
+      context_tokens: 469899,
+    },
+    { event_kind: 'reflex_asleep' },
+  )
+  for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
+
+  // The bar says the run that just ended — spent tokens summed onto the thread,
+  // context from the run's own last request — without re-reading the thread.
+  const held = useConsole.getState().detail
+  assert.equal(held?.usage.input, 5707)
+  assert.equal(held?.usage.output, 4588)
+  assert.equal(held?.usage.cacheRead, 464192)
+  assert.equal(held?.usage.cacheRate, 464192 / 469899)
+  assert.equal(held?.ctxK, 470)
+  assert.equal(getDetail.mock.callCount(), 1)
+  assert.ok(useConsole.getState().live.some((item) => item.kind === 'stream' && item.text === 'done'))
+})
 test('a run follows the first reflex its socket sees wake, not the end of one already awake', async () => {
   const live: ThreadDetail = { ...detail, key: 'late', live: true, sendKey: 'late-key' }
   mock.method(api, 'getThreadDetail', async () => live)

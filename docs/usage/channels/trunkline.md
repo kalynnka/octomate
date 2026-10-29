@@ -60,12 +60,19 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
 - **Read any thread**: the chat ledger, each agent conversation and its runs, the
   handoffs, and the pending actions. A thread opens on its latest messages and
   the agent's work between them; earlier ones load as you scroll up.
-  Sending a new prompt scrolls the conversation to the bottom.
+  Sending a new prompt scrolls the conversation to the bottom. A prompt sent
+  while a turn is still running lands behind it: the running turn keeps its own
+  context, and the thread's next turn answers it together with whatever else
+  arrived meanwhile.
   Agent replies show the channel bot's name when available, followed by the
   agent's name in parentheses. Quoted replies use the same sender label.
   Native transcript replies show only the runtime's name, such as Codex or Claude.
   Claude history preserves each transcript's message order.
   Native turns received live stay in place when they finish.
+- **Track a thread's cost** on the bar under the conversation: the tokens its
+  runs have spent, the cache hit rate, and how much of the model's context
+  window the last request filled. A finished run adds its own numbers to the
+  bar at once, before the thread is read again.
 - **Resize the input** by dragging the composer's top edge up or down. The chosen
   height stays while you type or use commands. Double-click the edge to return to
   automatic sizing; when the handle has keyboard focus, ↑ and ↓ adjust it.
