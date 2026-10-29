@@ -69,6 +69,11 @@ def create_app() -> Octomate:
         service_name=config.logfire.service_name,
         environment=config.logfire.environment,
         send_to_logfire="if-token-present" if config.logfire.send_to_logfire else False,
+        advanced=(
+            logfire.AdvancedOptions(base_url=config.logfire.base_url)
+            if config.logfire.base_url
+            else None
+        ),
         console=logfire.ConsoleOptions() if config.logfire.console else False,
         scrubbing=logfire.ScrubbingOptions(
             extra_patterns=[

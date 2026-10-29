@@ -204,6 +204,7 @@ async def test_run_stream_events_proxies_events_and_persists(
     # the conversation for resume.
     assert len(conversations.runs) == 1
     fake, _label, messages = conversations.runs[0]
+    assert fake.runs[-1].context_window == 1_000_000
     assert fake.external_id == "sess-xyz"
     assert messages  # user prompt + assistant turns
 

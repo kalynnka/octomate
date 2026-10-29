@@ -43,6 +43,7 @@ const conversation: ApiConversation = {
   parent_conversation_id: null, name: null, status: 'active', permission_mode: null, effort: null, allowed_tools: [],
   runs: [{
     id: 'run', kind: 'octomate', conversation_id: 'conversation', name: null, model_name: null,
+    context_used: 6004,
     permission_mode: null, cwd: null, parent_run_id: null, parent_tool_call_id: null, started_at: null,
   }],
 }
@@ -56,10 +57,12 @@ const said = (id: string, text: string, actor: 'human' | 'system'): ApiThreadMes
 })
 const notice = said('015', 'Forked from conversation elsewhere.', 'system')
 // The prompt as the model got it is dressed; the row it was built from is not.
+// The row's id predates the request that read it — rows are written when said,
+// requests when built — which is the order the ledger keys them by.
 const prompt: ApiModelMessage = {
   id: '020', run_id: 'run', kind: 'request', timestamp: null,
   parts: [{ part_kind: 'user-prompt', content: 'Ada (ada, user:ada) #msg:1: fix the build' }],
-  thread_messages: [said('m-1', 'fix the build', 'human')],
+  thread_messages: [said('018', 'fix the build', 'human')],
 }
 const narration: ApiModelMessage = {
   id: '030', run_id: 'run', kind: 'response', timestamp: at, thread_messages: [],
@@ -74,7 +77,7 @@ const built: ApiModelMessage = {
 }
 const answer: ApiModelMessage = {
   id: '050', run_id: 'run', kind: 'response', timestamp: at, thread_messages: [],
-  parts: [{ part_kind: 'text', content: 'fixed' }], usage: { input_tokens: 4, cache_read_tokens: 6000 },
+  parts: [{ part_kind: 'text', content: 'fixed' }], usage: { input_tokens: 6004, cache_read_tokens: 6000 },
 }
 
 const reads = (
@@ -83,10 +86,22 @@ const reads = (
   cursors: ThreadReads['cursors'],
 ): ThreadReads => ({
   thread, modelMessages, unbound, cursors, totals: { model: 4, unbound: 1 }, conversations: [conversation],
-  project: null, batches: [], usage: { input_tokens: 40, output_tokens: 7, cache_read_tokens: 60000 },
+  project: null, batches: [], usage: { input_tokens: 60040, output_tokens: 7, cache_read_tokens: 60000 },
 })
 const page = <T>(items: T[]) => ({ items: [...items].reverse(), total: 4, next_cursor: 'end', has_more: false })
 const kinds = (ledger: LedgerItem[]) => ledger.map((item) => item.kind)
+
+test('binding an inbound row preserves its position in the saved conversation', () => {
+  const inbound = said('035', 'also check lint', 'human')
+  const next = { ...prompt, id: '060', thread_messages: [inbound] }
+  const before = liveThreadDetail(reads([prompt, narration, built, answer], [inbound], { model: null, unbound: null }))
+  const after = liveThreadDetail(reads([prompt, narration, built, answer, next], [], { model: null, unbound: null }))
+  assert.deepEqual(after.ledger.map(item => item.uid), before.ledger.map(item => item.uid))
+  const inboundAt = after.ledger.findIndex(item => item.uid === inbound.id)
+  const replyAt = after.ledger.findIndex(item => item.kind === 'agent')
+  assert.ok(inboundAt >= 0 && inboundAt < replyAt)
+  assert.equal(after.ledger.filter(item => item.uid === inbound.id).length, 1)
+})
 
 for (const [agent, bound] of [['codex-native', true], ['codex-native', false], ['deepseek-native', true], ['deepseek-native', false]] as const) {
   test(`${agent} question replies remain readable ${bound ? 'after binding' : 'before their run commits'}`, () => {
@@ -260,13 +275,29 @@ test('a request nothing was bound to speaks for itself', () => {
   assert.deepEqual(user?.kind === 'user' && [user.who, user.text], ['operator', 'fix the build'])
 })
 
-test('usage is the relay total, and the context is the newest response in hand', () => {
+test('usage is the relay total, and context comes from the persisted run', () => {
   const latest = liveThreadDetail(reads([built, answer], [], { model: 'older', unbound: null }))
   assert.deepEqual(latest.usage, {
-    input: 40, output: 7, cacheRead: 60000, cacheWrite: 0, cacheRate: 60000 / 60040,
+    input: 60040, output: 7, cacheRead: 60000, cacheWrite: 0, cacheRate: 60000 / 60040,
   })
   assert.equal(latest.ctxK, 6)
 })
+
+for (const tokens of [null, 32000]) {
+  test(`context capacity comes from the latest persisted run with occupancy ${tokens}`, () => {
+    const history = reads([built, answer], [], { model: null, unbound: null })
+    history.conversations = [{ ...conversation, runs: [
+      { ...conversation.runs[0], id: 'old', started_at: '2026-10-08T10:00:00Z', context_window: 1000000 },
+      { ...conversation.runs[0], started_at: at, context_window: 128000, context_used: tokens },
+    ] }]
+    const detail = liveThreadDetail(history)
+    assert.equal(detail.contextWindow, 128000)
+    assert.equal(detail.ctxK, tokens === null ? 0 : 32)
+
+    history.conversations[0].runs[1].context_window = null
+    assert.equal(liveThreadDetail(history).contextWindow, null)
+  })
+}
 
 test('artifact references survive pagination with their row identity and no text card', () => {
   const artifact: ApiThreadMessage = { ...said('060', '', 'system'), kind: 'artifact', artifact_id: 'saved-app' }
@@ -279,7 +310,7 @@ test('artifact references survive pagination with their row identity and no text
 
 for (const text of ['Here is the chart.', '']) {
   test(`captured HTML stays after its originating response on reload (${text ? 'caption' : 'reference only'})`, () => {
-    const artifact: ApiThreadMessage = { ...said('015', '', 'system'), direction: 'outbound', kind: 'artifact', artifact_id: 'saved-html' }
+    const artifact: ApiThreadMessage = { ...said('052', '', 'system'), direction: 'outbound', kind: 'artifact', artifact_id: 'saved-html' }
     const response: ApiModelMessage = { ...answer, parts: [{ part_kind: 'text', content: text }], thread_messages: [artifact] }
     const next: ApiModelMessage = { ...prompt, id: '060', thread_messages: [said('055', 'Next question', 'human')] }
     const detail = liveThreadDetail(reads([prompt, response, next], [], { model: null, unbound: null }))

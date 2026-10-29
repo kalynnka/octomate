@@ -146,6 +146,35 @@ async def native_conversation(octomate: Octomate):
     )
 
 
+async def test_reported_capacity_survives_native_reconnect_and_route_change() -> None:
+    octomate = Octomate()
+    _, tailer = wired(octomate)
+    context: JsonObject = {
+        "provider": "deepseek-official",
+        "model": "deepseek-v4-flash",
+    }
+    await stream_events(
+        tailer,
+        octomate.nerve,
+        [
+            ev(1, "request/context", {**context, "contextWindow": 1000000}),
+            *turn_events(1, 2, "first", "one"),
+        ],
+    )
+    await stream_events(tailer, octomate.nerve, turn_events(2, 6, "second", "two"))
+    await stream_events(
+        tailer,
+        octomate.nerve,
+        [ev(10, "request/context", context), *turn_events(3, 11, "third", "three")],
+    )
+    conversation = await native_conversation(octomate)
+    assert [run.context_window for run in conversation.runs] == [1000000, 1000000, None]
+    assert [run.context_used for run in conversation.runs] == [10, 10, 10]
+    for run in conversation.runs:
+        assert isinstance(run.messages[-1], ModelResponse)
+        assert run.messages[-1].usage.input_tokens == run.context_used
+
+
 async def test_streamed_events_assemble_the_turn_and_its_ledger() -> None:
     octomate = Octomate()
     _, tailer = wired(octomate)

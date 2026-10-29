@@ -640,6 +640,12 @@ class CodexTranscriptTailer:
                     messages=turn.messages,
                     name=CODEX_NATIVE_ID,
                     model_name=turn.model_name,
+                    context_used=turn.usage.input_tokens
+                    if turn.usage is not None
+                    else None,
+                    context_window=turn.usage.details.get("model_context_window")
+                    if turn.usage is not None
+                    else None,
                     permission_mode=turn.permission_mode,
                     cwd=Path(tail.cwd) if tail.cwd else None,
                     native_session_id=tail.thread_id,
@@ -696,6 +702,12 @@ class CodexTranscriptTailer:
                     messages=turn.messages,
                     name=CODEX_NATIVE_ID,
                     model_name=turn.model_name,
+                    context_used=turn.usage.input_tokens
+                    if turn.usage is not None
+                    else None,
+                    context_window=turn.usage.details.get("model_context_window")
+                    if turn.usage is not None
+                    else None,
                     permission_mode=turn.permission_mode,
                     cwd=Path(state.cwd) if state.cwd else None,
                     native_session_id=state.session_id,
@@ -799,13 +811,15 @@ class CodexTranscriptTailer:
         if not isinstance(usage, dict):
             return None
         values = {key: value for key, value in usage.items() if isinstance(value, int)}
+        details = {"reasoning_output_tokens": values.get("reasoning_output_tokens", 0)}
+        window = info.get("model_context_window")
+        if isinstance(window, int) and not isinstance(window, bool) and window > 0:
+            details["model_context_window"] = window
         return RequestUsage(
             input_tokens=values.get("input_tokens", 0),
             output_tokens=values.get("output_tokens", 0),
             cache_read_tokens=values.get("cached_input_tokens", 0),
-            details={
-                "reasoning_output_tokens": values.get("reasoning_output_tokens", 0)
-            },
+            details=details,
         )
 
     @staticmethod

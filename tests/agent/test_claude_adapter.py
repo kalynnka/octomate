@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 from typing import Literal
 
 import pytest
@@ -36,13 +37,17 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
+from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
+from octomate.managers.conversation import ConversationManager
 from octomate.tentacles.claude.adapter import (
     ClaudeRunAccumulator,
     map_usage,
     normalize_tool_result_content,
 )
 from octomate.tentacles.feelers.output import render_stream_event_delta
+from tests.support.managers import a_thread
 
 
 def test_adapter_maps_a_full_turn_to_messages_and_events() -> None:
@@ -207,7 +212,11 @@ def test_adapter_run_usage_aggregates_like_a_native_run() -> None:
     # pydantic-ai run does — summed tokens, one request per model response.
     run_usage = acc.build_result(run_id="run-1", conversation_id="conv-1").usage
     assert run_usage.requests == 2
-    assert run_usage.input_tokens == 220
+    assert run_usage.input_tokens == 260
+    assert acc.context_used == 160
+    last = acc.messages[-1]
+    assert isinstance(last, ModelResponse)
+    assert last.usage.input_tokens == acc.context_used
     assert run_usage.output_tokens == 15
     assert run_usage.cache_read_tokens == 40
 
@@ -255,7 +264,7 @@ def test_adapter_fills_response_provenance_usage_and_signature() -> None:
     }
 
     # Usage maps onto RequestUsage, Anthropic cache names included.
-    assert turn.usage.input_tokens == 120
+    assert turn.usage.input_tokens == 135
     assert turn.usage.output_tokens == 34
     assert turn.usage.cache_write_tokens == 10
     assert turn.usage.cache_read_tokens == 5
@@ -391,12 +400,244 @@ def test_map_usage_maps_cache_names_and_preserves_extra_counts() -> None:
             "service_tier": "standard",  # non-int → dropped
         }
     )
-    assert usage.input_tokens == 7
+    assert usage.input_tokens == 10
     assert usage.output_tokens == 3
     assert usage.cache_write_tokens == 2
     assert usage.cache_read_tokens == 1
     # Unknown integer counts are preserved; already-mapped names don't double up.
     assert usage.details == {"some_new_count": 9}
+
+
+def test_map_usage_reads_counts_typed_as_floats_and_strings() -> None:
+    # Relays fronting the Anthropic wire have been seen typing whole counts as
+    # floats or strings; an int-only filter zeroed every one of them.
+    usage = map_usage(
+        {
+            "input_tokens": 2242.0,
+            "output_tokens": "150",
+            "cache_creation_input_tokens": "0",
+            "cache_read_input_tokens": 24576.0,
+            "some_new_count": "9.0",
+            "service_tier": "standard",  # still not a count
+            "cache_creation": {"x": 1},  # nested objects are not counts either
+        }
+    )
+    assert usage.input_tokens == 26818
+    assert usage.output_tokens == 150
+    assert usage.cache_write_tokens == 0
+    assert usage.cache_read_tokens == 24576
+    assert usage.details == {"some_new_count": 9}
+    # Booleans are ints to Python but never counts.
+    assert map_usage({"input_tokens": True}).input_tokens == 0
+
+
+@pytest.mark.parametrize("value", [True, False, 1.5, "1.5", float("inf"), float("nan")])
+def test_map_usage_omits_invalid_counts_but_keeps_valid_ones(
+    value: bool | float | str,
+) -> None:
+    usage = map_usage(
+        {"input_tokens": value, "output_tokens": "2", "some_new_count": value}
+    )
+    assert usage.input_tokens == 0
+    assert usage.output_tokens == 2
+    assert usage.details == {}
+
+
+def test_map_usage_warns_when_a_block_carries_no_counts(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="octomate.tentacles.claude.adapter"):
+        usage = map_usage({"service_tier": "standard", "server_tool_use": {}})
+    assert usage.input_tokens == 0
+    assert usage.details == {}
+    assert any("carried no counts" in record.message for record in caplog.records)
+
+
+def test_adapter_accumulates_float_typed_usage_from_the_stream() -> None:
+    acc = ClaudeRunAccumulator()
+    list(
+        acc.consume(
+            AssistantMessage(
+                content=[TextBlock(text="hello")],
+                model="GLM-5.3",
+                usage={
+                    "input_tokens": 2242.0,
+                    "cache_read_input_tokens": 24576.0,
+                    "output_tokens": 150.0,
+                },
+            )
+        )
+    )
+
+    turn = acc.messages[-1]
+    assert isinstance(turn, ModelResponse)
+    assert turn.usage.input_tokens == 26818
+    assert turn.usage.cache_read_tokens == 24576
+    assert turn.usage.output_tokens == 150
+    run_usage = acc.build_result(run_id="run-1", conversation_id="conv-1").usage
+    assert run_usage.input_tokens == 26818
+    assert run_usage.cache_read_tokens == 24576
+    assert run_usage.requests == 1
+
+
+def result_message(usage: dict[str, object] | None) -> ResultMessage:
+    return ResultMessage(
+        subtype="success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=False,
+        num_turns=1,
+        session_id="sess-1",
+        result="done",
+        usage=usage,
+    )
+
+
+@pytest.mark.parametrize("window", [0, 128000, 1000000])
+@pytest.mark.parametrize("matching_model", [False, True])
+def test_context_capacity_belongs_to_the_last_response_model(
+    window: int, matching_model: bool
+) -> None:
+    acc = ClaudeRunAccumulator()
+    list(acc.consume(AssistantMessage(content=[TextBlock(text="done")], model="m")))
+    result = result_message(None)
+    result.model_usage = {
+        "m" if matching_model else "subagent": {
+            "inputTokens": 1,
+            "outputTokens": 1,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0,
+            "webSearchRequests": 0,
+            "costUSD": 0.0,
+            "contextWindow": window,
+            "maxOutputTokens": 8192,
+        }
+    }
+    list(acc.consume(result))
+    assert acc.context_window == (window if matching_model and window else 1_000_000)
+
+
+def test_context_capacity_defaults_without_a_harness_report() -> None:
+    acc = ClaudeRunAccumulator()
+    assert acc.context_window == 1_000_000
+    list(acc.consume(AssistantMessage(content=[TextBlock(text="done")], model="m")))
+    list(acc.consume(result_message(None)))
+    assert acc.context_window == 1_000_000
+
+
+def test_adapter_folds_turn_usage_when_no_response_carried_any() -> None:
+    acc = ClaudeRunAccumulator()
+    acc.begin("go")
+    assert acc.context_used is None
+    # No usage block at all, then one carrying nothing countable.
+    list(acc.consume(AssistantMessage(content=[TextBlock(text="one")], model="m")))
+    list(
+        acc.consume(
+            AssistantMessage(
+                content=[TextBlock(text="two")], model="m", usage={"service_tier": "x"}
+            )
+        )
+    )
+    list(
+        acc.consume(
+            result_message(
+                {
+                    "input_tokens": 300,
+                    "cache_read_input_tokens": 4000,
+                    "output_tokens": 50,
+                }
+            )
+        )
+    )
+
+    # The turn's cumulative count stands in for billing, but cannot describe
+    # the last request's context.
+    run_usage = acc.build_result(run_id="run-1", conversation_id="conv-1").usage
+    assert run_usage.input_tokens == 4300
+    assert run_usage.cache_read_tokens == 4000
+    assert run_usage.output_tokens == 50
+    assert run_usage.requests == 2
+    last = acc.messages[-1]
+    assert isinstance(last, ModelResponse)
+    assert last.usage.input_tokens == 4300
+    assert last.usage.cache_read_tokens == 4000
+    assert last.usage.output_tokens == 50
+    assert acc.context_used is None
+
+
+def test_adapter_does_not_double_count_turn_usage_over_response_usage() -> None:
+    acc = ClaudeRunAccumulator()
+    acc.begin("go")
+    list(
+        acc.consume(
+            AssistantMessage(
+                content=[TextBlock(text="one")],
+                model="m",
+                usage={"input_tokens": 100, "output_tokens": 10},
+            )
+        )
+    )
+    list(
+        acc.consume(
+            result_message(
+                {"input_tokens": 100, "output_tokens": 10, "cache_read_tokens": 7}
+            )
+        )
+    )
+
+    # Responses carried their own counts, so the cumulative result block is
+    # redundant — the run keeps the responses' sum and their own numbers.
+    run_usage = acc.build_result(run_id="run-1", conversation_id="conv-1").usage
+    assert run_usage.input_tokens == 100
+    assert run_usage.output_tokens == 10
+    assert run_usage.cache_read_tokens == 0
+    last = acc.messages[-1]
+    assert isinstance(last, ModelResponse)
+    assert last.usage.input_tokens == 100
+    assert last.usage.output_tokens == 10
+
+
+@pytest.mark.parametrize("turn_usage", [False, True])
+async def test_adapter_usage_survives_persistence(
+    in_memory_engine: AsyncEngine, turn_usage: bool
+) -> None:
+    manager = ConversationManager()
+    thread_id = await a_thread()
+    conversation = await manager.ensure(thread_id, agent_tentacle_id="claude")
+    acc = ClaudeRunAccumulator()
+    acc.begin("go")
+    raw = {
+        "input_tokens": 300.0,
+        "cache_read_input_tokens": "5000",
+        "output_tokens": "50",
+    }
+    list(
+        acc.consume(
+            AssistantMessage(
+                content=[TextBlock(text="done")],
+                model="m",
+                usage=None if turn_usage else raw,
+            )
+        )
+    )
+    if turn_usage:
+        list(acc.consume(result_message(raw)))
+    await manager.record_agent_run(conversation, str(uuid7()), acc.messages)
+
+    reloaded = await ConversationManager().get(conversation.id)
+    last = reloaded.runs[-1].messages[-1]
+    assert isinstance(last, ModelResponse)
+    assert (
+        last.usage.input_tokens,
+        last.usage.cache_read_tokens,
+        last.usage.output_tokens,
+    ) == (5300, 5000, 50)
+    usage = await ConversationManager().usage(thread_id)
+    assert (
+        usage.input_tokens,
+        usage.cache_read_tokens,
+        usage.output_tokens,
+    ) == (5300, 5000, 50)
 
 
 def stream_event(event: dict[str, object]) -> StreamEvent:

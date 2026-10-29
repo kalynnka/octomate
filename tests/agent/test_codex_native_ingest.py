@@ -8,7 +8,7 @@ from pathlib import Path
 import anyio
 import pytest
 from anyio.abc import ObjectSendStream
-from pydantic_ai.messages import ModelRequest, UserPromptPart
+from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
@@ -172,6 +172,49 @@ async def stream_rollout(
             await tailer.feed_remote(state, None, raw.decode(), offset, end)
             offset = end
         tailer.detach_remote(state)
+
+
+async def test_context_snapshot_and_last_response_usage_persist_together(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "rollout.jsonl"
+    write_rollout(path)
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    records.insert(
+        -1,
+        {
+            "timestamp": "2026-07-16T10:00:05Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "model_context_window": 262144,
+                    "last_token_usage": {
+                        "input_tokens": 42,
+                        "output_tokens": 3,
+                        "cached_input_tokens": 7,
+                    },
+                },
+            },
+        },
+    )
+    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+    octomate = Octomate()
+    _, tailer = wired(octomate)
+    await stream_rollout(tailer, SESSION_ID, path)
+    thread = await octomate.threads.ensure(
+        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+    )
+    conversation = await octomate.conversations.ensure(
+        thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+    )
+    [run] = conversation.runs
+    assert run.context_used == 42
+    assert run.context_window == 262144
+    last = run.messages[-1]
+    assert isinstance(last, ModelResponse)
+    assert last.usage.input_tokens == run.context_used
+    assert last.usage.cache_read_tokens == 7
 
 
 async def test_hooks_reserve_identity_and_only_rollout_writes_messages(

@@ -134,6 +134,7 @@ test('a new thread adopts its saved identity without a transition or replacing i
   })
   mock.method(api, 'getThreadDetail', async () => ({
     ...detail, key: 'saved-thread', live: true, sendKey,
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheRate: 0 },
     sessions: [{ n: '1', id: 'session', conversationId: 'conversation', route: 'codex', agent: 'codex', model: null, effort: 'high', mode: null, kind: 'entry', t: '', reason: '', status: 'active', tone: 'accent' }],
     ledger: [{ kind: 'user', uid: 'persisted-prompt', text: 'hello', t: '', who: 'operator' }],
   } satisfies ThreadDetail))
@@ -149,6 +150,7 @@ test('a new thread adopts its saved identity without a transition or replacing i
   assert.equal(useConsole.getState().selThreadId, saved.id)
   assert.equal(useConsole.getState().detail?.sessions[0].conversationId, 'conversation')
   assert.equal(useConsole.getState().detail?.sessions[0].effort, 'high')
+  assert.equal(useConsole.getState().detail?.usage.input, 1)
   assert.deepEqual(useConsole.getState().detail?.ledger, [])
   assert.equal(useConsole.getState().live.find((item) => item.kind === 'user'), prompt)
   assert.equal(useConsole.getState().live.filter((item) => item.kind === 'stream').length, 1)
@@ -303,6 +305,72 @@ test('a run streaming on the open thread comes over its own socket alone, and th
 
   assert.ok(run.closed)
   assert.notEqual(await socketOn('thread_id=solo'), watching)
+})
+
+test('a driven run reads its persisted usage when it settles and after reopening', async () => {
+  const live: ThreadDetail = { ...detail, key: 'solo', live: true, sendKey: 'solo-key' }
+  const recorded: ThreadDetail = {
+    ...live,
+    usage: { input: 500000, output: 4588, cacheRead: 464192, cacheWrite: 0, cacheRate: 464192 / 500000 },
+    ctxK: 24,
+    contextWindow: 262144,
+  }
+  const getDetail = mock.method(api, 'getThreadDetail', async () => live)
+  mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) =>
+    init?.method === 'POST' ? new Response(null, { status: 202 }) : Response.json([]))
+  queryClient.setQueryData(['thread-detail', 'solo'], live)
+  const actions = useConsole.getState().actions
+  await actions.selectThread('trunkline', 'solo')
+
+  actions.sendDirective('carry on')
+  const run = await socketOn('thread_key=solo-key')
+  run.deliver(
+    { event_kind: 'reflex_awake' },
+    { ...result, output: 'done' },
+  )
+  assert.deepEqual(useConsole.getState().detail?.usage, live.usage)
+  assert.equal(getDetail.mock.callCount(), 1)
+  getDetail.mock.mockImplementation(async () => recorded)
+  run.deliver({ event_kind: 'reflex_asleep' })
+  for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
+
+  assert.deepEqual(useConsole.getState().detail?.usage, recorded.usage)
+  assert.equal(useConsole.getState().detail?.ctxK, recorded.ctxK)
+  assert.equal(useConsole.getState().detail?.contextWindow, recorded.contextWindow)
+  assert.equal(getDetail.mock.callCount(), 2)
+  assert.ok(useConsole.getState().live.some((item) => item.kind === 'stream' && item.text === 'done'))
+
+  await actions.selectThread('trunkline', 'solo')
+  assert.deepEqual(useConsole.getState().detail?.usage, recorded.usage)
+  assert.equal(useConsole.getState().detail?.ctxK, recorded.ctxK)
+  assert.equal(useConsole.getState().detail?.contextWindow, recorded.contextWindow)
+})
+
+test('a persisted usage read cannot update the thread selected while it was pending', async () => {
+  const live: ThreadDetail = { ...detail, key: 'refreshing', live: true, sendKey: 'refreshing-key' }
+  const other: ThreadDetail = { ...detail, key: 'other', ctxK: 12 }
+  const getDetail = mock.method(api, 'getThreadDetail', async (id: string) => id === 'refreshing' ? live : other)
+  mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) =>
+    init?.method === 'POST' ? new Response(null, { status: 202 }) : Response.json([]))
+  queryClient.setQueryData(['thread-detail', 'refreshing'], live)
+  const actions = useConsole.getState().actions
+  await actions.selectThread('trunkline', 'refreshing')
+  actions.sendDirective('carry on')
+  const run = await socketOn('thread_key=refreshing-key')
+
+  let resolve!: (value: ThreadDetail) => void
+  const reading = new Promise<ThreadDetail>((done) => { resolve = done })
+  getDetail.mock.mockImplementation((id: string) => id === 'refreshing' ? reading : Promise.resolve(other))
+  run.deliver({ event_kind: 'reflex_awake' }, result, { event_kind: 'reflex_asleep' })
+  for (let at = 0; at < 200 && getDetail.mock.callCount() < 2; at++) await tick()
+  assert.equal(getDetail.mock.callCount(), 2)
+
+  await actions.selectThread('trunkline', 'other')
+  resolve({ ...live, ctxK: 99 })
+  await tick()
+
+  assert.equal(useConsole.getState().selThreadId, 'other')
+  assert.deepEqual(useConsole.getState().detail, other)
 })
 
 test('a run follows the first reflex its socket sees wake, not the end of one already awake', async () => {

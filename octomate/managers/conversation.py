@@ -75,6 +75,22 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
                 .limit(1)
             )
 
+    async def latest_context_window(self, conversation_id: UUID7) -> int | None:
+        """The latest run's capacity, including None when its route reported none."""
+        async with async_session() as session:
+            return await session.scalar(
+                select(AgentRun["context_window"])
+                .where(
+                    AgentRun["id"].in_(
+                        select(ConversationRun["run_id"]).where(
+                            ConversationRun["conversation_id"] == conversation_id
+                        )
+                    )
+                )
+                .order_by(AgentRun["started_at"].desc(), AgentRun["id"].desc())
+                .limit(1)
+            )
+
     async def ensure(
         self,
         thread_id: UUID7,
@@ -296,6 +312,8 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         *,
         name: str | None = None,
         model_name: str | None = None,
+        context_window: int | None = None,
+        context_used: int | None = None,
         permission_mode: AgentPermissionMode | None = None,
         cwd: Path | None = None,
         external_id: str | None = None,
@@ -320,6 +338,8 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
             native_turn_id=native_turn_id,
             name=name,
             model_name=model_name,
+            context_window=context_window,
+            context_used=context_used,
             permission_mode=permission_mode,
             cwd=cwd,
             parent_run_id=parent_run_id,
@@ -358,6 +378,8 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         *,
         name: str | None = None,
         model_name: str | None = None,
+        context_window: int | None = None,
+        context_used: int | None = None,
         permission_mode: AgentPermissionMode | None = None,
         cwd: Path | None = None,
         native_session_id: str,
@@ -403,6 +425,8 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
             native_turn_id=run_id,
             name=name,
             model_name=model_name,
+            context_window=context_window,
+            context_used=context_used,
             permission_mode=permission_mode,
             cwd=cwd,
             parent_run_id=parent_run_id,
