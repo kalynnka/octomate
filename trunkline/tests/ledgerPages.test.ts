@@ -74,7 +74,7 @@ const built: ApiModelMessage = {
 }
 const answer: ApiModelMessage = {
   id: '050', run_id: 'run', kind: 'response', timestamp: at, thread_messages: [],
-  parts: [{ part_kind: 'text', content: 'fixed' }], usage: { input_tokens: 4, cache_read_tokens: 6000 },
+  parts: [{ part_kind: 'text', content: 'fixed' }], usage: { input_tokens: 6004, cache_read_tokens: 6000 },
 }
 
 const reads = (
@@ -83,7 +83,7 @@ const reads = (
   cursors: ThreadReads['cursors'],
 ): ThreadReads => ({
   thread, modelMessages, unbound, cursors, totals: { model: 4, unbound: 1 }, conversations: [conversation],
-  project: null, batches: [], usage: { input_tokens: 40, output_tokens: 7, cache_read_tokens: 60000 },
+  project: null, batches: [], usage: { input_tokens: 60040, output_tokens: 7, cache_read_tokens: 60000 },
 })
 const page = <T>(items: T[]) => ({ items: [...items].reverse(), total: 4, next_cursor: 'end', has_more: false })
 const kinds = (ledger: LedgerItem[]) => ledger.map((item) => item.kind)
@@ -263,7 +263,7 @@ test('a request nothing was bound to speaks for itself', () => {
 test('usage is the relay total, and the context is the newest response in hand', () => {
   const latest = liveThreadDetail(reads([built, answer], [], { model: 'older', unbound: null }))
   assert.deepEqual(latest.usage, {
-    input: 40, output: 7, cacheRead: 60000, cacheWrite: 0, cacheRate: 60000 / 60040,
+    input: 60040, output: 7, cacheRead: 60000, cacheWrite: 0, cacheRate: 60000 / 60040,
   })
   assert.equal(latest.ctxK, 6)
 })

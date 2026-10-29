@@ -109,13 +109,16 @@ class NativeToolState:
 
 
 def map_usage(usage: DeepseekUsage) -> RequestUsage:
+    """Include dsh's separate cache buckets in Pydantic AI's input total."""
     details = (
         {"reasoning_tokens": usage.reasoning_tokens}
         if usage.reasoning_tokens is not None
         else {}
     )
     return RequestUsage(
-        input_tokens=usage.input_tokens,
+        input_tokens=usage.input_tokens
+        + (usage.cache_read_tokens or 0)
+        + (usage.cache_write_tokens or 0),
         output_tokens=usage.output_tokens,
         cache_read_tokens=usage.cache_read_tokens or 0,
         cache_write_tokens=usage.cache_write_tokens or 0,

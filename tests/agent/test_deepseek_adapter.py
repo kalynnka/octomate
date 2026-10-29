@@ -328,13 +328,24 @@ def test_message_usage_wins_over_chunk_usage_and_folds_into_the_run() -> None:
             chunk("usage", usage={"inputTokens": 1, "outputTokens": 1}),
             message(
                 "a",
-                usage={"inputTokens": 10, "outputTokens": 4, "reasoningTokens": 2},
+                usage={
+                    "inputTokens": 10,
+                    "cacheReadTokens": 30,
+                    "cacheWriteTokens": 5,
+                    "outputTokens": 4,
+                    "reasoningTokens": 2,
+                },
             ),
             turn_end(),
         ],
     )
 
-    assert accumulator.usage.input_tokens == 10
+    assert accumulator.usage.input_tokens == 45
+    assert accumulator.usage.cache_read_tokens == 30
+    assert accumulator.usage.cache_write_tokens == 5
+    [response] = accumulator.messages
+    assert isinstance(response, ModelResponse)
+    assert response.usage.input_tokens == 45
     assert accumulator.usage.output_tokens == 4
     assert accumulator.usage.requests == 1
     assert accumulator.usage.details["reasoning_tokens"] == 2
