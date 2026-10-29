@@ -1,8 +1,9 @@
-"""Debug attachment changes hook executables without creating project hooks."""
+"""Debug attachment switches hooks and MCP without creating project hooks."""
 
 import json
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Literal
 from unittest.mock import Mock
@@ -21,7 +22,7 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     config.mkdir(parents=True)
     for name in ("debug", "macmini"):
         (config / f"cli.{name}.toml").write_text(
-            f'url = "https://{name}.example"\ntoken = "test-token"\n'
+            f'url = "https://{name}.example"\ntoken = "{name}-token"\n'
         )
     (config / "cli.toml").write_text('url = "https://before.example"\n')
     local_cli = root / ".venv" / "bin" / "octomate"
@@ -35,7 +36,7 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 @pytest.mark.parametrize("mode", ["on", "off"])
-def test_switch_updates_user_and_existing_project_hooks(
+def test_switch_updates_mcp_and_user_and_existing_project_hooks(
     workspace: Path, monkeypatch: pytest.MonkeyPatch, mode: Literal["on", "off"]
 ) -> None:
     project = workspace / ".claude" / "settings.json"
@@ -94,15 +95,8 @@ def test_switch_updates_user_and_existing_project_hooks(
         config / f"cli.{profile}.toml"
     ).read_bytes()
     if mode == "off":
-        assert commands[0] == [
-            "uv",
-            "tool",
-            "install",
-            "--force",
-            "--upgrade",
-            "--no-sources",
-            "octomate-cli",
-        ]
+        assert commands[0] == ["uv", "tool", "dir", "--bin"]
+        assert sum(command[0] == "uv" for command in commands) == 1
     else:
         assert all(command[0] != "uv" for command in commands)
     for path in (Path.home() / ".claude" / "settings.json", project):
@@ -110,6 +104,15 @@ def test_switch_updates_user_and_existing_project_hooks(
         assert str(cli) in raw
         assert "/old/" not in raw
     assert str(cli) in (Path.home() / ".codex" / "hooks.json").read_text()
+    codex = tomllib.loads((Path.home() / ".codex" / "config.toml").read_text())
+    claude = json.loads((Path.home() / ".claude.json").read_text())
+    for entry, headers in (
+        (codex["mcp_servers"]["octomate"], "http_headers"),
+        (claude["mcpServers"]["octomate"], "headers"),
+    ):
+        assert entry["url"] == f"https://{profile}.example/octomate/mcp"
+        assert entry[headers]["Authorization"] == f"Bearer {profile}-token"
+    assert "projects" not in claude
     assert not (workspace / ".codex" / "hooks.json").exists()
     assert unrelated.read_text() == '{"permissions": {"allow": ["Read"]}}\n'
     saved = json.loads(project.read_text())
@@ -119,12 +122,12 @@ def test_switch_updates_user_and_existing_project_hooks(
     ]
 
 
-def test_failed_global_install_keeps_current_profile_and_hooks(
+def test_failed_global_lookup_keeps_current_profile_and_hooks(
     workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     active = workspace / ".octomate" / "cli.toml"
     before = active.read_bytes()
-    run = Mock(side_effect=subprocess.CalledProcessError(1, ["uv", "tool", "install"]))
+    run = Mock(side_effect=subprocess.CalledProcessError(1, ["uv", "tool", "dir"]))
     monkeypatch.setattr(debug_attachment.subprocess, "run", run)
 
     with pytest.raises(subprocess.CalledProcessError):

@@ -60,6 +60,7 @@ from octomate.tentacles.codex.transcript import (
     RolloutLine,
     SessionMetadata,
     TurnPermissions,
+    UserMessageItem,
     payload_type,
     rollout_line_adapter,
     session_metadata_adapter,
@@ -97,6 +98,43 @@ class OpenTurn:
     visualizations: dict[int, list[HtmlSnapshot]] = field(
         default_factory=dict
     )  # Snapshots keyed by their model message position.
+    unpaired_prompts: list[tuple[str, str]] = field(
+        default_factory=list
+    )  # Source representation and text awaiting their counterpart in a mixed rollout.
+
+    def consume_prompt(self, line: RolloutLine) -> str | None:
+        """Read human text once per source occurrence, pairing mirrored formats.
+
+        Pair across representations rather than deduplicating by text: the user
+        can send identical prompts twice in one turn, including while it runs.
+        """
+        if line.type == "event_msg" and payload_type(line) == "user_message":
+            text = line.payload.get("message")
+            if not isinstance(text, str):
+                return None
+        elif line.type == "response_item" and line.payload.get("role") == "user":
+            try:
+                item = UserMessageItem.model_validate(line.payload)
+            except ValidationError:
+                return None
+            kinds = item.metadata.content_item_kinds
+            if item.metadata.turn_id != self.turn_id or len(kinds) != len(item.content):
+                return None
+            text = "\n".join(
+                part.text
+                for part, kind in zip(item.content, kinds, strict=True)
+                if kind == "user.text" and part.type == "input_text" and part.text
+            )
+        else:
+            return None
+        if not text:
+            return None
+        for index, (source, previous) in enumerate(self.unpaired_prompts):
+            if source != line.type and previous == text:
+                self.unpaired_prompts.pop(index)
+                return None
+        self.unpaired_prompts.append((line.type, text))
+        return text
 
 
 @dataclass(frozen=True)
@@ -172,6 +210,18 @@ class CodexTranscriptTailer:
     a fresh fold. The end is published only after the run and ledger are durable. Codex
     documents `transcript_path` for hook convenience while warning that its format
     is unstable, so parsing is deliberately narrow and fail-forward.
+
+    A parser update does not repair completed imports. To repair a session, stop
+    its tail and verify the full procedure on a consistent database copy first:
+    identify only its external runs missing prompts, load those `ExternalAgentRun`
+    schemas through Arcanus, clear their `end_offset`, and commit. Re-stream the
+    complete original rollout with the same session id and verified sender.
+    `record_external_run` replaces the incomplete model history in transcript
+    order; `bind_native_run` reuses each existing reply's ledger row by turn id.
+    Compare run ids, reply ledger ids, prompt timestamps and bindings before and
+    after, and replay again to check idempotency. Model message ids are replaced,
+    so inspect shared histories and artifact bindings before selecting any turn.
+    Never clear offsets automatically or change a live database without approval.
     """
 
     def __init__(
@@ -382,6 +432,19 @@ class CodexTranscriptTailer:
         if line.type == "turn_context":
             self.consume_turn_context(turn, line)
             return
+        if (
+            turn.native is not None
+            and (prompt := turn.consume_prompt(line)) is not None
+        ):
+            await turn.native.prompt(
+                message_id=turn.turn_id
+                if not turn.native.prompts
+                else f"{turn.turn_id}:{start}",
+                text=prompt,
+                timestamp=line.timestamp,
+                metadata=codex_metadata(),
+            )
+            return
         if line.type == "response_item" and turn.native is not None:
             if visualizations:
                 if state.sender.user_id is None:
@@ -395,18 +458,7 @@ class CodexTranscriptTailer:
             return
         if line.type != "event_msg":
             return
-        if kind == "user_message":
-            prompt = line.payload.get("message")
-            if turn.native is not None and isinstance(prompt, str) and prompt:
-                await turn.native.prompt(
-                    message_id=turn.turn_id
-                    if not turn.native.prompts
-                    else f"{turn.turn_id}:{start}",
-                    text=prompt,
-                    timestamp=line.timestamp,
-                    metadata=codex_metadata(),
-                )
-        elif kind == "token_count":
+        if kind == "token_count":
             turn.usage = self.parse_usage(line.payload)
         elif kind == "sub_agent_activity":
             child_thread_id = line.payload.get("agent_thread_id")
@@ -521,23 +573,22 @@ class CodexTranscriptTailer:
         if line.type == "turn_context":
             self.consume_turn_context(turn, line)
             return
+        if (prompt := turn.consume_prompt(line)) is not None:
+            turn.messages.append(
+                ModelRequest(
+                    parts=[UserPromptPart(content=prompt, timestamp=line.timestamp)],
+                    timestamp=line.timestamp,
+                    metadata=codex_metadata(),
+                )
+            )
+            return
         if line.type == "response_item":
             for _ in self.consume_response_item(turn, line):
                 pass
             return
         if line.type != "event_msg":
             return
-        if kind == "user_message":
-            prompt = line.payload.get("message")
-            if isinstance(prompt, str) and prompt:
-                turn.messages.append(
-                    ModelRequest(
-                        parts=[UserPromptPart(content=prompt)],
-                        timestamp=line.timestamp,
-                        metadata=codex_metadata(),
-                    )
-                )
-        elif kind == "token_count":
+        if kind == "token_count":
             turn.usage = self.parse_usage(line.payload)
         elif kind in {"task_complete", "turn_aborted"}:
             ended_id = line.payload.get("turn_id")
