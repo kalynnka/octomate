@@ -20,8 +20,8 @@ from pydantic import (
 )
 from pydantic_ai._utils import now_utc
 from pydantic_ai.messages import ModelRequest as PydanticModelRequest
-from pydantic_ai.messages import ModelResponse as PydanticModelResponse
 from pydantic_ai.messages import (
+    ModelRequestAttempt,
     TextContent,
     TextPart,
     ToolCallPart,
@@ -29,6 +29,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
     WorkspaceRef,
 )
+from pydantic_ai.messages import ModelResponse as PydanticModelResponse
 from uuid_utils.compat import uuid7
 
 from octomate.models.messages import ModelMessage as ModelMessageModel
@@ -146,6 +147,14 @@ class ModelResponse(Transmuter, PydanticModelResponse):
     workspace_ref: WorkspaceRef | None = Field(
         default=None,
         description="The provider and identifier of the response's workspace, without credentials.",
+    )
+    history_digest: str | None = Field(
+        default=None,
+        description="Digest of the response and preceding history used to validate server-side continuation.",
+    )
+    failed_attempts: list[ModelRequestAttempt] | None = Field(
+        default=None,
+        description="Earlier model request attempts that failed before this response was produced, in order.",
     )
     role: Literal["user", "assistant"] = "assistant"
     message_text: str | None = None

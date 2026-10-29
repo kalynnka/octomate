@@ -1,9 +1,9 @@
-"""The wrapper agent must serve a capability exactly what a plain agent serves it.
+"""The wrapper agent preserves Pydantic AI's streaming capability lifecycle.
 
 `stream_events` drives the graph by hand so it can emit segments as they validate.
-Every hook it drives itself is one pydantic-ai would otherwise have driven, and a
-capability has no way to tell it is running here rather than on a plain `Agent` —
-so anything that works against the native API has to work against this.
+It follows `run_stream`: the before hook runs before streaming, the wrap hook
+encloses graph advancement, and the after hook runs last. A plain `run` instead
+places the wrap hook outside the whole lifecycle.
 
 `RecordingCapability` proves the hooks fire; the stock-capability tests at the end
 prove the ones pydantic-ai actually ships still work when mounted here, which is
@@ -135,9 +135,8 @@ def node_hooks(calls: list[str]) -> list[str]:
     return [call for call in calls if "node_run" in call]
 
 
-async def test_node_hooks_fire_the_way_a_plain_run_fires_them() -> None:
-    """`AgentRun.__anext__` — the obvious way to drive `iter()` — runs none of
-    these. A capability built on them must not be able to tell the difference."""
+async def test_streaming_fires_the_same_node_hooks_as_a_plain_run() -> None:
+    """Both paths invoke the same hooks once, in their respective lifecycle order."""
 
     native = RecordingCapability()
     await build_agent(native).run("go")
@@ -147,7 +146,7 @@ async def test_node_hooks_fire_the_way_a_plain_run_fires_them() -> None:
         pass
 
     assert node_hooks(native.calls), "the plain run should have fired node hooks"
-    assert node_hooks(wrapper.calls) == node_hooks(native.calls)
+    assert sorted(node_hooks(wrapper.calls)) == sorted(node_hooks(native.calls))
 
 
 async def test_every_node_gets_the_whole_lifecycle() -> None:
@@ -159,9 +158,10 @@ async def test_every_node_gets_the_whole_lifecycle() -> None:
         pass
 
     for node in ("UserPromptNode", "ModelRequestNode", "CallToolsNode"):
-        assert f"before_node_run:{node}" in capability.calls
-        assert f"wrap_node_run:{node}" in capability.calls
-        assert f"after_node_run:{node}" in capability.calls
+        before = capability.calls.index(f"before_node_run:{node}")
+        wrap = capability.calls.index(f"wrap_node_run:{node}")
+        after = capability.calls.index(f"after_node_run:{node}")
+        assert before < wrap < after
 
 
 async def test_a_node_hook_can_still_wrap_the_streaming() -> None:
