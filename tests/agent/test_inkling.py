@@ -17,7 +17,7 @@ from pydantic_ai import (
     ToolDenied,
 )
 from pydantic_ai.capabilities import AbstractCapability
-from pydantic_ai.messages import ModelMessage, ToolCallPart
+from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.models.function import (
     AgentInfo,
@@ -187,6 +187,31 @@ async def test_run_records_its_model_and_effective_permission(
     [run] = conversation.runs
     assert run.model_name == "scripted"
     assert run.permission_mode == (override or configured)
+
+
+@pytest.mark.parametrize("window", [None, 262144])
+async def test_run_records_the_resolved_models_context_capacity(
+    window: int | None,
+) -> None:
+    agent, _ = build_scripted_agent(["done"])
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(agent, conversations)
+    await tentacle.run(
+        "go",
+        conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
+        output_type=STR_OUTPUT,
+        model=TestModel(call_tools=[], profile={"context_window": window}),
+    )
+    [conversation] = conversations.store.values()
+    run = conversation.runs[-1]
+    assert run.context_window == window
+    [(_, _, messages)] = conversations.runs
+    last = messages[-1]
+    assert isinstance(last, ModelResponse)
+    assert run.context_used == last.usage.input_tokens
+    assert run.context_used is not None
+    assert run.context_used > 0
 
 
 @pytest.mark.parametrize("effort", ["minimal", "low", "medium", "high", "xhigh"])

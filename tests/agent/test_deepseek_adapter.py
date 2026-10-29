@@ -70,6 +70,29 @@ def consume_all(
     return events
 
 
+@pytest.mark.parametrize("window", [None, 1000000])
+def test_request_context_replaces_capacity_and_closed_turn_keeps_its_snapshot(
+    window: int | None,
+) -> None:
+    acc = DeepseekRunAccumulator(context_window=128000)
+    context: JsonObject = {"provider": "deepseek", "model": "v4"}
+    if window is not None:
+        context["contextWindow"] = window
+    consume_all(
+        acc,
+        [frame("turn/start"), frame("request/context", context), turn_end()],
+    )
+    assert acc.context_window == window
+    consume_all(acc, [frame("request/context", {**context, "contextWindow": 42})])
+    assert acc.context_window == window
+
+
+def test_capacity_is_retained_when_request_context_is_unchanged() -> None:
+    acc = DeepseekRunAccumulator(context_window=128000)
+    consume_all(acc, [frame("turn/start"), message("done"), turn_end()])
+    assert acc.context_window == 128000
+
+
 @pytest.mark.parametrize("kind", ["text-delta", "reasoning-delta"])
 def test_buffered_opening_words_are_rendered_once(
     kind: Literal["text-delta", "reasoning-delta"],
@@ -328,13 +351,25 @@ def test_message_usage_wins_over_chunk_usage_and_folds_into_the_run() -> None:
             chunk("usage", usage={"inputTokens": 1, "outputTokens": 1}),
             message(
                 "a",
-                usage={"inputTokens": 10, "outputTokens": 4, "reasoningTokens": 2},
+                usage={
+                    "inputTokens": 10,
+                    "cacheReadTokens": 30,
+                    "cacheWriteTokens": 5,
+                    "outputTokens": 4,
+                    "reasoningTokens": 2,
+                },
             ),
             turn_end(),
         ],
     )
 
-    assert accumulator.usage.input_tokens == 10
+    assert accumulator.usage.input_tokens == 45
+    assert accumulator.usage.cache_read_tokens == 30
+    assert accumulator.usage.cache_write_tokens == 5
+    [response] = accumulator.messages
+    assert isinstance(response, ModelResponse)
+    assert response.usage.input_tokens == 45
+    assert accumulator.context_used == response.usage.input_tokens
     assert accumulator.usage.output_tokens == 4
     assert accumulator.usage.requests == 1
     assert accumulator.usage.details["reasoning_tokens"] == 2
@@ -355,7 +390,34 @@ def test_chunk_usage_covers_a_message_that_carries_none() -> None:
     )
 
     assert accumulator.usage.input_tokens == 3
+    assert accumulator.context_used == 3
     assert accumulator.usage.requests == 1
+
+
+@pytest.mark.parametrize("last_input", [None, 40])
+def test_context_used_tracks_only_the_last_requests_usage(
+    last_input: int | None,
+) -> None:
+    accumulator = DeepseekRunAccumulator()
+    consume_all(
+        accumulator,
+        [
+            frame("turn/start"),
+            message("first", usage={"inputTokens": 100, "outputTokens": 1}),
+            message(
+                "last",
+                usage={"inputTokens": last_input, "outputTokens": 1}
+                if last_input is not None
+                else None,
+            ),
+            turn_end(),
+        ],
+    )
+    assert accumulator.context_used == last_input
+    assert accumulator.usage.input_tokens == 100 + (last_input or 0)
+    last = accumulator.messages[-1]
+    assert isinstance(last, ModelResponse)
+    assert last.usage.input_tokens == (last_input or 0)
 
 
 def test_the_route_stamps_model_name_and_provider_details() -> None:

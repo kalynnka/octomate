@@ -596,6 +596,12 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             response = await asyncio.shield(prompt)
             assert history.request.metadata is not None
             history.request.metadata["stop_reason"] = response.stop_reason
+            if response.usage is not None:
+                assert history.response.metadata is not None
+                # ACP agents disagree on whether these totals cover a turn or a session.
+                history.response.metadata["usage"] = json_value_adapter.validate_json(
+                    response.usage.model_dump_json(by_alias=True, exclude_none=True)
+                )
         except (asyncio.CancelledError, GeneratorExit):
             failed = True
             assert history.request.metadata is not None
@@ -679,6 +685,8 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             history.messages,
             name=run_name,
             model_name=model,
+            context_window=history.context_window,
+            context_used=history.context_used,
             cwd=cwd,
             external_id=history.prompt.session_id,
             native_id=self.id,

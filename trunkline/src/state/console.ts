@@ -830,6 +830,15 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         const landed = await landedThread(selId, landing)
         if (landed && landed.id !== selId && here()) await actions.selectThread(landed.channel_tentacle_id, landed.id)
       }
+      if (carried && here() && get().detail && !get().ntOn) {
+        const recorded = await queryClient.fetchQuery({
+          queryKey: ['thread-detail', selId],
+          queryFn: () => api.getThreadDetail(selId),
+          staleTime: 0,
+          retry: false,
+        })
+        if (here()) set((s) => ({ detail: s.detail && { ...s.detail, usage: recorded.usage, ctxK: recorded.ctxK, contextWindow: recorded.contextWindow } }))
+      }
       return true
     } catch (err) {
       const message = `relay error — ${err instanceof Error ? err.message : String(err)}`

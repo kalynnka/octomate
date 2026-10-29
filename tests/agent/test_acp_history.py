@@ -22,6 +22,24 @@ from pydantic_ai.messages import (
 from octomate.tentacles.acp.history import AcpHistory, ContentBlock, content_value
 
 
+@pytest.mark.parametrize("window", [0, 128000])
+def test_context_snapshot_is_independent_of_billing(window: int) -> None:
+    history = AcpHistory(schema.PromptRequest(session_id="native", prompt=[]))
+    for used in (100, 900):
+        events = history.feed(
+            schema.SessionNotification(
+                session_id="native",
+                update=schema.UsageUpdate(
+                    session_update="usage_update", used=used, size=window
+                ),
+            )
+        )
+        assert events == []
+    assert history.context_used == 900
+    assert history.context_window == (window or None)
+    assert history.response.usage.input_tokens == 0
+
+
 @pytest.mark.parametrize(
     ("block", "expected"),
     [

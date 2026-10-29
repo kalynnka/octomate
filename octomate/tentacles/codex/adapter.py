@@ -248,6 +248,8 @@ class CodexRunAccumulator:
         self.turn_status: TurnStatus | None = None
         self.turn_error: str | None = None
         self.request_usage: RequestUsage | None = None
+        self.context_window: int | None = None  # Capacity from the latest token update.
+        self.context_used: int | None = None  # Last request's input tokens.
         self.part_index = 0
         self.streaming_parts: dict[str, StreamingPartState] = {}
         self.native_tools: dict[str, NativeToolState] = {}
@@ -297,6 +299,8 @@ class CodexRunAccumulator:
             self.thread_id = payload.thread_id
             self.turn_id = payload.turn_id
             self.request_usage = map_usage(payload.token_usage)
+            self.context_used = self.request_usage.input_tokens
+            self.context_window = payload.token_usage.model_context_window or None
             self.pending_events.append(event)
         elif isinstance(payload, TurnCompletedNotification):
             self.consume_turn_completed(payload, event)

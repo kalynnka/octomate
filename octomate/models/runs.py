@@ -61,6 +61,16 @@ class AgentRun(Base, TransmuterProxiedMixin):
         nullable=True,
         comment="Model selected for this run, as reported by its runtime.",
     )
+    context_window: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="Context capacity in tokens reported by the harness for this run; NULL when unknown.",
+    )
+    context_used: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="Context tokens used, from the harness occupancy snapshot or the last model request's input usage; NULL when unavailable.",
+    )
     permission_mode: Mapped[str | None] = mapped_column(
         String,
         nullable=True,

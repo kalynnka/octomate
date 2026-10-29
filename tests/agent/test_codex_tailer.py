@@ -83,6 +83,21 @@ def final_parts(events: Iterable[StreamEvents[str]]) -> list[tuple[str, JsonValu
     return parts
 
 
+@pytest.mark.parametrize("window", [None, 0, 262144])
+def test_rollout_usage_preserves_reported_context_capacity(window: int | None) -> None:
+    usage = CodexTranscriptTailer.parse_usage(
+        {
+            "info": {
+                "last_token_usage": {"input_tokens": 12},
+                "model_context_window": window,
+            }
+        }
+    )
+    assert usage is not None
+    assert usage.input_tokens == 12
+    assert usage.details.get("model_context_window") == (window or None)
+
+
 def test_rollout_parts_match_the_completed_driven_parts() -> None:
     driven = CodexRunAccumulator()
     events: list[StreamEvents[str]] = []
