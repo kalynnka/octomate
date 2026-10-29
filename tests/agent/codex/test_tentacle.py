@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import tomllib
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -12,8 +13,16 @@ from unittest.mock import AsyncMock, Mock
 
 import anyio
 import pytest
-from openai_codex import AsyncCodex, AsyncThread, InputItem, SkillInput, TextInput
+from openai_codex import (
+    AsyncCodex,
+    AsyncThread,
+    AsyncTurnHandle,
+    InputItem,
+    SkillInput,
+    TextInput,
+)
 from openai_codex import CodexConfig as CodexSdkConfig
+from openai_codex._message_router import _TurnSubscription
 from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.errors import CodexError, TransportClosedError
 from openai_codex.generated.v2_all import (
@@ -22,7 +31,6 @@ from openai_codex.generated.v2_all import (
     ApprovalsReviewer,
     AskForApprovalValue,
     ConfigReadResponse,
-    DangerFullAccessSandboxPolicy,
     ItemCompletedNotification,
     ItemStartedNotification,
     MessagePhase,
@@ -30,23 +38,18 @@ from openai_codex.generated.v2_all import (
     ReasoningEffort,
     ReasoningSummary,
     ReasoningSummaryValue,
-    SandboxMode,
     SkillUserInput,
     TextUserInput,
     ThreadClosedNotification,
     ThreadForkParams,
     ThreadItem,
     ThreadReadResponse,
-    ThreadResumeParams,
-    ThreadStartParams,
     ThreadStatus,
     Turn,
     TurnCompletedNotification,
     TurnError,
     TurnItemsView,
-    TurnStartParams,
     TurnStatus,
-    WorkspaceWriteSandboxPolicy,
 )
 from openai_codex.models import Notification, NotificationPayload
 from pydantic import UUID7, BaseModel, SecretStr, TypeAdapter
@@ -85,6 +88,11 @@ from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import base as codex_base
 from octomate.tentacles.codex import ink as codex_ink
 from octomate.tentacles.codex.client import RequestHandler, SharedCodex
+from octomate.tentacles.codex.schemas import (
+    ThreadResumeParams,
+    ThreadStartParams,
+    TurnStartParams,
+)
 from octomate.tentacles.slack.feelers.questions import SlackAskQuestionFeeler
 from octomate.tentacles.slack.ink import SlackInk
 from octomate.tentacles.slack.schema import SlackOutboundMessage
@@ -299,6 +307,19 @@ def native_thread_handles(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(codex_ink, "AsyncThread", handle)
 
+    def turn_handle(
+        client: AsyncCodex,
+        thread_id: str,
+        turn_id: str,
+        *,
+        _subscription: _TurnSubscription | FakeTurn | None = None,
+    ) -> AsyncTurnHandle | FakeTurn:
+        if isinstance(_subscription, FakeTurn):
+            return _subscription
+        return AsyncTurnHandle(client, thread_id, turn_id, _subscription=_subscription)
+
+    monkeypatch.setattr(codex_ink, "AsyncTurnHandle", turn_handle)
+
 
 class FakeCodex:
     loaded_threads: ClassVar[set[str]] = set()
@@ -331,6 +352,7 @@ class FakeCodex:
             thread_start=self.thread_start,
             thread_resume=self.thread_resume,
             thread_fork=self.thread_fork,
+            _start_turn=self.start_turn,
             request=AsyncMock(side_effect=self.request),
             next_notification=self.next_notification,
         )
@@ -359,7 +381,13 @@ class FakeCodex:
         elif method == "thread/settings/update":
             payload = {}
         else:
-            payload = {"config": {"mcp_servers": self.local_mcp_servers}, "origins": {}}
+            payload = {
+                "config": {
+                    "mcp_servers": self.local_mcp_servers,
+                    "permissions": {"octomate-workspace": codex_ink.WORKSPACE_PROFILE},
+                },
+                "origins": {},
+            }
         return response_model.model_validate(payload)
 
     async def next_notification(self) -> Notification:
@@ -407,19 +435,62 @@ class FakeCodex:
     ) -> SimpleNamespace:
         return SimpleNamespace(thread=FakeThread("thread-fork"))
 
+    async def start_turn(
+        self,
+        thread_id: str,
+        inputs: list[JsonObject],
+        *,
+        params: TurnStartParams,
+        for_handle: bool,
+    ) -> tuple[SimpleNamespace, FakeTurn]:
+        items: list[InputItem] = []
+        for item in params.input:
+            if isinstance(item.root, TextUserInput):
+                items.append(TextInput(item.root.text))
+            elif isinstance(item.root, SkillUserInput):
+                items.append(SkillInput(item.root.name, item.root.path))
+            else:
+                raise AssertionError(f"Unexpected test input: {item}")
+        approval = (
+            ApprovalMode.deny_all
+            if params.approval_policy is not None
+            and params.approval_policy.root is AskForApprovalValue.never
+            else ApprovalMode.auto_review
+            if params.approvals_reviewer is ApprovalsReviewer.auto_review
+            else None
+        )
+        turn = await FakeThread(thread_id).turn(
+            items[0].text
+            if len(items) == 1 and isinstance(items[0], TextInput)
+            else items,
+            approval_mode=approval,
+            cwd=params.cwd,
+            effort=params.effort,
+            model=params.model,
+            output_schema=params.output_schema,
+            personality=params.personality,
+            sandbox={
+                ":read-only": Sandbox.read_only,
+                "octomate-workspace": Sandbox.workspace_write,
+                ":danger-full-access": Sandbox.full_access,
+            }[params.permissions],
+            summary=params.summary,
+        )
+        return SimpleNamespace(turn=SimpleNamespace(id=turn.id)), turn
+
     def record_thread(self, params: ThreadStartParams | ThreadResumeParams) -> None:
         assert params.approval_policy is not None
-        assert params.sandbox is not None
+        assert params.sandbox is None
         approval = {
             ApprovalsReviewer.user: None,
             ApprovalsReviewer.auto_review: ApprovalMode.auto_review,
             None: ApprovalMode.deny_all,
         }[params.approvals_reviewer]
         sandbox = {
-            SandboxMode.read_only: Sandbox.read_only,
-            SandboxMode.workspace_write: Sandbox.workspace_write,
-            SandboxMode.danger_full_access: Sandbox.full_access,
-        }[params.sandbox]
+            ":read-only": Sandbox.read_only,
+            "octomate-workspace": Sandbox.workspace_write,
+            ":danger-full-access": Sandbox.full_access,
+        }[params.permissions]
         FakeCodex.thread_calls.append(
             ThreadCall(
                 kind="start" if isinstance(params, ThreadStartParams) else "resume",
@@ -2622,7 +2693,10 @@ async def test_local_config_cannot_claim_the_driven_mcp_name(
     request = AsyncMock(
         return_value=ConfigReadResponse.model_validate(
             {
-                "config": {"mcp_servers": {"octomate_driven": {"command": "owner"}}},
+                "config": {
+                    "mcp_servers": {"octomate_driven": {"command": "owner"}},
+                    "permissions": {"octomate-workspace": codex_ink.WORKSPACE_PROFILE},
+                },
                 "origins": {},
             }
         )
@@ -2663,14 +2737,25 @@ async def test_driven_isolation_overrides_local_feature_settings(
     async with tentacle:
         await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
     assert FakeCodex.last_config is not None
-    assert FakeCodex.last_config.config_overrides[-6:] == (
+    assert FakeCodex.last_config.config_overrides[-8:-1] == (
         "features.hooks=false",
         "features.plugins=false",
         "features.apps=false",
         "notify=[]",
         'shell_environment_policy.inherit="core"',
         'shell_environment_policy.exclude=["OCTOMATE_*"]',
+        'default_permissions="octomate-workspace"',
     )
+    assert tomllib.loads(FakeCodex.last_config.config_overrides[-1]) == {
+        "permissions": {
+            "octomate-workspace": {
+                "filesystem": {
+                    ":minimal": "read",
+                    ":workspace_roots": {".": "write"},
+                }
+            }
+        }
+    }
 
 
 async def test_a_turn_kicked_by_an_unregistered_user_launches_clean(
@@ -2856,25 +2941,6 @@ class BindingFakeTurn(FakeTurn):
             yield event
 
 
-class BindingFakeThread(FakeThread):
-    async def turn(
-        self,
-        input: str,
-        *,
-        approval_mode: ApprovalMode | None = None,
-        cwd: str | None = None,
-        effort: ReasoningEffort | None = None,
-        model: str | None = None,
-        output_schema: JsonObject | None = None,
-        personality: Personality | None = None,
-        sandbox: Sandbox | None = None,
-        summary: ReasoningSummary | None = None,
-    ) -> BindingFakeTurn:
-        turn = BindingFakeTurn()
-        FakeCodex.turns.append(turn)
-        return turn
-
-
 async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
     monkeypatch: pytest.MonkeyPatch,
     in_memory_engine: AsyncEngine,
@@ -2909,7 +2975,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
-    ) -> tuple[BindingFakeThread, str]:
+    ) -> tuple[FakeThread, str]:
         servers = config["mcp_servers"]
         assert isinstance(servers, dict)
         driven = servers["octomate_driven"]
@@ -2919,7 +2985,13 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
         assert headers["X-Octomate-Conversation"] == str(conversation.id)
         assert driven["url"] == "http://127.0.0.1:8123/octomate/mcp"
         assert driven["tools"] == {"gateway_teleport": {"approval_mode": "prompt"}}
-        return BindingFakeThread("thread-new"), "runtime-model"
+        assert isinstance(self.client, FakeCodex)
+        turn = BindingFakeTurn()
+        FakeCodex.turns.append(turn)
+        self.client._client._start_turn = AsyncMock(
+            return_value=(SimpleNamespace(turn=SimpleNamespace(id=turn.id)), turn)
+        )
+        return FakeThread("thread-new"), "runtime-model"
 
     monkeypatch.setattr(codex_ink.CodexInk, "start_thread", start_binding_thread)
     tentacle = CodexTentacle(
@@ -3228,6 +3300,8 @@ async def test_thread_settings_preserve_reviewer_and_report_model(
     assert params.approval_policy is not None
     assert params.approval_policy.root is policy
     assert params.approvals_reviewer is reviewer
+    assert params.permissions == "octomate-workspace"
+    assert params.sandbox is None
 
 
 @pytest.mark.parametrize("skill", [False, True])
@@ -3292,11 +3366,10 @@ async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread(
         assert params.approval_policy is not None
         assert params.approval_policy.root is policy
         assert params.approvals_reviewer is reviewer
-        assert params.sandbox_policy is not None
-        if sandbox is Sandbox.full_access:
-            assert isinstance(params.sandbox_policy.root, DangerFullAccessSandboxPolicy)
-        else:
-            assert isinstance(params.sandbox_policy.root, WorkspaceWriteSandboxPolicy)
-            assert params.sandbox_policy.root.network_access is False
-            assert params.sandbox_policy.root.writable_roots == []
-            assert params.cwd == "/workspace"
+        assert params.permissions == (
+            ":danger-full-access"
+            if sandbox is Sandbox.full_access
+            else "octomate-workspace"
+        )
+        assert params.sandbox_policy is None
+        assert params.cwd == "/workspace"

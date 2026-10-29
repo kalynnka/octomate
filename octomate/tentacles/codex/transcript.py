@@ -4,10 +4,18 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    model_validator,
+)
 
+from octomate.tentacles.codex.schemas import PermissionProfile
 from octomate.types.json import JsonObject
 from octomate.types.permissions import CodexPermissionMode
 
@@ -121,8 +129,8 @@ class WorkspaceWritePolicy(BaseModel):
     type: Literal["workspace-write"]
     writable_roots: list[str] = Field(default_factory=list, max_length=0)
     network_access: Literal[False] = False
-    exclude_tmpdir_env_var: Literal[False] = False
-    exclude_slash_tmp: Literal[False] = False
+    exclude_tmpdir_env_var: bool = False
+    exclude_slash_tmp: bool = False
 
 
 class FullAccessPolicy(BaseModel):
@@ -133,6 +141,14 @@ class FullAccessPolicy(BaseModel):
     type: Literal["danger-full-access"]
 
 
+class ActivePermissionProfile(BaseModel):
+    """Native profiles whose boundaries Octomate can reproduce on a fork."""
+
+    id: Literal[":workspace"] | PermissionProfile = Field(
+        description="The built-in legacy profile or an Octomate-selected native profile."
+    )
+
+
 class TurnPermissions(BaseModel):
     """Permissions recorded in a native rollout's turn_context payload."""
 
@@ -141,6 +157,28 @@ class TurnPermissions(BaseModel):
     sandbox_policy: WorkspaceWritePolicy | FullAccessPolicy = Field(
         discriminator="type"
     )
+    active_permission_profile: ActivePermissionProfile | None = Field(
+        default=None, description="Selected native profile, absent in legacy rollouts."
+    )
+
+    @model_validator(mode="after")
+    def profile_matches_sandbox(self) -> Self:
+        profile = self.active_permission_profile
+        if isinstance(self.sandbox_policy, FullAccessPolicy):
+            if profile is not None and profile.id != ":danger-full-access":
+                raise ValueError("Native profile does not match sandbox_policy")
+            return self
+        strict = profile is not None and profile.id == "octomate-workspace"
+        flags = (
+            self.sandbox_policy.exclude_tmpdir_env_var,
+            self.sandbox_policy.exclude_slash_tmp,
+        )
+        if flags != (strict, strict) or (
+            profile is not None
+            and profile.id not in {":workspace", "octomate-workspace"}
+        ):
+            raise ValueError("Native profile does not match sandbox_policy")
+        return self
 
     @property
     def permission_mode(self) -> CodexPermissionMode:

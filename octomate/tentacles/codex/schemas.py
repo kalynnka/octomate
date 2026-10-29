@@ -1,12 +1,43 @@
 """Codex model and command metadata and native protocol extensions."""
 
 from pathlib import Path
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 from openai_codex.generated.v2_all import Model, ReasoningEffort, SkillScope
+from openai_codex.generated.v2_all import ThreadResumeParams as SdkThreadResumeParams
+from openai_codex.generated.v2_all import ThreadStartParams as SdkThreadStartParams
+from openai_codex.generated.v2_all import TurnStartParams as SdkTurnStartParams
 from pydantic import BaseModel, Field
 
 from octomate.schemas.commands import CommandDescriptor
+
+type PermissionProfile = Literal[
+    "octomate-workspace", ":read-only", ":danger-full-access"
+]
+
+
+class ThreadStartParams(SdkThreadStartParams):
+    """Native thread start with the permission-profile field omitted by the SDK."""
+
+    permissions: PermissionProfile = Field(
+        description="Native permission profile to select."
+    )
+
+
+class ThreadResumeParams(SdkThreadResumeParams):
+    """Native thread resume with the permission-profile field omitted by the SDK."""
+
+    permissions: PermissionProfile = Field(
+        description="Native permission profile to select."
+    )
+
+
+class TurnStartParams(SdkTurnStartParams):
+    """Native turn start with the permission-profile field omitted by the SDK."""
+
+    permissions: PermissionProfile = Field(
+        description="Native permission profile to select."
+    )
 
 
 class CodexModelCatalog(NamedTuple):

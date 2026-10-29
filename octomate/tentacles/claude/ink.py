@@ -8,6 +8,7 @@ import uuid
 import weakref
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
+from tempfile import TemporaryDirectory, gettempdir
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
@@ -74,26 +75,37 @@ class ClaudeInk:
         """Stream a turn, superseding the prior client for this conversation."""
         if options.cwd is None:
             raise ValueError("Driven Claude runs require a workspace")
-        # failIfUnavailable and the file-tool read setting are not in SDK types yet.
-        options.settings = json.dumps(
-            {
-                "permissions": {"blockReadsOutsideWorkingDirectories": True},
-                "sandbox": {
-                    "enabled": True,
-                    "failIfUnavailable": True,
-                    "autoAllowBashIfSandboxed": False,
-                    "allowUnsandboxedCommands": False,
-                    "excludedCommands": [],
-                    "enableWeakerNestedSandbox": False,
-                },
-            }
-        )
-        options.setting_sources = []
-        # The SDK merges env into the parent environment; empty values scrub it.
-        options.env.update(
-            {key: "" for key in os.environ if key.upper().startswith("OCTOMATE_")}
-        )
         async with contextlib.AsyncExitStack() as resources:
+            # Claude falls back to shared temp storage when this path is too long.
+            temp = resources.enter_context(
+                TemporaryDirectory(prefix="octo-", dir="/tmp")
+            )
+            temp_root = str(await asyncio.to_thread(Path(temp).resolve))
+            options.env["CLAUDE_CODE_TMPDIR"] = temp_root
+            # These native filesystem settings are not in the SDK types yet.
+            options.settings = json.dumps(
+                {
+                    "permissions": {"blockReadsOutsideWorkingDirectories": True},
+                    "sandbox": {
+                        "enabled": True,
+                        "failIfUnavailable": True,
+                        "autoAllowBashIfSandboxed": False,
+                        "allowUnsandboxedCommands": False,
+                        "excludedCommands": [],
+                        "enableWeakerNestedSandbox": False,
+                        "filesystem": {
+                            "denyRead": ["/tmp", gettempdir()],
+                            "allowRead": [str(options.cwd), temp_root],
+                            "allowWrite": [temp_root],
+                        },
+                    },
+                }
+            )
+            options.setting_sources = []
+            # The SDK merges env into the parent environment; empty values scrub it.
+            options.env.update(
+                {key: "" for key in os.environ if key.upper().startswith("OCTOMATE_")}
+            )
             client = await resources.enter_async_context(
                 ClaudeSDKClient(options=options)
             )
