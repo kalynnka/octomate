@@ -223,8 +223,8 @@ async def test_launch_url_is_logged_once_without_writing_a_file(
 @pytest.mark.parametrize(
     ("version", "expected", "level"),
     [
-        ("0.2.1-alpha.2", "matches Octomate's tested release", logging.INFO),
-        ("0.2.0", "differs from Octomate's tested version", logging.WARNING),
+        ("0.2.1-rc.2", "matches Octomate's tested release", logging.INFO),
+        ("0.2.1-alpha.2", "differs from Octomate's tested version", logging.WARNING),
         ("unknown", "Could not determine dsh version", logging.WARNING),
     ],
 )
