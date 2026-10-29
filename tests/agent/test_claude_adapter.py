@@ -213,6 +213,10 @@ def test_adapter_run_usage_aggregates_like_a_native_run() -> None:
     run_usage = acc.build_result(run_id="run-1", conversation_id="conv-1").usage
     assert run_usage.requests == 2
     assert run_usage.input_tokens == 260
+    assert acc.context_used == 160
+    last = acc.messages[-1]
+    assert isinstance(last, ModelResponse)
+    assert last.usage.input_tokens == acc.context_used
     assert run_usage.output_tokens == 15
     assert run_usage.cache_read_tokens == 40
 
@@ -489,9 +493,34 @@ def result_message(usage: dict[str, object] | None) -> ResultMessage:
     )
 
 
+@pytest.mark.parametrize("window", [0, 128000, 1000000])
+@pytest.mark.parametrize("matching_model", [False, True])
+def test_context_capacity_belongs_to_the_last_response_model(
+    window: int, matching_model: bool
+) -> None:
+    acc = ClaudeRunAccumulator()
+    list(acc.consume(AssistantMessage(content=[TextBlock(text="done")], model="m")))
+    result = result_message(None)
+    result.model_usage = {
+        "m" if matching_model else "subagent": {
+            "inputTokens": 1,
+            "outputTokens": 1,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0,
+            "webSearchRequests": 0,
+            "costUSD": 0.0,
+            "contextWindow": window,
+            "maxOutputTokens": 8192,
+        }
+    }
+    list(acc.consume(result))
+    assert acc.context_window == (window if matching_model and window else None)
+
+
 def test_adapter_folds_turn_usage_when_no_response_carried_any() -> None:
     acc = ClaudeRunAccumulator()
     acc.begin("go")
+    assert acc.context_used is None
     # No usage block at all, then one carrying nothing countable.
     list(acc.consume(AssistantMessage(content=[TextBlock(text="one")], model="m")))
     list(
@@ -513,8 +542,8 @@ def test_adapter_folds_turn_usage_when_no_response_carried_any() -> None:
         )
     )
 
-    # The turn's cumulative count stands in, landing on the last response —
-    # the row the relay sums for the thread and the console reads as context.
+    # The turn's cumulative count stands in for billing, but cannot describe
+    # the last request's context.
     run_usage = acc.build_result(run_id="run-1", conversation_id="conv-1").usage
     assert run_usage.input_tokens == 4300
     assert run_usage.cache_read_tokens == 4000
@@ -525,6 +554,7 @@ def test_adapter_folds_turn_usage_when_no_response_carried_any() -> None:
     assert last.usage.input_tokens == 4300
     assert last.usage.cache_read_tokens == 4000
     assert last.usage.output_tokens == 50
+    assert acc.context_used is None
 
 
 def test_adapter_does_not_double_count_turn_usage_over_response_usage() -> None:

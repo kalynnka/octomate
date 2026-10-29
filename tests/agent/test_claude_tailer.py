@@ -212,6 +212,10 @@ async def test_records_runs_with_byte_ranges() -> None:
     assert [run.id for run in runs] == ["p1", "p2"]
 
     p1, p2 = runs
+    for run in runs:
+        last = run.messages[-1]
+        assert isinstance(last, ModelResponse)
+        assert run.context_used == last.usage.input_tokens == 12
     assert p1.source == "cli"  # the transcript entrypoint
     assert p1.last_line_uuid == "a2"  # last line folded into turn one
     # Contiguous, gapless byte ranges over the file: p1 ends where p2 begins.

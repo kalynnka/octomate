@@ -43,6 +43,7 @@ const conversation: ApiConversation = {
   parent_conversation_id: null, name: null, status: 'active', permission_mode: null, effort: null, allowed_tools: [],
   runs: [{
     id: 'run', kind: 'octomate', conversation_id: 'conversation', name: null, model_name: null,
+    context_used: 6004,
     permission_mode: null, cwd: null, parent_run_id: null, parent_tool_call_id: null, started_at: null,
   }],
 }
@@ -260,13 +261,29 @@ test('a request nothing was bound to speaks for itself', () => {
   assert.deepEqual(user?.kind === 'user' && [user.who, user.text], ['operator', 'fix the build'])
 })
 
-test('usage is the relay total, and the context is the newest response in hand', () => {
+test('usage is the relay total, and context comes from the persisted run', () => {
   const latest = liveThreadDetail(reads([built, answer], [], { model: 'older', unbound: null }))
   assert.deepEqual(latest.usage, {
     input: 60040, output: 7, cacheRead: 60000, cacheWrite: 0, cacheRate: 60000 / 60040,
   })
   assert.equal(latest.ctxK, 6)
 })
+
+for (const tokens of [null, 32000]) {
+  test(`context capacity comes from the latest persisted run with occupancy ${tokens}`, () => {
+    const history = reads([built, answer], [], { model: null, unbound: null })
+    history.conversations = [{ ...conversation, runs: [
+      { ...conversation.runs[0], id: 'old', started_at: '2026-10-08T10:00:00Z', context_window: 1000000 },
+      { ...conversation.runs[0], started_at: at, context_window: 128000, context_used: tokens },
+    ] }]
+    const detail = liveThreadDetail(history)
+    assert.equal(detail.contextWindow, 128000)
+    assert.equal(detail.ctxK, tokens === null ? 0 : 32)
+
+    history.conversations[0].runs[1].context_window = null
+    assert.equal(liveThreadDetail(history).contextWindow, null)
+  })
+}
 
 test('artifact references survive pagination with their row identity and no text card', () => {
   const artifact: ApiThreadMessage = { ...said('060', '', 'system'), kind: 'artifact', artifact_id: 'saved-app' }

@@ -355,6 +355,16 @@ class ModelRoute(BaseModel):
     model: str
 
 
+class RequestContext(ModelRoute):
+    """Registration-bound route metadata for the next model request."""
+
+    context_window: int | None = Field(
+        default=None,
+        gt=0,
+        description="Context capacity reported by the resolved harness route; None clears the previous capacity.",
+    )
+
+
 class ModelEffort(BaseModel):
     """One reasoning effort level a catalog model offers."""
 
@@ -447,12 +457,12 @@ def provenance_of(event: SessionEvent) -> ModelRoute | None:
         return None
 
 
-def request_route_of(event: SessionEvent) -> ModelRoute | None:
+def request_route_of(event: SessionEvent) -> RequestContext | None:
     """The route a `request/context` names. This lands before the step it
     describes, so it is the only reader that can name the model of a turn that
     ended without ever committing an assistant message."""
     try:
-        return model_route_adapter.validate_python(event.data)
+        return RequestContext.model_validate(event.data)
     except ValidationError:
         return None
 

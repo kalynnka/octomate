@@ -372,7 +372,27 @@ def main() -> None:
                         }
                     )
                 case None if message["id"] == "permission" and pending is not None:
-                    send({"id": pending, "result": {"stopReason": "end_turn"}})
+                    result: dict[str, JsonValue] = {"stopReason": "end_turn"}
+                    if os.getenv("ACP_TEST_USAGE"):
+                        send(
+                            {
+                                "method": "session/update",
+                                "params": {
+                                    "sessionId": session_id,
+                                    "update": {
+                                        "sessionUpdate": "usage_update",
+                                        "used": 32000,
+                                        "size": 128000,
+                                    },
+                                },
+                            }
+                        )
+                        result["usage"] = {
+                            "inputTokens": 9999,
+                            "outputTokens": 1,
+                            "totalTokens": 10000,
+                        }
+                    send({"id": pending, "result": result})
                     pending = None
                 case _:
                     send(

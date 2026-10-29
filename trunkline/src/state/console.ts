@@ -837,7 +837,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
           staleTime: 0,
           retry: false,
         })
-        if (here()) set((s) => ({ detail: s.detail && { ...s.detail, usage: recorded.usage, ctxK: recorded.ctxK } }))
+        if (here()) set((s) => ({ detail: s.detail && { ...s.detail, usage: recorded.usage, ctxK: recorded.ctxK, contextWindow: recorded.contextWindow } }))
       }
       return true
     } catch (err) {

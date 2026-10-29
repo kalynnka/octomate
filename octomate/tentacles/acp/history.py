@@ -3,7 +3,8 @@
 ACP exposes presentation content, not native model turns. Each prompt becomes
 one request and its output one response, labelled with `source=acp`. Original
 content and updates are retained in metadata; model names, usage and native turn
-IDs are not inferred. Tool titles are presentation names, not executable tools.
+IDs are not inferred. Reported context snapshots are independent of billing
+usage. Tool titles are presentation names, not executable tools.
 """
 
 from __future__ import annotations
@@ -92,6 +93,8 @@ class AcpHistory:
     returns: dict[str, NativeToolReturnPart] = field(default_factory=dict)
     streaming: int | None = None  # The response part currently receiving chunks.
     message_id: str | None = None  # ACP's optional boundary, not a native turn ID.
+    context_window: int | None = None  # Last reported context capacity.
+    context_used: int | None = None  # Context occupancy, not billed input.
 
     def __post_init__(self) -> None:
         self.request = ModelRequest(
@@ -140,6 +143,10 @@ class AcpHistory:
                 update.model_dump_json(by_alias=True, exclude_none=True)
             )
         )
+        if isinstance(update, schema.UsageUpdate):
+            self.context_window = update.size if update.size > 0 else None
+            self.context_used = update.used
+            return []
         if isinstance(update, schema.ToolCallStart | schema.ToolCallProgress):
             return self.end_part() + self.tool(update)
         if not isinstance(update, schema.AgentMessageChunk | schema.AgentThoughtChunk):

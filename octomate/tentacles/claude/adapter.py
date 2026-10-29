@@ -263,6 +263,8 @@ class ClaudeRunAccumulator:
     result_text: str = ""
     session_id: str | None = None
     model_name: str | None = None
+    context_window: int | None = None  # Capacity of the last response's model.
+    context_used: int | None = None  # Input tokens of the last measured request.
     # Set when the run was driven with an `output_format` schema: the SDK's
     # validated structured result (a JSON-able object), used by
     # `build_structured_result` instead of the freeform text.
@@ -321,6 +323,12 @@ class ClaudeRunAccumulator:
                 self.result_text = message.result
             if message.structured_output is not None:
                 self.structured_output = message.structured_output
+            model_usage = (message.model_usage or {}).get(self.model_name or "")
+            self.context_window = (
+                model_usage["contextWindow"]
+                if model_usage is not None and model_usage["contextWindow"] > 0
+                else None
+            )
             # Result usage covers the whole turn; use it only when every response
             # lacked token counts.
             turn = map_usage(message.usage)
@@ -555,6 +563,9 @@ class ClaudeRunAccumulator:
             if message.error:
                 provider_details["error"] = message.error
             response_usage = map_usage(message.usage)
+            self.context_used = (
+                response_usage.input_tokens if response_usage.has_values() else None
+            )
             # Match native pydantic-ai run accounting (see _agent_graph): sum each
             # response's usage into the run usage, one request counted per response.
             self.usage.incr(response_usage)

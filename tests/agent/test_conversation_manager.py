@@ -51,6 +51,43 @@ async def _thread() -> UUID7:
 
 
 @pytest.mark.parametrize("external", [False, True])
+async def test_context_snapshot_survives_reload_and_unknown_replaces_capacity(
+    external: bool,
+) -> None:
+    manager = ConversationManager()
+    conversation = await manager.ensure(await a_thread(), agent_tentacle_id="agent")
+    assert await manager.latest_context_window(conversation.id) is None
+    response = RawModelResponse(parts=[TextPart("done")])
+    if external:
+        await manager.record_external_run(
+            conversation,
+            run_id=str(uuid7()),
+            messages=[response],
+            native_session_id="native",
+            end_offset=42,
+            context_window=262144,
+            context_used=12345,
+        )
+    else:
+        await manager.record_agent_run(
+            conversation,
+            run_id=str(uuid7()),
+            messages=[response],
+            context_window=262144,
+            context_used=12345,
+        )
+
+    reloaded = await ConversationManager().get(conversation.id)
+    assert reloaded.runs[-1].context_window == 262144
+    assert reloaded.runs[-1].context_used == 12345
+    assert await manager.latest_context_window(conversation.id) == 262144
+    await manager.record_agent_run(
+        conversation, run_id=str(uuid7()), messages=[response]
+    )
+    assert await manager.latest_context_window(conversation.id) is None
+
+
+@pytest.mark.parametrize("external", [False, True])
 @pytest.mark.parametrize(
     "workspace_ref", [None, WorkspaceRef(provider="local", id="/work/project")]
 )

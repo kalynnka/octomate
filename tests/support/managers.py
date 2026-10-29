@@ -182,6 +182,10 @@ class FakeConversationManager(ConversationManager):
             None,
         )
 
+    async def latest_context_window(self, conversation_id: UUID7) -> int | None:
+        conversation = await self.get(conversation_id)
+        return conversation.runs[-1].context_window if conversation.runs else None
+
     async def ensure(
         self,
         thread_id: UUID7,
@@ -253,6 +257,8 @@ class FakeConversationManager(ConversationManager):
         *,
         name: str | None = None,
         model_name: str | None = None,
+        context_window: int | None = None,
+        context_used: int | None = None,
         permission_mode: AgentPermissionMode | None = None,
         cwd: Path | None = None,
         external_id: str | None = None,
@@ -270,6 +276,8 @@ class FakeConversationManager(ConversationManager):
                 name=name,
                 cwd=cwd,
                 model_name=model_name,
+                context_window=context_window,
+                context_used=context_used,
                 permission_mode=permission_mode,
                 native_id=native_id,
                 native_session_id=external_id,

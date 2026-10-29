@@ -549,11 +549,8 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
   }
   const read = usage.input
   usage.cacheRate = read > 0 ? usage.cacheRead / read : null
-  const turn = modelMessages.findLast(
-    (message): message is Extract<ApiModelMessage, { kind: 'response' }> =>
-      message.kind === 'response' && !!message.usage,
-  )?.usage
-  const context = turn?.input_tokens ?? 0
+  const latestRun = runs.at(-1)
+  const context = latestRun?.context_used ?? 0
 
   const { agent } = activeRoute(thread)
   return {
@@ -588,6 +585,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     ledger,
     usage,
     ctxK: Math.round(context / 1000),
+    contextWindow: latestRun?.context_window ?? null,
   }
 }
 

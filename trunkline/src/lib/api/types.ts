@@ -356,6 +356,8 @@ export interface ThreadDetail {
   usage: ThreadUsage
   /** the context the last turn ran with, in kilotokens; 0 when none reported one */
   ctxK: number
+  /** harness-reported context capacity in tokens; null or absent when unknown */
+  contextWindow?: number | null
 }
 
 export interface ThreadUsage {

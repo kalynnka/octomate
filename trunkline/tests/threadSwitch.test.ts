@@ -313,6 +313,7 @@ test('a driven run reads its persisted usage when it settles and after reopening
     ...live,
     usage: { input: 500000, output: 4588, cacheRead: 464192, cacheWrite: 0, cacheRate: 464192 / 500000 },
     ctxK: 24,
+    contextWindow: 262144,
   }
   const getDetail = mock.method(api, 'getThreadDetail', async () => live)
   mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) =>
@@ -335,12 +336,14 @@ test('a driven run reads its persisted usage when it settles and after reopening
 
   assert.deepEqual(useConsole.getState().detail?.usage, recorded.usage)
   assert.equal(useConsole.getState().detail?.ctxK, recorded.ctxK)
+  assert.equal(useConsole.getState().detail?.contextWindow, recorded.contextWindow)
   assert.equal(getDetail.mock.callCount(), 2)
   assert.ok(useConsole.getState().live.some((item) => item.kind === 'stream' && item.text === 'done'))
 
   await actions.selectThread('trunkline', 'solo')
   assert.deepEqual(useConsole.getState().detail?.usage, recorded.usage)
   assert.equal(useConsole.getState().detail?.ctxK, recorded.ctxK)
+  assert.equal(useConsole.getState().detail?.contextWindow, recorded.contextWindow)
 })
 
 test('a persisted usage read cannot update the thread selected while it was pending', async () => {

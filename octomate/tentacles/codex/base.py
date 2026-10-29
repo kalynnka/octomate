@@ -1884,6 +1884,8 @@ class CodexTentacle(AgentTentacle[str, None]):
             messages=accumulator.messages,
             name=run_name,
             model_name=model_name,
+            context_window=accumulator.context_window,
+            context_used=accumulator.context_used,
             permission_mode=permission_mode,
             cwd=Path(run_cwd),
             external_id=codex_thread_id,
