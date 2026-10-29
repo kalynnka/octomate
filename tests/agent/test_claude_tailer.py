@@ -213,6 +213,7 @@ async def test_records_runs_with_byte_ranges() -> None:
 
     p1, p2 = runs
     for run in runs:
+        assert run.context_window == 1_000_000
         last = run.messages[-1]
         assert isinstance(last, ModelResponse)
         assert run.context_used == last.usage.input_tokens == 12
@@ -940,6 +941,7 @@ async def test_a_subagent_transcript_becomes_a_child_run() -> None:
     assert [run.id for run in await runs_of(octomate)] == ["p1", "p2"]
 
     [child_run] = await subagent_runs_of(octomate)
+    assert child_run.context_window == 1_000_000
     assert child_run.id == f"{AGENT_ID}:p1"
     assert child_run.parent_run_id == "p1"
     assert child_run.parent_tool_call_id == f"toolu-agent-{AGENT_ID}"

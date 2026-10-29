@@ -263,7 +263,7 @@ class ClaudeRunAccumulator:
     result_text: str = ""
     session_id: str | None = None
     model_name: str | None = None
-    context_window: int | None = None  # Capacity of the last response's model.
+    context_window: int = 1_000_000  # Default until the harness reports capacity.
     context_used: int | None = None  # Input tokens of the last measured request.
     # Set when the run was driven with an `output_format` schema: the SDK's
     # validated structured result (a JSON-able object), used by
@@ -324,11 +324,8 @@ class ClaudeRunAccumulator:
             if message.structured_output is not None:
                 self.structured_output = message.structured_output
             model_usage = (message.model_usage or {}).get(self.model_name or "")
-            self.context_window = (
-                model_usage["contextWindow"]
-                if model_usage is not None and model_usage["contextWindow"] > 0
-                else None
-            )
+            if model_usage is not None and model_usage["contextWindow"] > 0:
+                self.context_window = model_usage["contextWindow"]
             # Result usage covers the whole turn; use it only when every response
             # lacked token counts.
             turn = map_usage(message.usage)

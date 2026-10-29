@@ -514,7 +514,15 @@ def test_context_capacity_belongs_to_the_last_response_model(
         }
     }
     list(acc.consume(result))
-    assert acc.context_window == (window if matching_model and window else None)
+    assert acc.context_window == (window if matching_model and window else 1_000_000)
+
+
+def test_context_capacity_defaults_without_a_harness_report() -> None:
+    acc = ClaudeRunAccumulator()
+    assert acc.context_window == 1_000_000
+    list(acc.consume(AssistantMessage(content=[TextBlock(text="done")], model="m")))
+    list(acc.consume(result_message(None)))
+    assert acc.context_window == 1_000_000
 
 
 def test_adapter_folds_turn_usage_when_no_response_carried_any() -> None:
