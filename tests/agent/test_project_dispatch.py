@@ -41,9 +41,11 @@ from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import ink as codex_ink
 from tests.agent.test_codex_tentacle import (
     FakeCodex,
-    FakeThread,
     reset_fake_codex,
     text_script,
+)
+from tests.agent.test_codex_tentacle import (
+    native_thread_handles as native_thread_handles,
 )
 from tests.support.agents import RecordingClaudeClient
 from tests.support.managers import FakeConversationManager, a_project, a_registry
@@ -135,9 +137,6 @@ async def codex_run(octomate: Octomate, thread: Thread) -> str | None:
 def _fakes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", RecordingClaudeClient)
     monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
-    monkeypatch.setattr(
-        codex_ink, "AsyncThread", lambda _client, thread_id: FakeThread(thread_id)
-    )
     reset_fake_codex(text_script("done"))
 
 
