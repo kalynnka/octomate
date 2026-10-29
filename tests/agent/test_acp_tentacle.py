@@ -59,6 +59,36 @@ def custom_provider(tmp_path: Path) -> AcpProvider:
     )
 
 
+@pytest.mark.parametrize("supports_close", [False, True])
+async def test_catalog_discovery_closes_its_temporary_session_when_supported(
+    custom_provider: AcpProvider,
+    in_memory_engine: AsyncEngine,
+    tmp_path: Path,
+    supports_close: bool,
+) -> None:
+    provider = AcpProvider.model_validate(
+        {
+            **custom_provider.model_dump(),
+            "env": {
+                **custom_provider.env,
+                "ACP_TEST_CLOSE": "1" if supports_close else "0",
+            },
+        }
+    )
+    agent = AcpAgentTentacle("custom", Octomate(), provider=provider)
+    async with agent:
+        assert set(agent.models) == {"fast", "careful"}
+        messages = [
+            json.loads(line)["message"]
+            for line in (tmp_path / "custom-requests.jsonl").read_text().splitlines()
+        ]
+        closing = [one for one in messages if one["method"] == "session/close"]
+        assert len(closing) == int(supports_close)
+        if supports_close:
+            assert messages[-1] == closing[0]
+            assert closing[0]["params"] == {"sessionId": "native-1"}
+
+
 @pytest.mark.parametrize("catalog", ["grouped", "flat", "none"])
 async def test_custom_harness_discovers_selects_and_reopens(
     custom_provider: AcpProvider,

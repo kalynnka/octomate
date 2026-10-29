@@ -89,7 +89,15 @@ def main() -> None:
                                     "loadSession": not disabled,
                                     "sessionCapabilities": {}
                                     if disabled
-                                    else {"list": {}, "resume": {}},
+                                    else {
+                                        "list": {},
+                                        "resume": {},
+                                        **(
+                                            {"close": {}}
+                                            if os.getenv("ACP_TEST_CLOSE") == "1"
+                                            else {}
+                                        ),
+                                    },
                                     "promptCapabilities": {"image": True},
                                     "mcpCapabilities": {
                                         "http": os.getenv("ACP_TEST_HTTP") != "0"
@@ -110,6 +118,8 @@ def main() -> None:
                         }
                     )
                 case "authenticate":
+                    send({"id": message["id"], "result": {}})
+                case "session/close" if os.getenv("ACP_TEST_CLOSE") == "1":
                     send({"id": message["id"], "result": {}})
                 case "session/new":
                     session_count += 1

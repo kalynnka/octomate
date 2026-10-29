@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import uuid
 from typing import Literal, Self
@@ -9,6 +10,8 @@ from typing import Literal, Self
 import discord
 from pydantic import UUID7
 
+from octomate.capabilities.harness.events import ActionBatchAnsweredEvent
+from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion, QuestionAnswer
 from octomate.telemetry import channel_logfire
@@ -436,6 +439,53 @@ class DiscordAskQuestionFeeler(QuestionFeeler):
         )
         return {action.id: message_id for action in actions}
 
+    async def settle(
+        self,
+        address: ChannelAddress,
+        event: ActionBatchAnsweredEvent,
+        *,
+        action_manager: DeferredActionManager,
+    ) -> None:
+        if not event.answers:
+            return
+        batch = await action_manager.get_batch(uuid.UUID(event.batch_id))
+        target = batch.target_address
+        chat_id = target.chat_id or target.user_id
+        channel_id = (
+            (target.channel_thread_id or chat_id)
+            if target.chat_type == "thread"
+            else chat_id
+        )
+        message_ids = {
+            action.platform_message_id
+            for action in batch.questions
+            if action.id in event.answers and action.platform_message_id is not None
+        }
+        async with asyncio.TaskGroup() as tasks:
+            for message_id in message_ids:
+                actions = sorted(
+                    action
+                    for action in batch.questions
+                    if action.platform_message_id == message_id
+                )
+                answers = {
+                    action.id: action.result
+                    for action in actions
+                    if action.status == "answered"
+                    and isinstance(action.result, str | list)
+                }
+                answered = [action for action in actions if action.id in answers]
+                pending = [action for action in actions if action.id not in answers]
+                view = question_summary_view(
+                    question_summary_content(answered, answers)
+                )
+                if pending:
+                    pending_view = question_view(pending)
+                    view.add_item(pending_view.children[0])
+                tasks.create_task(
+                    self.ink.edit_message(channel_id, message_id, None, view=view)
+                )
+
 
 async def edit_question_page(
     interaction: discord.Interaction[discord.Client],
@@ -570,9 +620,9 @@ def question_summary_content(
     actions: list[DeferredQuestion],
     answers: dict[UUID7, QuestionAnswer],
     *,
-    responder_id: str,
+    responder_id: str = "",
 ) -> str:
-    footer = f"\n\nAnswered by <@{responder_id}>"
+    footer = f"\n\nAnswered by <@{responder_id}>" if responder_id else ""
     content = "**Answers submitted**"
     for index, action in enumerate(actions, start=1):
         answer = answer_text(answers.get(action.id))

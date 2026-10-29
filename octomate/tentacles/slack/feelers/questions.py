@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from pydantic import UUID7, JsonValue, TypeAdapter
 
+from octomate.capabilities.harness.events import ActionBatchAnsweredEvent
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
@@ -28,6 +31,7 @@ from octomate.tentacles.slack.schema import (
 )
 
 if TYPE_CHECKING:
+    from octomate.managers.deferred import DeferredActionManager
     from octomate.tentacles.slack.ink import SlackInk
 
 
@@ -75,6 +79,50 @@ class SlackAskQuestionFeeler(QuestionFeeler):
             ),
         )
         return {action.id: message_id for action in actions}
+
+    async def settle(
+        self,
+        address: ChannelAddress,
+        event: ActionBatchAnsweredEvent,
+        *,
+        action_manager: DeferredActionManager,
+    ) -> None:
+        if not event.answers:
+            return
+        batch = await action_manager.get_batch(UUID(event.batch_id))
+        message_ids = {
+            action.platform_message_id
+            for action in batch.questions
+            if action.id in event.answers and action.platform_message_id is not None
+        }
+        async with asyncio.TaskGroup() as tasks:
+            for message_id in message_ids:
+                actions = [
+                    action
+                    for action in batch.questions
+                    if action.platform_message_id == message_id
+                ]
+                answers = {
+                    action.id: action.result
+                    for action in actions
+                    if action.status == "answered"
+                    and isinstance(action.result, str | list)
+                }
+                answered = [action for action in actions if action.id in answers]
+                pending = [action for action in actions if action.id not in answers]
+                blocks = submitted_blocks(answered, answers) if answered else []
+                if pending:
+                    blocks.extend(ask_question_blocks(pending))
+                tasks.create_task(
+                    self.ink.update_message(
+                        batch.target_address.chat_id or batch.target_address.user_id,
+                        message_id,
+                        text=question_title(pending)
+                        if pending
+                        else "Answers submitted",
+                        blocks=blocks,
+                    )
+                )
 
 
 def ask_question_blocks(actions: list[DeferredQuestion]) -> list[SlackBlock]:
