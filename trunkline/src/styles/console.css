@@ -792,8 +792,23 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
 .trk-md .hljs-meta { color: var(--code-title); }
 .trk-md .hljs-comment,
 .trk-md .hljs-quote { color: color-mix(in srgb, var(--fg-2) 85%, var(--fg-1)); font-style: italic; }
-.trk-md .trk-mermaid { margin: 10px 0; overflow-x: auto; }
-.trk-md .trk-mermaid > svg { display: block; max-width: 100%; height: auto; max-height: calc(min(480px, 60dvh) / var(--trk-zoom, 1)); margin: auto; }
+.trk-md .trk-mermaid {
+  --pele-bg: var(--page-bg);
+  --pele-fg: var(--fg-1);
+  --pele-muted: var(--fg-2);
+  --pele-line: var(--fg-2);
+  --pele-surface: var(--color-surface);
+  --pele-surface-alt: var(--surface-raised);
+  --pele-border: color-mix(in srgb, var(--fg-2) 75%, var(--color-border));
+  --pele-accent: var(--color-accent);
+  --pele-error: var(--color-red);
+  --pele-font: var(--font-sans);
+  --pele-font-mono: var(--font-mono);
+  --pele-radius: 0px;
+  margin: 10px 0;
+  overflow-x: auto;
+}
+.trk-md .trk-mermaid > svg.pele { display: block; max-width: 100%; height: auto; max-height: calc(min(480px, 60dvh) / var(--trk-zoom, 1)); margin: auto; }
 .trk-md .trk-mermaid > p[role="status"] { color: var(--fg-2); font: var(--ui); }
 .trk-md blockquote {
   border-left: 2px solid var(--line-divider);

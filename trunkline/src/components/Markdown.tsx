@@ -1,7 +1,7 @@
 import hljs from 'highlight.js/lib/common'
 import MarkdownIt from 'markdown-it'
-import { memo, useEffect, useId, useMemo, useRef } from 'react'
-import { useConsole } from '@/state/console'
+import type { Mounted } from 'pele'
+import { memo, useEffect, useMemo, useRef } from 'react'
 
 // html stays off (the default): agent output is prose, not trusted markup —
 // any raw HTML in it renders as text. linkify turns bare URLs into links.
@@ -34,9 +34,6 @@ md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
  * in console.css; the font voice inherits from the ledger card. */
 export const Markdown = memo(function Markdown({ text, cursor = false }: { text: string; cursor?: boolean }) {
   const root = useRef<HTMLDivElement>(null)
-  const id = useId().replace(/[^a-zA-Z0-9_-]/g, '')
-  const generation = useRef(0)
-  const dark = useConsole(s => s.theme === 'dark' || (s.theme === 'auto' && s.sysDark))
   const html = useMemo(() => {
     const tokens = md.parse(text, {})
     if (cursor) {
@@ -61,40 +58,35 @@ export const Markdown = memo(function Markdown({ text, cursor = false }: { text:
     const diagrams = root.current?.querySelectorAll<HTMLElement>('.trk-mermaid')
     if (!diagrams?.length) return
     let active = true
-    const revision = ++generation.current
-    const library = import('mermaid')
-    const render = async (node: HTMLElement, index: number) => {
+    const mounted: Mounted[] = []
+    const library = import('pele/lazy')
+    const render = async (node: HTMLElement) => {
       const source = node.dataset.source!
-      const container = document.createElement('div')
       try {
-        const [{ default: mermaid }] = await Promise.all([library, document.fonts.ready])
+        const { mountAsync } = await library
         if (!active) return
-        mermaid.initialize({
-          startOnLoad: false,
-          securityLevel: 'strict',
-          htmlLabels: false,
-          suppressErrorRendering: true,
-          logLevel: 'fatal',
-          layout: 'dagre',
-          theme: dark ? 'dark' : 'neutral',
-          fontFamily: 'Fira Code, monospace',
-        })
-        // Mermaid measures in viewport pixels, so neutralize the console zoom during layout.
-        container.style.cssText = `position: fixed; visibility: hidden; zoom: calc(1 / var(--trk-zoom, 1)); width: ${node.clientWidth}px;`
-        document.body.append(container)
-        const { svg } = await mermaid.render(`mermaid-${id}-${revision}-${index}`, source, container)
-        if (active) node.innerHTML = svg
+        const diagram = await mountAsync(node, source, { links: false, images: false, zoom: true })
+        if (!active) {
+          diagram.destroy()
+          return
+        }
+        if (diagram.error !== undefined) {
+          diagram.destroy()
+          throw diagram.error
+        }
+        mounted.push(diagram)
       } catch (error) {
         if (!active) return
         node.innerHTML = `<pre><code>${md.utils.escapeHtml(source)}</code></pre><p role="status">Unable to render this Mermaid diagram.</p>`
         node.querySelector('p')!.title = error instanceof Error ? error.message : String(error)
-      } finally {
-        container.remove()
       }
     }
-    diagrams.forEach((node, index) => { void render(node, index) })
-    return () => { active = false }
-  }, [text, cursor, dark, id])
+    diagrams.forEach(node => { void render(node) })
+    return () => {
+      active = false
+      mounted.forEach(diagram => diagram.destroy())
+    }
+  }, [text, cursor])
 
   return <div ref={root} className="trk-md" dangerouslySetInnerHTML={{ __html: html }} />
 })
