@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import type { ApiConversation, ApiModelMessage, ApiThread, ApiThreadMessage } from '../../src/lib/api/events'
 
 for (const width of [1280, 390]) {
-  test(`timeline previews show readable Markdown and reasoning labels at ${width}px`, async ({ page }) => {
+  test(`header controls work by keyboard and timeline previews stay readable at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 })
     const timestamp = '2026-10-31T02:00:00Z'
     const thread: ApiThread = {
@@ -54,8 +54,36 @@ for (const width of [1280, 390]) {
     await page.goto('/threads/thread-a')
     await expect(page).toHaveTitle('Trunkline · Octomate')
     await expect(page.locator('[id="pm-reply.2"]')).toBeAttached()
+    await page.getByRole('button', { name: 'Choose thread operation', exact: true }).focus()
+    await page.keyboard.press('Tab')
+    const theme = page.getByRole('button', { name: /^Switch to (light|dark)$/ })
+    await expect(theme).toBeFocused()
+    await expect(theme).toHaveAttribute('aria-label', 'Switch to dark')
+    await expect(theme).toHaveCSS('outline-style', 'solid')
+    expect(await theme.evaluate(el => parseFloat(getComputedStyle(el).outlineWidth))).toBeGreaterThan(0)
+    await page.keyboard.press('Enter')
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+    await expect(theme).toHaveAttribute('aria-label', 'Switch to light')
+    await page.screenshot({ path: `/private/tmp/inky-header-dark-${width}.png` })
+    await page.keyboard.press('Space')
+    await expect(page.locator('html')).not.toHaveAttribute('data-theme')
+    await expect(theme).toHaveAttribute('aria-label', 'Switch to dark')
+    await page.keyboard.press('Tab')
+    const toggle = page.getByRole('button', { name: 'Timeline panel', exact: true })
+    await expect(toggle).toBeFocused()
+    await expect(toggle).toHaveAttribute('aria-controls', 'trk-trace-panel')
+    await expect(toggle).toHaveCSS('outline-style', 'solid')
+    expect(await toggle.evaluate(el => parseFloat(getComputedStyle(el).outlineWidth))).toBeGreaterThan(0)
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await page.keyboard.press('Enter')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
     const panel = page.locator('#trk-trace-panel')
-    if (await panel.getAttribute('data-folded') !== null) await page.getByTitle('Timeline panel', { exact: true }).click()
+    await expect(panel).not.toHaveAttribute('data-folded')
+    await page.keyboard.press('Space')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(panel).toHaveAttribute('data-folded')
+    await page.keyboard.press('Enter')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
     await expect(panel).not.toHaveAttribute('data-folded')
     const timeline = page.locator('#trk-timeline')
     await expect(timeline.locator('[data-uid="prompt"]')).toContainText('Check the workspace.')

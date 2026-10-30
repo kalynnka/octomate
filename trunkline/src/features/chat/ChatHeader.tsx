@@ -20,7 +20,7 @@ export function ChatHeader() {
   const ntTitle = useConsole((s) => s.ntTitle)
   const pending = useConsole((s) => s.gatewayPending)
   const running = useConsole((s) => s.running)
-  const traceOn = useConsole((s) => s.traceOn) ?? true
+  const traceOn = useConsole((s) => (s.traceOn ?? true) && !s.mgmtSec && !s.pvOpen)
   const theme = useConsole((s) => s.theme)
   const sysDark = useConsole((s) => s.sysDark)
   const gatewayMode = useConsole((s) => s.gatewayMode)
@@ -66,11 +66,15 @@ export function ChatHeader() {
         .flat()
         .find((t) => t.id === selThreadId)?.title ?? '')
 
-  const iconBtn = (onClick: () => void, title2: string, active: boolean, children: React.ReactNode) => (
-    <span
+  const iconBtn = (onClick: () => void, title2: string, active: boolean, children: React.ReactNode, expanded?: boolean) => (
+    <button
+      type="button"
       onClick={onClick}
       title={title2}
-      className="hov-ink-wash"
+      aria-label={title2}
+      aria-controls={expanded === undefined ? undefined : 'trk-trace-panel'}
+      aria-expanded={expanded}
+      className="hov-ink-wash trk-head-icon"
       style={{
         width: 'var(--trk-btn, 22px)',
         height: 'var(--trk-btn, 22px)',
@@ -85,7 +89,7 @@ export function ChatHeader() {
       }}
     >
       {children}
-    </span>
+    </button>
   )
 
   return (
@@ -260,7 +264,7 @@ export function ChatHeader() {
       {iconBtn(toggleTheme, isDark ? 'Switch to light' : 'Switch to dark', false, (
         <Icon name={isDark ? 'moon' : 'sun'} size={13} />
       ))}
-      {iconBtn(toggleTrace, 'Timeline panel', traceOn, <Icon name="panelRight" size={13} />)}
+      {iconBtn(toggleTrace, 'Timeline panel', traceOn, <Icon name="panelRight" size={13} />, traceOn)}
     </div>
   )
 }
