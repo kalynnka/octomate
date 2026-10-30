@@ -92,7 +92,7 @@ const scrollChatBottom = (smooth?: boolean) => {
 
 /** Whether the reader is pinned near the ledger's tail (measured pre-commit,
  * so streaming growth follows only while they haven't scrolled away). */
-const nearChatBottom = () => {
+export const nearChatBottom = () => {
   const el = document.getElementById('trk-chatlog')
   return el === null || el.scrollHeight - el.scrollTop - el.clientHeight < 120
 }
