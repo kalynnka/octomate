@@ -1,5 +1,5 @@
 import hljs from 'highlight.js/lib/common'
-import MarkdownIt from 'markdown-it'
+import MarkdownIt, { type Token } from 'markdown-it'
 import type { Mounted } from 'pele'
 import { memo, useEffect, useMemo, useRef } from 'react'
 
@@ -37,6 +37,14 @@ md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
   tokens[idx].attrSet('target', '_blank')
   tokens[idx].attrSet('rel', 'noreferrer')
   return renderLink(tokens, idx, options, env, self)
+}
+
+/** Readable text for compact message previews, preserving literal code and escapes. */
+export function markdownText(text: string): string {
+  const content = (token: Token): string => token.children
+    ? token.children.map(content).join('')
+    : token.type === 'softbreak' || token.type === 'hardbreak' ? ' ' : token.content
+  return md.parse(text, {}).map(content).join(' ').replace(/\s+/g, ' ').trim()
 }
 
 /** Agent prose rendered as markdown — element rhythm comes from `.trk-md`

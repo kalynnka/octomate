@@ -4,6 +4,7 @@ import { goLedgerTarget, syncRails, useConsole } from '@/state/console'
 import { useRailDrag } from '@/lib/useRailDrag'
 import { chipLabel, ellipsis, label, microSection, mono, serif } from '@/components/text'
 import { Disclose, Fold } from '@/components/Fold'
+import { markdownText } from '@/components/Markdown'
 import { answerText } from '@/lib/api/fold'
 import type {
   LedgerItem,
@@ -129,7 +130,7 @@ function eventOf(item: LedgerItem, operator: string, agent?: string): Omit<TlEve
       return {
         k: 'turn',
         title: item.who,
-        sub: (item.chips?.length ? `[${item.chips.length} note] ` : '') + item.text,
+        sub: (item.chips?.length ? `[${item.chips.length} note] ` : '') + markdownText(item.text),
         t: item.t,
         tgt,
       }
@@ -137,12 +138,14 @@ function eventOf(item: LedgerItem, operator: string, agent?: string): Omit<TlEve
       return {
         k: 'msg',
         title: item.label.split(' · ')[0],
-        sub: item.blocks.find((b) => b.type === 'p')?.text ?? '',
+        sub: markdownText(item.blocks.find((b) => b.type === 'p')?.text ?? ''),
         t: item.label.match(/\d\d:\d\d/)?.[0] ?? '',
         tgt,
       }
-    case 'think':
-      return { k: 'think', title: `thinking · ${item.dur}`, sub: item.text, t: '', tgt }
+    case 'think': {
+      const format = !item.text.trim() && !item.thinking ? 'Unavailable' : item.format === 'summary' ? 'Summary' : ''
+      return { k: 'think', title: ['thinking', format, item.dur].filter(Boolean).join(' · '), sub: markdownText(item.text), t: '', tgt }
+    }
     case 'plan': {
       const active = item.steps.find((s) => s.status === 'active')
       return {
@@ -199,7 +202,7 @@ function eventOf(item: LedgerItem, operator: string, agent?: string): Omit<TlEve
       return {
         k: 'msg',
         title: agent || 'claude',
-        sub: item.streaming ? 'reply streaming…' : item.text,
+        sub: item.streaming ? 'reply streaming…' : markdownText(item.text),
         t: '',
         tgt,
       }
