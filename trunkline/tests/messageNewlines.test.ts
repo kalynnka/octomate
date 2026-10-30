@@ -66,6 +66,29 @@ test('newline rendering keeps code literal and raw HTML escaped', () => {
   assert.ok(!html.includes('<script>'))
 })
 
+test('language fences highlight code without changing its escaped content', () => {
+  const html = renderToStaticMarkup(createElement(Markdown, { text: '```python\nimport json\ncount = 42\nprint("<script>literal</script>")\n```' }))
+  assert.ok(html.includes('class="hljs-keyword">import</span>'))
+  assert.ok(html.includes('class="hljs-number">42</span>'))
+  assert.ok(html.includes('class="hljs-string">'))
+  assert.ok(html.includes('&lt;script&gt;literal&lt;/script&gt;'))
+  assert.ok(!html.includes('<script>'))
+})
+
+test('unknown languages remain escaped plain code', () => {
+  const html = renderToStaticMarkup(createElement(Markdown, { text: '```unknown-language\n<script>literal</script>\n```' }))
+  assert.ok(html.includes('&lt;script&gt;literal&lt;/script&gt;'))
+  assert.ok(!html.includes('hljs-'))
+})
+
+test('Mermaid fences keep their source and printing caret while streaming', () => {
+  const html = renderToStaticMarkup(createElement(Markdown, { text: '```mermaid\nflowchart LR\nA["<script>literal</script>"] -->', cursor: true }))
+  assert.ok(html.includes('class="trk-mermaid"'))
+  assert.ok(html.includes('&lt;script&gt;literal&lt;/script&gt;'))
+  assert.match(html, /--&gt;<span[^>]*class="lt-caret trk-print-caret"/)
+  assert.ok(!html.includes('<script>'))
+})
+
 for (const kind of ['user', 'agent'] as const) {
   test(`${kind} reply previews show the author and escape quoted HTML`, () => {
     const reply = { who: 'Ada', text: '<script>quoted</script>\nSecond line' }
