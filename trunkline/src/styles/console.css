@@ -58,6 +58,36 @@ html[data-theme='dark'] {
 html[data-interface-size='small'] { --trk-interface-scale: 0.8; }
 html[data-interface-size='large'] { --trk-interface-scale: 1; }
 
+.trk-thread-list-alert {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-gold) 40%, var(--line-divider));
+  background: color-mix(in srgb, var(--color-gold) 8%, var(--page-bg));
+  color: var(--fg-1);
+  font: var(--ui);
+}
+.trk-thread-list-alert > svg {
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--color-gold) 55%, var(--fg-1));
+}
+.trk-thread-list-alert-copy {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+}
+.trk-thread-list-alert-copy strong { font-weight: 600; }
+.trk-thread-list-alert-copy span { color: color-mix(in srgb, var(--fg-2) 85%, var(--fg-1)); }
+.trk-thread-list-alert button:focus-visible {
+  outline: 2px solid var(--fg-1);
+  outline-offset: 3px;
+}
+
 .trk-control-page {
   --trk-control-inset: clamp(12px, 2vw, 28px);
   container-type: inline-size;
@@ -702,6 +732,37 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
    elements their rhythm and the console's data-voice for code and tables.
    -------------------------------------------------------------------------- */
 .trk-print-caret { vertical-align: text-bottom; margin-left: 3px; }
+.trk-thinking-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 13px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-1);
+  text-align: left;
+  cursor: pointer;
+}
+.trk-thinking-toggle:focus-visible {
+  outline: 2px solid var(--info-strong);
+  outline-offset: -2px;
+}
+.trk-thinking-format {
+  padding: 2px 5px;
+  border: 1px solid var(--line-divider);
+  background: var(--trk-wash);
+  color: var(--fg-1);
+  font: var(--label-xs);
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: var(--track-wide);
+}
+.trk-thinking-content {
+  border-left: 1px solid var(--line-divider);
+  padding: 6px 14px;
+  overflow-wrap: anywhere;
+}
 .trk-md > :first-child {
   margin-top: 0;
 }

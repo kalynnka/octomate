@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Button } from '@/components/Button'
 import { useConsole } from '@/state/console'
 import { followAddress } from '@/state/url'
 import { watchThreads } from '@/state/threads'
@@ -57,7 +58,19 @@ export function ConsoleShell() {
         fontFamily: 'var(--font-sans)',
       }}
     >
-      {threadListError && <div role="alert">{threadListError} Reload to resume thread-list updates.</div>}
+      {threadListError && (
+        <div className="trk-thread-list-alert" role="alert">
+          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+            <path d="M12 9v4M12 17h.01" />
+          </svg>
+          <div className="trk-thread-list-alert-copy">
+            <strong>{threadListError}</strong>
+            <span>Reload to resume thread-list updates.</span>
+          </div>
+          <Button onClick={() => window.location.reload()} style={{ flexShrink: 0 }}>Reload</Button>
+        </div>
+      )}
       <div className="trk-shell-row" style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative' }}>
         <ThreadsSidebar />
         <ControlRail />

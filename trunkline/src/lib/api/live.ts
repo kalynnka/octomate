@@ -15,7 +15,7 @@ import type {
   ApiThreadMessage,
   ApiUsage,
 } from './events'
-import { batchFeelers, nativeQuestionAnswered, nativeQuestionReplies, promptText, replayRun, segmentText, type NativeQuestionReply, type ReplayChild } from './fold'
+import { batchFeelers, botLabel, nativeQuestionAnswered, nativeQuestionReplies, promptText, replayRun, segmentText, type NativeQuestionReply, type ReplayChild } from './fold'
 import type {
   ChannelMeta,
   LedgerItem,
@@ -289,12 +289,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
   const targets = new Map(messages.filter((message) => message.platform_message_id)
     .map((message) => [`${message.thread_id}:${message.platform_message_id}`, message]))
   const senderOf = (message: ApiThreadMessage): string | undefined => {
-    const name = message.sender?.name
-    const id = message.actor_kind === 'agent' ? message.agent_tentacle_id : null
-    const runtime = id ? channelMeta(id) : null
-    if (runtime?.native) return runtime.label
-    const agent = id ? id.charAt(0).toUpperCase() + id.slice(1) : undefined
-    return name && agent ? `${name} (${agent})` : name || agent
+    return message.actor_kind === 'agent' ? botLabel(message.agent_tentacle_id) : message.sender?.name
   }
   const textOf = (message: ApiThreadMessage): string => {
     if (!message.segments.some((segment) => segment.type === 'at')) return message.message_text ?? ''
@@ -410,7 +405,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         item: {
           kind: 'agent',
           uid: message.id,
-          label: senderOf(message) ?? 'agent',
+          label: botLabel(message.agent_tentacle_id),
           blocks: [{ type: 'p', text }],
           ...(reply && { reply }),
         },
@@ -425,7 +420,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         item: {
           kind: 'agent',
           uid: `${message.id}.outcome`,
-          label: 'relay',
+          label: botLabel(message.agent_tentacle_id),
           blocks: feedback.map((text) => ({ type: 'p', text })),
         },
       })
@@ -461,7 +456,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     const runtime = channelMeta(agent)
     const deliveries = new Map(messages.flatMap((message) => {
       const outbound = message.thread_messages.find((row) => row.direction === 'outbound' && row.kind !== 'artifact')
-      return outbound ? [[message.id, { label: senderOf(outbound), reply: replyOf(outbound) }] as const] : []
+      return outbound ? [[message.id, { label: botLabel(outbound.agent_tentacle_id ?? conversation?.agent_tentacle_id), reply: replyOf(outbound) }] as const] : []
     }))
     for (const card of replayRun(messages, runtime.native ? runtime.label : agent, children, runtime.native === true)) {
       if (card.item.kind === 'ask' && card.item.nativeCallId) {

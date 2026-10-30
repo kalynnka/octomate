@@ -10,6 +10,7 @@ import type {
   ApiUserProfile,
   CommandStreamEvent,
   ModelResponsePart,
+  ThinkingPart,
   ToolCallPart,
   WireDeferredApproval,
   WireDeferredQuestion,
@@ -286,6 +287,17 @@ export interface ReplayCard {
   item: LedgerItemDraft
 }
 
+function thinkingFormat(part: ThinkingPart): 'reasoning' | 'summary' {
+  return part.provider_details?.reasoning_format ?? (part.provider_name === 'anthropic' ? 'summary' : 'reasoning')
+}
+
+export function botLabel(agent?: string | null): string {
+  const id = agent?.replace(/-native$/, '')
+  if (!id || id === 'agent' || id === 'relay') return 'Octomate'
+  const name = /^(deepseek|dsh)$/i.test(id) ? 'Dsh' : id.charAt(0).toUpperCase() + id.slice(1)
+  return `Octomate(${name})`
+}
+
 /**
  * A finished run's thinking, text, and tool cards, rebuilt from the model
  * messages the run recorded. This is the reload path: what a live stream showed
@@ -403,10 +415,9 @@ export function replayRun(
       switch (part.part_kind) {
         case 'thinking':
           // No duration survives the row, and a made-up one would be a claim.
-          // `content` is routinely empty: a Claude transcript signs each thinking
-          // block and writes no text with it, so a replayed one has nothing to
-          // show and the card says so rather than opening on a blank quote.
-          push({ kind: 'think', dur: '', text: part.content, thinking: false })
+          // Signed or encrypted reasoning can arrive without readable text;
+          // keep its place in history and let the card explain its absence.
+          push({ kind: 'think', dur: '', text: part.content, thinking: false, format: thinkingFormat(part) })
           break
         case 'tool-call':
         case 'builtin-tool-call': {
@@ -428,7 +439,7 @@ export function replayRun(
           push(
             index < lastWork
               ? { kind: 'stream', text: part.content, streaming: false }
-              : { kind: 'agent', label: agent, blocks: [{ type: 'p', text: part.content }] },
+              : { kind: 'agent', label: botLabel(agent), blocks: [{ type: 'p', text: part.content }] },
           )
           break
         case 'file':
@@ -443,10 +454,10 @@ export function replayRun(
 export class TurnFold {
   private sink: FoldSink
   private streamUid: string | null = null
+  private streamIndex: number | null = null
   private streamText = ''
-  private thinkUid: string | null = null
-  private thinkText = ''
-  private thinkStarted = 0
+  private thinkIndex: number | null = null
+  private thinkParts = new Map<number, { uid: string; text: string; started: number }>()
   private toolUids = new Map<string, { uid: string; args: string }>()
   private planUid: string | null = null
   private todos = new Map<string, WireTodo>()
@@ -470,15 +481,17 @@ export class TurnFold {
     if (this.streamUid !== null) {
       this.sink.patch(this.streamUid, { streaming: false })
       this.streamUid = null
+      this.streamIndex = null
     }
   }
 
-  private closeThink() {
-    if (this.thinkUid !== null) {
-      const secs = Math.max(1, Math.round((Date.now() - this.thinkStarted) / 1000))
-      this.sink.patch(this.thinkUid, { dur: `${secs}s`, thinking: false })
-      this.thinkUid = null
-    }
+  private closeThink(index = this.thinkIndex) {
+    if (index === null) return
+    const part = this.thinkParts.get(index)
+    if (!part) return
+    const secs = Math.max(1, Math.round((Date.now() - part.started) / 1000))
+    this.sink.patch(part.uid, { dur: `${secs}s`, thinking: false })
+    if (this.thinkIndex === index) this.thinkIndex = null
   }
 
   private appendReply(text: string) {
@@ -497,24 +510,28 @@ export class TurnFold {
     this.sink.patch(this.streamUid, { text: this.streamText })
   }
 
-  private openPart(part: ModelResponsePart) {
+  private openPart(part: ModelResponsePart, index: number) {
     switch (part.part_kind) {
       case 'text':
         this.closeThink()
+        this.closeStream()
+        this.streamIndex = index
         this.appendReply(part.content)
         break
-      case 'thinking':
+      case 'thinking': {
         this.closeStream()
         this.closeThink()
-        this.thinkText = part.content
-        this.thinkStarted = Date.now()
-        this.thinkUid = this.sink.push({
+        const uid = this.sink.push({
           kind: 'think',
           dur: '…',
           text: part.content,
           thinking: true,
+          format: thinkingFormat(part),
         })
+        this.thinkIndex = index
+        this.thinkParts.set(index, { uid, text: part.content, started: Date.now() })
         break
+      }
       case 'builtin-tool-call':
         this.openTool(part.tool_call_id, part.tool_name, argsText(part.args))
         break
@@ -627,25 +644,35 @@ export class TurnFold {
         break
       }
       case 'part_start':
-        this.openPart(event.part)
+        this.openPart(event.part, event.index)
         break
       case 'part_delta':
         switch (event.delta.part_delta_kind) {
           case 'text':
             this.appendReply(event.delta.content_delta)
             break
-          case 'thinking':
-            if (this.thinkUid !== null && event.delta.content_delta) {
-              this.thinkText += event.delta.content_delta
-              this.sink.patch(this.thinkUid, { text: this.thinkText })
+          case 'thinking': {
+            const part = this.thinkParts.get(event.index)
+            if (part && event.delta.content_delta) {
+              part.text += event.delta.content_delta
+              this.sink.patch(part.uid, { text: part.text })
             }
             break
+          }
           case 'tool_call':
             break
         }
         break
       case 'part_end':
-        if (event.part.part_kind === 'thinking') this.closeThink()
+        if (event.part.part_kind === 'thinking') {
+          const part = this.thinkParts.get(event.index)
+          if (part) this.sink.patch(part.uid, { text: event.part.content, format: thinkingFormat(event.part) })
+          this.closeThink(event.index)
+          this.thinkParts.delete(event.index)
+        } else if (event.part.part_kind === 'text' && this.streamUid !== null && this.streamIndex === event.index) {
+          this.sink.patch(this.streamUid, { text: event.part.content })
+          this.closeStream()
+        }
         break
       case 'function_tool_call': {
         const part: ToolCallPart = event.part
@@ -687,7 +714,7 @@ export class TurnFold {
         this.closeStream()
         this.sink.push({
           kind: 'agent',
-          label: 'relay',
+          label: botLabel(this.nativeAgent),
           blocks: event.segments.map((segment) => ({
             type: 'p',
             text: segmentText(segment),

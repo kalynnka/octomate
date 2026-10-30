@@ -139,7 +139,7 @@ test('a thread is rebuilt from its model messages, in the words its rows were sa
   const tool = whole.ledger.find((item) => item.kind === 'tool')
   assert.equal(tool?.kind === 'tool' && tool.detail.type === 'plain' && tool.detail.res, 'built')
   const reply = whole.ledger.at(-1)
-  assert.deepEqual(reply?.kind === 'agent' && [reply.label, reply.blocks], ['claude', [{ type: 'p', text: 'fixed' }]])
+  assert.deepEqual(reply?.kind === 'agent' && [reply.label, reply.blocks], ['Octomate(Claude)', [{ type: 'p', text: 'fixed' }]])
   assert.equal(whole.sessions[0].anchor, '010')
   assert.equal(whole.msgCount, 5)
 })
@@ -202,7 +202,7 @@ test('replayed model answers carry the reply reference from their bound channel 
   assert.deepEqual(item?.kind === 'agent' && item.reply, { who: 'Ada', text: 'fix the build' })
 })
 
-for (const [nativeId, label] of [['codex-native', 'Codex'], ['claude-native', 'Claude'], ['deepseek-native', 'DeepSeek']]) {
+for (const [nativeId, label] of [['codex-native', 'Octomate(Codex)'], ['claude-native', 'Octomate(Claude)'], ['deepseek-native', 'Octomate(Dsh)']]) {
   test(`${nativeId} labels native and imported replies by runtime, while keeping the uploading user's identity on prompts`, () => {
     const owner = { ...said('owner', '', 'human').sender!, name: 'test', channel_tentacle_id: nativeId }
     const outbound: ApiThreadMessage = {
@@ -229,14 +229,14 @@ for (const [nativeId, label] of [['codex-native', 'Codex'], ['claude-native', 'C
   })
 }
 
-test('channel bot replies retain the bot name and agent name together', () => {
+test('channel bot replies use Octomate and the agent id instead of the channel profile name', () => {
   const outbound: ApiThreadMessage = {
     ...said('045', 'Channel answer', 'human'), direction: 'outbound', actor_kind: 'agent', agent_tentacle_id: 'inkling',
     sender: { ...said('bot', '', 'human').sender!, name: '玥葉', channel_tentacle_id: 'napcat' },
   }
   const detail = liveThreadDetail(reads([], [outbound], { model: null, unbound: null }))
   const item = detail.ledger.find((item) => item.kind === 'agent')
-  assert.equal(item?.kind === 'agent' && item.label, '玥葉 (Inkling)')
+  assert.equal(item?.kind === 'agent' && item.label, 'Octomate(Inkling)')
 })
 
 test('a reply segment retains its quote even without a reply_id or a loaded original', () => {

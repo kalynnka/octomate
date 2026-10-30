@@ -262,10 +262,9 @@ function ThinkRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'thi
   // An explicit toggle is remembered by uid and outlives the transition.
   const open = useConsole((s) => s.open[item.uid] ?? item.thinking)
   const { toggleCardOpen } = useConsole((s) => s.actions)
-  // A tailed runtime signs its thinking and keeps the text, so a replayed block
-  // arrives empty. That is worth saying on the row itself — the alternative is a
-  // card that opens on nothing and reads as a relay that dropped it.
+  // Native transcripts can record a reasoning block without readable text.
   const recorded = item.text.trim().length > 0
+  const badge = !recorded && !item.thinking ? 'Unavailable' : item.format === 'summary' ? 'Summary' : null
   return (
     <div
       id={`pm-${item.uid}`}
@@ -273,32 +272,20 @@ function ThinkRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'thi
       style={{ '--i': i ?? 0, maxWidth: cardMax, position: 'relative', border: '1px solid var(--line-divider)', background: 'var(--card-bg)' } as CSSProperties}
     >
       <Brackets />
-      <div onClick={() => toggleCardOpen(item.uid, item.thinking)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 13px', cursor: 'pointer' }}>
+      <button type="button" className="trk-thinking-toggle hov-wash" aria-expanded={open} onClick={() => toggleCardOpen(item.uid, item.thinking)}>
         <Disclose open={open} style={{ ...mono(11), ...ghost3, width: 12 }} />
         <Icon name="sparkle" style={{ color: 'var(--fg-2)' }} />
         <span style={{ ...cardKind, color: 'var(--fg-1)' }}>Thinking</span>
+        {badge && <span className="trk-thinking-format" title={badge === 'Summary' ? 'A summary of reasoning provided by the harness' : 'No readable reasoning text or summary was supplied'}>{badge}</span>}
         <span style={{ flex: 1 }} />
-        <span style={{ ...metaLine, color: 'var(--fg-3)' }}>
-          {recorded || item.thinking ? item.dur : 'not recorded'}
-        </span>
-      </div>
+        {item.dur && <span style={{ ...metaLine, color: 'var(--fg-3)' }}>{item.dur}</span>}
+      </button>
       <Fold open={open}>
         <div style={{ borderTop: '1px solid var(--line-divider)', padding: '10px 12px' }}>
-          <div style={{ borderLeft: '2px solid var(--line-divider)', padding: '6px 14px' }}>
-            <p
-              style={{
-                margin: 0,
-                ...serif(13),
-                lineHeight: 1.65,
-                color: recorded ? 'var(--fg-2)' : 'var(--fg-3)',
-                fontStyle: 'italic',
-                whiteSpace: 'pre-wrap',
-              }}
-            >
-              {recorded
-                ? item.text
-                : 'The runtime signed this block and wrote no text with it — the reasoning never reached the transcript, so there was nothing to tail.'}
-            </p>
+          <div className="trk-thinking-content" style={{ ...serif(13), lineHeight: 1.65, color: recorded ? 'var(--fg-2)' : 'var(--fg-1)' }}>
+            {recorded ? <Markdown text={item.text} cursor={item.thinking} /> : <p style={{ margin: 0, fontStyle: 'italic' }}>
+              This transcript records a reasoning block but contains no readable reasoning text or summary.
+            </p>}
           </div>
         </div>
       </Fold>
