@@ -12,6 +12,11 @@ for (const width of [1280, 390]) {
     await expect(page).toHaveTitle('Message rendering test')
     await expect(page.locator('.hljs-keyword').first()).toHaveText('import')
     await expect(page.locator('code').first()).toHaveText('demo_worker.py')
+    const block = page.locator('.trk-code-block').first()
+    await expect(block.locator('.trk-code-header')).toHaveText('Python8 lines')
+    await expect(block.locator('.trk-code-gutter')).toHaveText('1\n2\n3\n4\n5\n6\n7\n8')
+    expect(await page.locator('.trk-md h2').evaluate(el => getComputedStyle(el).fontWeight)).toBe('500')
+    expect(await block.locator('.trk-code-header').evaluate(el => getComputedStyle(el).fontWeight)).toBe('400')
     expect(diagramRequests).toEqual([])
     await page.getByRole('button', { name: 'Stream', exact: true }).click()
     await expect(page.locator('.trk-mermaid code')).toContainText('Core -->')
@@ -82,6 +87,45 @@ for (const width of [1280, 390]) {
       expect(errors).toEqual([])
       await page.screenshot({ path: `/private/tmp/inky-markdown-${width}-${theme.toLowerCase()}.png`, fullPage: true })
     }
+  })
+
+  test(`long code stays selectable and scrollable with aligned line numbers at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    await page.goto('/tests/browser/markdown.html')
+    await page.getByRole('button', { name: 'Long code', exact: true }).click()
+    const region = page.getByRole('region', { name: 'Python code', exact: true })
+    const gutter = region.locator('.trk-code-gutter')
+    const code = region.locator('code')
+    await expect(page.locator('.trk-code-header')).toHaveText('Python105 lines')
+    await expect(gutter).toContainText('104\n105')
+    await expect(code.locator('.hljs-string').first()).toHaveText('"""First line\nSecond line\nThird line"""')
+    const original = await code.textContent()
+    const selected = await code.evaluate(el => {
+      const selection = window.getSelection()!
+      selection.selectAllChildren(el)
+      return selection.toString()
+    })
+    expect(selected).toBe(original)
+    await page.evaluate(() => window.getSelection()?.removeAllRanges())
+    expect(await gutter.evaluate(el => getComputedStyle(el).userSelect)).toBe('none')
+    expect(await gutter.evaluate(el => getComputedStyle(el).lineHeight)).toBe(await code.evaluate(el => getComputedStyle(el).lineHeight))
+    for (const theme of ['Light', 'Dark']) {
+      await page.getByRole('button', { name: theme, exact: true }).click()
+      await region.evaluate(el => { el.scrollLeft = 0; el.scrollTop = 0 })
+      const left = (await gutter.boundingBox())!.x
+      await region.focus()
+      await page.keyboard.press('ArrowRight')
+      await expect.poll(() => region.evaluate(el => el.scrollLeft)).toBeGreaterThan(0)
+      expect(Math.abs((await gutter.boundingBox())!.x - left)).toBeLessThan(1)
+      expect(Math.round((await region.boundingBox())!.height)).toBeLessThanOrEqual(560)
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+      await region.evaluate(el => { el.scrollLeft = 0 })
+      await page.locator('.trk-code-block').screenshot({ path: `/private/tmp/inky-code-block-${width}-${theme.toLowerCase()}.png` })
+    }
+    await expect(page.locator('vite-error-overlay')).toHaveCount(0)
+    expect(errors).toEqual([])
   })
 
   test(`tall charts stay within the message and viewport at ${width}px`, async ({ page }) => {

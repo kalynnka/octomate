@@ -85,12 +85,40 @@ test('unknown languages remain escaped plain code', () => {
   assert.ok(!html.includes('hljs-'))
 })
 
+for (const [fence, language] of [['python', 'Python'], ['js', 'JavaScript'], ['unknown-language', 'unknown-language'], ['', 'Plain text']]) {
+  test(`${fence || 'unlabelled'} code gets its language and blank lines counted without changing the source`, () => {
+    const html = renderToStaticMarkup(createElement(Markdown, { text: `\`\`\`${fence}\nfirst\n\nthird\n\`\`\`` }))
+    assert.ok(html.includes(`<span>${language}</span><span>3 lines</span>`))
+    assert.ok(html.includes('class="trk-code-gutter" aria-hidden="true">1\n2\n3</span>'))
+    assert.ok(html.includes('first\n\nthird\n</code></pre>'))
+  })
+}
+
+test('indented code has the same plain-text frame and gutter', () => {
+  const html = renderToStaticMarkup(createElement(Markdown, { text: '    first\n    second' }))
+  assert.ok(html.includes('<span>Plain text</span><span>2 lines</span>'))
+  assert.ok(html.includes('<pre><code>first\nsecond\n</code></pre>'))
+})
+
+test('line numbers preserve syntax spans across multiline comments', () => {
+  const html = renderToStaticMarkup(createElement(Markdown, { text: '```js\n/* first\nsecond */\nconst count = 1\n```' }))
+  assert.ok(html.includes('<span class="hljs-comment">/* first\nsecond */</span>'))
+  assert.ok(html.includes('<span>3 lines</span>'))
+})
+
+test('a code language label cannot inject markup or attributes', () => {
+  const html = renderToStaticMarkup(createElement(Markdown, { text: '```x"><img/src=x/onerror=alert(1)>\nsafe\n```' }))
+  assert.ok(html.includes('x&quot;&gt;&lt;img/src=x/onerror=alert(1)&gt;'))
+  assert.ok(!html.includes('<img'))
+})
+
 test('Mermaid fences keep their source and printing caret while streaming', () => {
   const html = renderToStaticMarkup(createElement(Markdown, { text: '```mermaid\nflowchart LR\nA["<script>literal</script>"] -->', cursor: true }))
   assert.ok(html.includes('class="trk-mermaid"'))
   assert.ok(html.includes('&lt;script&gt;literal&lt;/script&gt;'))
   assert.match(html, /--&gt;<span[^>]*class="lt-caret trk-print-caret"/)
   assert.ok(!html.includes('<script>'))
+  assert.ok(!html.includes('trk-code-header'))
 })
 
 for (const kind of ['user', 'agent'] as const) {

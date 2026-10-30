@@ -13,11 +13,20 @@ const md = new MarkdownIt({
     : '',
 })
 
-const renderFence = md.renderer.rules.fence!
-md.renderer.rules.fence = (tokens, idx, options, env, self) => {
-  const html = renderFence(tokens, idx, options, env, self)
-  if (tokens[idx].info.trim().split(/\s+/)[0] !== 'mermaid') return html
-  return `<div class="trk-mermaid" data-source="${md.utils.escapeHtml(tokens[idx].content)}">${html}</div>\n`
+for (const rule of ['fence', 'code_block']) {
+  const render = md.renderer.rules[rule]!
+  md.renderer.rules[rule] = (tokens, idx, options, env, self) => {
+    const token = tokens[idx]
+    const html = render(tokens, idx, options, env, self)
+    const language = token.info.trim().split(/\s+/)[0]
+    if (language === 'mermaid') {
+      return `<div class="trk-mermaid" data-source="${md.utils.escapeHtml(token.content)}">${html}</div>\n`
+    }
+    const name = md.utils.escapeHtml(hljs.getLanguage(language)?.name || language || 'Plain text')
+    const count = token.content.replace(/\n$/, '').split('\n').length
+    const numbers = Array.from({ length: count }, (_, index) => index + 1).join('\n')
+    return `<div class="trk-code-block"><div class="trk-code-header"><span>${name}</span><span>${count} ${count === 1 ? 'line' : 'lines'}</span></div><div class="trk-code-scroll" role="region" aria-label="${name} code" tabindex="0"><span class="trk-code-gutter" aria-hidden="true">${numbers}</span>${html}</div></div>\n`
+  }
 }
 
 // Links leave the console; open them beside it rather than over it.
