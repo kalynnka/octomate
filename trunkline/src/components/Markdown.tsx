@@ -1,7 +1,9 @@
 import hljs from 'highlight.js/lib/common'
-import MarkdownIt, { type Token } from 'markdown-it'
+import MarkdownIt from 'markdown-it'
 import type { Mounted } from 'pele'
-import { memo, useEffect, useMemo, useRef } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
+import { createPortal } from 'react-dom'
+import { CopyButton } from './CopyButton'
 
 // html stays off (the default): agent output is prose, not trusted markup —
 // any raw HTML in it renders as text. linkify turns bare URLs into links.
@@ -25,7 +27,7 @@ for (const rule of ['fence', 'code_block']) {
     const name = md.utils.escapeHtml(hljs.getLanguage(language)?.name || language || 'Plain text')
     const count = token.content.replace(/\n$/, '').split('\n').length
     const numbers = Array.from({ length: count }, (_, index) => index + 1).join('\n')
-    return `<div class="trk-code-block"><div class="trk-code-header"><span>${name}</span><span>${count} ${count === 1 ? 'line' : 'lines'}</span></div><div class="trk-code-scroll" role="region" aria-label="${name} code" tabindex="0"><span class="trk-code-gutter" aria-hidden="true">${numbers}</span>${html}</div></div>\n`
+    return `<div class="trk-code-block"><div class="trk-code-header"><span>${name}</span><span>${count} ${count === 1 ? 'line' : 'lines'}</span><span class="trk-code-copy"></span></div><div class="trk-code-scroll" role="region" aria-label="${name} code" tabindex="0"><span class="trk-code-gutter" aria-hidden="true">${numbers}</span>${html}</div></div>\n`
   }
 }
 
@@ -39,12 +41,15 @@ md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
   return renderLink(tokens, idx, options, env, self)
 }
 
-/** Readable text for compact message previews, preserving literal code and escapes. */
-export function markdownText(text: string): string {
-  const content = (token: Token): string => token.children
-    ? token.children.map(content).join('')
-    : token.type === 'softbreak' || token.type === 'hardbreak' ? ' ' : token.content
-  return md.parse(text, {}).map(content).join(' ').replace(/\s+/g, ' ').trim()
+function CodeCopyButtons({ root, html }: { root: RefObject<HTMLDivElement | null>; html: string }) {
+  const [codeTargets, setCodeTargets] = useState<{ node: HTMLElement; text: string }[]>([])
+  useLayoutEffect(() => {
+    setCodeTargets(Array.from(root.current!.querySelectorAll<HTMLElement>('.trk-code-copy'), node => ({
+      node,
+      text: node.closest('.trk-code-block')!.querySelector('code')!.textContent!,
+    })))
+  }, [root, html])
+  return codeTargets.map(({ node, text }, index) => createPortal(<CopyButton text={text} label="Copy code" />, node, String(index)))
 }
 
 /** Agent prose rendered as markdown — element rhythm comes from `.trk-md`
@@ -105,5 +110,8 @@ export const Markdown = memo(function Markdown({ text, cursor = false }: { text:
     }
   }, [text, cursor])
 
-  return <div ref={root} className="trk-md" dangerouslySetInnerHTML={{ __html: html }} />
+  return <>
+    <div ref={root} className="trk-md" dangerouslySetInnerHTML={{ __html: html }} />
+    <CodeCopyButtons root={root} html={html} />
+  </>
 })

@@ -21,6 +21,7 @@ export function Harness() {
   const [reasoning, setReasoning] = useState(false)
   const [thinking, setThinking] = useState(true)
   const reasoningItems: LedgerItem[] = [
+    { kind: 'user', uid: 'copy-user', who: 'Owner', t: '10:00', text: '**Keep** the `workspace`.\n\nSecond line.', reply: { who: 'Octomate', text: 'Earlier context, not part of this message.' } },
     { kind: 'agent', uid: 'progress', label: botLabel('codex'), blocks: [{ type: 'p', text: '**Checking macOS setup**\nI am checking the admin permissions before continuing.' }] },
     { kind: 'agent', uid: 'claude-reply', label: botLabel('claude'), blocks: [{ type: 'p', text: 'Workspace permissions checked.' }] },
     { kind: 'agent', uid: 'dsh-reply', label: botLabel('deepseek'), blocks: [{ type: 'p', text: 'Ready to continue.' }] },
@@ -28,6 +29,12 @@ export function Harness() {
     { kind: 'think', uid: 'codex-summary', format: 'summary', text: '**Awaiting macOS admin setup**\n\nThe account needs access to the shared workspace.', dur: thinking ? '…' : '1s', thinking },
     { kind: 'think', uid: 'claude-summary', format: 'summary', text: '**Checking the configuration**\n\nThe permission settings need to agree with the workspace owner.', dur: '1s', thinking: false },
     { kind: 'think', uid: 'unavailable', format: 'summary', text: '', dur: '', thinking: false },
+    { kind: 'agent', uid: 'copy-agent', label: botLabel('codex'), blocks: [
+      { type: 'p', text: '**Ready** to continue.' },
+      { type: 'ul', items: ['First item', 'Second `item`'] },
+      { type: 'diff', diff: { file: 'demo.py', adds: 1, dels: 0, lines: [{ tone: 'add', text: '+ ready = True' }] } },
+    ] },
+    { kind: 'stream', uid: 'copy-stream', text: 'A **native** reply with `code`.', streaming: false },
   ]
   const { setTheme } = useConsole.getState().actions
   return <main style={{ maxWidth: 900, margin: '24px auto', padding: 16, fontFamily: 'var(--font-cn)', fontSize: 16 }}>

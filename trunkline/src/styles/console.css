@@ -741,6 +741,43 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
    elements their rhythm and the console's data-voice for code and tables.
    -------------------------------------------------------------------------- */
 .trk-print-caret { vertical-align: text-bottom; margin-left: 3px; }
+.trk-copy-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-soft-sm);
+  background: transparent;
+  color: var(--fg-2);
+  font: var(--meta);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.trk-copy-button > svg { display: block; flex-shrink: 0; }
+.trk-copy-button > [role='status'] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.trk-copy-button:hover { background: var(--hover); color: var(--fg-1); }
+.trk-copy-button:focus-visible { outline: 2px solid var(--fg-2); outline-offset: 2px; }
+.trk-copy-button[data-state='copied'] { color: var(--color-sage); }
+.trk-copy-button[data-state='failed'] { color: var(--color-red); }
+.trk-message-actions { display: flex; align-items: center; min-height: 26px; }
+.trk-message-copy { opacity: 0; pointer-events: none; transition: opacity var(--motion-fast) var(--ease-out); }
+.lt-message-entry:hover > .trk-message-actions > .trk-message-copy,
+.lt-message-entry:focus-within > .trk-message-actions > .trk-message-copy { opacity: 1; pointer-events: auto; }
+@media (hover: none) {
+  .trk-message-copy { opacity: 1; pointer-events: auto; }
+}
 .trk-thinking-toggle {
   display: flex;
   align-items: center;
@@ -845,6 +882,7 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
 }
 .trk-code-header {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
   padding: 8px 12px;
@@ -854,12 +892,14 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
   font: var(--meta);
 }
 .trk-code-header > span:first-child {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.trk-code-header > span:last-child { flex-shrink: 0; }
+.trk-code-header > span:not(:first-child) { flex-shrink: 0; }
+.trk-code-copy { display: flex; margin: -4px -4px -4px 0; }
 .trk-code-scroll {
   display: flex;
   align-items: flex-start;

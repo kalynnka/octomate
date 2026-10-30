@@ -13,6 +13,7 @@ import { Brackets } from '@/components/Brackets'
 import { Icon, type IconName } from '@/components/Icon'
 import { Disclose, Fold } from '@/components/Fold'
 import { Markdown } from '@/components/Markdown'
+import { CopyButton } from '@/components/CopyButton'
 import { cardKind, display, ellipsis, fieldLabel, label, metaLine, microMeta, microSection, mono, sectionLabel, serif, statusNote } from '@/components/text'
 
 const ghost3: CSSProperties = { color: 'var(--fg-3)' }
@@ -124,6 +125,9 @@ function UserRow({ item }: { item: Extract<LedgerItem, { kind: 'user' }> }) {
         {item.reply && <ReplyPreview reply={item.reply} />}
         {item.text}
       </div>
+      <div className="trk-message-actions">
+        <CopyButton text={item.text} label="Copy message" className="trk-message-copy" />
+      </div>
     </div>
   )
 }
@@ -206,6 +210,12 @@ function AgentRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'agent'
             )
           return <DiffBlock key={i} uid={item.uid} index={i} diff={b.diff} />
         })}
+      </div>
+      <div className="trk-message-actions" style={{ maxWidth: cardMax }}>
+        <CopyButton text={item.blocks.map(block => block.type === 'p' ? block.text : block.type === 'ul'
+          ? block.items.map(line => `- ${line}`).join('\n')
+          : `\`\`\`diff\n${block.diff.lines.map(line => line.text).join('\n')}\n\`\`\``).join('\n\n')}
+          label="Copy message" className="trk-message-copy" />
       </div>
     </div>
   )
@@ -1146,8 +1156,11 @@ function StreamRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'strea
     return () => { cancelAnimationFrame(frame); cancelAnimationFrame(scroll) }
   }, [streaming])
   return (
-    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry" style={{ maxWidth: cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
+    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry" style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
       <Markdown text={streaming ? text : item.text} cursor={streaming} />
+      <div className="trk-message-actions">
+        <CopyButton text={streaming ? text : item.text} label="Copy message" className="trk-message-copy" />
+      </div>
     </div>
   )
 }

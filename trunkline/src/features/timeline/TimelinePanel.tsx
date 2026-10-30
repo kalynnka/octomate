@@ -4,7 +4,7 @@ import { goLedgerTarget, syncRails, useConsole } from '@/state/console'
 import { useRailDrag } from '@/lib/useRailDrag'
 import { chipLabel, ellipsis, label, microSection, mono, serif } from '@/components/text'
 import { Disclose, Fold } from '@/components/Fold'
-import { markdownText } from '@/components/Markdown'
+import { markdownText } from '@/lib/markdown'
 import { answerText } from '@/lib/api/fold'
 import type {
   LedgerItem,
