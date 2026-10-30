@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.5](https://github.com/kalynnka/octomate/compare/octomate-protocol-v0.0.4...octomate-protocol-v0.0.5) (2026-10-29)
+
+
+### Features
+
+* **artifacts:** capture Codex widgets and embed them in Trunkline ([#143](https://github.com/kalynnka/octomate/issues/143)) ([9fdb7a3](https://github.com/kalynnka/octomate/commit/9fdb7a3bf4a3be6bed597c9822312737210c31a7))
+
 ## [0.0.4](https://github.com/kalynnka/octomate/compare/octomate-protocol-v0.0.3...octomate-protocol-v0.0.4) (2026-10-12)
 
 
