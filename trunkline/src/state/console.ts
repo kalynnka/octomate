@@ -17,7 +17,7 @@ import type {
   ThreadDetail,
 } from '@/lib/api/types'
 import { api, resolveBatch, sendDirective } from '@/lib/api'
-import { castGateway, executeCommand, fetchThreads, watchThread } from '@/lib/api/client'
+import { castGateway, executeCommand, fetchThreadProject, fetchThreads, watchThread } from '@/lib/api/client'
 import type {
   ActionBatchAnsweredEvent,
   ActionBatchUpdatedEvent,
@@ -33,7 +33,7 @@ import type {
 } from '@/lib/api/events'
 import { queryClient } from '@/lib/queryClient'
 import { batchFeelers, TurnFold } from '@/lib/api/fold'
-import { channelMeta, holdingBack, withOlderPage } from '@/lib/api/live'
+import { channelMeta, holdingBack, liveThreadDetail, withOlderPage } from '@/lib/api/live'
 import { useAuth } from '@/state/auth'
 import { COMMAND_CONTROLS } from '@/features/chat/commands'
 import { withArtifact } from '@/features/artifacts/ledger'
@@ -186,6 +186,7 @@ export const replayView = () => {
 
 export interface ConsoleActions {
   selectThread(chId: string, thId: string, direction?: 'up' | 'down'): Promise<void>
+  refreshThreadProject(thId: string): Promise<void>
   loadOlder(): void
   onChatScroll(scrollTop: number): void
   setSysDark(dark: boolean): void
@@ -911,6 +912,25 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   }
 
   const actions: ConsoleActions = {
+    async refreshThreadProject(thId: string) {
+      const queryKey = ['thread-detail', thId]
+      if (!queryClient.getQueryState(queryKey) && get().selThreadId !== thId) return
+      if (queryClient.isFetching({ queryKey, exact: true })) {
+        await queryClient.fetchQuery({ queryKey, queryFn: () => api.getThreadDetail(thId), staleTime: 0, retry: false })
+      }
+      const project = await fetchThreadProject(thId)
+      const update = (detail: ThreadDetail | undefined): ThreadDetail | undefined => {
+        if (!detail?.reads) return detail
+        const reads = { ...detail.reads, project, thread: { ...detail.reads.thread, project_id: project?.id ?? null } }
+        const fresh = liveThreadDetail(reads)
+        return { ...detail, reads, project: fresh.project, vscode: fresh.vscode }
+      }
+      queryClient.setQueryData<ThreadDetail>(queryKey, detail => {
+        const current = get().selThreadId === thId ? get().detail : null
+        return update(detail ?? current ?? undefined)
+      })
+      if (get().selThreadId === thId) set(s => ({ detail: update(s.detail ?? undefined) ?? null }))
+    },
     /* ---------------------------------------------------- selection ------ */
     async selectThread(chId: string, thId: string, direction = 'down') {
       const selection = ++threadSelection
