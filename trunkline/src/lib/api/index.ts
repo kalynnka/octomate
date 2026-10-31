@@ -33,7 +33,7 @@ import type {
   ApiProject,
   ApiRoute,
 } from './events'
-import { channelMeta, liveThreadDetail, type OlderPage, type ThreadRead } from './live'
+import { channelMeta, liveThreadDetail, threadMetrics, type OlderPage, type ThreadRead } from './live'
 import type { ChannelMeta, EffortStep, ThreadDetail } from './types'
 
 export interface RoutesResult {
@@ -90,6 +90,11 @@ export const api = {
   },
 
   listThreads: fetchThreads,
+
+  async getThreadMetrics(id: string): Promise<Pick<ThreadDetail, 'usage' | 'ctxK' | 'contextWindow'>> {
+    const [conversations, usage] = await Promise.all([fetchThreadConversations(id), fetchThreadUsage(id)])
+    return threadMetrics(conversations ?? [], usage ?? {})
+  },
 
   /**
    * One thread, read as the relay shapes it: the row, the latest page of its own

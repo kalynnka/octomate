@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode } from 'react'
+import { TextSwap } from './TextSwap'
 
 const variantClass: Record<string, string> = {
   outline: 'hov-panel',
@@ -58,7 +59,7 @@ export function Button({
         ...style,
       }}
     >
-      {children}
+      {typeof children === 'string' || typeof children === 'number' ? <TextSwap>{children}</TextSwap> : children}
     </button>
   )
 }

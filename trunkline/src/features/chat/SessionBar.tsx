@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { useConsole } from '@/state/console'
 import { channelMeta } from '@/lib/api/live'
 import { mono } from '@/components/text'
+import { TextSwap } from '@/components/TextSwap'
+import { useThreadSummary } from '@/lib/api/hooks'
 
 const vline = <i style={{ width: 1, height: 12, background: 'var(--trk-vline)', flexShrink: 0 }} />
 
@@ -26,6 +28,7 @@ export function SessionBar() {
   const detail = useConsole((s) => s.detail)
   const selChannel = useConsole((s) => s.selChannel)
   const selThreadId = useConsole((s) => s.selThreadId)
+  const thread = useThreadSummary(selThreadId)
   const ntOn = useConsole((s) => s.ntOn)
   const ntStarted = useConsole((s) => s.ntStarted)
   const clock = useClock()
@@ -40,7 +43,7 @@ export function SessionBar() {
       : '—'
   // The channel list is the connected tentacles only, so a native channel is
   // not in it; its display name is the same table the sidebar reads.
-  const routeChip = `${channelMeta(selChannel).label.toLowerCase()}/${detail?.key ?? selThreadId}`
+  const routeChip = `${channelMeta(selChannel).label.toLowerCase()}/${detail?.key ?? (thread?.key || thread?.tag) ?? '—'}`
   // A thread that has not run yet is on nothing; one that has carries the
   // provider's own numbers, summed off the runs.
   const fresh = ntOn && !ntStarted
@@ -72,7 +75,7 @@ export function SessionBar() {
         ...extra,
       }}
     >
-      {children}
+      {typeof children === 'string' || typeof children === 'number' ? <TextSwap>{children}</TextSwap> : children}
     </span>
   )
 
@@ -97,7 +100,7 @@ export function SessionBar() {
         {chip('current session of this thread', (
           <>
             <i style={{ width: 5, height: 5, borderRadius: 9999, background: 'var(--color-sage)' }} />
-            {sesChip}
+            <TextSwap>{sesChip}</TextSwap>
           </>
         ))}
         {vline}
@@ -124,7 +127,7 @@ export function SessionBar() {
             >
               <i style={{ width: ctxW, background: 'var(--color-ghost)' }} />
             </i>
-            {ctxK === undefined ? '—' : `${count(ctxK * 1000)}`}/{contextWindow ? count(contextWindow) : '—'}
+            <TextSwap>{`${ctxK === undefined ? '—' : count(ctxK * 1000)}/${contextWindow ? count(contextWindow) : '—'}`}</TextSwap>
           </>
         ))}
         {vline}

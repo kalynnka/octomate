@@ -1,9 +1,36 @@
 import MarkdownIt from 'markdown-it'
-import { memo } from 'react'
+import { tex } from '@mdit/plugin-tex'
+import type { Mounted } from 'pele'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
+import { createPortal } from 'react-dom'
+import { CopyButton } from './CopyButton'
 
 // html stays off (the default): agent output is prose, not trusted markup —
 // any raw HTML in it renders as text. linkify turns bare URLs into links.
-const md = new MarkdownIt({ linkify: true, breaks: true })
+const md = new MarkdownIt({
+  linkify: true,
+  breaks: true,
+})
+md.use(tex, {
+  delimiters: 'all',
+  render: (source, display) => `<span class="trk-math" data-source="${md.utils.escapeHtml(source)}" data-display="${display}">${md.utils.escapeHtml(source)}</span>`,
+})
+
+for (const rule of ['fence', 'code_block']) {
+  const render = md.renderer.rules[rule]!
+  md.renderer.rules[rule] = (tokens, idx, options, env, self) => {
+    const token = tokens[idx]
+    const html = render(tokens, idx, options, env, self)
+    const language = token.info.trim().split(/\s+/)[0]
+    if (language === 'mermaid') {
+      return `<div class="trk-mermaid" data-source="${md.utils.escapeHtml(token.content)}">${html}</div>\n`
+    }
+    const name = md.utils.escapeHtml(language || 'Plain text')
+    const count = token.content.replace(/\n$/, '').split('\n').length
+    const numbers = Array.from({ length: count }, (_, index) => index + 1).join('\n')
+    return `<div class="trk-code-block" data-language="${md.utils.escapeHtml(language)}"><div class="trk-code-header"><span>${name}</span><span>${count} ${count === 1 ? 'line' : 'lines'}</span><span class="trk-code-copy"></span></div><div class="trk-code-scroll" role="region" aria-label="${name} code" tabindex="0"><span class="trk-code-gutter" aria-hidden="true">${numbers}</span>${html}</div></div>\n`
+  }
+}
 
 // Links leave the console; open them beside it rather than over it.
 const renderLink =
@@ -15,23 +42,97 @@ md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
   return renderLink(tokens, idx, options, env, self)
 }
 
+function CodeCopyButtons({ root, html }: { root: RefObject<HTMLDivElement | null>; html: string }) {
+  const [codeTargets, setCodeTargets] = useState<{ node: HTMLElement; text: string }[]>([])
+  useLayoutEffect(() => {
+    setCodeTargets(Array.from(root.current!.querySelectorAll<HTMLElement>('.trk-code-copy'), node => ({
+      node,
+      text: node.closest('.trk-code-block')!.querySelector('code')!.textContent!,
+    })))
+  }, [root, html])
+  return codeTargets.map(({ node, text }, index) => createPortal(<CopyButton text={text} label="Copy code" />, node, String(index)))
+}
+
 /** Agent prose rendered as markdown — element rhythm comes from `.trk-md`
  * in console.css; the font voice inherits from the ledger card. */
 export const Markdown = memo(function Markdown({ text, cursor = false }: { text: string; cursor?: boolean }) {
-  const tokens = md.parse(text, {})
-  if (cursor) {
-    const caret = new MarkdownIt.Token('html_inline', '', 0)
-    caret.content = '<span aria-hidden="true" class="lt-caret trk-print-caret"></span>'
-    const last = tokens.findLast((token) => token.nesting !== -1 && !token.hidden)
-    if (last?.type === 'inline') {
-      last.children?.push(caret)
-    } else if (last?.type === 'fence' || last?.type === 'code_block') {
-      const html = md.renderer.render([last], md.options, {})
-      last.type = 'html_block'
-      last.content = html.replace(/<\/code><\/pre>\n?$/, `${caret.content}</code></pre>\n`)
-    } else {
-      tokens.push(caret)
+  const root = useRef<HTMLDivElement>(null)
+  const html = useMemo(() => {
+    const tokens = md.parse(text, {})
+    if (cursor) {
+      const caret = new MarkdownIt.Token('html_inline', '', 0)
+      caret.content = '<span aria-hidden="true" class="lt-caret trk-print-caret"></span>'
+      const last = tokens.findLast((token) => token.nesting !== -1 && !token.hidden)
+      if (last?.type === 'inline') {
+        last.children?.push(caret)
+      } else if (last?.type === 'fence' || last?.type === 'code_block') {
+        const rendered = md.renderer.render([last], md.options, {})
+        last.type = 'html_block'
+        last.content = rendered.replace(/<\/code><\/pre>/, `${caret.content}</code></pre>`)
+      } else {
+        tokens.push(caret)
+      }
     }
-  }
-  return <div className="trk-md" dangerouslySetInnerHTML={{ __html: md.renderer.render(tokens, md.options, {}) }} />
+    return md.renderer.render(tokens, md.options, {})
+  }, [text, cursor])
+
+  useEffect(() => {
+    const blocks = root.current?.querySelectorAll<HTMLElement>('.trk-code-block[data-language]:not([data-language=""])')
+    if (!blocks?.length) return
+    let active = true
+    void import('./highlight').then(({ highlightCode }) => {
+      if (active) blocks.forEach(highlightCode)
+    })
+    return () => { active = false }
+  }, [text, cursor])
+
+  useEffect(() => {
+    const nodes = root.current?.querySelectorAll<HTMLElement>('.trk-math')
+    if (!nodes?.length) return
+    let active = true
+    void import('./math').then(({ renderMath }) => {
+      if (active) nodes.forEach(renderMath)
+    })
+    return () => { active = false }
+  }, [text, cursor])
+
+  useEffect(() => {
+    if (cursor) return
+    const diagrams = root.current?.querySelectorAll<HTMLElement>('.trk-mermaid')
+    if (!diagrams?.length) return
+    let active = true
+    const mounted: Mounted[] = []
+    const library = import('pele/lazy')
+    const render = async (node: HTMLElement) => {
+      const source = node.dataset.source!
+      try {
+        const { mountAsync } = await library
+        if (!active) return
+        const diagram = await mountAsync(node, source, { links: false, images: false, zoom: true })
+        if (!active) {
+          diagram.destroy()
+          return
+        }
+        if (diagram.error !== undefined) {
+          diagram.destroy()
+          throw diagram.error
+        }
+        mounted.push(diagram)
+      } catch (error) {
+        if (!active) return
+        node.innerHTML = `<pre><code>${md.utils.escapeHtml(source)}</code></pre><p role="status">Unable to render this Mermaid diagram.</p>`
+        node.querySelector('p')!.title = error instanceof Error ? error.message : String(error)
+      }
+    }
+    diagrams.forEach(node => { void render(node) })
+    return () => {
+      active = false
+      mounted.forEach(diagram => diagram.destroy())
+    }
+  }, [text, cursor])
+
+  return <>
+    <div ref={root} className="trk-md" dangerouslySetInnerHTML={{ __html: html }} />
+    <CodeCopyButtons root={root} html={html} />
+  </>
 })

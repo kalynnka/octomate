@@ -1,11 +1,12 @@
-import type { CSSProperties } from 'react'
-import { useConsole } from '@/state/console'
+import { useLayoutEffect, useRef, type CSSProperties } from 'react'
+import { nearChatBottom, useConsole } from '@/state/console'
 import { LedgerRow } from './cards'
 import { label, mono, display, statusNote } from '@/components/text'
 
 const CARD_MAX = 'var(--trk-card-max)'
 
 export function ChatLog() {
+  const threadId = useConsole((s) => s.selThreadId)
   const detail = useConsole((s) => s.detail)
   const live = useConsole((s) => s.live)
   const notices = useConsole((s) => s.notices)
@@ -18,6 +19,22 @@ export function ChatLog() {
   const traceOn = useConsole((s) => s.traceOn) ?? true
   const pvOpen = useConsole((s) => s.pvOpen)
   const { onChatScroll } = useConsole((s) => s.actions)
+  const logRef = useRef<HTMLDivElement>(null)
+  const ledgerRef = useRef<HTMLDivElement>(null)
+  const following = useRef(true)
+  const dimensions = useRef({ height: 0, viewport: 0 })
+
+  useLayoutEffect(() => {
+    following.current = true
+    const log = logRef.current!
+    const observer = new ResizeObserver(() => {
+      if (following.current) log.scrollTop = log.scrollHeight
+      dimensions.current = { height: log.scrollHeight, viewport: log.clientHeight }
+    })
+    observer.observe(log)
+    observer.observe(ledgerRef.current!)
+    return () => observer.disconnect()
+  }, [threadId])
 
   const cardMax = ['64%', '78%', '88%', '92%'][
     (sbFold ? 0 : 1) + (mgmtOpen ? 1 : 0) + (traceOn && !pvOpen ? 1 : 0)
@@ -34,8 +51,16 @@ export function ChatLog() {
   return (
     <div
       id="trk-chatlog"
+      ref={logRef}
       className="lt-fade-in"
-      onScroll={(e) => onChatScroll(e.currentTarget.scrollTop)}
+      onScroll={(e) => {
+        const log = e.currentTarget
+        // Layout can fire a scroll before ResizeObserver updates the anchor.
+        if (log.scrollHeight === dimensions.current.height && log.clientHeight === dimensions.current.viewport) {
+          following.current = nearChatBottom()
+        }
+        onChatScroll(e.currentTarget.scrollTop)
+      }}
       style={
         {
           '--trk-card-max': cardMax,
@@ -59,7 +84,7 @@ export function ChatLog() {
           ↑ scroll — earlier messages load step by step
         </div>
       )}
-      <div className="trk-ledger-col">
+      <div ref={ledgerRef} className="trk-ledger-col">
         {blank && (
           <div
             className="lt-fade-in"

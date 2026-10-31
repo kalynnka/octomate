@@ -4,6 +4,7 @@ import { ApiError } from '@/lib/api/auth'
 import { useAddresses, useChannels } from '@/lib/api/hooks'
 import { channelMeta } from '@/lib/api/live'
 import { ellipsis, label, mono } from '@/components/text'
+import { TextSwap } from '@/components/TextSwap'
 import { addressRow, channelRows, destinationReason, level, navigateGatewayMenu, sameAddress, type Crumb, type Destination, type DestinationRow } from './gateway'
 
 const tint = (share: number) => `color-mix(in srgb, var(--color-accent) ${share}%, transparent)`
@@ -95,7 +96,7 @@ export function DestinationPicker({ threadId, sourceChannel, suggestions, routes
       >
         <i style={{ width: 6, height: 6, flexShrink: 0, background: selection ? channelMeta(selection.address.channel_tentacle_id).brand : 'var(--line-divider)' }} />
         <span style={{ minWidth: 0, ...ellipsis, color: selection ? 'var(--fg-1)' : 'var(--fg-3)' }}>
-          {selection ? selection.path.join(' / ') : 'choose destination'}
+          <TextSwap style={{ ...ellipsis }}>{selection ? selection.path.join(' / ') : 'choose destination'}</TextSwap>
         </span>
         <span style={{ fontSize: 7, color: 'var(--fg-3)', lineHeight: 1, marginTop: 1 }}>▾</span>
       </button>
@@ -160,7 +161,7 @@ export function DestinationPicker({ threadId, sourceChannel, suggestions, routes
               })}
             </span>
             <span style={{ ...mono(7.5), color: 'var(--fg-3)', letterSpacing: '.06em', whiteSpace: 'nowrap' }}>
-              {loading ? noun : `${rows.length} ${rows.length === 1 ? kind.one : noun}`}
+              <TextSwap>{loading ? noun : `${rows.length} ${rows.length === 1 ? kind.one : noun}`}</TextSwap>
             </span>
           </span>
           <span key={JSON.stringify(crumbs)} className="trk-gateway-page" data-direction={direction} style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -272,7 +273,7 @@ export function DestinationPicker({ threadId, sourceChannel, suggestions, routes
           </span>
           </span>
           <span style={{ display: 'block', padding: '7px 12px', flexShrink: 0, ...mono(7.5), color: 'var(--fg-3)', letterSpacing: '.04em', lineHeight: 1.5, ...ellipsis }}>
-            {selection ? `→ ${selection.path.join(' / ')}` : 'pick a destination · levels load from the gateway as you open them'}
+            <TextSwap style={{ ...ellipsis }}>{selection ? `→ ${selection.path.join(' / ')}` : 'pick a destination · levels load from the gateway as you open them'}</TextSwap>
           </span>
         </span>
       )}

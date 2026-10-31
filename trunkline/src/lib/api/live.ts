@@ -15,7 +15,7 @@ import type {
   ApiThreadMessage,
   ApiUsage,
 } from './events'
-import { batchFeelers, nativeQuestionAnswered, nativeQuestionReplies, promptText, replayRun, segmentText, type NativeQuestionReply, type ReplayChild } from './fold'
+import { batchFeelers, botLabel, nativeQuestionAnswered, nativeQuestionReplies, promptText, replayRun, segmentText, type NativeQuestionReply, type ReplayChild } from './fold'
 import type {
   ChannelMeta,
   LedgerItem,
@@ -289,12 +289,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
   const targets = new Map(messages.filter((message) => message.platform_message_id)
     .map((message) => [`${message.thread_id}:${message.platform_message_id}`, message]))
   const senderOf = (message: ApiThreadMessage): string | undefined => {
-    const name = message.sender?.name
-    const id = message.actor_kind === 'agent' ? message.agent_tentacle_id : null
-    const runtime = id ? channelMeta(id) : null
-    if (runtime?.native) return runtime.label
-    const agent = id ? id.charAt(0).toUpperCase() + id.slice(1) : undefined
-    return name && agent ? `${name} (${agent})` : name || agent
+    return message.actor_kind === 'agent' ? botLabel(message.agent_tentacle_id) : message.sender?.name
   }
   const textOf = (message: ApiThreadMessage): string => {
     if (!message.segments.some((segment) => segment.type === 'at')) return message.message_text ?? ''
@@ -410,7 +405,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         item: {
           kind: 'agent',
           uid: message.id,
-          label: senderOf(message) ?? 'agent',
+          label: botLabel(message.agent_tentacle_id),
           blocks: [{ type: 'p', text }],
           ...(reply && { reply }),
         },
@@ -425,7 +420,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         item: {
           kind: 'agent',
           uid: `${message.id}.outcome`,
-          label: 'relay',
+          label: botLabel(message.agent_tentacle_id),
           blocks: feedback.map((text) => ({ type: 'p', text })),
         },
       })
@@ -461,7 +456,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     const runtime = channelMeta(agent)
     const deliveries = new Map(messages.flatMap((message) => {
       const outbound = message.thread_messages.find((row) => row.direction === 'outbound' && row.kind !== 'artifact')
-      return outbound ? [[message.id, { label: senderOf(outbound), reply: replyOf(outbound) }] as const] : []
+      return outbound ? [[message.id, { label: botLabel(outbound.agent_tentacle_id ?? conversation?.agent_tentacle_id), reply: replyOf(outbound) }] as const] : []
     }))
     for (const card of replayRun(messages, runtime.native ? runtime.label : agent, children, runtime.native === true)) {
       if (card.item.kind === 'ask' && card.item.nativeCallId) {
@@ -534,22 +529,6 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         ? lastCwd.slice(root.length + 1)
         : lastCwd
 
-  // What the thread cost, as the relay summed it over every response, and what
-  // its last turn was carrying — the newest response's own input, which is the
-  // context it ran with. Summing those would add every turn's context together,
-  // which is not a window.
-  const usage: ThreadUsage = {
-    input: spent.input_tokens ?? 0,
-    output: spent.output_tokens ?? 0,
-    cacheRead: spent.cache_read_tokens ?? 0,
-    cacheWrite: spent.cache_write_tokens ?? 0,
-    cacheRate: null,
-  }
-  const read = usage.input
-  usage.cacheRate = read > 0 ? usage.cacheRead / read : null
-  const latestRun = runs.at(-1)
-  const context = latestRun?.context_used ?? 0
-
   const { agent } = activeRoute(thread)
   return {
     key: thread.channel_thread_id || threadTag(thread.id),
@@ -581,10 +560,21 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     reads,
     sessions: liveSessions(thread.handoffs, own, anchors),
     ledger,
-    usage,
-    ctxK: Math.round(context / 1000),
-    contextWindow: latestRun?.context_window ?? null,
+    ...threadMetrics(conversations, spent),
   }
+}
+
+/** Usage totals and the context of the newest parent run, without reading message pages. */
+export function threadMetrics(conversations: ApiConversation[], spent: ApiUsage): Pick<ThreadDetail, 'usage' | 'ctxK' | 'contextWindow'> {
+  const usage: ThreadUsage = {
+    input: spent.input_tokens ?? 0, output: spent.output_tokens ?? 0,
+    cacheRead: spent.cache_read_tokens ?? 0, cacheWrite: spent.cache_write_tokens ?? 0,
+    cacheRate: null,
+  }
+  usage.cacheRate = usage.input > 0 ? usage.cacheRead / usage.input : null
+  const latest = conversations.filter(conversation => !conversation.subagent_id).flatMap(conversation => conversation.runs)
+    .sort((a, b) => (a.started_at ? Date.parse(a.started_at) : 0) - (b.started_at ? Date.parse(b.started_at) : 0)).at(-1)
+  return { usage, ctxK: Math.round((latest?.context_used ?? 0) / 1000), contextWindow: latest?.context_window ?? null }
 }
 
 /**

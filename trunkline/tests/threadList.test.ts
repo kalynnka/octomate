@@ -2,13 +2,16 @@ import assert from 'node:assert/strict'
 import { after, afterEach, before, beforeEach, mock, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { createServer, type ViteDevServer } from 'vite'
-import type { ApiHandoff, ApiThread, ThreadEvent } from '../src/lib/api/events.ts'
+import type { ApiHandoff, ApiProject, ApiThread, ThreadEvent } from '../src/lib/api/events.ts'
+import type { ThreadDetail } from '../src/lib/api/types.ts'
 import { installLiveSocket, LiveSocket } from './liveSocket.ts'
 
 let server: ViteDevServer
 let api: typeof import('../src/lib/api/index.ts').api
 let queryClient: typeof import('../src/lib/queryClient.ts').queryClient
 let watchThreads: typeof import('../src/state/threads.ts').watchThreads
+let useConsole: typeof import('../src/state/console.ts').useConsole
+let liveThreadDetail: typeof import('../src/lib/api/live.ts').liveThreadDetail
 let stop: (() => void) | undefined
 const globals = ['WebSocket', 'location'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const)
 const tick = () => new Promise(resolve => setImmediate(resolve))
@@ -18,6 +21,7 @@ const thread: ApiThread = {
   project_id: null, status: 'active', created_at: '2026-10-16T01:00:00Z',
   updated_at: '2026-10-16T01:00:00Z', handoffs: [],
 }
+const project: ApiProject = { id: 'project', name: 'octomate', origin: '', root: '/work/octomate', extra_roots: [], description: null, enabled: true }
 const errors: string[] = []
 const rows = () => queryClient.getQueryData<ApiThread[]>(['threads'])!
 
@@ -29,10 +33,13 @@ before(async () => {
   ;({ api } = await server.ssrLoadModule('/src/lib/api/index.ts'))
   ;({ queryClient } = await server.ssrLoadModule('/src/lib/queryClient.ts'))
   ;({ watchThreads } = await server.ssrLoadModule('/src/state/threads.ts'))
+  ;({ useConsole } = await server.ssrLoadModule('/src/state/console.ts'))
+  ;({ liveThreadDetail } = await server.ssrLoadModule('/src/lib/api/live.ts'))
 })
 beforeEach(() => {
   installLiveSocket()
   errors.length = 0
+  useConsole.setState({ selThreadId: '', detail: null, live: [], running: false })
 })
 afterEach(() => {
   stop?.()
@@ -112,6 +119,69 @@ test('an unseen thread is fetched once while subsequent events wait for that row
   assert.equal(rows().length, 1)
   assert.equal(rows()[0].title, 'New title')
   assert.equal(fetch.mock.callCount(), 1)
+})
+
+for (const viewing of ['open', 'cached', 'switched away', 'uncached']) {
+  test(`a project binding refreshes workspace metadata (${viewing}) without replacing history or live output`, async () => {
+    const selected = viewing !== 'cached'
+    const detail = liveThreadDetail({
+      thread: { ...thread, active_agent_tentacle_id: 'codex' }, modelMessages: [], unbound: [], conversations: [], project: null, batches: [], usage: {},
+      cursors: { model: 'older', unbound: null }, totals: { model: 10, unbound: 0 },
+    })
+    detail.ledger.push({ kind: 'user', uid: 'saved', t: '', who: 'Owner', text: 'Already loaded history' })
+    const other = { ...detail, key: 'other' }
+    const live = [{ kind: 'stream' as const, uid: 'reply', text: 'Still answering', streaming: true }]
+    if (viewing !== 'uncached') queryClient.setQueryData(['thread-detail', thread.id], detail)
+    useConsole.setState({ selThreadId: selected ? thread.id : 'other', detail: selected ? detail : other, live, running: true })
+    mock.method(api, 'listThreads', async () => [thread])
+    let resolve!: (response: Response) => void
+    const fetch = mock.method(globalThis, 'fetch', () => new Promise<Response>(done => { resolve = done }))
+    stop = watchThreads(error => errors.push(error))
+    await tick()
+    LiveSocket.last().deliver({ event_kind: 'thread_project_bound', thread_id: thread.id, project_id: 'project', updated_at: thread.updated_at })
+    await tick()
+    assert.equal(fetch.mock.callCount(), 1)
+    assert.equal(fetch.mock.calls[0].arguments[0], `/api/trunkline/threads/${thread.id}/project`)
+    if (viewing === 'switched away') useConsole.setState({ selThreadId: 'other', detail: other })
+    resolve(Response.json(project))
+    await tick()
+    const cached = queryClient.getQueryData<ThreadDetail>(['thread-detail', thread.id])!
+    assert.deepEqual(cached.project, { name: project.name, path: project.root, cwd: undefined })
+    assert.equal(cached.vscode?.dir, project.root)
+    assert.equal(cached.reads?.project?.id, project.id)
+    assert.equal(cached.reads?.thread.project_id, project.id)
+    assert.equal(cached.ledger, detail.ledger)
+    assert.equal(cached.reads?.cursors.model, 'older')
+    assert.deepEqual(useConsole.getState().detail, ['open', 'uncached'].includes(viewing) ? cached : other)
+    assert.equal(useConsole.getState().live, live)
+    assert.equal(useConsole.getState().running, true)
+    assert.deepEqual(errors, [])
+  })
+}
+
+test('a binding received during the initial detail read refreshes the workspace after that snapshot', async () => {
+  let resolve!: (detail: ThreadDetail) => void
+  const pending = queryClient.fetchQuery<ThreadDetail>({
+    queryKey: ['thread-detail', thread.id],
+    queryFn: () => new Promise(done => { resolve = done }),
+  })
+  mock.method(api, 'listThreads', async () => [thread])
+  const fetch = mock.method(globalThis, 'fetch', async () => Response.json(project))
+  stop = watchThreads(error => errors.push(error))
+  await tick()
+  LiveSocket.last().deliver({ event_kind: 'thread_project_bound', thread_id: thread.id, project_id: project.id, updated_at: thread.updated_at })
+  await tick()
+  assert.equal(fetch.mock.callCount(), 0)
+  resolve(liveThreadDetail({
+    thread, modelMessages: [], unbound: [], conversations: [], project: null, batches: [], usage: {},
+    cursors: { model: null, unbound: null }, totals: { model: 0, unbound: 0 },
+  }))
+  useConsole.setState({ selThreadId: thread.id, detail: await pending })
+  await tick()
+  assert.equal(fetch.mock.callCount(), 1)
+  assert.equal(useConsole.getState().detail?.project?.name, project.name)
+  assert.equal(queryClient.getQueryData<ThreadDetail>(['thread-detail', thread.id])?.project?.name, project.name)
+  assert.deepEqual(errors, [])
 })
 
 test('events already reflected in the snapshot do not roll it back', async () => {

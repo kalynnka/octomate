@@ -3,17 +3,20 @@
  * design comp. Chat rows carry id "pm-{uid}" (session rules use their own
  * uid) so the timeline can jump to them.
  */
-import { Fragment, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { answerText } from '@/lib/api/fold'
+import { Fragment, lazy, Suspense, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { answerText, botLabel } from '@/lib/api/fold'
 import type { AgentBlock, AskAnswer, LedgerItem, MessageReply, QueueChip, ToolDetail } from '@/lib/api/types'
 import { useAuth } from '@/state/auth'
-import { ArtifactViewer } from '@/features/artifacts/ArtifactViewer'
 import { useConsole } from '@/state/console'
+import { TextSwap } from '@/components/TextSwap'
 import { Brackets } from '@/components/Brackets'
 import { Icon, type IconName } from '@/components/Icon'
 import { Disclose, Fold } from '@/components/Fold'
 import { Markdown } from '@/components/Markdown'
+import { CopyButton } from '@/components/CopyButton'
 import { cardKind, display, ellipsis, fieldLabel, label, metaLine, microMeta, microSection, mono, sectionLabel, serif, statusNote } from '@/components/text'
+
+const ArtifactViewer = lazy(() => import('@/features/artifacts/ArtifactViewer').then(module => ({ default: module.ArtifactViewer })))
 
 const ghost3: CSSProperties = { color: 'var(--fg-3)' }
 
@@ -43,7 +46,7 @@ function InlineCode({ text, size = 12.5 }: { text: string; size?: number }) {
 }
 
 function CapsLabel({ children, style }: { children: ReactNode; style?: CSSProperties }) {
-  return <span style={{ ...metaLine, color: 'var(--fg-3)', ...style }}>{children}</span>
+  return <span style={{ ...metaLine, color: 'var(--fg-3)', ...style }}>{typeof children === 'string' || typeof children === 'number' ? <TextSwap>{children}</TextSwap> : children}</span>
 }
 
 function UserChips({ chips, width }: { chips: QueueChip[]; width: string }) {
@@ -123,6 +126,9 @@ function UserRow({ item }: { item: Extract<LedgerItem, { kind: 'user' }> }) {
       >
         {item.reply && <ReplyPreview reply={item.reply} />}
         {item.text}
+      </div>
+      <div className="trk-message-actions">
+        <CopyButton text={item.text} label="Copy message" className="trk-message-copy" />
       </div>
     </div>
   )
@@ -207,6 +213,12 @@ function AgentRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'agent'
           return <DiffBlock key={i} uid={item.uid} index={i} diff={b.diff} />
         })}
       </div>
+      <div className="trk-message-actions" style={{ maxWidth: cardMax }}>
+        <CopyButton text={item.blocks.map(block => block.type === 'p' ? block.text : block.type === 'ul'
+          ? block.items.map(line => `- ${line}`).join('\n')
+          : `\`\`\`diff\n${block.diff.lines.map(line => line.text).join('\n')}\n\`\`\``).join('\n\n')}
+          label="Copy message" className="trk-message-copy" />
+      </div>
     </div>
   )
 }
@@ -262,10 +274,9 @@ function ThinkRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'thi
   // An explicit toggle is remembered by uid and outlives the transition.
   const open = useConsole((s) => s.open[item.uid] ?? item.thinking)
   const { toggleCardOpen } = useConsole((s) => s.actions)
-  // A tailed runtime signs its thinking and keeps the text, so a replayed block
-  // arrives empty. That is worth saying on the row itself — the alternative is a
-  // card that opens on nothing and reads as a relay that dropped it.
+  // Native transcripts can record a reasoning block without readable text.
   const recorded = item.text.trim().length > 0
+  const badge = !recorded && !item.thinking ? 'Unavailable' : item.format === 'summary' ? 'Summary' : null
   return (
     <div
       id={`pm-${item.uid}`}
@@ -273,32 +284,20 @@ function ThinkRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'thi
       style={{ '--i': i ?? 0, maxWidth: cardMax, position: 'relative', border: '1px solid var(--line-divider)', background: 'var(--card-bg)' } as CSSProperties}
     >
       <Brackets />
-      <div onClick={() => toggleCardOpen(item.uid, item.thinking)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 13px', cursor: 'pointer' }}>
+      <button type="button" className="trk-thinking-toggle hov-wash" aria-expanded={open} onClick={() => toggleCardOpen(item.uid, item.thinking)}>
         <Disclose open={open} style={{ ...mono(11), ...ghost3, width: 12 }} />
         <Icon name="sparkle" style={{ color: 'var(--fg-2)' }} />
         <span style={{ ...cardKind, color: 'var(--fg-1)' }}>Thinking</span>
+        {badge && <span className="trk-thinking-format" title={badge === 'Summary' ? 'A summary of reasoning provided by the harness' : 'No readable reasoning text or summary was supplied'}><TextSwap>{badge}</TextSwap></span>}
         <span style={{ flex: 1 }} />
-        <span style={{ ...metaLine, color: 'var(--fg-3)' }}>
-          {recorded || item.thinking ? item.dur : 'not recorded'}
-        </span>
-      </div>
+        {item.dur && <TextSwap style={{ ...metaLine, color: 'var(--fg-3)' }}>{item.dur}</TextSwap>}
+      </button>
       <Fold open={open}>
         <div style={{ borderTop: '1px solid var(--line-divider)', padding: '10px 12px' }}>
-          <div style={{ borderLeft: '2px solid var(--line-divider)', padding: '6px 14px' }}>
-            <p
-              style={{
-                margin: 0,
-                ...serif(13),
-                lineHeight: 1.65,
-                color: recorded ? 'var(--fg-2)' : 'var(--fg-3)',
-                fontStyle: 'italic',
-                whiteSpace: 'pre-wrap',
-              }}
-            >
-              {recorded
-                ? item.text
-                : 'The runtime signed this block and wrote no text with it — the reasoning never reached the transcript, so there was nothing to tail.'}
-            </p>
+          <div className="trk-thinking-content" style={{ ...serif(13), lineHeight: 1.65, color: recorded ? 'var(--fg-2)' : 'var(--fg-1)' }}>
+            {recorded ? <Markdown text={item.text} cursor={item.thinking} /> : <p style={{ margin: 0, fontStyle: 'italic' }}>
+              This transcript records a reasoning block but contains no readable reasoning text or summary.
+            </p>}
           </div>
         </div>
       </Fold>
@@ -322,7 +321,7 @@ function PlanRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'plan
         <Icon name="listChecks" style={{ color: 'var(--fg-1)' }} />
         <span style={{ ...cardKind, color: 'var(--fg-1)' }}>Plan</span>
         <span style={{ flex: 1 }} />
-        <span style={{ ...metaLine, color: 'var(--fg-3)' }}>{counter}</span>
+        <TextSwap style={{ ...metaLine, color: 'var(--fg-3)' }}>{counter}</TextSwap>
       </div>
       <Fold open={open}>
         <div style={{ borderTop: '1px solid var(--line-divider)', padding: '8px 13px' }}>
@@ -584,18 +583,9 @@ function ToolRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'tool
           </span>
         )}
         <span style={{ flex: 1 }} />
-        {item.dur && <span style={{ ...mono(8), ...ghost3 }}>{item.dur}</span>}
-        {item.status === 'run' ? (
-          <>
-            <span style={{ width: 5, height: 5, borderRadius: 9999, background: 'var(--color-accent)', animation: 'trkPulse 1.2s infinite' }} />
-            <span style={{ ...statusNote, color: 'var(--color-accent)' }}>run</span>
-          </>
-        ) : (
-          <>
-            <span style={{ width: 5, height: 5, borderRadius: 9999, background: 'var(--color-sage)' }} />
-            <span style={{ ...statusNote, color: 'var(--color-sage)' }}>done</span>
-          </>
-        )}
+        {item.dur && <TextSwap style={{ ...mono(8), ...ghost3 }}>{item.dur}</TextSwap>}
+        <span style={{ width: 5, height: 5, borderRadius: 9999, background: item.status === 'run' ? 'var(--color-accent)' : 'var(--color-sage)', animation: item.status === 'run' ? 'trkPulse 1.2s infinite' : undefined }} />
+        <TextSwap style={{ ...statusNote, color: item.status === 'run' ? 'var(--color-accent)' : 'var(--color-sage)' }}>{item.status === 'run' ? 'run' : 'done'}</TextSwap>
       </div>
       <Fold open={open}>
         <div>
@@ -1159,8 +1149,12 @@ function StreamRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'strea
     return () => { cancelAnimationFrame(frame); cancelAnimationFrame(scroll) }
   }, [streaming])
   return (
-    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry" style={{ maxWidth: cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
+    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry" style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
+      <CapsLabel style={{ textTransform: 'none' }}>{item.label ?? botLabel()}</CapsLabel>
       <Markdown text={streaming ? text : item.text} cursor={streaming} />
+      <div className="trk-message-actions">
+        <CopyButton text={streaming ? text : item.text} label="Copy message" className="trk-message-copy" />
+      </div>
     </div>
   )
 }
@@ -1171,7 +1165,7 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
   switch (item.kind) {
     case 'artifact':
       return <div id={`pm-${item.uid}`} className="lt-entry trk-artifact-row">
-        <ArtifactViewer artifactId={item.artifactId} messageId={item.uid} threadId={threadId} />
+        <Suspense fallback={<div role="status">Loading artifact…</div>}><ArtifactViewer artifactId={item.artifactId} messageId={item.uid} threadId={threadId} /></Suspense>
       </div>
     case 'divider':
       return (

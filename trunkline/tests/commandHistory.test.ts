@@ -44,7 +44,7 @@ for (const outcome of [
     const reply = detail.ledger[1]
     assert.equal(reply.kind, 'agent')
     if (reply.kind !== 'agent') return
-    assert.equal(reply.label, 'relay')
+    assert.equal(reply.label, 'Octomate(Codex)')
     assert.deepEqual(reply.blocks, outcome.status === 'completed'
       ? [{ type: 'p', text: 'Usage: 42 tokens' }, { type: 'p', text: 'Quota: 80% left' }]
       : [{ type: 'p', text: 'The runtime is offline.' }])
