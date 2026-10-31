@@ -3,18 +3,20 @@
  * design comp. Chat rows carry id "pm-{uid}" (session rules use their own
  * uid) so the timeline can jump to them.
  */
-import { Fragment, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { answerText } from '@/lib/api/fold'
+import { Fragment, lazy, Suspense, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { answerText, botLabel } from '@/lib/api/fold'
 import type { AgentBlock, AskAnswer, LedgerItem, MessageReply, QueueChip, ToolDetail } from '@/lib/api/types'
 import { useAuth } from '@/state/auth'
-import { ArtifactViewer } from '@/features/artifacts/ArtifactViewer'
 import { useConsole } from '@/state/console'
+import { TextSwap } from '@/components/TextSwap'
 import { Brackets } from '@/components/Brackets'
 import { Icon, type IconName } from '@/components/Icon'
 import { Disclose, Fold } from '@/components/Fold'
 import { Markdown } from '@/components/Markdown'
 import { CopyButton } from '@/components/CopyButton'
 import { cardKind, display, ellipsis, fieldLabel, label, metaLine, microMeta, microSection, mono, sectionLabel, serif, statusNote } from '@/components/text'
+
+const ArtifactViewer = lazy(() => import('@/features/artifacts/ArtifactViewer').then(module => ({ default: module.ArtifactViewer })))
 
 const ghost3: CSSProperties = { color: 'var(--fg-3)' }
 
@@ -44,7 +46,7 @@ function InlineCode({ text, size = 12.5 }: { text: string; size?: number }) {
 }
 
 function CapsLabel({ children, style }: { children: ReactNode; style?: CSSProperties }) {
-  return <span style={{ ...metaLine, color: 'var(--fg-3)', ...style }}>{children}</span>
+  return <span style={{ ...metaLine, color: 'var(--fg-3)', ...style }}>{typeof children === 'string' || typeof children === 'number' ? <TextSwap>{children}</TextSwap> : children}</span>
 }
 
 function UserChips({ chips, width }: { chips: QueueChip[]; width: string }) {
@@ -286,9 +288,9 @@ function ThinkRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'thi
         <Disclose open={open} style={{ ...mono(11), ...ghost3, width: 12 }} />
         <Icon name="sparkle" style={{ color: 'var(--fg-2)' }} />
         <span style={{ ...cardKind, color: 'var(--fg-1)' }}>Thinking</span>
-        {badge && <span className="trk-thinking-format" title={badge === 'Summary' ? 'A summary of reasoning provided by the harness' : 'No readable reasoning text or summary was supplied'}>{badge}</span>}
+        {badge && <span className="trk-thinking-format" title={badge === 'Summary' ? 'A summary of reasoning provided by the harness' : 'No readable reasoning text or summary was supplied'}><TextSwap>{badge}</TextSwap></span>}
         <span style={{ flex: 1 }} />
-        {item.dur && <span style={{ ...metaLine, color: 'var(--fg-3)' }}>{item.dur}</span>}
+        {item.dur && <TextSwap style={{ ...metaLine, color: 'var(--fg-3)' }}>{item.dur}</TextSwap>}
       </button>
       <Fold open={open}>
         <div style={{ borderTop: '1px solid var(--line-divider)', padding: '10px 12px' }}>
@@ -319,7 +321,7 @@ function PlanRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'plan
         <Icon name="listChecks" style={{ color: 'var(--fg-1)' }} />
         <span style={{ ...cardKind, color: 'var(--fg-1)' }}>Plan</span>
         <span style={{ flex: 1 }} />
-        <span style={{ ...metaLine, color: 'var(--fg-3)' }}>{counter}</span>
+        <TextSwap style={{ ...metaLine, color: 'var(--fg-3)' }}>{counter}</TextSwap>
       </div>
       <Fold open={open}>
         <div style={{ borderTop: '1px solid var(--line-divider)', padding: '8px 13px' }}>
@@ -581,18 +583,9 @@ function ToolRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'tool
           </span>
         )}
         <span style={{ flex: 1 }} />
-        {item.dur && <span style={{ ...mono(8), ...ghost3 }}>{item.dur}</span>}
-        {item.status === 'run' ? (
-          <>
-            <span style={{ width: 5, height: 5, borderRadius: 9999, background: 'var(--color-accent)', animation: 'trkPulse 1.2s infinite' }} />
-            <span style={{ ...statusNote, color: 'var(--color-accent)' }}>run</span>
-          </>
-        ) : (
-          <>
-            <span style={{ width: 5, height: 5, borderRadius: 9999, background: 'var(--color-sage)' }} />
-            <span style={{ ...statusNote, color: 'var(--color-sage)' }}>done</span>
-          </>
-        )}
+        {item.dur && <TextSwap style={{ ...mono(8), ...ghost3 }}>{item.dur}</TextSwap>}
+        <span style={{ width: 5, height: 5, borderRadius: 9999, background: item.status === 'run' ? 'var(--color-accent)' : 'var(--color-sage)', animation: item.status === 'run' ? 'trkPulse 1.2s infinite' : undefined }} />
+        <TextSwap style={{ ...statusNote, color: item.status === 'run' ? 'var(--color-accent)' : 'var(--color-sage)' }}>{item.status === 'run' ? 'run' : 'done'}</TextSwap>
       </div>
       <Fold open={open}>
         <div>
@@ -1157,6 +1150,7 @@ function StreamRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'strea
   }, [streaming])
   return (
     <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry" style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
+      <CapsLabel style={{ textTransform: 'none' }}>{item.label ?? botLabel()}</CapsLabel>
       <Markdown text={streaming ? text : item.text} cursor={streaming} />
       <div className="trk-message-actions">
         <CopyButton text={streaming ? text : item.text} label="Copy message" className="trk-message-copy" />
@@ -1171,7 +1165,7 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
   switch (item.kind) {
     case 'artifact':
       return <div id={`pm-${item.uid}`} className="lt-entry trk-artifact-row">
-        <ArtifactViewer artifactId={item.artifactId} messageId={item.uid} threadId={threadId} />
+        <Suspense fallback={<div role="status">Loading artifact…</div>}><ArtifactViewer artifactId={item.artifactId} messageId={item.uid} threadId={threadId} /></Suspense>
       </div>
     case 'divider':
       return (

@@ -70,11 +70,11 @@ test('newline rendering keeps code literal and raw HTML escaped', () => {
   assert.ok(!html.includes('<script>'))
 })
 
-test('language fences highlight code without changing its escaped content', () => {
+test('language fences preserve escaped code before highlighting loads', () => {
   const html = renderToStaticMarkup(createElement(Markdown, { text: '```python\nimport json\ncount = 42\nprint("<script>literal</script>")\n```' }))
-  assert.ok(html.includes('class="hljs-keyword">import</span>'))
-  assert.ok(html.includes('class="hljs-number">42</span>'))
-  assert.ok(html.includes('class="hljs-string">'))
+  assert.ok(html.includes('data-language="python"'))
+  assert.ok(html.includes('import json\ncount = 42\n'))
+  assert.ok(!html.includes('hljs-'))
   assert.ok(html.includes('&lt;script&gt;literal&lt;/script&gt;'))
   assert.ok(!html.includes('<script>'))
 })
@@ -85,7 +85,7 @@ test('unknown languages remain escaped plain code', () => {
   assert.ok(!html.includes('hljs-'))
 })
 
-for (const [fence, language] of [['python', 'Python'], ['js', 'JavaScript'], ['unknown-language', 'unknown-language'], ['', 'Plain text']]) {
+for (const [fence, language] of [['python', 'python'], ['js', 'js'], ['unknown-language', 'unknown-language'], ['', 'Plain text']]) {
   test(`${fence || 'unlabelled'} code gets its language and blank lines counted without changing the source`, () => {
     const html = renderToStaticMarkup(createElement(Markdown, { text: `\`\`\`${fence}\nfirst\n\nthird\n\`\`\`` }))
     assert.ok(html.includes(`<span>${language}</span><span>3 lines</span>`))
@@ -100,9 +100,9 @@ test('indented code has the same plain-text frame and gutter', () => {
   assert.ok(html.includes('<pre><code>first\nsecond\n</code></pre>'))
 })
 
-test('line numbers preserve syntax spans across multiline comments', () => {
+test('line numbers preserve multiline comments before highlighting loads', () => {
   const html = renderToStaticMarkup(createElement(Markdown, { text: '```js\n/* first\nsecond */\nconst count = 1\n```' }))
-  assert.ok(html.includes('<span class="hljs-comment">/* first\nsecond */</span>'))
+  assert.ok(html.includes('/* first\nsecond */\nconst count = 1\n</code>'))
   assert.ok(html.includes('<span>3 lines</span>'))
 })
 

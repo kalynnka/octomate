@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useProjects } from '@/lib/api/hooks'
 import { useConsole } from '@/state/console'
 import { ellipsis, label, mono } from '@/components/text'
+import { TextSwap } from '@/components/TextSwap'
 import { navigateGatewayMenu } from './gateway'
 
 /**
@@ -101,7 +102,7 @@ export function NewThreadStrip() {
           }}
         >
           <span style={{ color: chosen ? 'var(--color-accent)' : 'var(--fg-2)' }}>
-            {chosen ? chosen.name : 'no project'}
+            <TextSwap>{chosen ? chosen.name : 'no project'}</TextSwap>
           </span>
           {!ntStarted && (
             <span style={{ fontSize: 7, color: 'var(--fg-3)', lineHeight: 1, marginTop: 1 }}>▾</span>
@@ -149,11 +150,11 @@ export function NewThreadStrip() {
         )}
       </span>
       <span style={{ ...mono(8.5), color: 'var(--fg-3)', ...ellipsis, minWidth: 0, flexShrink: 1 }}>
-        {chosen ? chosen.root : 'nothing is registered until a project claims it'}
+        <TextSwap>{chosen ? chosen.root : 'nothing is registered until a project claims it'}</TextSwap>
       </span>
       <span style={{ flex: 1, minWidth: 8 }} />
       <span style={{ ...mono(8), color: 'var(--fg-3)', whiteSpace: 'nowrap', flexShrink: 0 }}>
-        {ntStarted ? 'filed — a thread keeps its project' : 'filed with the first directive'}
+        <TextSwap>{ntStarted ? 'filed — a thread keeps its project' : 'filed with the first directive'}</TextSwap>
       </span>
     </div>
   )

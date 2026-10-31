@@ -87,6 +87,7 @@ beforeEach(() => {
   Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: () => 0 })
   installLiveSocket()
   mock.method(api, 'getThreadDetail', async () => sourceDetail)
+  mock.method(api, 'getThreadMetrics', async () => sourceDetail)
   useConsole.setState({ selThreadId: 'source', detail: null, ntOn: false, running: false, gatewayPending: null, gatewayMode: null, live: [], notices: [] })
 })
 afterEach(() => {
@@ -339,7 +340,7 @@ for (const initiator of ['operator', 'agent']) {
       transport.mock.mockImplementation(async () => live(result))
       useConsole.getState().actions.sendDirective('who are you?')
       for (let at = 0; at < 200 && useConsole.getState().running; at++) await new Promise((resolve) => setTimeout(resolve, 0))
-      assert.ok(String(transport.mock.calls.at(-1)?.arguments[0]).endsWith('/messages'))
+      assert.ok(transport.mock.calls.some(call => String(call.arguments[0]).endsWith('/messages')))
       assert.equal(useConsole.getState().gatewayMode, null)
       assert.equal(useConsole.getState().running, false)
     }
@@ -380,7 +381,7 @@ test('the header follows the relay: an in-place summon is open with no suggested
   queryClient.setQueryData(['threads'], [])
   queryClient.setQueryData(['thread-operations', 'source'], options)
   const header = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ChatHeader)))
-  assert.ok(header.includes('>Summon</span></button>'))
+  assert.match(header, />Summon(?:<\/span>)+<\/button>/)
   assert.ok(header.includes('aria-pressed="false"'))
   assert.ok(header.includes('title="Current surface"'))
 })
@@ -392,7 +393,7 @@ test('the header selects the operation opened through a command', () => {
   queryClient.setQueryData(['threads'], [])
   queryClient.setQueryData(['thread-operations', 'source'], { ...options, teleport: { ...inPlace, destinations: [fresh] } })
   const header = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ChatHeader)))
-  assert.ok(header.includes('>Summon</span></button>'))
+  assert.match(header, />Summon(?:<\/span>)+<\/button>/)
   assert.ok(header.includes('aria-pressed="true" title="Back to chat"'))
 })
 
@@ -686,7 +687,7 @@ for (const [teleport, summon, expected] of [
       summon: summon ? inPlace : refused,
     })
     const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ChatHeader)))
-    assert.ok(html.includes(`>${expected}</span></button>`))
+    assert.match(html, new RegExp(`>${expected}(?:</span>)+</button>`))
     assert.equal(html.includes('aria-disabled="true"'), !teleport && !summon)
   })
 }

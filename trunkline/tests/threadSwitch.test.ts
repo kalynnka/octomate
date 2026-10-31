@@ -60,6 +60,7 @@ beforeEach(() => {
   Object.defineProperty(globalThis, 'window', { configurable: true, value: { matchMedia: () => ({ matches: false }) } })
   Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: () => 0 })
   installLiveSocket()
+  mock.method(api, 'getThreadMetrics', async () => detail)
   useConsole.setState({ selThreadId: 'other', detail: null, mgmtSec: '' })
 })
 afterEach(() => {
@@ -112,6 +113,7 @@ test('skipping a pending transition handles its rejection and keeps the newly se
 })
 
 test('a new thread adopts its saved identity without a transition or replacing its live messages', async () => {
+  mock.method(api, 'getThreadMetrics', async () => ({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheRate: 0 }, ctxK: 0 }))
   let sendKey = ''
   const saved: ApiThread = {
     id: 'saved-thread', kind: 'thread', chat_type: 'thread', chat_id: 'owner',
@@ -345,6 +347,7 @@ test('a driven run reads its persisted usage when it settles and after reopening
     contextWindow: 262144,
   }
   const getDetail = mock.method(api, 'getThreadDetail', async () => live)
+  const metrics = mock.method(api, 'getThreadMetrics', async () => recorded)
   mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) =>
     init?.method === 'POST' ? new Response(null, { status: 202 }) : Response.json([]))
   queryClient.setQueryData(['thread-detail', 'solo'], live)
@@ -366,7 +369,8 @@ test('a driven run reads its persisted usage when it settles and after reopening
   assert.deepEqual(useConsole.getState().detail?.usage, recorded.usage)
   assert.equal(useConsole.getState().detail?.ctxK, recorded.ctxK)
   assert.equal(useConsole.getState().detail?.contextWindow, recorded.contextWindow)
-  assert.equal(getDetail.mock.callCount(), 2)
+  assert.equal(getDetail.mock.callCount(), 1)
+  assert.equal(metrics.mock.callCount(), 1)
   assert.ok(useConsole.getState().live.some((item) => item.kind === 'stream' && item.text === 'done'))
 
   await actions.selectThread('trunkline', 'solo')
@@ -389,10 +393,11 @@ test('a persisted usage read cannot update the thread selected while it was pend
 
   let resolve!: (value: ThreadDetail) => void
   const reading = new Promise<ThreadDetail>((done) => { resolve = done })
-  getDetail.mock.mockImplementation((id: string) => id === 'refreshing' ? reading : Promise.resolve(other))
+  const metrics = mock.method(api, 'getThreadMetrics', () => reading)
   run.deliver({ event_kind: 'reflex_awake' }, result, { event_kind: 'reflex_asleep' })
-  for (let at = 0; at < 200 && getDetail.mock.callCount() < 2; at++) await tick()
-  assert.equal(getDetail.mock.callCount(), 2)
+  for (let at = 0; at < 200 && metrics.mock.callCount() < 1; at++) await tick()
+  assert.equal(getDetail.mock.callCount(), 1)
+  assert.equal(metrics.mock.callCount(), 1)
 
   await actions.selectThread('trunkline', 'other')
   resolve({ ...live, ctxK: 99 })

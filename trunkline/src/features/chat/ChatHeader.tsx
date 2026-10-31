@@ -1,8 +1,9 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { useConsole } from '@/state/console'
-import { useThreadOperations, useThreads } from '@/lib/api/hooks'
+import { useThreadOperations, useThreadSummary } from '@/lib/api/hooks'
 import { channelMeta } from '@/lib/api/live'
 import { Icon } from '@/components/Icon'
+import { TextSwap } from '@/components/TextSwap'
 import { ellipsis, label, mono } from '@/components/text'
 
 const operations = {
@@ -32,7 +33,8 @@ export function ChatHeader() {
     void eligibility.refetch()
     setGatewayMode({ threadId: selThreadId, action })
   }
-  const { data: threads } = useThreads()
+  const thread = useThreadSummary(selThreadId)
+  const threadKey = detail?.key ?? (thread?.key || thread?.tag) ?? '—'
   const [choice, setChoice] = useState<Operation | null>(null)
   const [copied, setCopied] = useState<{ id: string; version: number } | null>(null)
   const showingCopied = !ntOn && copied?.id === selThreadId
@@ -62,9 +64,7 @@ export function ChatHeader() {
   const isDark = theme === 'dark' || (theme === 'auto' && sysDark)
   const title = ntOn
     ? ntTitle || 'untitled — new thread'
-    : (Object.values(threads ?? {})
-        .flat()
-        .find((t) => t.id === selThreadId)?.title ?? '')
+    : thread?.title ?? ''
 
   const iconBtn = (onClick: () => void, title2: string, active: boolean, children: React.ReactNode, expanded?: boolean) => (
     <button
@@ -110,7 +110,7 @@ export function ChatHeader() {
       }}
     >
       <span className="trk-head-title">
-        <span style={{ ...label(10, '.14em'), color: 'var(--fg-1)', minWidth: 0, maxWidth: '100%', ...ellipsis }}>{title}</span>
+        <TextSwap style={{ ...label(10, '.14em'), color: 'var(--fg-1)', minWidth: 0, maxWidth: '100%', ...ellipsis }}>{title}</TextSwap>
         <button
           type="button"
           disabled={ntOn || !detail}
@@ -122,7 +122,7 @@ export function ChatHeader() {
           }}
           style={{ ...mono(8.5, 700), color: 'var(--color-accent)', flexShrink: 0, border: 0, padding: 0, background: 'transparent', position: 'relative', minWidth: '8ch', cursor: ntOn || !detail ? 'default' : 'pointer' }}
         >
-          <span style={{ visibility: showingCopied ? 'hidden' : undefined }}>{detail?.key ?? selThreadId}</span>
+          <TextSwap style={{ visibility: showingCopied ? 'hidden' : undefined }}>{threadKey}</TextSwap>
           {showingCopied && <span key={copied.version} role="status" className="trk-copy-confirm">✓ Copied</span>}
         </button>
       </span>
@@ -135,7 +135,7 @@ export function ChatHeader() {
           whiteSpace: 'nowrap', flexShrink: 0,
         }}
       >
-        {channelMeta(selChannel).label}
+        <TextSwap>{channelMeta(selChannel).label}</TextSwap>
       </span>
       <span
         onKeyDown={(event) => {
@@ -176,13 +176,12 @@ export function ChatHeader() {
             position: 'relative', zIndex: 60,
           }}
         >
-          <span key={operation} className="trk-operation-label">
+          <span className="trk-operation-label">
             <Icon name={operation === 'teleport' ? 'arrowRightLeft' : 'wandSparkles'} size={12} style={{ flexShrink: 0 }} />
-            {pending?.threadId === selThreadId ? (
-              <span aria-label={pending.action === 'teleport' ? 'Teleporting' : 'Summoning'}>
-                {pending.action === 'teleport' ? 'Moving' : 'Summon'}<span className="lt-fork-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>
-              </span>
-            ) : selected.label}
+            <span aria-label={pending?.threadId === selThreadId ? pending.action === 'teleport' ? 'Teleporting' : 'Summoning' : undefined}>
+              <TextSwap>{pending?.threadId === selThreadId ? pending.action === 'teleport' ? 'Moving' : 'Summon' : selected.label}</TextSwap>
+              {pending?.threadId === selThreadId && <span className="lt-fork-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>}
+            </span>
           </span>
         </button>
         <button

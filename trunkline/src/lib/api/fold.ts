@@ -438,7 +438,7 @@ export function replayRun(
           if (!part.content) break
           push(
             index < lastWork
-              ? { kind: 'stream', text: part.content, streaming: false }
+              ? { kind: 'stream', text: part.content, streaming: false, label: botLabel(agent) }
               : { kind: 'agent', label: botLabel(agent), blocks: [{ type: 'p', text: part.content }] },
           )
           break
@@ -501,6 +501,7 @@ export class TurnFold {
       this.streamText = text
       this.streamUid = this.sink.push({
         kind: 'stream',
+        label: botLabel(this.nativeAgent),
         text,
         streaming: true,
       })

@@ -1,5 +1,5 @@
-import hljs from 'highlight.js/lib/common'
 import MarkdownIt from 'markdown-it'
+import { tex } from '@mdit/plugin-tex'
 import type { Mounted } from 'pele'
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
@@ -10,9 +10,10 @@ import { CopyButton } from './CopyButton'
 const md = new MarkdownIt({
   linkify: true,
   breaks: true,
-  highlight: (code, language) => hljs.getLanguage(language)
-    ? hljs.highlight(code, { language, ignoreIllegals: true }).value
-    : '',
+})
+md.use(tex, {
+  delimiters: 'all',
+  render: (source, display) => `<span class="trk-math" data-source="${md.utils.escapeHtml(source)}" data-display="${display}">${md.utils.escapeHtml(source)}</span>`,
 })
 
 for (const rule of ['fence', 'code_block']) {
@@ -24,10 +25,10 @@ for (const rule of ['fence', 'code_block']) {
     if (language === 'mermaid') {
       return `<div class="trk-mermaid" data-source="${md.utils.escapeHtml(token.content)}">${html}</div>\n`
     }
-    const name = md.utils.escapeHtml(hljs.getLanguage(language)?.name || language || 'Plain text')
+    const name = md.utils.escapeHtml(language || 'Plain text')
     const count = token.content.replace(/\n$/, '').split('\n').length
     const numbers = Array.from({ length: count }, (_, index) => index + 1).join('\n')
-    return `<div class="trk-code-block"><div class="trk-code-header"><span>${name}</span><span>${count} ${count === 1 ? 'line' : 'lines'}</span><span class="trk-code-copy"></span></div><div class="trk-code-scroll" role="region" aria-label="${name} code" tabindex="0"><span class="trk-code-gutter" aria-hidden="true">${numbers}</span>${html}</div></div>\n`
+    return `<div class="trk-code-block" data-language="${md.utils.escapeHtml(language)}"><div class="trk-code-header"><span>${name}</span><span>${count} ${count === 1 ? 'line' : 'lines'}</span><span class="trk-code-copy"></span></div><div class="trk-code-scroll" role="region" aria-label="${name} code" tabindex="0"><span class="trk-code-gutter" aria-hidden="true">${numbers}</span>${html}</div></div>\n`
   }
 }
 
@@ -73,6 +74,26 @@ export const Markdown = memo(function Markdown({ text, cursor = false }: { text:
       }
     }
     return md.renderer.render(tokens, md.options, {})
+  }, [text, cursor])
+
+  useEffect(() => {
+    const blocks = root.current?.querySelectorAll<HTMLElement>('.trk-code-block[data-language]:not([data-language=""])')
+    if (!blocks?.length) return
+    let active = true
+    void import('./highlight').then(({ highlightCode }) => {
+      if (active) blocks.forEach(highlightCode)
+    })
+    return () => { active = false }
+  }, [text, cursor])
+
+  useEffect(() => {
+    const nodes = root.current?.querySelectorAll<HTMLElement>('.trk-math')
+    if (!nodes?.length) return
+    let active = true
+    void import('./math').then(({ renderMath }) => {
+      if (active) nodes.forEach(renderMath)
+    })
+    return () => { active = false }
   }, [text, cursor])
 
   useEffect(() => {

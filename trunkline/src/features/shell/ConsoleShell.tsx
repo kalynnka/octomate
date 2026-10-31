@@ -35,6 +35,13 @@ export function ConsoleShell() {
   // which is the trade the shortcut is worth.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !event.defaultPrevented && overlayOpen && window.matchMedia('(max-width: 599px), (max-height: 519px) and (max-width: 999px)').matches) {
+        const state = useConsole.getState()
+        const target = state.traceOn ? '[aria-controls="trk-trace-panel"]' : !state.sbFold ? '[aria-controls="trk-channel-list"]' : '[aria-label="Control"]'
+        closeOverlays()
+        requestAnimationFrame(() => document.querySelector<HTMLElement>(target)?.focus())
+        return
+      }
       if (useConsole.getState().mgmtSec) return
       if (event.key !== 'Tab' || !event.shiftKey) return
       if (event.ctrlKey || event.metaKey || event.altKey) return
@@ -43,7 +50,7 @@ export function ConsoleShell() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [cyclePermissionMode])
+  }, [cyclePermissionMode, closeOverlays, overlayOpen])
   return (
     <div
       className="paper-texture"

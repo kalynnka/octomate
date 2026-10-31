@@ -16,13 +16,14 @@ let server: ViteDevServer
 let liveThreadDetail: typeof import('../src/lib/api/live.ts').liveThreadDetail
 let withOlderPage: typeof import('../src/lib/api/live.ts').withOlderPage
 let holdingBack: typeof import('../src/lib/api/live.ts').holdingBack
+let threadMetrics: typeof import('../src/lib/api/live.ts').threadMetrics
 
 before(async () => {
   server = await createServer({
     root: fileURLToPath(new URL('../', import.meta.url)),
     server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom',
   })
-  ;({ liveThreadDetail, withOlderPage, holdingBack } = await server.ssrLoadModule('/src/lib/api/live.ts'))
+  ;({ liveThreadDetail, withOlderPage, holdingBack, threadMetrics } = await server.ssrLoadModule('/src/lib/api/live.ts'))
 })
 after(async () => { await server?.close() })
 
@@ -47,6 +48,18 @@ const conversation: ApiConversation = {
     permission_mode: null, cwd: null, parent_run_id: null, parent_tool_call_id: null, started_at: null,
   }],
 }
+
+test('metrics keep aggregate cache totals and use the newest parent run for context', () => {
+  const newer: ApiConversation = { ...conversation, id: 'newer', runs: [{ ...conversation.runs[0], id: 'newer-run', started_at: '2026-10-31T10:00:00Z', context_used: 24000, context_window: 262144 }] }
+  const child: ApiConversation = { ...newer, id: 'child', subagent_id: 'worker', runs: [{ ...newer.runs[0], id: 'child-run', started_at: '2026-10-31T11:00:00Z', context_used: 99000 }] }
+  assert.deepEqual(threadMetrics([newer, conversation, child], { input_tokens: 500000, output_tokens: 4588, cache_read_tokens: 464192 }), {
+    usage: { input: 500000, output: 4588, cacheRead: 464192, cacheWrite: 0, cacheRate: 464192 / 500000 },
+    ctxK: 24, contextWindow: 262144,
+  })
+  assert.deepEqual(threadMetrics([], {}), {
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null }, ctxK: 0, contextWindow: null,
+  })
+})
 
 const said = (id: string, text: string, actor: 'human' | 'system'): ApiThreadMessage => ({
   kind: 'message', id, thread_id: 'thread', platform_message_id: null, reply_id: '', happened_at: at, direction: 'inbound',

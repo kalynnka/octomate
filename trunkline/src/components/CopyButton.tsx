@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Icon } from './Icon'
+import { TextSwap } from './TextSwap'
 
 export function CopyButton({ text, label, className = '' }: { text: string; label: string; className?: string }) {
   const [result, setResult] = useState<{ status: 'copied' | 'failed' } | null>(null)
@@ -25,6 +26,6 @@ export function CopyButton({ text, label, className = '' }: { text: string; labe
     }}
   >
     <Icon name={status === 'copied' ? 'check' : 'copy'} size={12} />
-    <span role="status">{status === 'copied' ? 'Copied' : status === 'failed' ? 'Copy failed' : ''}</span>
+    <span role="status"><TextSwap>{status === 'copied' ? 'Copied' : status === 'failed' ? 'Copy failed' : ''}</TextSwap></span>
   </button>
 }

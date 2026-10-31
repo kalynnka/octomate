@@ -5,6 +5,8 @@ for (const width of [1280, 390]) {
   test(`header controls work by keyboard and timeline previews stay readable at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 })
     const timestamp = '2026-10-31T02:00:00Z'
+    let showThreads!: () => void
+    const threadsReady = new Promise<void>(resolve => { showThreads = resolve })
     const thread: ApiThread = {
       id: 'thread-a', kind: 'thread', chat_type: 'thread', chat_id: 'owner',
       channel_tentacle_id: 'trunkline', channel_thread_id: 'thread-key', title: 'Timeline previews',
@@ -37,7 +39,10 @@ for (const width of [1280, 390]) {
       const path = new URL(route.request().url()).pathname
       if (path === '/api/auth/me') return route.fulfill({ json: { id: 'owner', username: 'owner', name: 'Owner', nickname: null } })
       if (path === '/api/artifacts/config') return route.fulfill({ json: { path: '/artifacts' } })
-      if (path === '/api/trunkline/threads') return route.fulfill({ json: [thread] })
+      if (path === '/api/trunkline/threads') {
+        await threadsReady
+        return route.fulfill({ json: [thread] })
+      }
       if (path === '/api/trunkline/threads/thread-a') return route.fulfill({ json: thread })
       if (path.endsWith('/thread-a/conversations')) return route.fulfill({ json: [conversation] })
       if (path.endsWith('/thread-a/conversations/messages')) return route.fulfill({ json: { items: [response], total: 1, has_more: false, next_cursor: null } })
@@ -51,9 +56,29 @@ for (const width of [1280, 390]) {
     })
     const errors: string[] = []
     page.on('pageerror', error => errors.push(error.message))
-    await page.goto('/threads/thread-a')
+    await page.goto('/threads/thread-a', { waitUntil: 'domcontentloaded' })
     await expect(page).toHaveTitle('Trunkline · Octomate')
+    if (width === 390) await page.getByRole('button', { name: 'Show channels', exact: true }).first().press('Enter')
+    const sidebar = page.locator('#trk-sb-panel')
+    await expect(sidebar).toContainText('Loading threads…')
+    await expect(sidebar).not.toContainText('0 thr · 0 ch')
+    showThreads()
     await expect(page.locator('[id="pm-reply.2"]')).toBeAttached()
+    await expect(sidebar).not.toContainText('Loading threads…')
+    const channel = page.getByRole('button', { name: 'Trunkline threads', exact: true })
+    await channel.press('Space')
+    await expect(channel).toHaveAttribute('aria-expanded', 'false')
+    await channel.press('Enter')
+    await expect(channel).toHaveAttribute('aria-expanded', 'true')
+    const threadButton = sidebar.getByRole('button', { name: /Timeline previews/ })
+    await threadButton.press('Enter')
+    await expect(threadButton).toHaveAttribute('aria-current', 'page')
+    await expect(sidebar.getByRole('button', { name: 'New trunkline thread', exact: true })).toBeEnabled()
+    if (width === 390) {
+      await page.keyboard.press('Escape')
+      await expect(sidebar).toHaveAttribute('data-folded', '')
+      await expect(page.getByRole('button', { name: 'Show channels', exact: true }).last()).toBeFocused()
+    }
     await page.getByRole('button', { name: 'Choose thread operation', exact: true }).focus()
     await page.keyboard.press('Tab')
     const theme = page.getByRole('button', { name: /^Switch to (light|dark)$/ })
@@ -86,6 +111,16 @@ for (const width of [1280, 390]) {
     await expect(toggle).toHaveAttribute('aria-expanded', 'true')
     await expect(panel).not.toHaveAttribute('data-folded')
     const timeline = page.locator('#trk-timeline')
+    const conversationFold = timeline.getByTitle('Fold / unfold conversation', { exact: true })
+    await conversationFold.press('Space')
+    await expect(conversationFold).toHaveAttribute('aria-expanded', 'false')
+    await conversationFold.press('Enter')
+    await expect(conversationFold).toHaveAttribute('aria-expanded', 'true')
+    const runFold = timeline.getByTitle('Fold / unfold run', { exact: true })
+    await runFold.press('Enter')
+    await expect(runFold).toHaveAttribute('aria-expanded', 'false')
+    await runFold.press('Space')
+    await expect(runFold).toHaveAttribute('aria-expanded', 'true')
     await expect(timeline.locator('[data-uid="prompt"]')).toContainText('Check the workspace.')
     await expect(timeline.locator('[data-uid="reply.0"]')).toContainText('Checking the workspace.')
     const reasoning = timeline.locator('[data-uid="reply.1"]')
@@ -101,11 +136,25 @@ for (const width of [1280, 390]) {
     await expect(unavailable).toContainText('thinking · Unavailable')
     await expect(unavailable).not.toContainText('Summary')
     await expect(timeline.locator('[data-uid="reply.4"]')).toContainText('Use a ** b and *literal*. x ** y Read the guide & continue.')
-    await summary.click()
-    if (width === 390) await page.locator('.trk-scrim').click({ position: { x: 80, y: 400 } })
+    if (width === 390) {
+      await page.getByRole('button', { name: 'Close timeline', exact: true }).click()
+      await expect(toggle).toBeFocused()
+      await expect(panel).toHaveAttribute('data-folded')
+      await page.keyboard.press('Enter')
+      await page.keyboard.press('Escape')
+      await expect(panel).toHaveAttribute('data-folded')
+      await expect(toggle).toBeFocused()
+      await page.keyboard.press('Enter')
+    }
+    await summary.press('Enter')
+    if (width === 390) {
+      await expect(panel).toHaveAttribute('data-folded')
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    }
     const card = page.locator('[id="pm-reply.2"]')
     await expect(card).toHaveClass(/trk-flash/)
     await expect(card).toBeInViewport()
+    await expect(card).toBeFocused()
     await card.getByRole('button').click()
     await expect(card.locator('strong')).toHaveText('Preparing binary-search example')
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)

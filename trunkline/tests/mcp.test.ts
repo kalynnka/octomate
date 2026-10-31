@@ -144,8 +144,8 @@ for (const item of cases) {
     const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ControlPage)))
     assert.match(html, new RegExp(`>${item.text}<`))
     assert.doesNotMatch(html, />(Not connected|Pending)</)
-    if (item.action) assert.match(html, new RegExp(`>${item.action}</button>`))
-    else assert.doesNotMatch(html, />(Connect|Continue|Reconnect|Enable)<\/button>/)
+    if (item.action) assert.match(html, new RegExp(`>${item.action}(?:</span>)*</button>`))
+    else assert.doesNotMatch(html, />(Connect|Continue|Reconnect|Enable)(?:<\/span>)*<\/button>/)
   })
 }
 
@@ -174,10 +174,10 @@ for (const device of [true, false]) {
     const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient },
       createElement(McpAuthorizationDialog, { mcp, onClose: () => {} })))
     assert.match(html, />Open authorization ↗<\/a>/)
-    assert.match(html, />Cancel authorization<\/button>/)
-    assert.match(html, />Close<\/button>/)
-    assert.match(html, />Check status<\/button>/)
-    assert.doesNotMatch(html, />Continue<\/button>/)
+    assert.match(html, />Cancel authorization(?:<\/span>)*<\/button>/)
+    assert.match(html, />Close(?:<\/span>)*<\/button>/)
+    assert.match(html, />Check status(?:<\/span>)*<\/button>/)
+    assert.doesNotMatch(html, />Continue(?:<\/span>)*<\/button>/)
     if (device) {
       assert.match(html, /value="ABCD-EFGH"/)
       assert.match(html, /title="Copy device code"/)

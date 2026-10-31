@@ -77,6 +77,7 @@ for (const streaming of [false, true]) {
       await composer.fill('Inspect the project')
       await composer.press('Enter')
       await expect(log.getByText('Still answering', { exact: true })).toBeVisible()
+      await expect(log).toContainText('Octomate(Codex)')
       reply = await log.getByText('Still answering', { exact: true }).elementHandle()
     }
     const reads = historyReads

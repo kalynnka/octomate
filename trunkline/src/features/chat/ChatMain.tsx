@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import { useConsole } from '@/state/console'
 import { useTrunklineRuntime } from './runtime'
@@ -7,7 +8,8 @@ import { NewThreadStrip } from './NewThreadStrip'
 import { ChatLog } from './ChatLog'
 import { Composer } from './Composer'
 import { SessionBar } from './SessionBar'
-import { ControlPage } from '@/features/control/ControlPage'
+
+const ControlPage = lazy(() => import('@/features/control/ControlPage').then(module => ({ default: module.ControlPage })))
 
 export function ChatMain() {
   const runtime = useTrunklineRuntime()
@@ -39,7 +41,7 @@ export function ChatMain() {
         }}
       >
         {mgmtSec ? (
-          <ControlPage />
+          <Suspense fallback={<div role="status" style={{ padding: 24 }}>Loading Control…</div>}><ControlPage /></Suspense>
         ) : (
           <>
             <ChatHeader />

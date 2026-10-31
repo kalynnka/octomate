@@ -741,6 +741,18 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
    elements their rhythm and the console's data-voice for code and tables.
    -------------------------------------------------------------------------- */
 .trk-print-caret { vertical-align: text-bottom; margin-left: 3px; }
+.trk-math { max-width: 100%; }
+.trk-math[data-display='true'] { display: block; overflow-x: auto; }
+.trk-md .katex { font-size: 1.05em; }
+.trk-md .katex-display { margin: 12px 0; padding: 4px 0; overflow-x: auto; overflow-y: hidden; }
+.trk-nav-button { border: 0; border-radius: 0; padding: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.trk-nav-button:focus-visible { outline: 2px solid var(--fg-2); outline-offset: -2px; }
+#trk-chatlog [tabindex="-1"]:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+.trk-thread-pick { display: block; width: 100%; }
+.trk-overlay-close { display: none; }
+@media (max-width: 599px), (max-height: 519px) and (max-width: 999px) {
+  .trk-overlay-close { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex-shrink: 0; }
+}
 .trk-copy-button {
   position: relative;
   display: inline-flex;

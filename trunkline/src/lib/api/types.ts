@@ -234,7 +234,7 @@ export type LedgerItem =
       connectorId: string
     }
   | { kind: 'dots'; uid: string; label: string }
-  | { kind: 'stream'; uid: string; text: string; streaming: boolean }
+  | { kind: 'stream'; uid: string; text: string; streaming: boolean; label?: string }
   | { kind: 'end'; uid: string; label: string }
   | { kind: 'notice'; uid: string; text: string; tone?: 'error' | 'warning' | 'info' }
 

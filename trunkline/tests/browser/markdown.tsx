@@ -14,6 +14,15 @@ const longCode = ['message = """First line', 'Second line', 'Third line"""', '',
 const diagram = '```mermaid\nflowchart LR\n    accTitle: Octomate dispatch\n    Core[Octomate core] --> Worker[Alice worker]\n    Worker --> CLI[CLI tools]\n```'
 const second = '> ```mermaid\n> flowchart TD\n>     accTitle: Thread lifecycle\n>     Start --> Done\n> ```'
 const tall = '```mermaid\nflowchart TD\n    Start([Start]) --> Setup[Set a = 2 and b = 3]\n    Setup --> Calculate[Calculate sum = a + b]\n    Calculate --> Decision{Is sum greater than 0?}\n    Decision -->|Yes| Positive[Print sum]\n    Decision -->|No| Other[Print zero]\n    Positive --> End([End])\n    Other --> End\n```'
+const math = String.raw`Inline $2^6 - 1 = 63$ and \(a^2+b^2=c^2\).
+
+$$
+\sum_{n=1}^{10} n = \frac{10(10+1)}{2}
+$$
+
+\[\int_0^1 x^2\,dx=\frac{1}{3}\]
+
+Prices are \$5 and \$10.` + '\n\nKeep `$x^2$` literal.\n\n```text\n$x^2$ and \\(x\\)\n```'
 useConsole.getState().actions.setTheme('light')
 
 export function Harness() {
@@ -42,6 +51,11 @@ export function Harness() {
       <button onClick={() => setMessage({ text: `${code}\n\n${diagram}\n\n${second}`, cursor: false })}>Example</button>
       <button onClick={() => setMessage({ text: `\`\`\`python\n${longCode}\n\`\`\``, cursor: false })}>Long code</button>
       <button onClick={() => setMessage({ text: tall, cursor: false })}>Tall</button>
+      <button onClick={() => setMessage({ text: math, cursor: false })}>Math</button>
+      <button onClick={() => setMessage({ text: String.raw`$\href{javascript:alert(1)}{click}$ $\includegraphics{https://example.com/tracker.png}$ $\notarealcommand{x}$ $\frac{1}{$`, cursor: false })}>Unsafe math</button>
+      <button onClick={() => setMessage({ text: 'Working $2^', cursor: true })}>Stream math</button>
+      <button onClick={() => setMessage({ text: '```python\nimport json\nprint(', cursor: true })}>Stream code</button>
+      <button onClick={() => setMessage({ text: '```python\nimport json\ncount = 42\nprint("<script>literal</script>")\n```\n\n```js\n/* first\nsecond */\nconst count = 1\n```', cursor: false })}>Escaped code</button>
       <button onClick={() => setMessage({ text: '```mermaid\nsequenceDiagram\nAlice->>Worker: Run task\nWorker-->>Alice: Done\n```', cursor: false })}>Sequence</button>
       <button onClick={() => setMessage({ text: '```mermaid\nflowchart LR\n    Core -->', cursor: true })}>Stream</button>
       <button onClick={() => setMessage({ text: diagram, cursor: false })}>Finish</button>

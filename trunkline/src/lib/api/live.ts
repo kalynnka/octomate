@@ -529,22 +529,6 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         ? lastCwd.slice(root.length + 1)
         : lastCwd
 
-  // What the thread cost, as the relay summed it over every response, and what
-  // its last turn was carrying — the newest response's own input, which is the
-  // context it ran with. Summing those would add every turn's context together,
-  // which is not a window.
-  const usage: ThreadUsage = {
-    input: spent.input_tokens ?? 0,
-    output: spent.output_tokens ?? 0,
-    cacheRead: spent.cache_read_tokens ?? 0,
-    cacheWrite: spent.cache_write_tokens ?? 0,
-    cacheRate: null,
-  }
-  const read = usage.input
-  usage.cacheRate = read > 0 ? usage.cacheRead / read : null
-  const latestRun = runs.at(-1)
-  const context = latestRun?.context_used ?? 0
-
   const { agent } = activeRoute(thread)
   return {
     key: thread.channel_thread_id || threadTag(thread.id),
@@ -576,10 +560,21 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     reads,
     sessions: liveSessions(thread.handoffs, own, anchors),
     ledger,
-    usage,
-    ctxK: Math.round(context / 1000),
-    contextWindow: latestRun?.context_window ?? null,
+    ...threadMetrics(conversations, spent),
   }
+}
+
+/** Usage totals and the context of the newest parent run, without reading message pages. */
+export function threadMetrics(conversations: ApiConversation[], spent: ApiUsage): Pick<ThreadDetail, 'usage' | 'ctxK' | 'contextWindow'> {
+  const usage: ThreadUsage = {
+    input: spent.input_tokens ?? 0, output: spent.output_tokens ?? 0,
+    cacheRead: spent.cache_read_tokens ?? 0, cacheWrite: spent.cache_write_tokens ?? 0,
+    cacheRate: null,
+  }
+  usage.cacheRate = usage.input > 0 ? usage.cacheRead / usage.input : null
+  const latest = conversations.filter(conversation => !conversation.subagent_id).flatMap(conversation => conversation.runs)
+    .sort((a, b) => (a.started_at ? Date.parse(a.started_at) : 0) - (b.started_at ? Date.parse(b.started_at) : 0)).at(-1)
+  return { usage, ctxK: Math.round((latest?.context_used ?? 0) / 1000), contextWindow: latest?.context_window ?? null }
 }
 
 /**

@@ -4,8 +4,11 @@ import { goLedgerTarget, syncRails, useConsole } from '@/state/console'
 import { useRailDrag } from '@/lib/useRailDrag'
 import { chipLabel, ellipsis, label, microSection, mono, serif } from '@/components/text'
 import { Disclose, Fold } from '@/components/Fold'
+import { Icon } from '@/components/Icon'
+import { TextSwap } from '@/components/TextSwap'
+import { useThreadSummary } from '@/lib/api/hooks'
 import { markdownText } from '@/lib/markdown'
-import { answerText } from '@/lib/api/fold'
+import { answerText, botLabel } from '@/lib/api/fold'
 import type {
   LedgerItem,
   SessionInfo,
@@ -201,7 +204,7 @@ function eventOf(item: LedgerItem, operator: string, agent?: string): Omit<TlEve
     case 'stream':
       return {
         k: 'msg',
-        title: agent || 'claude',
+        title: item.label ?? botLabel(agent),
         sub: item.streaming ? 'reply streaming…' : markdownText(item.text),
         t: '',
         tgt,
@@ -221,6 +224,8 @@ const skeletonBars = [
 export function TimelinePanel() {
   const selThreadId = useConsole((s) => s.selThreadId)
   const detail = useConsole((s) => s.detail)
+  const thread = useThreadSummary(selThreadId)
+  const threadKey = detail?.key ?? (thread?.key || thread?.tag) ?? '—'
   const live = useConsole((s) => s.live)
   const running = useConsole((s) => s.running)
   const tlFold = useConsole((s) => s.tlFold)
@@ -232,7 +237,7 @@ export function TimelinePanel() {
   const pvOpen = useConsole((s) => s.pvOpen)
   const traceW = useConsole((s) => s.widths.trace)
   const railDrag = useConsole((s) => s.railDrag)
-  const { toggleTimelineFold, openFile } = useConsole((s) => s.actions)
+  const { toggleTimelineFold, openFile, toggleTrace } = useConsole((s) => s.actions)
   const operator = useAuth((s) => s.user?.username ?? 'operator')
   const dragTrace = useRailDrag('trace', 'trk-trace-panel', 240, 480, true)
   const opened = useRef({ thread: selThreadId, at: Date.now() })
@@ -379,7 +384,11 @@ export function TimelinePanel() {
         <span style={{ ...label(8, '.14em'), color: 'var(--fg-3)', ...ellipsis, minWidth: 0 }}>of this thread</span>
         <span style={{ flex: 1 }} />
         {/* The full key sits in the row below; this one truncates when squashed. */}
-        <span style={{ ...mono(8.5, 700), color: 'var(--color-accent)', ...ellipsis, minWidth: 0 }}>{detail?.key ?? selThreadId}</span>
+        <TextSwap data-testid="timeline-thread-key" style={{ ...mono(8.5, 700), color: 'var(--color-accent)', ...ellipsis, minWidth: 0 }}>{threadKey}</TextSwap>
+        <button type="button" aria-label="Close timeline" onClick={() => {
+          toggleTrace()
+          document.querySelector<HTMLButtonElement>('#trk-chathead [aria-controls="trk-trace-panel"]')?.focus()
+        }} className="trk-overlay-close trk-nav-button hov-wash"><Icon name="close" /></button>
       </div>
       <div
         style={{
@@ -394,11 +403,11 @@ export function TimelinePanel() {
         }}
       >
         <span style={{ ...ellipsis, minWidth: 0 }}>
-          key: {ntOn ? 'trunkline / direct / console / —' : (detail?.key ?? '—')}
+          key: <TextSwap>{ntOn ? 'trunkline / direct / console / —' : threadKey}</TextSwap>
         </span>
         <span style={{ flex: 1 }} />
         <span style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>
-          {sessions.length} cnv · {runCount} runs · {eventTally} msg
+          <TextSwap>{`${sessions.length} cnv · ${runCount} runs · ${eventTally} msg`}</TextSwap>
         </span>
       </div>
       <div
@@ -418,11 +427,11 @@ export function TimelinePanel() {
               <Fragment key={ses.id}>
                 {/* The sticky header needs an opaque bed; the hover wash rides on top of it. */}
                 <div style={{ position: 'sticky', top: 0, zIndex: 3, background: 'var(--card-bg)' }}>
-                  <div
+                  <button type="button" aria-expanded={!folded} aria-controls={`trk-session-${si}`}
                     onClick={() => toggleTimelineFold(ses.id)}
                     title="Fold / unfold conversation"
-                    className="hov-wash"
-                    style={{ position: 'relative', padding: '8px 10px 8px 28px', cursor: 'pointer' }}
+                    className="hov-wash trk-nav-button"
+                    style={{ display: 'block', width: '100%', position: 'relative', padding: '8px 10px 8px 28px', cursor: 'pointer' }}
                   >
                     <i
                       style={{
@@ -442,10 +451,10 @@ export function TimelinePanel() {
                         style={{ ...mono(10), color: 'var(--fg-3)', width: 11, textAlign: 'center', flexShrink: 0 }}
                       />
                       <span title={ses.name ?? ses.id} style={{ ...mono(10, 700), color: 'var(--color-accent)', minWidth: 0, ...ellipsis }}>
-                        {ses.name ?? ses.id}
+                        <TextSwap>{ses.name ?? ses.id}</TextSwap>
                       </span>
                       <span style={{ ...mono(8.5), color: 'var(--fg-2)', flex: 1, minWidth: 0, ...ellipsis }}>
-                        {ses.route}
+                        <TextSwap>{ses.route}</TextSwap>
                       </span>
                       <span
                         style={{
@@ -458,10 +467,10 @@ export function TimelinePanel() {
                           ...ellipsis,
                         }}
                       >
-                        {ses.kind}
+                        <TextSwap>{ses.kind}</TextSwap>
                       </span>
                       <span style={{ ...label(7.5, '.12em'), color: TONE_COLOR[ses.tone], minWidth: 0, maxWidth: '25%', ...ellipsis }}>
-                        ● {ses.status}
+                        <TextSwap>{`● ${ses.status}`}</TextSwap>
                       </span>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, marginTop: 3, paddingLeft: 18 }}>
@@ -480,13 +489,13 @@ export function TimelinePanel() {
                           overflow: 'hidden',
                         }}
                       >
-                        {ses.reason}
+                        <TextSwap>{ses.reason}</TextSwap>
                       </span>
-                      <span style={{ ...mono(8), color: 'var(--fg-3)', flexShrink: 0 }}>{ses.t}</span>
+                      <span style={{ ...mono(8), color: 'var(--fg-3)', flexShrink: 0 }}><TextSwap>{ses.t}</TextSwap></span>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 7, paddingLeft: 18 }}>
                       <span style={{ ...mono(7.5), color: 'var(--fg-3)', flex: '1 0 auto', whiteSpace: 'nowrap' }}>
-                        {runs.length} {runs.length === 1 ? 'run' : 'runs'} · {msgCount} msg
+                        <TextSwap>{`${runs.length} ${runs.length === 1 ? 'run' : 'runs'} · ${msgCount} msg`}</TextSwap>
                       </span>
                       {/* A long conversation's strip outgrows the rail; it gives up its oldest runs first. */}
                       <div
@@ -530,10 +539,10 @@ export function TimelinePanel() {
                         )}
                       </div>
                     </div>
-                  </div>
+                  </button>
                 </div>
                 <Fold open={!folded}>
-                  <div style={{ padding: '2px 0 8px' }}>
+                  <div id={`trk-session-${si}`} style={{ padding: '2px 0 8px' }}>
                     {runs.map((run, ri) => {
                       const key = `${ses.id}/${ri}`
                       const runFolded = !!tlFold[key]
@@ -544,12 +553,13 @@ export function TimelinePanel() {
                       const user = chip === undefined
                       return (
                         <Fragment key={ri}>
-                          <div
+                          <button type="button" aria-expanded={!runFolded} aria-controls={`trk-run-${si}-${ri}`}
                             data-uid={run.head?.uid}
                             onClick={() => toggleTimelineFold(key)}
                             title="Fold / unfold run"
-                            className="hov-wash trk-scan"
+                            className="hov-wash trk-scan trk-nav-button"
                             style={{
+                              display: 'block', width: '100%',
                               position: 'relative',
                               padding: '6px 12px 6px 48px',
                               cursor: 'pointer',
@@ -633,8 +643,9 @@ export function TimelinePanel() {
                                 {run.events.length} msg · folded
                               </div>
                             )}
-                          </div>
+                          </button>
                           <Fold open={!runFolded}>
+                            <div id={`trk-run-${si}-${ri}`}>
                             {rows.map((ev, ei) => {
                               const ks = KS[ev.k]
                               const file = ev.file
@@ -644,8 +655,8 @@ export function TimelinePanel() {
                               const badgeColor =
                                 ev.badge?.tone === 'terra' ? 'var(--color-terra)' : 'var(--color-gold)'
                               return (
-                                <div
-                                  key={`${ev.tgt}-${ei}`}
+                                <div key={`${ev.tgt}-${ei}`} style={{ position: 'relative' }}>
+                                <button type="button" disabled={wait}
                                   data-uid={wait ? undefined : ev.uid}
                                   onClick={wait ? undefined : () => goLedgerTarget(ev.tgt)}
                                   title={
@@ -653,11 +664,12 @@ export function TimelinePanel() {
                                       ? 'Waiting for the next message from the live run'
                                       : 'Jump to this moment in the ledger'
                                   }
-                                  className={wait ? 'hov-wash' : 'hov-wash trk-scan'}
+                                  className={wait ? 'hov-wash trk-nav-button' : 'hov-wash trk-scan trk-nav-button'}
                                   style={{
+                                    display: 'block', width: '100%',
                                     position: 'relative',
-                                    padding: '4px 12px 4px 60px',
-                                    cursor: wait ? undefined : 'pointer',
+                                    padding: `4px ${file ? 36 : 12}px 4px 60px`,
+                                    cursor: wait ? 'default' : 'pointer',
                                     // One or the other: React warns on a shorthand and
                                     // its longhand in one style, even undefined.
                                     ...(wait
@@ -700,7 +712,7 @@ export function TimelinePanel() {
                                       {ks.tag}
                                     </span>
                                     <span style={{ ...mono(9, 700), color: ks.titleColor, ...ellipsis, minWidth: 0 }}>
-                                      {ev.title}
+                                      <TextSwap style={{ ...ellipsis }}>{ev.title}</TextSwap>
                                     </span>
                                     {ev.badge && (
                                       <span
@@ -716,26 +728,7 @@ export function TimelinePanel() {
                                       </span>
                                     )}
                                     <span style={{ flex: 1 }} />
-                                    <span style={{ ...mono(7.5), color: 'var(--fg-3)', flexShrink: 0 }}>{ev.t}</span>
-                                    {file && (
-                                      <span
-                                        onClick={(e) => {
-                                          e.stopPropagation()
-                                          openFile(file)
-                                        }}
-                                        title="Open in review panel"
-                                        className="hov-border-accent"
-                                        style={{
-                                          ...mono(9, 700),
-                                          color: 'var(--color-accent)',
-                                          flexShrink: 0,
-                                          padding: '0 4px',
-                                          border: '1px solid transparent',
-                                        }}
-                                      >
-                                        →
-                                      </span>
-                                    )}
+                                    <span style={{ ...mono(7.5), color: 'var(--fg-3)', flexShrink: 0 }}><TextSwap>{ev.t}</TextSwap></span>
                                   </div>}
                                   {wait && (
                                     <div aria-label="Waiting for the next message" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0' }}>
@@ -754,12 +747,17 @@ export function TimelinePanel() {
                                         ...ellipsis,
                                       }}
                                     >
-                                      {ev.sub}
+                                      <TextSwap style={{ ...ellipsis }}>{ev.sub}</TextSwap>
                                     </div>
                                   )}
+                                </button>
+                                {file && <button type="button" onClick={() => openFile(file)} title="Open in review panel"
+                                  aria-label={`Open ${file} in review panel`} className="trk-nav-button hov-border-accent"
+                                  style={{ position: 'absolute', top: 4, right: 12, ...mono(9, 700), color: 'var(--color-accent)', padding: '0 4px', border: '1px solid transparent' }}>→</button>}
                                 </div>
                               )
                             })}
+                            </div>
                           </Fold>
                         </Fragment>
                       )
@@ -904,7 +902,7 @@ export function TimelinePanel() {
           padding: '0 14px',
         }}
       >
-        <span style={{ ...mono(8, 700), letterSpacing: '.1em', color: 'var(--fg-1)', whiteSpace: 'nowrap' }}>
+        <span style={{ ...mono(8, 700), letterSpacing: '.1em', color: 'var(--fg-2)', whiteSpace: 'nowrap' }}>
           {eventTally} messages indexed
         </span>
         <span style={{ flex: 1 }} />

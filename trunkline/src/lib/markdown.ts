@@ -1,6 +1,7 @@
 import MarkdownIt, { type Token } from 'markdown-it'
+import { tex } from '@mdit/plugin-tex'
 
-const markdown = new MarkdownIt()
+const markdown = new MarkdownIt().use(tex, { delimiters: 'all', render: content => content })
 
 /** Readable text for compact message previews, preserving literal code and escapes. */
 export function markdownText(text: string): string {
