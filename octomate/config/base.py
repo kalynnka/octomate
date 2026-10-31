@@ -61,6 +61,7 @@ from octomate.config.oauth import OAuthConfig
 from octomate.config.observability import LogfireConfig, LoggingConfig
 from octomate.config.projects import ProjectsConfig
 from octomate.config.providers import ProvidersConfig
+from octomate.config.sandbox import NativeSandboxConfig, SandboxConfig
 from octomate.config.tentacles import TentacleConfigVariant
 from octomate.config.workspaces import WorkspacesConfig
 from octomate.schemas.project import Project
@@ -132,6 +133,10 @@ class OctomateConfig(BaseSettings):
     workspaces: WorkspacesConfig = Field(
         default_factory=WorkspacesConfig,
         description="When a thread's workspace is reclaimed.",
+    )
+    sandbox: SandboxConfig = Field(
+        default_factory=NativeSandboxConfig,
+        description="Agent sandbox mode; sbx requires an immutable worker image.",
     )
 
     @field_validator("projects", mode="wrap")
