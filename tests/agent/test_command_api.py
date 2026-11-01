@@ -239,7 +239,9 @@ async def test_http_direct_command_before_conversation_creates_no_runtime_record
         )
     async with async_session() as session:
         profiles_before = await session.count(UserProfile)
-    with app.nerve.subscribe(ThreadTopic(ThreadKey.from_address(address))) as live:
+    async with app.nerve.subscribe(
+        ThreadTopic(ThreadKey.from_address(address))
+    ) as live:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -816,7 +818,9 @@ async def test_http_execution_preserves_arguments_and_replays_saved_outcome(
     command_body: dict[str, JsonValue],
     address: ChannelAddress,
 ) -> None:
-    with app.nerve.subscribe(ThreadTopic(ThreadKey.from_address(address))) as live:
+    async with app.nerve.subscribe(
+        ThreadTopic(ThreadKey.from_address(address))
+    ) as live:
         async with (
             drawing(*app.channels.values()),
             httpx.AsyncClient(
@@ -911,7 +915,9 @@ async def test_http_execution_uses_manager_refusals(
         command_body.pop("conversation_id")
     else:
         app.dependency_overrides[current_user] = lambda: User(username="other")
-    with app.nerve.subscribe(ThreadTopic(ThreadKey.from_address(address))) as live:
+    async with app.nerve.subscribe(
+        ThreadTopic(ThreadKey.from_address(address))
+    ) as live:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -969,7 +975,9 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
     monkeypatch.setattr(agent, "events", events)
     user_capabilities = AsyncMock(return_value=[])
     monkeypatch.setattr(agent, "user_capabilities", user_capabilities)
-    with app.nerve.subscribe(ThreadTopic(ThreadKey.from_address(address))) as live:
+    async with app.nerve.subscribe(
+        ThreadTopic(ThreadKey.from_address(address))
+    ) as live:
         async with (
             drawing(*app.channels.values()),
             httpx.AsyncClient(
@@ -1058,7 +1066,9 @@ async def test_command_presents_a_persisted_reflex_approval(
 
     agent.behavior = "stream_complete"
     monkeypatch.setattr(agent, "events", events)
-    with app.nerve.subscribe(ThreadTopic(ThreadKey.from_address(address))) as live:
+    async with app.nerve.subscribe(
+        ThreadTopic(ThreadKey.from_address(address))
+    ) as live:
         async with (
             drawing(*app.channels.values()),
             httpx.AsyncClient(

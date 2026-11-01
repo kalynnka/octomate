@@ -409,7 +409,7 @@ async def test_reflex_owns_dispatch_and_history(
         segments=[TextSegment(data={"text": "hello from the reflex"})],
     )
     inbound = await app.threads.record_inbound(message)
-    with app.nerve.subscribe(ThreadTopic(thread.key)) as stream:
+    async with app.nerve.subscribe(ThreadTopic(thread.key)) as stream:
         task = await app.kick(
             UserMessageSignal(
                 [message], agent_id=tentacle.id, trigger_thread_message_id=inbound.id
@@ -535,7 +535,7 @@ async def test_cancel_settles_provider_and_keeps_partial_history(
         segments=[TextSegment(data={"text": "wait for approval"})],
     )
     inbound = await app.threads.record_inbound(message)
-    with app.nerve.subscribe(ThreadTopic(thread.key)) as stream:
+    async with app.nerve.subscribe(ThreadTopic(thread.key)) as stream:
         task = await app.kick(
             UserMessageSignal(
                 [message], agent_id=tentacle.id, trigger_thread_message_id=inbound.id

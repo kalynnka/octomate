@@ -136,7 +136,7 @@ class OctomateConfig(BaseSettings):
     )
     sandbox: SandboxConfig = Field(
         default_factory=NativeSandboxConfig,
-        description="Agent sandbox mode; sbx requires an immutable worker image.",
+        description="Agent sandbox mode; sbx requires an immutable sandbox agent image.",
     )
 
     @field_validator("projects", mode="wrap")

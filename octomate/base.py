@@ -34,6 +34,7 @@ from octomate.managers.gateway import GatewayManager
 from octomate.managers.mcp import McpManager
 from octomate.managers.oauth import OAuthManager
 from octomate.managers.project import ProjectManager
+from octomate.managers.sandbox import SandboxManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
@@ -154,6 +155,7 @@ class Octomate(FastAPI):
     gateway: GatewayManager = field(default_factory=GatewayManager)
     workspaces: WorkspaceManager = field(default_factory=WorkspaceManager)
     nerve: Nerve = field(default_factory=Nerve)
+    sandboxes: SandboxManager = field(init=False)
 
     # Every connected tentacle by id, in connection order — the one registry. A
     # tentacle composes its roles (a channel that is also an MCP tentacle), so
@@ -179,6 +181,7 @@ class Octomate(FastAPI):
             lifespan=self.lifespan,
         )
         self.threads = ThreadManager(users=self.users, nerve=self.nerve)
+        self.sandboxes = SandboxManager(self.config.sandbox, self.nerve)
         self.deferred_actions = DeferredActionManager(nerve=self.nerve)
         self.commands = CommandManager(
             tentacles=self.tentacles,
@@ -407,6 +410,11 @@ class Octomate(FastAPI):
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI) -> AsyncGenerator[dict[str, Octomate]]:
+        if self.config.sandbox.mode == "sbx":
+            raise RuntimeError(
+                "sbx agent dispatch is not enabled in this build; "
+                "the sandbox manager supports bootstrap verification only"
+            )
         with sqlalchemy_materia():
             # The project registry: reconciling here is what builds
             # the resolution index, so a declared project resolves before

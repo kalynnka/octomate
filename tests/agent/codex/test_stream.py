@@ -12,7 +12,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from io import BytesIO
 from pathlib import Path
 from typing import Literal
@@ -351,7 +351,7 @@ async def test_a_stop_returns_before_the_late_reply_and_completion(
     """Codex can flush its reply and terminal line only after Stop returns."""
     octomate, tailer = remote_tailer()
     key = ThreadKey.from_address(SESSION_ADDRESS)
-    with octomate.nerve.subscribe(ThreadTopic(key)) as live:
+    async with octomate.nerve.subscribe(ThreadTopic(key)) as live:
         async with octomate.nerve.publish(SESSION_ADDRESS) as impulses:
             state, _ = await tailer.attach_remote(
                 SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
@@ -552,12 +552,15 @@ def test_native_html_crosses_the_client_stream_and_reuses_the_owned_viewer(
         host.dependency_overrides[current_user] = lambda: owner
         return artifact, entry
 
-    with (
-        host.nerve.subscribe(
-            ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
-        ) as live,
-        client,
-    ):
+    with client, ExitStack() as subscriptions:
+        assert client.portal is not None
+        live = subscriptions.enter_context(
+            client.portal.wrap_async_context_manager(
+                host.nerve.subscribe(
+                    ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
+                )
+            )
+        )
         with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
             websocket.receive_text()

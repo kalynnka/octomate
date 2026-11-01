@@ -19,12 +19,23 @@ class SbxSandboxConfig(BaseModel):
     version: Literal["0.48.0"] = "0.48.0"
     image: str = Field(
         pattern=r"^[^\s]+@sha256:[0-9a-f]{64}$",
-        description="Immutable worker image reference, matching the host architecture.",
+        description="Immutable sandbox agent image reference, matching the host architecture.",
     )
-    cpus: int = Field(default=2, ge=1, strict=True)
-    memory_mib: int = Field(default=2048, ge=512, strict=True)
-    idle_timeout: float = Field(default=300, gt=0, allow_inf_nan=False)
-    max_active: int = Field(default=4, ge=1, strict=True)
+    cpus: int = Field(
+        default=2, ge=1, strict=True, description="Virtual CPU count per sandbox."
+    )
+    memory_mib: int = Field(
+        default=2048,
+        ge=512,
+        strict=True,
+        description="Guest RAM size in MiB, passed to sbx --memory.",
+    )
+    idle_timeout: float = Field(
+        default=900,
+        gt=0,
+        allow_inf_nan=False,
+        description="Seconds after the last invocation finishes before stopping the user sandbox, preserving its disk.",
+    )
 
 
 type SandboxConfig = Annotated[

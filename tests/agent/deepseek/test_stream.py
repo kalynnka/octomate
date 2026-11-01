@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
 from unittest.mock import AsyncMock
 
 import pytest
@@ -135,7 +135,13 @@ def test_entries_flow_over_the_socket_and_the_next_connect_resumes() -> None:
     client, tentacle = stream_client()
 
     key = ThreadKey.from_address(SESSION_ADDRESS)
-    with client, tentacle.octomate.nerve.subscribe(ThreadTopic(key)) as live:
+    with client, ExitStack() as subscriptions:
+        assert client.portal is not None
+        live = subscriptions.enter_context(
+            client.portal.wrap_async_context_manager(
+                tentacle.octomate.nerve.subscribe(ThreadTopic(key))
+            )
+        )
         with client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())

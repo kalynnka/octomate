@@ -144,7 +144,7 @@ async def test_unified_model_selection_stream_and_history(
         assert isinstance(app, Octomate)
         thread = await app.threads.get(UUID(session_id), with_messages=False)
         assert thread is not None
-        with app.nerve.subscribe(ThreadTopic(thread.key)) as events:
+        async with app.nerve.subscribe(ThreadTopic(thread.key)) as events:
             first = prompt(socket, session_id)
             heard = []
             while True:
