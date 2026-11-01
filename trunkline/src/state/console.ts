@@ -17,7 +17,7 @@ import type {
   ThreadDetail,
 } from '@/lib/api/types'
 import { api, resolveBatch, sendDirective } from '@/lib/api'
-import { castGateway, executeCommand, fetchThreads, watchThread } from '@/lib/api/client'
+import { castGateway, executeCommand, fetchThreadProject, fetchThreads, watchThread } from '@/lib/api/client'
 import type {
   ActionBatchAnsweredEvent,
   ActionBatchUpdatedEvent,
@@ -33,7 +33,7 @@ import type {
 } from '@/lib/api/events'
 import { queryClient } from '@/lib/queryClient'
 import { batchFeelers, TurnFold } from '@/lib/api/fold'
-import { channelMeta, holdingBack, withOlderPage } from '@/lib/api/live'
+import { channelMeta, holdingBack, liveThreadDetail, withOlderPage } from '@/lib/api/live'
 import { useAuth } from '@/state/auth'
 import { COMMAND_CONTROLS } from '@/features/chat/commands'
 import { withArtifact } from '@/features/artifacts/ledger'
@@ -92,7 +92,7 @@ const scrollChatBottom = (smooth?: boolean) => {
 
 /** Whether the reader is pinned near the ledger's tail (measured pre-commit,
  * so streaming growth follows only while they haven't scrolled away). */
-const nearChatBottom = () => {
+export const nearChatBottom = () => {
   const el = document.getElementById('trk-chatlog')
   return el === null || el.scrollHeight - el.scrollTop - el.clientHeight < 120
 }
@@ -162,7 +162,12 @@ export const goLedgerTarget = (tgt?: string) => {
     scrollChatBottom(true)
     return
   }
+  if (window.matchMedia('(max-width: 599px), (max-height: 519px) and (max-width: 999px)').matches) {
+    useConsole.getState().actions.closeOverlays()
+  }
   log.scrollTo({ top: Math.max(0, el.offsetTop - 46), behavior: 'smooth' })
+  el.tabIndex = -1
+  el.focus({ preventScroll: true })
   el.classList.remove('trk-flash')
   void el.offsetWidth
   el.classList.add('trk-flash')
@@ -186,6 +191,7 @@ export const replayView = () => {
 
 export interface ConsoleActions {
   selectThread(chId: string, thId: string, direction?: 'up' | 'down'): Promise<void>
+  refreshThreadProject(thId: string): Promise<void>
   loadOlder(): void
   onChatScroll(scrollTop: number): void
   setSysDark(dark: boolean): void
@@ -625,7 +631,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
             } else patchLive(patch)
           },
           done: () => {},
-        }, event.event_kind === 'run_started' ? channelMeta(event.address.channel_tentacle_id).label : undefined, [...(get().detail?.ledger ?? []), ...get().live])
+        }, get().detail?.sessions.at(-1)?.agent ?? (event.event_kind === 'run_started' ? channelMeta(event.address.channel_tentacle_id).label : undefined), [...(get().detail?.ledger ?? []), ...get().live])
         set({ running: true })
         if (!reflex) fold.feed(event)
       } else if (event.event_kind === 'reflex_asleep' || (event.event_kind === 'run_ended' && !reflex)) {
@@ -727,7 +733,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       },
       // The graph releases its active turn after the result, before stream EOF.
       done: () => {},
-    })
+    }, get().ntOn ? get().ntAgent : get().detail?.sessions.at(-1)?.agent)
     let fold = turnFold()
     const feed = (event: CommandStreamEvent) => {
       received++
@@ -745,7 +751,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     let following: Promise<void> | undefined
     const held: CommandStreamEvent[] = []
     const openSummon = async () => {
-      fold = turnFold()
       terminal = false
       const detail = await api.getThreadDetail(selId)
       if (here()) {
@@ -757,6 +762,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
           sessions: detail.sessions.map((session) => session.id === opening?.sessionId ? { ...session, anchor } : session),
         } }))
       }
+      fold = turnFold()
       following = undefined
       held.splice(0).forEach(feed)
     }
@@ -851,12 +857,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         if (landed && landed.id !== selId && here()) await actions.selectThread(landed.channel_tentacle_id, landed.id)
       }
       if (carried && here() && get().detail && !get().ntOn) {
-        const recorded = await queryClient.fetchQuery({
-          queryKey: ['thread-detail', selId],
-          queryFn: () => api.getThreadDetail(selId),
-          staleTime: 0,
-          retry: false,
-        })
+        const recorded = await api.getThreadMetrics(selId)
         if (here()) set((s) => ({ detail: s.detail && { ...s.detail, usage: recorded.usage, ctxK: recorded.ctxK, contextWindow: recorded.contextWindow } }))
       }
       return true
@@ -911,6 +912,25 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   }
 
   const actions: ConsoleActions = {
+    async refreshThreadProject(thId: string) {
+      const queryKey = ['thread-detail', thId]
+      if (!queryClient.getQueryState(queryKey) && get().selThreadId !== thId) return
+      if (queryClient.isFetching({ queryKey, exact: true })) {
+        await queryClient.fetchQuery({ queryKey, queryFn: () => api.getThreadDetail(thId), staleTime: 0, retry: false })
+      }
+      const project = await fetchThreadProject(thId)
+      const update = (detail: ThreadDetail | undefined): ThreadDetail | undefined => {
+        if (!detail?.reads) return detail
+        const reads = { ...detail.reads, project, thread: { ...detail.reads.thread, project_id: project?.id ?? null } }
+        const fresh = liveThreadDetail(reads)
+        return { ...detail, reads, project: fresh.project, vscode: fresh.vscode }
+      }
+      queryClient.setQueryData<ThreadDetail>(queryKey, detail => {
+        const current = get().selThreadId === thId ? get().detail : null
+        return update(detail ?? current ?? undefined)
+      })
+      if (get().selThreadId === thId) set(s => ({ detail: update(s.detail ?? undefined) ?? null }))
+    },
     /* ---------------------------------------------------- selection ------ */
     async selectThread(chId: string, thId: string, direction = 'down') {
       const selection = ++threadSelection

@@ -246,9 +246,173 @@ def test_rollout_parts_match_the_completed_driven_parts() -> None:
     ]
 
 
+def test_rollout_keeps_commentary_and_reasoning_formats_separate() -> None:
+    turn = OpenTurn(TURN_ID, 0, 0, NOW, "local")
+    payloads: list[JsonObject] = [
+        {
+            "type": "message",
+            "role": "assistant",
+            "phase": "commentary",
+            "content": [{"type": "output_text", "text": "I am checking the setup."}],
+        },
+        {
+            "type": "reasoning",
+            "content": [{"type": "reasoning_text", "text": "Detailed reasoning"}],
+            "summary": [
+                {"type": "summary_text", "text": "**Awaiting macOS admin setup**"}
+            ],
+        },
+    ]
+    events = [
+        event
+        for payload in payloads
+        for event in CodexTranscriptTailer.consume_response_item(
+            turn,
+            RolloutLine(timestamp=NOW, type="response_item", payload=payload),
+        )
+    ]
+    parts = [event.part for event in events if isinstance(event, PartEndEvent)]
+    assert isinstance(parts[0], TextPart)
+    assert parts[0].content == "I am checking the setup."
+    assert turn.answer == ""
+    assert isinstance(parts[1], ThinkingPart)
+    assert parts[1].provider_details == {"reasoning_format": "reasoning"}
+    assert isinstance(parts[2], ThinkingPart)
+    assert parts[2].provider_details == {"reasoning_format": "summary"}
+    assert parts[2].content == "**Awaiting macOS admin setup**"
+    assert [part.part_kind for message in turn.messages for part in message.parts] == [
+        "text",
+        "thinking",
+        "thinking",
+    ]
+
+
+@pytest.mark.parametrize("readable", [None, "content", "summary"])
+def test_encrypted_reasoning_keeps_one_part_without_copying_ciphertext(
+    readable: str | None,
+) -> None:
+    turn = OpenTurn(TURN_ID, 0, 0, NOW, "local")
+    payload: JsonObject = {
+        "type": "reasoning",
+        "id": "reasoning-1",
+        "content": None,
+        "summary": [],
+        "encrypted_content": "opaque-ciphertext",
+    }
+    if readable is not None:
+        payload[readable] = [{"text": "Readable reasoning"}]
+    events = list(
+        CodexTranscriptTailer.consume_response_item(
+            turn, RolloutLine(timestamp=NOW, type="response_item", payload=payload)
+        )
+    )
+    assert [event.event_kind for event in events] == ["part_start", "part_end"]
+    completed = events[-1]
+    assert isinstance(completed, PartEndEvent)
+    part = completed.part
+    assert isinstance(part, ThinkingPart)
+    assert part.content == ("Readable reasoning" if readable else "")
+    if readable is None:
+        assert part.id == "reasoning-1"
+        assert part.provider_name == "openai_codex"
+    else:
+        assert part.provider_details == {
+            "reasoning_format": "summary" if readable == "summary" else "reasoning"
+        }
+    assert len(turn.messages) == 1
+    assert turn.messages[0].parts == [part]
+    assert "opaque-ciphertext" not in str(turn.messages)
+
+
+@pytest.mark.parametrize("encrypted", [None, "", False])
+def test_empty_reasoning_without_ciphertext_does_not_create_a_placeholder(
+    encrypted: JsonValue,
+) -> None:
+    turn = OpenTurn(TURN_ID, 0, 0, NOW, "local")
+    events = list(
+        CodexTranscriptTailer.consume_response_item(
+            turn,
+            RolloutLine(
+                timestamp=NOW,
+                type="response_item",
+                payload={
+                    "type": "reasoning",
+                    "content": None,
+                    "summary": [],
+                    "encrypted_content": encrypted,
+                },
+            ),
+        )
+    )
+    assert events == []
+    assert turn.messages == []
+
+
 @pytest.fixture
 async def db(in_memory_engine: AsyncEngine) -> None:
     return
+
+
+@pytest.mark.usefixtures("db")
+async def test_encrypted_reasoning_placeholder_is_published_and_saved() -> None:
+    octomate = Octomate()
+    tailer = CodexTranscriptTailer(
+        octomate.conversations, octomate.threads, octomate.files
+    )
+    with octomate.nerve.subscribe(
+        ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
+    ) as live:
+        async with octomate.nerve.publish(SESSION_ADDRESS) as publisher:
+            state, _ = await tailer.attach_remote(
+                SESSION_ID, ROLLOUT_LABEL, SENDER, SESSION_ADDRESS, publisher
+            )
+            await feed_records(
+                tailer,
+                state,
+                [
+                    {
+                        "timestamp": NOW.isoformat(),
+                        "type": "event_msg",
+                        "payload": {"type": "task_started", "turn_id": TURN_ID},
+                    },
+                    {
+                        "timestamp": NOW.isoformat(),
+                        "type": "response_item",
+                        "payload": {
+                            "type": "reasoning",
+                            "id": "reasoning-1",
+                            "content": None,
+                            "summary": [],
+                            "encrypted_content": "opaque-ciphertext",
+                        },
+                    },
+                    {
+                        "timestamp": NOW.isoformat(),
+                        "type": "event_msg",
+                        "payload": {"type": "task_complete", "turn_id": TURN_ID},
+                    },
+                ],
+            )
+            assert state.conversation is not None
+            stored = await octomate.conversations.get(state.conversation.id)
+            assert len(stored.messages) == 1
+            part = stored.messages[0].parts[0]
+            assert isinstance(part, ThinkingPart)
+            assert part.content == ""
+            assert part.id == "reasoning-1"
+            assert part.provider_name == "openai_codex"
+            assert "opaque-ciphertext" not in str(stored.messages)
+            tailer.detach_remote(state)
+        events = [impulse.event for impulse in held(live)]
+        assert [event.event_kind for event in events] == [
+            "run_started",
+            "part_start",
+            "part_end",
+            "run_ended",
+        ]
+        completed = events[2]
+        assert isinstance(completed, PartEndEvent)
+        assert completed.part == part
 
 
 @pytest.mark.usefixtures("db")

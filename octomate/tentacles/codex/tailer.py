@@ -878,19 +878,47 @@ class CodexTranscriptTailer:
                     turn.answer = text
             return
         if kind == "reasoning":
-            summary = payload.get("summary")
-            texts = []
-            if not isinstance(summary, list):
-                return
-            for part in summary:
-                if isinstance(part, str):
-                    texts.append(part)
-                elif isinstance(part, dict) and isinstance(
-                    part_text := part.get("text"), str
-                ):
-                    texts.append(part_text)
-            if texts:
-                part = ThinkingPart(content="\n".join(texts))
+            parts: list[ThinkingPart] = []
+            for field in ("content", "summary"):
+                blocks = payload.get(field)
+                if not isinstance(blocks, list):
+                    continue
+                texts = [
+                    fragment
+                    for block in blocks
+                    if isinstance(block, str | dict)
+                    if isinstance(
+                        fragment := block
+                        if isinstance(block, str)
+                        else block.get("text"),
+                        str,
+                    )
+                ]
+                content = "\n\n".join(texts)
+                if not content:
+                    continue
+                parts.append(
+                    ThinkingPart(
+                        content=content,
+                        provider_name=CODEX_PROVIDER_NAME,
+                        provider_details={
+                            "reasoning_format": "summary"
+                            if field == "summary"
+                            else "reasoning"
+                        },
+                    )
+                )
+            encrypted = payload.get("encrypted_content")
+            if not parts and isinstance(encrypted, str) and encrypted:
+                response_id = payload.get("id")
+                parts.append(
+                    ThinkingPart(
+                        content="",
+                        id=response_id if isinstance(response_id, str) else None,
+                        provider_name=CODEX_PROVIDER_NAME,
+                    )
+                )
+            for part in parts:
                 turn.messages.append(
                     ModelResponse(
                         parts=[part],

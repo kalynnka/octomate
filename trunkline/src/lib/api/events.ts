@@ -18,6 +18,8 @@ export interface ThinkingPart {
   content: string
   id?: string | null
   signature?: string | null
+  provider_name?: string | null
+  provider_details?: { reasoning_format?: 'reasoning' | 'summary' } | null
 }
 
 export interface ToolCallPart {

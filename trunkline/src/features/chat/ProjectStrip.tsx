@@ -1,5 +1,6 @@
 import { useConsole } from '@/state/console'
 import { Icon } from '@/components/Icon'
+import { TextSwap } from '@/components/TextSwap'
 import { ellipsis, label, mono } from '@/components/text'
 
 /**
@@ -42,28 +43,17 @@ export function ProjectStrip() {
       >
         ⌗
       </span>
-      {project ? (
-        <span
-          title="project directory — fixed when the thread was opened, from where its session ran"
-          style={{ ...mono(9, 700), letterSpacing: '.08em', color: 'var(--fg-1)', whiteSpace: 'nowrap', flexShrink: 0 }}
-        >
-          {project.name}
-        </span>
-      ) : (
-        <span
-          title="no project claims this directory — the session ran here all the same"
-          style={{ ...label(8, '.12em'), color: 'var(--fg-3)', whiteSpace: 'nowrap', flexShrink: 0 }}
-        >
-          no project
-        </span>
-      )}
-      <span style={{ ...mono(8.5), color: 'var(--fg-3)', ...ellipsis, minWidth: 0, flexShrink: 1 }}>{dir}</span>
+      <TextSwap
+        title={project ? 'project directory — fixed when the thread was opened, from where its session ran' : 'no project claims this directory — the session ran here all the same'}
+        style={{ ...(project ? { ...mono(9, 700), letterSpacing: '.08em', color: 'var(--fg-1)' } : { ...label(8, '.12em'), color: 'var(--fg-3)' }), whiteSpace: 'nowrap', flexShrink: 0 }}
+      >{project?.name ?? 'no project'}</TextSwap>
+      <TextSwap style={{ ...mono(8.5), color: 'var(--fg-3)', ...ellipsis, minWidth: 0, flexShrink: 1 }}>{dir}</TextSwap>
       {project?.cwd && (
         <span
           title="where the last run ran — inside this tree, below its root"
           style={{ ...mono(8.5), color: 'var(--fg-2)', whiteSpace: 'nowrap', flexShrink: 0 }}
         >
-          ↳ {project.cwd}
+          <TextSwap>{`↳ ${project.cwd}`}</TextSwap>
         </span>
       )}
       {/* Unset git state is unknown, not absent: no endpoint reports it yet, and
@@ -74,9 +64,9 @@ export function ProjectStrip() {
           {project.git ? (
             <span title="git state of the shared tree" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
               <Icon name="gitBranch" size={11} style={{ color: 'var(--fg-2)' }} />
-              <span style={{ ...mono(8.5, 700), color: 'var(--fg-1)', whiteSpace: 'nowrap' }}>{project.branch}</span>
+              <TextSwap style={{ ...mono(8.5, 700), color: 'var(--fg-1)', whiteSpace: 'nowrap' }}>{project.branch ?? ''}</TextSwap>
               <span style={{ ...mono(8.5, 700), color: project.dirty ? 'var(--color-gold)' : 'var(--color-sage)', whiteSpace: 'nowrap' }}>
-                {project.stat}
+                <TextSwap>{project.stat ?? ''}</TextSwap>
               </span>
             </span>
           ) : (
@@ -87,7 +77,7 @@ export function ProjectStrip() {
       <span style={{ flex: 1, minWidth: 8 }} />
       {project?.also && (
         <span title="threads sharing this working tree" style={{ ...mono(8), color: 'var(--fg-3)', ...ellipsis, minWidth: 0, flexShrink: 1 }}>
-          {project.also}
+          <TextSwap>{project.also}</TextSwap>
         </span>
       )}
       {vsLaunch && (

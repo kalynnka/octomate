@@ -11,6 +11,11 @@ export const useChannels = () =>
 export const useThreads = () =>
   useQuery({ queryKey: ['threads'], queryFn: api.listThreads, select: groupLiveThreads, staleTime: Infinity })
 
+export function useThreadSummary(threadId: string) {
+  const { data } = useThreads()
+  return Object.values(data ?? {}).flat().find(thread => thread.id === threadId)
+}
+
 export const useHealth = () =>
   useQuery({
     queryKey: ['health'],

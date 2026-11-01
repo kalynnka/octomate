@@ -1,8 +1,9 @@
-import { useSyncExternalStore } from 'react'
+import { lazy, Suspense, useSyncExternalStore } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ConsoleShell } from '@/features/shell/ConsoleShell'
 import { fetchArtifactConfig } from './api'
-import { ArtifactViewer } from './ArtifactViewer'
+
+const ArtifactViewer = lazy(() => import('./ArtifactViewer').then(module => ({ default: module.ArtifactViewer })))
 
 const subscribe = (changed: () => void) => {
   window.addEventListener('popstate', changed)
@@ -19,6 +20,6 @@ export function ArtifactRoute() {
   const id = path.slice(config.data.path.length + 1)
   return <main className="trk-artifact-page">
     <a href="/">← Trunkline</a>
-    <ArtifactViewer key={id} artifactId={id} />
+    <Suspense fallback={<p role="status">Loading artifact…</p>}><ArtifactViewer key={id} artifactId={id} /></Suspense>
   </main>
 }

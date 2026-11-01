@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Disclose, Fold } from '@/components/Fold'
 import { Icon } from '@/components/Icon'
+import { TextSwap } from '@/components/TextSwap'
 import { display, ellipsis, label, mono } from '@/components/text'
 import { useChannels, useThreads } from '@/lib/api/hooks'
 import type { ThreadSummary } from '@/lib/api/types'
@@ -36,8 +37,12 @@ interface ThreadRow {
 }
 
 export function ThreadsSidebar() {
-  const connected = useChannels().data ?? []
-  const threadsByCh = useThreads().data ?? {}
+  const channelsQuery = useChannels()
+  const threadsQuery = useThreads()
+  const connected = channelsQuery.data ?? []
+  const threadsByCh = threadsQuery.data ?? {}
+  const loading = channelsQuery.isPending || threadsQuery.isPending
+  const failed = channelsQuery.isError || threadsQuery.isError
   // The rail mirrors the relay's connected channels; a channel that is gone
   // from config but still owns threads keeps a group for its history.
   const channels = [
@@ -166,7 +171,7 @@ export function ThreadsSidebar() {
       />
       {/* On a phone the folded rail is a 36px strip: any touch on it opens
           the drawer, whose own rail then answers the letters and the gear. */}
-      {sbFold && <span className="trk-rail-tap" onClick={toggleSidebar} />}
+      {sbFold && <button type="button" aria-label="Show channels" className="trk-rail-tap trk-nav-button" onClick={toggleSidebar} />}
       <div
         style={{
           display: 'flex',
@@ -201,10 +206,10 @@ export function ThreadsSidebar() {
               v0.4.1
             </span>
             <span style={{ flex: 1 }} />
-            <span
+            <button type="button" aria-label="Channels panel" aria-expanded={!sidebarFolded} aria-controls="trk-channel-list"
               onClick={toggleSidebar}
               title="Channels panel"
-              className="hov-ink-wash"
+              className="hov-ink-wash trk-nav-button"
               style={{
                 width: 'var(--trk-btn, 22px)',
                 height: 'var(--trk-btn, 22px)',
@@ -219,14 +224,14 @@ export function ThreadsSidebar() {
               }}
             >
               <Icon name="panelLeft" size={13} />
-            </span>
+            </button>
           </>
         )}
         {sidebarFolded && (
-          <span
+          <button type="button" aria-label="Show channels" aria-expanded="false" aria-controls="trk-channel-list"
             onClick={toggleSidebar}
             title="Show channels"
-            className="hov-ink-wash"
+            className="hov-ink-wash trk-nav-button"
             style={{
               width: 'var(--trk-btn, 22px)',
               height: 'var(--trk-btn, 22px)',
@@ -241,7 +246,7 @@ export function ThreadsSidebar() {
             }}
           >
             <Icon name="panelLeft" size={13} />
-          </span>
+          </button>
         )}
       </div>
       {!sidebarFolded && (
@@ -258,10 +263,10 @@ export function ThreadsSidebar() {
         />
       )}
       {!sidebarFolded && (
-        <span
+        <button type="button" aria-label="New trunkline thread"
           onClick={() => startNewThread()}
           title="New trunkline thread"
-          className="hov-accent-border-wash"
+          className="hov-accent-border-wash trk-nav-button"
           style={{
             display: 'grid',
             placeItems: 'center',
@@ -276,10 +281,12 @@ export function ThreadsSidebar() {
           }}
         >
           <span style={{ lineHeight: 1, paddingLeft: '.14em', paddingTop: 1 }}>+ new</span>
-        </span>
+        </button>
       )}
       <div
+        id="trk-channel-list"
         ref={channelList}
+        aria-busy={loading}
         className="trk-quiet-scroll"
         style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '4px 0 10px', position: 'relative' }}
       >
@@ -399,14 +406,13 @@ export function ThreadsSidebar() {
                           flexShrink: 0,
                         }}
                       >
-                        {(threadsByCh[c.id] ?? []).length}
+                        <TextSwap>{(threadsByCh[c.id] ?? []).length}</TextSwap>
                       </span>
                     </span>
                   </button>
                 </div>
                 <div
                   data-channel-id={c.id}
-                  onClick={() => toggleChannel(c.id)}
                   className="hov-wash"
                   style={{
                     display: sidebarFolded ? 'none' : 'flex',
@@ -421,6 +427,10 @@ export function ThreadsSidebar() {
                     boxShadow: focused ? `inset 3px 0 0 ${c.brand}` : undefined,
                   }}
                 >
+                  <button type="button" className="trk-nav-button" aria-label={`${c.label} threads`}
+                    aria-expanded={!folded} aria-controls={`trk-channel-${c.id}`}
+                    onClick={() => toggleChannel(c.id)}
+                    style={{ display: 'flex', alignItems: 'center', gap: 7, flex: 1, minWidth: 0, height: '100%' }}>
                   <Disclose
                     open={!folded}
                     style={{ ...mono(8), color: 'var(--fg-3)', width: 9, flexShrink: 0 }}
@@ -429,16 +439,17 @@ export function ThreadsSidebar() {
                   <span style={{ flex: 1, borderTop: '1px solid var(--line-color)' }} />
                   {!railExpanded && (
                     <span style={{ ...mono(8), color: 'var(--fg-3)' }}>
-                      {folded ? `${ths.length} thr` : c.sub}
+                      <TextSwap>{folded ? `${ths.length} thr` : c.sub}</TextSwap>
                     </span>
                   )}
-                  <span
+                  </button>
+                  <button type="button" aria-label={`${pinned ? 'Unpin' : 'Pin'} ${c.label}`} aria-pressed={pinned}
                     onClick={(e) => {
                       e.stopPropagation()
                       toggleChannelPin(c.id)
                     }}
                     title={pinned ? 'Unpin' : 'Pin to top'}
-                    className="hov-op"
+                    className="hov-op trk-nav-button"
                     style={{
                       display: 'inline-flex',
                       alignItems: 'center',
@@ -450,10 +461,10 @@ export function ThreadsSidebar() {
                     }}
                   >
                     <Icon name="pin" size={10} />
-                  </span>
+                  </button>
                 </div>
                 {!sidebarFolded && (
-                  <div data-channel-threads={c.id} aria-hidden={folded || undefined} inert={folded} style={{ gridColumn: 2, minWidth: 0 }}>
+                  <div id={`trk-channel-${c.id}`} data-channel-threads={c.id} aria-hidden={folded || undefined} inert={folded} style={{ gridColumn: 2, minWidth: 0 }}>
                     <Fold open={!folded}>
                     {/* Each channel scrolls under its own header, so a channel with
                         a hundred threads still leaves the ones below it reachable —
@@ -470,9 +481,9 @@ export function ThreadsSidebar() {
                     {rows.slice(0, shown[c.id] ?? THREAD_PAGE).map((t) => (
                       <div key={t.id} className={t.id === 'THR-NEW' ? 'trk-thread-enter' : undefined}>
                       <div style={{ overflow: 'hidden' }}>
-                      <div
+                      <button type="button" aria-current={t.on ? 'page' : undefined} disabled={!t.pick}
                         onClick={t.pick}
-                        className="hov-wash"
+                        className="hov-wash trk-nav-button trk-thread-pick"
                         style={{ position: 'relative', padding: 'var(--trk-th-pad, 7px 14px)', cursor: 'pointer' }}
                       >
                         {t.on && (
@@ -510,7 +521,7 @@ export function ThreadsSidebar() {
                             }}
                           />
                           <span style={{ fontSize: 12, color: 'var(--trk-thread-title-fg)', ...ellipsis, flex: 1 }}>
-                            {t.title}
+                            <TextSwap style={{ ...ellipsis }}>{t.title}</TextSwap>
                           </span>
                         </div>
                         <div
@@ -524,24 +535,24 @@ export function ThreadsSidebar() {
                           }}
                         >
                           <span style={{ ...mono(8.5, 700), color: c.brand, whiteSpace: 'nowrap', flexShrink: 0 }}>
-                            {t.tag}
+                            <TextSwap>{t.tag}</TextSwap>
                           </span>
                           <span style={{ ...mono(8.5), color: 'var(--fg-3)', ...ellipsis }}>
-                            {t.agent}
+                            <TextSwap style={{ ...ellipsis }}>{t.agent}</TextSwap>
                           </span>
                         </div>
-                      </div>
+                      </button>
                       </div>
                       </div>
                     ))}
                     {rows.length > (shown[c.id] ?? THREAD_PAGE) && (
-                      <div
+                      <button type="button"
                         onClick={() => reveal(c.id, rows.length)}
-                        className="hov-wash"
+                        className="hov-wash trk-nav-button trk-thread-pick"
                         style={{ padding: '6px 14px 8px', ...label(7.5, '.14em'), color: 'var(--fg-3)', cursor: 'pointer' }}
                       >
-                        ↓ {rows.length - (shown[c.id] ?? THREAD_PAGE)} more
-                      </div>
+                        <TextSwap>{`↓ ${rows.length - (shown[c.id] ?? THREAD_PAGE)} more`}</TextSwap>
+                      </button>
                     )}
                     </div>
                     </Fold>
@@ -575,11 +586,11 @@ export function ThreadsSidebar() {
             whiteSpace: 'nowrap',
           }}
         >
-          {threadTotal} thr · {channels.length} ch
+          <TextSwap>{loading ? 'Loading threads…' : failed ? 'Could not load threads' : `${threadTotal} thr · ${channels.length} ch`}</TextSwap>
         </span>
         <span style={{ flex: 1 }} />
         <span style={{ ...mono(7.5), color: 'var(--fg-3)', ...ellipsis, minWidth: 0 }}>
-          {'// end of index'}
+          <TextSwap>{loading ? '// loading index' : failed ? '// index unavailable' : '// end of index'}</TextSwap>
         </span>
       </div>
       <button

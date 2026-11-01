@@ -423,7 +423,11 @@ class ClaudeRunAccumulator:
             if block_type == "text":
                 part: TextPart | ThinkingPart = TextPart(content="")
             elif block_type == "thinking":
-                part = ThinkingPart(content="", provider_name=CLAUDE_PROVIDER_NAME)
+                part = ThinkingPart(
+                    content="",
+                    provider_name=CLAUDE_PROVIDER_NAME,
+                    provider_details={"reasoning_format": "summary"},
+                )
             else:
                 return
             self.streaming_active = True
@@ -496,6 +500,7 @@ class ClaudeRunAccumulator:
                     content=block.thinking,
                     signature=block.signature,
                     provider_name=CLAUDE_PROVIDER_NAME,
+                    provider_details={"reasoning_format": "summary"},
                 )
                 parts.append(thinking)
                 if not self.streaming_active:

@@ -113,6 +113,7 @@ class StreamingPartState:
     part: TextPart | ThinkingPart
     events: list[JsonValue] = field(default_factory=list)
     pending_text: str = ""  # Withhold incomplete visualization references from prose.
+    section_index: int = 0  # Preserve paragraph boundaries between reasoning sections.
 
 
 @dataclass
@@ -252,6 +253,7 @@ class CodexRunAccumulator:
         self.context_used: int | None = None  # Last request's input tokens.
         self.part_index = 0
         self.streaming_parts: dict[str, StreamingPartState] = {}
+        self.reasoning_parts: dict[tuple[str, bool], StreamingPartState] = {}
         self.native_tools: dict[str, NativeToolState] = {}
         self.pending_events: list[JsonValue] = []
         self.usage_counted = False
@@ -392,23 +394,33 @@ class CodexRunAccumulator:
     ) -> Iterator[StreamEvents[str]]:
         self.thread_id = payload.thread_id
         self.turn_id = payload.turn_id
-        state = self.streaming_parts.get(payload.item_id)
+        summary = isinstance(payload, ReasoningSummaryTextDeltaNotification)
+        key = (payload.item_id, summary)
+        state = self.reasoning_parts.get(key)
         if state is None:
             part = ThinkingPart(
                 content="",
                 id=payload.item_id,
                 provider_name=CODEX_PROVIDER_NAME,
+                provider_details={
+                    "reasoning_format": "summary" if summary else "reasoning"
+                },
             )
             state = StreamingPartState(index=self.take_part_index(), part=part)
-            self.streaming_parts[payload.item_id] = state
+            self.reasoning_parts[key] = state
             yield PartStartEvent(index=state.index, part=replace(part))
         state.events.append(event)
         if isinstance(state.part, ThinkingPart):
-            state.part.content += payload.delta
+            section_index = payload.summary_index if summary else payload.content_index
+            delta = payload.delta
+            if section_index != state.section_index and state.part.content:
+                delta = "\n\n" + delta
+            state.section_index = section_index
+            state.part.content += delta
             yield PartDeltaEvent(
                 index=state.index,
                 delta=ThinkingPartDelta(
-                    content_delta=payload.delta,
+                    content_delta=delta,
                     provider_name=CODEX_PROVIDER_NAME,
                 ),
             )
@@ -420,7 +432,7 @@ class CodexRunAccumulator:
         self.turn_id = payload.turn_id
         state = self.streaming_parts.get(payload.item_id)
         if state is None:
-            part = ThinkingPart(
+            part = TextPart(
                 content="",
                 id=payload.item_id,
                 provider_name=CODEX_PROVIDER_NAME,
@@ -429,11 +441,11 @@ class CodexRunAccumulator:
             self.streaming_parts[payload.item_id] = state
             yield PartStartEvent(index=state.index, part=replace(part))
         state.events.append(event)
-        if isinstance(state.part, ThinkingPart):
+        if isinstance(state.part, TextPart):
             state.part.content += payload.delta
             yield PartDeltaEvent(
                 index=state.index,
-                delta=ThinkingPartDelta(
+                delta=TextPartDelta(
                     content_delta=payload.delta,
                     provider_name=CODEX_PROVIDER_NAME,
                 ),
@@ -466,7 +478,7 @@ class CodexRunAccumulator:
             yield FunctionToolCallEvent(part=live_call)
             return
         if isinstance(item, PlanThreadItem):
-            part = ThinkingPart(
+            part = TextPart(
                 content=item.text,
                 id=item.id,
                 provider_name=CODEX_PROVIDER_NAME,
@@ -688,47 +700,46 @@ class CodexRunAccumulator:
     def complete_reasoning(
         self, item: ReasoningThreadItem, event: JsonObject
     ) -> Iterator[StreamEvents[str]]:
-        state = self.streaming_parts.pop(item.id, None)
-        reasoning = "\n".join([*(item.content or []), *(item.summary or [])])
-        streamed = (
-            state.part.content
-            if state is not None and isinstance(state.part, ThinkingPart)
-            else ""
-        )
-        content = reasoning or streamed
-        if not content:
-            # Codex emits a reasoning item even when it carries no reasoning text
-            # (summaries disabled, or a short turn with no streamed reasoning). Don't
-            # surface an empty thinking block; keep the raw event for replay.
+        emitted = False
+        for summary, texts in ((False, item.content), (True, item.summary)):
+            state = self.reasoning_parts.pop((item.id, summary), None)
+            streamed = state.part.content if state is not None else ""
+            content = "\n\n".join(texts or []) or streamed
+            if not content:
+                continue
+            if state is None:
+                part = ThinkingPart(
+                    content=content,
+                    id=item.id,
+                    provider_name=CODEX_PROVIDER_NAME,
+                    provider_details={
+                        "reasoning_format": "summary" if summary else "reasoning"
+                    },
+                )
+                state = StreamingPartState(index=self.take_part_index(), part=part)
+                yield PartStartEvent(index=state.index, part=part)
+            else:
+                state.part.content = content
+            state.events.append(event)
+            yield PartEndEvent(index=state.index, part=state.part)
+            self.messages.append(
+                ModelResponse(
+                    parts=[state.part],
+                    provider_name=CODEX_PROVIDER_NAME,
+                    provider_response_id=item.id,
+                    metadata=codex_metadata(self.take_message_events(state.events)),
+                )
+            )
+            emitted = True
+        if not emitted:
             self.pending_events.append(event)
-            return
-        if state is None or not isinstance(state.part, ThinkingPart):
-            part = ThinkingPart(
-                content=content,
-                id=item.id,
-                provider_name=CODEX_PROVIDER_NAME,
-            )
-            state = StreamingPartState(index=self.take_part_index(), part=part)
-            yield PartStartEvent(index=state.index, part=part)
-        else:
-            state.part.content = content
-        state.events.append(event)
-        yield PartEndEvent(index=state.index, part=state.part)
-        self.messages.append(
-            ModelResponse(
-                parts=[state.part],
-                provider_name=CODEX_PROVIDER_NAME,
-                provider_response_id=item.id,
-                metadata=codex_metadata(self.take_message_events(state.events)),
-            )
-        )
 
     def complete_plan(
         self, item: PlanThreadItem, event: JsonObject
     ) -> Iterator[StreamEvents[str]]:
         state = self.streaming_parts.pop(item.id, None)
-        if state is None or not isinstance(state.part, ThinkingPart):
-            part = ThinkingPart(
+        if state is None or not isinstance(state.part, TextPart):
+            part = TextPart(
                 content=item.text,
                 id=item.id,
                 provider_name=CODEX_PROVIDER_NAME,

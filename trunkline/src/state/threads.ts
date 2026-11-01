@@ -2,6 +2,7 @@ import { fetchThread } from '@/lib/api/client'
 import type { ApiThread, ThreadEvent, WireEvent } from '@/lib/api/events'
 import { api } from '@/lib/api'
 import { queryClient } from '@/lib/queryClient'
+import { useConsole } from '@/state/console'
 
 /** A row already read can include the change that announced it. */
 function changedThread(thread: ApiThread, event: ThreadEvent): ApiThread {
@@ -61,6 +62,7 @@ export function watchThreads(onError: (message: string) => void): () => void {
           queryClient.setQueryData<ApiThread[]>(['threads'], (rows = []) => [
             ...rows.filter(row => row.id !== updated.id), updated,
           ].sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at) || b.id.localeCompare(a.id)))
+          if (event.event_kind === 'thread_project_bound') await useConsole.getState().actions.refreshThreadProject(event.thread_id)
         }).catch(fail)
     }
   }

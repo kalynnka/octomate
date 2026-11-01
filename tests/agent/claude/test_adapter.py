@@ -253,6 +253,7 @@ def test_adapter_fills_response_provenance_usage_and_signature() -> None:
     assert isinstance(thinking, ThinkingPart)
     assert thinking.signature == "sig-xyz"
     assert thinking.provider_name == "anthropic"
+    assert thinking.provider_details == {"reasoning_format": "summary"}
 
     # Response provenance is filled from the Claude message.
     assert turn.provider_name == "anthropic"
@@ -817,6 +818,11 @@ def test_adapter_streams_partial_thinking_with_signature() -> None:
     assert isinstance(thinking_part, ThinkingPart)
     assert thinking_part.content == "weigh it"
     assert thinking_part.signature == "sig"
+    assert thinking_part.provider_details == {"reasoning_format": "summary"}
+    start = events[0]
+    assert isinstance(start, PartStartEvent)
+    assert isinstance(start.part, ThinkingPart)
+    assert start.part.provider_details == {"reasoning_format": "summary"}
 
 
 def test_adapter_falls_back_to_block_render_without_partial_stream() -> None:
