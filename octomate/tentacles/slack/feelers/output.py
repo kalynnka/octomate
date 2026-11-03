@@ -77,9 +77,6 @@ SLACK_TODO_STATUS: dict[TodoStatus, str] = {
 }
 
 THINKING_TITLE = "Thinking"
-STATUS_THINKING = "Thinking…"
-STATUS_WRITING = "Writing the response…"
-STATUS_INPUT_REQUESTED = "Input requested…"
 
 TEXT_STREAM_ROTATE_AFTER = 270.0
 
@@ -160,8 +157,6 @@ class SlackTimelineState(TimelineState):
     tool_steps: dict[str, SlackStep] = field(default_factory=dict)
     todo_steps: dict[str, SlackStep] = field(default_factory=dict)
     skipped_tool_call_ids: set[str] = field(default_factory=set)
-    last_status: str | None = None
-    status_tasks: set[asyncio.Task[None]] = field(default_factory=set)
     stop_tasks: set[asyncio.Task[IMMessageID | None]] = field(default_factory=set)
     step_streams: dict[str, AsyncChatStream] = field(default_factory=dict)
     retired: list[AsyncChatStream] = field(default_factory=list)
@@ -199,30 +194,6 @@ class SlackTimelineState(TimelineState):
         self.text_stream = None
         self.text_stream_started_at = 0.0
         self.pending_text_delta = ""
-
-    async def set_status(self, status: str) -> None:
-        # The status is a fire-and-forget UI hint: spawn the setStatus call so
-        # the drive loop never blocks on Slack's round-trip. Keep a reference
-        # (asyncio only weak-refs tasks, so an untracked one can be collected
-        # mid-flight) and drop it once the call settles.
-        if status == self.last_status:
-            return
-        self.last_status = status
-        task = asyncio.create_task(
-            self.ink.set_assistant_status(self.channel, self.thread_ts, status)
-        )
-        self.status_tasks.add(task)
-        task.add_done_callback(self.status_tasks.discard)
-
-    async def join_status(self) -> None:
-        # Let the in-flight hints settle, then clear the status last so a late
-        # hint can't leave the thread stuck on a stale label.
-        try:
-            if self.status_tasks:
-                await asyncio.gather(*self.status_tasks, return_exceptions=True)
-        finally:
-            self.last_status = ""
-            await self.ink.set_assistant_status(self.channel, self.thread_ts, "")
 
     async def ensure_plan_stream(
         self, *, title: str = DEFAULT_PLAN_TITLE
@@ -297,7 +268,6 @@ class SlackTimelineState(TimelineState):
         if self.text_stream is None:
             await self.complete_active_thinking()
             self.finish_plan()
-            await self.set_status(STATUS_WRITING)
             # Each text part is its own Slack message: clear the batcher's carried
             # `full_text` so the previous message's length can't fold this one.
             self.answer_batcher.reset()
@@ -371,7 +341,6 @@ class SlackTimelineState(TimelineState):
         await self.flush_text()
         await self.thinking_flusher.drain()
         await self.flush_thinking()
-        await self.set_status(STATUS_INPUT_REQUESTED)
 
     async def thinking_start(self) -> None:
         await self.complete_active_thinking()
@@ -382,7 +351,6 @@ class SlackTimelineState(TimelineState):
             started_at=time.monotonic(),
         )
         self.active_thinking = step
-        await self.set_status(STATUS_THINKING)
         await self.emit(step)
 
     async def thinking_delta(self, text: str) -> None:
@@ -415,7 +383,6 @@ class SlackTimelineState(TimelineState):
         tool_call_id: str | None,
         title: str,
         args_text: str | None,
-        status: str,
         *,
         tool_name: str | None = None,
     ) -> None:
@@ -432,7 +399,6 @@ class SlackTimelineState(TimelineState):
         if args_text:
             step.append_section("Arguments", args_text)
         self.tool_steps[step.id] = step
-        await self.set_status(status)
         await self.emit(step)
 
     async def finish_tool(
@@ -471,7 +437,6 @@ class SlackTimelineState(TimelineState):
             tool.tool_call_id,
             title,
             format_tool_arguments(tool.tool_name, args) if args else None,
-            f"{humanize_tool_name(tool.tool_name)}…",
             tool_name=tool.tool_name,
         )
 
@@ -668,20 +633,16 @@ class SlackTimelineFeeler(TimelineFeeler):
             recipient_user_id=context.recipient_user_id,
             recipient_team_id=context.recipient_team_id,
         )
-        await state.set_status(STATUS_THINKING)
         try:
             yield state
         finally:
-            try:
-                await state.complete_pending()
-                await state.finish_text()
-                state.finish_plan()
-                state.release_drained()
-                await state.join_stops()
-                # The last text message is the final reply.
-                state.message_id = state.last_message_id
-            finally:
-                await state.join_status()
+            await state.complete_pending()
+            await state.finish_text()
+            state.finish_plan()
+            state.release_drained()
+            await state.join_stops()
+            # The last text message is the final reply.
+            state.message_id = state.last_message_id
 
 
 @dataclass

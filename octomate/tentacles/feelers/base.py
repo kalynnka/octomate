@@ -24,6 +24,7 @@ from octomate.tentacles.feelers.output import (
     SegmentsFeeler,
     TimelineFeeler,
 )
+from octomate.tentacles.feelers.status import StatusFeeler
 
 if TYPE_CHECKING:
     from octomate.managers.deferred import DeferredActionManager
@@ -41,6 +42,7 @@ class Feelers:
     oauth: OAuthFeeler
     # Saved artifacts presented independently of the run's reply.
     artifacts: ArtifactFeeler
+    status: StatusFeeler | None = None
 
     async def present(
         self, address: ChannelAddress, event: GatewayEvent | RunErrorEvent

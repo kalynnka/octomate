@@ -32,7 +32,7 @@ from octomate.tentacles.napcat.schema import NapcatOutboundMessage
 from octomate.tentacles.siphon import Siphon
 from octomate.types.json import JsonObject
 from tests.channels.napcat.fakes import FakeNapcatHTTP
-from tests.support.channels import FakeOctomate, drive
+from tests.support.channels import FakeChannelTentacle, FakeOctomate, drive
 from tests.support.scenarios import plain_answer, play
 
 
@@ -322,6 +322,7 @@ async def test_napcat_context_manager_runs_serve_until_exit(monkeypatch) -> None
     channel.stop_event = None
     channel.serve_task = None
     channel.octomate = FakeOctomate()
+    channel.feelers = FakeChannelTentacle().feelers
     channel.siphon = Siphon(channel)
 
     started = asyncio.Event()

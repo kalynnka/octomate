@@ -75,6 +75,8 @@ class Siphon:
             with suppress(asyncio.CancelledError):
                 await self.reading
         self.subscription.close()
+        if self.channel.feelers.status is not None:
+            await self.channel.feelers.status.close()
 
     async def read(self, impulses: ObjectReceiveStream[Impulse]) -> None:
         """Hand each impulse to its thread's lane, opening one where none is."""
@@ -82,6 +84,8 @@ class Siphon:
             async for impulse in impulses:
                 if impulse.address is None:
                     continue  # The nerve hands a channel only what has an address.
+                if self.channel.feelers.status is not None:
+                    self.channel.feelers.status.feed(impulse.address, impulse.event)
                 key = ThreadKey.from_address(impulse.address)
                 lane = self.lanes.get(key)
                 if lane is None:

@@ -44,6 +44,7 @@ from octomate.tentacles.slack.feelers.questions import (
     SlackAskQuestionFeeler,
     collect_answers,
 )
+from octomate.tentacles.slack.feelers.status import SlackStatusFeeler
 from octomate.tentacles.slack.ink import SlackInk
 from octomate.tentacles.slack.oauth import SlackOAuthConnector, SlackTokenExchange
 from octomate.tentacles.slack.schema import (
@@ -155,6 +156,7 @@ class SlackTentacle(
         oauth = SlackOAuthFeeler(self.ink)
         self.feelers = Feelers(
             markdown=markdown_feeler,
+            status=SlackStatusFeeler(self.ink),
             artifacts=SlackArtifactFeeler(
                 artifacts=self.octomate.artifacts,
                 users=self.octomate.users,
