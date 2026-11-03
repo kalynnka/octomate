@@ -1,4 +1,4 @@
-"""Local sbx subprocesses and the sandbox agent's stdio connection."""
+"""Local sbx lifecycle operations and scoped guest command streams."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ import os
 import platform
 import re
 import socket
-from contextlib import suppress
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from typing import TypedDict, Unpack
 
@@ -39,7 +40,6 @@ class SbxSandbox:
     config: SbxSandboxConfig
     user_id: UUID7
     managed: bool = field(default=False, init=False)  # Name found or create tried.
-    process: sh.RunningCommand | None = field(default=None, init=False)
 
     @property
     def name(self) -> str:
@@ -130,75 +130,95 @@ class SbxSandbox:
         await self.preflight()
         names = (await self.command("ls", quiet=True)).decode().splitlines()
         self.managed = True
-        if self.name in names:
-            return
-        await self.command(
-            "create",
-            "shell",
-            name=self.name,
-            template=self.config.image,
-            pull="missing",
-            cpus=self.config.cpus,
-            memory=f"{self.config.memory_mib}m",
-            skills="off",
-            no_progress=True,
-            env=[
-                f"OCTOMATE_SANDBOX_USER_ID={self.user_id}",
-                f"OCTOMATE_SANDBOX_IMAGE={self.config.image}",
-                f"OCTOMATE_SANDBOX_CPUS={self.config.cpus}",
-                f"OCTOMATE_SANDBOX_MEMORY_MIB={self.config.memory_mib}",
-            ],
+        if self.name not in names:
+            await self.command(
+                "create",
+                "shell",
+                name=self.name,
+                template=self.config.image,
+                pull="missing",
+                cpus=self.config.cpus,
+                memory=f"{self.config.memory_mib}m",
+                skills="off",
+                no_progress=True,
+                env=[
+                    f"OCTOMATE_SANDBOX_USER_ID={self.user_id}",
+                    f"OCTOMATE_SANDBOX_IMAGE={self.config.image}",
+                    f"OCTOMATE_SANDBOX_CPUS={self.config.cpus}",
+                    f"OCTOMATE_SANDBOX_MEMORY_MIB={self.config.memory_mib}",
+                ],
+            )
+        metadata = await self.command(
+            "exec",
+            self.name,
+            "printenv",
+            "OCTOMATE_SANDBOX_USER_ID",
+            "OCTOMATE_SANDBOX_IMAGE",
+            "OCTOMATE_SANDBOX_CPUS",
+            "OCTOMATE_SANDBOX_MEMORY_MIB",
         )
+        if metadata.splitlines() != [
+            str(self.user_id).encode(),
+            self.config.image.encode(),
+            str(self.config.cpus).encode(),
+            str(self.config.memory_mib).encode(),
+        ]:
+            raise SandboxError(
+                "Existing sandbox owner, image or resource settings differ; no automatic replacement is allowed"
+            )
 
-    async def open(self) -> UNIXSocketStream:
+    @asynccontextmanager
+    async def execute(
+        self, *command: str, workdir: str, env: dict[str, str] | None = None
+    ) -> AsyncGenerator[UNIXSocketStream]:
         """Connect guest stdio directly to a byte stream, bypassing sh buffering."""
         parent, child = socket.socketpair()
         stream: UNIXSocketStream | None = None
+        process: sh.RunningCommand | None = None
         try:
             stream = await UNIXSocketStream.from_socket(parent)
             with child.makefile("rwb", buffering=0) as stdio:
                 process = self.cli().bake(
-                    "exec", interactive=True, workdir="/home/agent/workspace"
+                    "exec",
+                    interactive=True,
+                    workdir=workdir,
+                    env=[f"{key}={value}" for key, value in (env or {}).items()],
                 )(
                     self.name,
-                    "/opt/octomate/.venv/bin/python",
-                    "-m",
-                    "octomate.sandbox.entrypoint",
+                    *command,
                     _in=stdio,
                     _out=stdio.fileno(),
                 )
-            self.process = process
-            return stream
         except BaseException as error:
             if stream is not None:
                 await stream.aclose()
             else:
                 parent.close()
             if isinstance(error, (OSError, sh.ForkException)):
-                raise SandboxError("Cannot attach to the sandbox agent") from None
+                raise SandboxError("Cannot launch the sandbox command") from None
             raise
         finally:
             child.close()
+        try:
+            async with stream:
+                yield stream
+        finally:
+            with suppress(ProcessLookupError):
+                if process.is_alive():
+                    process.terminate()
+            try:
+                async with asyncio.timeout(5):
+                    await process
+            except TimeoutError:
+                with suppress(ProcessLookupError):
+                    process.kill()
+                with suppress(sh.ErrorReturnCode):
+                    await process
+            except sh.ErrorReturnCode:
+                pass
 
     async def stop(self) -> None:
         if self.managed:
             names = (await self.command("ls", quiet=True)).decode().splitlines()
             if self.name in names:
                 await self.command("stop", self.name)
-        process = self.process
-        if process is None:
-            return
-        with suppress(ProcessLookupError):
-            if process.is_alive():
-                process.terminate()
-        try:
-            async with asyncio.timeout(5):
-                await process
-        except TimeoutError:
-            with suppress(ProcessLookupError):
-                process.kill()
-            with suppress(sh.ErrorReturnCode):
-                await process
-        except sh.ErrorReturnCode:
-            pass
-        self.process = None

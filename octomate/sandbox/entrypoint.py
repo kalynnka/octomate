@@ -10,7 +10,7 @@ import anyio
 from anyio.streams.file import FileReadStream, FileWriteStream
 
 from octomate.fibers import FiberError, StdioFiber
-from octomate.nerve import Impulse, Publication, SandboxTopic, publication_adapter
+from octomate.nerve import Impulse, NerveEvent, impulse_adapter
 from octomate.schemas.sandbox import (
     CancelInvocation,
     ExecuteAgent,
@@ -23,15 +23,10 @@ from octomate.schemas.sandbox import (
 
 
 async def reject_invocations(
-    fiber: StdioFiber[Publication],
-    topic: SandboxTopic,
+    fiber: StdioFiber[Impulse[NerveEvent]],
 ) -> None:
     """Keep the bootstrap agent explicit about the missing React runner."""
-    async for publication in fiber.receive:
-        if publication.topic != topic:
-            fiber.fail(FiberError("Core publication targets another sandbox topic"))
-            return
-        impulse = publication.impulse
+    async for impulse in fiber.receive:
         if not isinstance(
             impulse.event,
             ExecuteAgent
@@ -42,15 +37,12 @@ async def reject_invocations(
         ):
             continue
         await fiber.send.send(
-            Publication(
-                topic=topic,
-                impulse=Impulse(
-                    InvocationRejected(
-                        invocation_id=impulse.event.invocation_id,
-                        reason="This sandbox agent provides bootstrap readiness only; agent runs are not enabled",
-                    ),
+            Impulse(
+                InvocationRejected(
                     invocation_id=impulse.event.invocation_id,
+                    reason="This sandbox agent provides bootstrap readiness only; agent runs are not enabled",
                 ),
+                invocation_id=impulse.event.invocation_id,
             ),
         )
 
@@ -63,17 +55,16 @@ async def main() -> None:
         memory_mib=int(os.environ["OCTOMATE_SANDBOX_MEMORY_MIB"]),
         accepts_invocations=False,
     )
-    topic = SandboxTopic(ready.user_id)
     fiber = StdioFiber(
         FileReadStream(os.fdopen(os.dup(sys.stdin.fileno()), "rb", buffering=0)),
         FileWriteStream(os.fdopen(os.dup(sys.stdout.fileno()), "wb", buffering=0)),
-        publication_adapter,
+        impulse_adapter,
     )
     async with aclosing(fiber):
         fiber.start()
         try:
-            await fiber.send.send(Publication(topic=topic, impulse=Impulse(ready)))
-            await reject_invocations(fiber, topic)
+            await fiber.send.send(Impulse(ready))
+            await reject_invocations(fiber)
         except (anyio.BrokenResourceError, anyio.ClosedResourceError):
             pass  # The core closed stdio; wait_closed reports any transport failure.
         await fiber.wait_closed()

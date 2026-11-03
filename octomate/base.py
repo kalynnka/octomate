@@ -413,7 +413,7 @@ class Octomate(FastAPI):
         if self.config.sandbox.mode == "sbx":
             raise RuntimeError(
                 "sbx agent dispatch is not enabled in this build; "
-                "the sandbox manager supports bootstrap verification only"
+                "the sandbox agent transport supports bootstrap verification only"
             )
         with sqlalchemy_materia():
             # The project registry: reconciling here is what builds

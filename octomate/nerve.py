@@ -41,14 +41,11 @@ import anyio
 from anyio.abc import ObjectReceiveStream, ObjectSendStream
 from pydantic import (
     UUID7,
-    BaseModel,
     ConfigDict,
     Discriminator,
-    Field,
-    PlainSerializer,
     Tag,
     TypeAdapter,
-    ValidateAs,
+    with_config,
 )
 from typing_extensions import TypeVar
 
@@ -64,6 +61,13 @@ EventT = TypeVar("EventT", default=WireEvent, covariant=True)
 
 
 # Python 3.12 needs typing_extensions for a type parameter with a default.
+@with_config(
+    ConfigDict(
+        extra="forbid",
+        ser_json_bytes="base64",
+        val_json_bytes="base64",
+    )
+)
 @dataclass(frozen=True)
 class Impulse(Generic[EventT]):
     """One event or signal with an optional address and the routing metadata
@@ -84,7 +88,6 @@ class ChannelTopic:
     """Every impulse at one channel's addresses, each once."""
 
     channel_tentacle_id: str
-    kind: Literal["channel"] = "channel"
 
 
 @dataclass(frozen=True)
@@ -92,7 +95,6 @@ class ThreadTopic:
     """The impulses published to one thread."""
 
     key: ThreadKey
-    kind: Literal["thread"] = "thread"
 
 
 @dataclass(frozen=True)
@@ -100,19 +102,18 @@ class UserTopic:
     """Notifications explicitly published to one registered user."""
 
     user_id: UUID7
-    kind: Literal["user"] = "user"
 
 
 @dataclass(frozen=True)
 class SandboxTopic:
-    """Internal signals exchanged with one user's sandbox, separate from UI topics."""
+    """A user's sandbox lifecycle, or one agent invocation inside that sandbox."""
 
     user_id: UUID7
-    kind: Literal["sandbox"] = "sandbox"
+    invocation_id: UUID7 | None = None
 
 
 type EventTopic = ChannelTopic | ThreadTopic | UserTopic
-type Topic = Annotated[EventTopic | SandboxTopic, Field(discriminator="kind")]
+type Topic = EventTopic | SandboxTopic
 
 
 def nerve_event_family(
@@ -132,39 +133,7 @@ type NerveEvent = Annotated[
 ]
 
 
-class Publication(BaseModel):
-    """One topic delivery crossing a nerve connection."""
-
-    model_config = ConfigDict(
-        extra="forbid", ser_json_bytes="base64", val_json_bytes="base64"
-    )
-
-    version: Literal[1] = 1
-    topic: Topic
-    impulse: Impulse[NerveEvent]
-
-    @staticmethod
-    def adapter(topic: Topic) -> TypeAdapter[Impulse[NerveEvent]]:
-        """Bind wire publications to a core-authorized topic at the transport boundary."""
-
-        def unpack(publication: Publication) -> Impulse[NerveEvent]:
-            if publication.topic != topic:
-                raise ValueError("Publication targets an unauthorized topic")
-            return publication.impulse
-
-        def pack(impulse: Impulse[NerveEvent]) -> Publication:
-            return Publication(topic=topic, impulse=impulse)
-
-        return TypeAdapter(
-            Annotated[
-                Impulse[NerveEvent],
-                ValidateAs(Publication, unpack),
-                PlainSerializer(pack, return_type=Publication),
-            ]
-        )
-
-
-publication_adapter = TypeAdapter(Publication)
+impulse_adapter = TypeAdapter(Impulse[NerveEvent])
 
 
 class Nerve:
@@ -211,7 +180,8 @@ class Nerve:
 
         `ChannelTopic` names a channel's addresses, `ThreadTopic` wraps one
         `ThreadKey`, `UserTopic` wraps a registered user's UUID, and `SandboxTopic`
-        names the internal connection to that user's sandbox.
+        names the sandbox lifecycle or a specific invocation's stream. Receivers select the
+        messages they handle; the nerve does not distinguish commands from events.
         Publishers choose authorized topics before publishing; the nerve does
         not filter subscribers within a topic.
 
@@ -221,11 +191,12 @@ class Nerve:
         subscriber = (
             fiber if fiber is not None else MemoryFiber[Impulse[NerveEvent]](backlog)
         )
-        if subscriber.closed or subscriber in self.subscribers.get(topic, set()):
+        recipients = self.subscribers.get(topic, set())
+        if subscriber.closed or subscriber in recipients:
             raise ValueError("Fiber is already subscribed or closed")
         self.subscribers[topic].add(subscriber)
         try:
-            yield subscriber.receive
+            yield subscriber
         finally:
             self.subscribers[topic].discard(subscriber)
             if not self.subscribers[topic]:
@@ -271,7 +242,7 @@ class Nerve:
 
         A topic publishes impulses unchanged to that topic. A supplied fiber is
         read for the block's lifetime and remains owned by its caller. Its incoming
-        impulses are never echoed back to the same fiber's subscription.
+        impulses are delivered to subscribers on the core-bound topic.
         """
         publisher = fiber if fiber is not None else MemoryFiber[Impulse[NerveEvent]]()
         if publisher.closed:
@@ -289,9 +260,9 @@ class Nerve:
 
         async def pump() -> None:
             try:
-                async for sent in publisher.receive:
+                async for sent in publisher:
                     if topic is not None:
-                        self.deliver(topic, sent, source=publisher)
+                        self.deliver(topic, sent)
                         continue
                     impulse = replace(sent, origin=asked)
                     topics: set[Topic] = set()
@@ -301,29 +272,24 @@ class Nerve:
                     if not impulse.private and asked is not None:
                         topics.add(ThreadTopic(asked))
                     for destination in topics:
-                        self.deliver(destination, impulse, source=publisher)
-            except ValueError:
-                if fiber is None:
-                    raise
-                publisher.fail(
-                    FiberError("Publication violates nerve topic permissions")
-                )
+                        self.deliver(destination, impulse)
             except (anyio.BrokenResourceError, anyio.ClosedResourceError):
                 pass  # The owner closed the supplied fiber while its pump was waiting.
             finally:
                 if fiber is None:
-                    publisher.receive.close()
+                    publisher.close()
 
         pumping = asyncio.create_task(pump())
         try:
-            yield publisher.send
+            yield publisher
         finally:
             if fiber is not None:
-                pumping.cancel()
+                if not publisher.closed or publisher.failure is not None:
+                    pumping.cancel()
                 with suppress(asyncio.CancelledError):
                     await pumping
             else:
-                publisher.send.close()
+                publisher.close_send()
                 try:
                     await pumping
                 finally:
@@ -333,24 +299,19 @@ class Nerve:
         self,
         topic: Topic,
         impulse: Impulse[NerveEvent],
-        *,
-        source: Fiber[Impulse[NerveEvent]] | None = None,
     ) -> None:
-        """Fan out to a topic's subscribers, excluding the publishing fiber.
+        """Fan out to every subscriber of one topic.
 
         A slow local subscriber is cut off at its backlog. A full or broken peer
         fiber is disconnected independently; other subscribers keep receiving.
-        Signals may only travel on internal sandbox topics.
+        Message handling belongs to receivers; unobserved publications are dropped.
         """
-        if isinstance(impulse.event, SandboxAgentSignal) and not isinstance(
-            topic, SandboxTopic
-        ):
-            raise ValueError("Sandbox signals require an internal sandbox topic")
-        for fiber in self.subscribers.get(topic, set()):
-            if fiber is source or fiber.closed:
+        recipients = self.subscribers.get(topic, set())
+        for fiber in recipients:
+            if fiber.closed:
                 continue
             try:
-                fiber.send.send_nowait(impulse)
+                fiber.send_nowait(impulse)
             except (
                 anyio.WouldBlock,
                 anyio.BrokenResourceError,
