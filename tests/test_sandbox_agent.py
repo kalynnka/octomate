@@ -10,17 +10,15 @@ import anyio
 import pytest
 from uuid_utils.compat import uuid7
 
+from octomate.capabilities.harness.events import RunEndedEvent
 from octomate.fibers import StdioFiber
 from octomate.nerve import (
     Impulse,
     Nerve,
-    Publication,
     SandboxTopic,
-    UserTopic,
+    impulse_adapter,
 )
 from octomate.schemas.sandbox import (
-    CancelInvocation,
-    InvocationRejected,
     SandboxAgentReady,
 )
 from tests.test_sandbox_contracts import IMAGE
@@ -28,9 +26,9 @@ from tests.test_sandbox_contracts import IMAGE
 REPOSITORY = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize("fault", [None, "invalid-frame", "foreign-topic", "ui-topic"])
+@pytest.mark.parametrize("unexpected_input", [False, True])
 async def test_bootstrap_uses_a_stdio_fiber_with_the_core_nerve(
-    tmp_path: Path, fault: str | None
+    tmp_path: Path, unexpected_input: bool
 ) -> None:
     owner, invocation = uuid7(), uuid7()
     environment = {
@@ -55,12 +53,11 @@ async def test_bootstrap_uses_a_stdio_fiber_with_the_core_nerve(
         assert process.stdout is not None
         assert process.stdin is not None
         assert process.stderr is not None
-        topic = SandboxTopic(owner)
+        topic = SandboxTopic(owner, invocation)
         nerve = Nerve()
-        fiber = StdioFiber(process.stdout, process.stdin, Publication.adapter(topic))
+        fiber = StdioFiber(impulse_adapter, input=process.stdout)
         impulses = await stack.enter_async_context(nerve.subscribe(topic))
         stack.push_async_callback(fiber.aclose)
-        await stack.enter_async_context(nerve.subscribe(topic, fiber=fiber))
         await stack.enter_async_context(nerve.publish(topic, fiber=fiber))
         connection = fiber.start()
         async with asyncio.timeout(30):
@@ -68,31 +65,18 @@ async def test_bootstrap_uses_a_stdio_fiber_with_the_core_nerve(
             assert isinstance(ready, SandboxAgentReady)
             assert ready.user_id == owner
             assert not ready.accepts_invocations
-            if fault == "invalid-frame":
-                await process.stdin.send(
-                    b'{"version":999,"secret":"must-not-be-echoed"}\n'
-                )
-            elif fault is not None:
-                publication = Publication(
-                    topic=SandboxTopic(uuid7())
-                    if fault == "foreign-topic"
-                    else UserTopic(owner),
-                    impulse=Impulse(CancelInvocation(invocation_id=invocation)),
-                )
-                await process.stdin.send(publication.model_dump_json().encode() + b"\n")
+            local = Impulse(RunEndedEvent(), invocation_id=invocation)
+            nerve.deliver(topic, local)
+            assert await impulses.receive() == local
+            if unexpected_input:
+                await process.stdin.send(b"must-not-be-echoed\n")
             else:
-                sent = Impulse(CancelInvocation(invocation_id=invocation))
-                nerve.deliver(topic, sent)
-                assert await impulses.receive() == sent
-                rejected = (await impulses.receive()).event
-                assert isinstance(rejected, InvocationRejected)
-                assert rejected.invocation_id == invocation
                 await process.stdin.aclose()
             await process.wait()
             await connection
             await fiber.wait_closed()
             error = b"".join([chunk async for chunk in process.stderr])
-        if fault is not None:
+        if unexpected_input:
             assert process.returncode != 0
             assert b"must-not-be-echoed" not in error
             assert b"Sandbox stdio fiber failed" in error

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Generator
-from dataclasses import dataclass, field
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Unpack
 from unittest.mock import AsyncMock
 
-import anyio
 import pytest
 from anyio.abc import ByteStream
 from uuid_utils.compat import uuid7
@@ -14,56 +14,11 @@ from uuid_utils.compat import uuid7
 import octomate.sandbox.sbx as sandbox_module
 from octomate.config.sandbox import SbxSandboxConfig
 from octomate.managers.sandbox import SandboxError, SandboxManager
-from octomate.nerve import (
-    Impulse,
-    Nerve,
-    Publication,
-    SandboxTopic,
-    UserTopic,
-    publication_adapter,
-)
+from octomate.nerve import Nerve, SandboxTopic, UserTopic
 from octomate.sandbox.sbx import SbxOptions, SbxSandbox
-from octomate.schemas.sandbox import (
-    CancelInvocation,
-    InvocationScope,
-    SandboxAgentReady,
-    SandboxFailed,
-    SandboxProgress,
-)
+from octomate.schemas.sandbox import InvocationScope, SandboxFailed, SandboxProgress
 from tests.support.nerve import held
 from tests.test_sandbox_contracts import IMAGE
-
-
-@dataclass
-class GuestProcess:
-    stream: AsyncMock = field(default_factory=lambda: AsyncMock(spec=ByteStream))
-    handshake: bytes | None = None
-    returncode: int | None = None
-
-    def __post_init__(self) -> None:
-        self.stream.receive.side_effect = self.receive
-
-    async def receive(self) -> bytes:
-        if self.handshake is None:
-            return await asyncio.Future[bytes]()
-        frame, self.handshake = self.handshake, None
-        return frame
-
-    def is_alive(self) -> bool:
-        return self.returncode is None
-
-    def __await__(self) -> Generator[None, None, int]:
-        return self.wait().__await__()
-
-    def terminate(self) -> None:
-        self.returncode = -15
-
-    def kill(self) -> None:
-        self.returncode = -9
-
-    async def wait(self) -> int:
-        assert self.returncode is not None
-        return self.returncode
 
 
 @pytest.fixture
@@ -72,57 +27,33 @@ def scope() -> InvocationScope:
 
 
 @pytest.fixture
-def guest(scope: InvocationScope) -> GuestProcess:
-    process = GuestProcess()
-    process.handshake = (
-        Publication(
-            topic=SandboxTopic(scope.user_id),
-            impulse=Impulse(
-                SandboxAgentReady(
-                    user_id=scope.user_id,
-                    image=IMAGE,
-                    cpus=2,
-                    memory_mib=2048,
-                    accepts_invocations=False,
-                )
-            ),
-        )
-        .model_dump_json()
-        .encode()
-        + b"\n"
-    )
-    return process
-
-
-@pytest.fixture
-def manager(monkeypatch: pytest.MonkeyPatch, guest: GuestProcess) -> SandboxManager:
+def manager(monkeypatch: pytest.MonkeyPatch, scope: InvocationScope) -> SandboxManager:
     manager = SandboxManager(SbxSandboxConfig(image=IMAGE, idle_timeout=0.01), Nerve())
     monkeypatch.setattr(SbxSandbox, "preflight", AsyncMock())
+    monkeypatch.setattr(
+        SbxSandbox,
+        "execute",
+        AsyncMock(side_effect=AssertionError("acquisition must not launch an agent")),
+    )
     names: set[str] = set()
 
     async def command(*args: str, **options: Unpack[SbxOptions]) -> bytes:
         if args[0] == "create":
             assert "name" in options
             names.add(options["name"])
+        if args[0] == "exec":
+            assert args[2] == "printenv"
+            return f"{scope.user_id}\n{IMAGE}\n2\n2048\n".encode()
         return "\n".join(sorted(names)).encode() if args[0] == "ls" else b""
 
     monkeypatch.setattr(SbxSandbox, "command", AsyncMock(side_effect=command))
-
-    async def open(sandbox: SbxSandbox) -> ByteStream:
-        monkeypatch.setattr(sandbox, "process", guest)
-        return guest.stream
-
-    monkeypatch.setattr(SbxSandbox, "open", open)
     return manager
 
 
-async def test_concurrent_acquisitions_share_one_guest_and_keep_peer_alive(
-    manager: SandboxManager,
-    scope: InvocationScope,
-    guest: GuestProcess,
+async def test_concurrent_acquisitions_share_one_vm_and_keep_peer_alive(
+    manager: SandboxManager, scope: InvocationScope
 ) -> None:
-    entered = asyncio.Event()
-    release = asyncio.Event()
+    entered, release = asyncio.Event(), asyncio.Event()
 
     async def peer() -> None:
         async with manager.acquire(scope, uuid7()):
@@ -133,114 +64,66 @@ async def test_concurrent_acquisitions_share_one_guest_and_keep_peer_alive(
     await entered.wait()
     async with manager.nerve.subscribe(UserTopic(scope.user_id)) as events:
         async with manager.acquire(scope, uuid7()) as state:
-            assert isinstance(state.sandbox, SbxSandbox)
-            assert state.sandbox.process is guest
-            assert state.fiber in manager.nerve.subscribers[SandboxTopic(scope.user_id)]
             assert len(state.invocations) == 2
+            assert state.snapshot.phase == "ready"
         await manager.stop(scope.user_id)
-        assert guest.returncode is None
+        assert state.needs_cleanup
         assert held(events) == []
     release.set()
     await task
     await manager.close()
     assert manager.snapshot(scope).phase == "stopped"
-    assert not manager.state(scope.user_id).needs_cleanup
+    assert not state.needs_cleanup
     assert not manager.nerve.subscribers
+    execute = SbxSandbox.execute
+    assert isinstance(execute, AsyncMock)
+    execute.assert_not_called()
 
 
-async def test_connection_routes_remain_open_after_prepare_until_stop(
-    manager: SandboxManager, scope: InvocationScope, guest: GuestProcess
-) -> None:
-    sent = asyncio.Future[bytes]()
-
-    async def send(frame: bytes) -> None:
-        sent.set_result(frame)
-
-    guest.stream.send.side_effect = send
-    topic = SandboxTopic(scope.user_id)
-    impulse = Impulse(CancelInvocation(invocation_id=uuid7()))
-    async with manager.acquire(scope, uuid7()) as state:
-        connection = state.connection
-        assert connection is not None
-        assert not connection.done()
-        manager.nerve.deliver(topic, impulse)
-        frame = await asyncio.wait_for(sent, 1)
-        assert publication_adapter.validate_json(frame) == Publication(
-            topic=topic, impulse=impulse
-        )
-    await manager.stop(scope.user_id)
-    assert connection.done()
-    assert state.connection is None
-    assert topic not in manager.nerve.subscribers
-    guest.stream.aclose.assert_awaited()
-
-
-async def test_guest_eof_removes_routes_and_prevents_reuse(
-    manager: SandboxManager, scope: InvocationScope, guest: GuestProcess
-) -> None:
-    close = asyncio.Event()
-
-    async def receive() -> bytes:
-        if guest.handshake is not None:
-            return await guest.receive()
-        await close.wait()
-        raise anyio.EndOfStream
-
-    guest.stream.receive.side_effect = receive
-    async with manager.acquire(scope, uuid7()) as state:
-        assert state.connection is not None
-        close.set()
-        await asyncio.wait_for(asyncio.shield(state.connection), 1)
-        assert SandboxTopic(scope.user_id) not in manager.nerve.subscribers
-        with pytest.raises(SandboxError, match="connection ended"):
-            async with manager.acquire(scope, uuid7()):
-                pytest.fail("closed sandbox connection was reused")
-    await manager.close()
-
-
-async def test_cancelled_prepare_closes_connection_and_routes(
-    manager: SandboxManager, scope: InvocationScope, guest: GuestProcess
+async def test_cancelled_prepare_stops_runtime_without_launching_an_agent(
+    manager: SandboxManager, scope: InvocationScope, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     waiting = asyncio.Event()
+    runtime_prepare = manager.state(scope.user_id).sandbox.prepare
 
-    async def receive() -> bytes:
+    async def prepare() -> None:
+        await runtime_prepare()
         waiting.set()
-        return await asyncio.Future[bytes]()
+        await asyncio.Future[None]()
 
     async def acquire() -> None:
         async with manager.acquire(scope, uuid7()):
-            pytest.fail("sandbox became ready without a handshake")
+            pytest.fail("sandbox became ready before startup completed")
 
-    guest.stream.receive.side_effect = receive
+    monkeypatch.setattr(manager.state(scope.user_id).sandbox, "prepare", prepare)
     task = asyncio.create_task(acquire())
     await waiting.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    state = manager.state(scope.user_id)
-    assert state.connection is None
-    assert state.fiber is None
-    assert not state.needs_cleanup
+    assert not manager.state(scope.user_id).needs_cleanup
+    assert manager.snapshot(scope).phase == "failed"
     assert not manager.nerve.subscribers
-    assert guest.returncode is not None
-    guest.stream.aclose.assert_awaited()
+    command = SbxSandbox.command
+    assert isinstance(command, AsyncMock)
+    command.assert_any_await("stop", manager.state(scope.user_id).sandbox.name)
 
 
 async def test_create_is_mountless_scoped_and_budgeted(
-    manager: SandboxManager,
-    scope: InvocationScope,
+    manager: SandboxManager, scope: InvocationScope
 ) -> None:
-    async with manager.nerve.subscribe(UserTopic(scope.user_id)) as events:
+    async with (
+        manager.nerve.subscribe(UserTopic(scope.user_id)) as events,
+        manager.nerve.subscribe(SandboxTopic(scope.user_id)) as lifecycle,
+    ):
         async with manager.acquire(scope, uuid7()):
+            observations = held(events)
+            assert held(lifecycle) == observations
             phases: list[str] = []
-            for impulse in held(events):
+            for impulse in observations:
                 assert isinstance(impulse.event, SandboxProgress)
                 phases.append(impulse.event.phase)
-            assert phases == [
-                "preparing",
-                "starting",
-                "ready",
-            ]
+            assert phases == ["preparing", "ready"]
         await manager.close()
     command = SbxSandbox.command
     assert isinstance(command, AsyncMock)
@@ -257,7 +140,7 @@ async def test_create_is_mountless_scoped_and_budgeted(
 
 
 async def test_manager_uses_the_sandbox_protocol(
-    manager: SandboxManager, scope: InvocationScope, guest: GuestProcess
+    manager: SandboxManager, scope: InvocationScope
 ) -> None:
     calls: list[str] = []
 
@@ -268,9 +151,12 @@ async def test_manager_uses_the_sandbox_protocol(
         async def prepare(self) -> None:
             calls.append("prepare")
 
-        async def open(self) -> ByteStream:
-            calls.append("open")
-            return guest.stream
+        @asynccontextmanager
+        async def execute(
+            self, *command: str, workdir: str, env: dict[str, str] | None = None
+        ) -> AsyncGenerator[ByteStream]:
+            pytest.fail("acquisition must not launch an agent")
+            yield AsyncMock(spec=ByteStream)
 
         async def stop(self) -> None:
             calls.append("stop")
@@ -278,72 +164,55 @@ async def test_manager_uses_the_sandbox_protocol(
     state = manager.state(scope.user_id)
     state.sandbox = OtherSandbox(name="another-runtime")
     async with manager.acquire(scope, uuid7()):
-        assert state.ready is not None
+        assert state.snapshot.phase == "ready"
         assert manager.snapshot(scope).sandbox == "another-runtime"
     await manager.close()
-    assert calls == ["prepare", "open", "stop"]
+    assert calls == ["prepare", "stop"]
     command = SbxSandbox.command
     assert isinstance(command, AsyncMock)
     command.assert_not_called()
 
 
 async def test_reuse_does_not_create_or_replace_a_sandbox(
-    manager: SandboxManager,
-    scope: InvocationScope,
+    manager: SandboxManager, scope: InvocationScope
 ) -> None:
     command = SbxSandbox.command
     assert isinstance(command, AsyncMock)
-    command.side_effect = None
-    command.return_value = manager.state(scope.user_id).sandbox.name.encode() + b"\n"
+    await manager.state(scope.user_id).sandbox.prepare()
+    command.reset_mock()
     async with manager.acquire(scope, uuid7()):
         pass
     await manager.close()
     assert "create" not in [c.args[0] for c in command.await_args_list]
 
 
-@pytest.mark.parametrize("fault", ["wrong-owner", "wrong-image", "bad-json", "version"])
-async def test_readiness_failure_cleans_up_and_reports_sanitized_error(
-    manager: SandboxManager,
-    scope: InvocationScope,
-    guest: GuestProcess,
-    fault: str,
+@pytest.mark.parametrize("field", [0, 1, 2, 3])
+async def test_configuration_mismatch_stops_runtime_without_replacing_it(
+    manager: SandboxManager, scope: InvocationScope, field: int
 ) -> None:
-    ready = SandboxAgentReady(
-        user_id=scope.user_id,
-        image=IMAGE,
-        cpus=2,
-        memory_mib=2048,
-        accepts_invocations=False,
-    )
-    if fault == "wrong-owner":
-        ready.user_id = uuid7()
-    if fault == "wrong-image":
-        ready.image = "different"
-    wire = (
-        Publication(topic=SandboxTopic(scope.user_id), impulse=Impulse(ready))
-        .model_dump_json()
-        .encode()
-    )
-    if fault == "bad-json":
-        wire = b"secret=never-publish-this"
-    if fault == "version":
-        wire = wire.replace(b'"version":1', b'"version":2')
-    guest.handshake = wire + b"\n"
-    with pytest.raises(SandboxError):
+    command = SbxSandbox.command
+    assert isinstance(command, AsyncMock)
+    metadata = [str(scope.user_id).encode(), IMAGE.encode(), b"2", b"2048"]
+    metadata[field] = b"mismatch"
+
+    async def existing(*args: str, **options: Unpack[SbxOptions]) -> bytes:
+        if args[0] == "ls":
+            return manager.state(scope.user_id).sandbox.name.encode() + b"\n"
+        return b"\n".join(metadata)
+
+    command.side_effect = existing
+    with pytest.raises(SandboxError, match="settings differ"):
         async with manager.acquire(scope, uuid7()):
-            pytest.fail("bad sandbox agent was accepted")
-    snapshot = manager.snapshot(scope)
-    assert isinstance(snapshot, SandboxFailed)
-    assert "never-publish" not in snapshot.message
+            pytest.fail("mismatched sandbox was accepted")
+    assert isinstance(manager.snapshot(scope), SandboxFailed)
     assert not manager.state(scope.user_id).needs_cleanup
-    assert guest.returncode is not None
+    assert "create" not in [c.args[0] for c in command.await_args_list]
+    command.assert_any_await("stop", manager.state(scope.user_id).sandbox.name)
     await manager.close()
 
 
-async def test_idle_stop_closes_attachment_only_after_last_reference(
-    manager: SandboxManager,
-    scope: InvocationScope,
-    guest: GuestProcess,
+async def test_idle_stop_runs_only_after_last_reference(
+    manager: SandboxManager, scope: InvocationScope
 ) -> None:
     async with manager.nerve.subscribe(UserTopic(scope.user_id)) as events:
         async with manager.acquire(scope, uuid7()):
@@ -356,14 +225,12 @@ async def test_idle_stop_closes_attachment_only_after_last_reference(
             event = (await events.receive()).event
             assert isinstance(event, SandboxProgress)
             assert event.phase == "stopped"
-    guest.stream.aclose.assert_awaited()
     assert not manager.state(scope.user_id).needs_cleanup
     await manager.close()
 
 
 async def test_failed_stop_keeps_cleanup_pending(
-    manager: SandboxManager,
-    scope: InvocationScope,
+    manager: SandboxManager, scope: InvocationScope
 ) -> None:
     async with manager.acquire(scope, uuid7()):
         pass
@@ -381,9 +248,7 @@ async def test_failed_stop_keeps_cleanup_pending(
 
 
 async def test_cancelled_acquisition_does_not_cancel_an_existing_peer(
-    manager: SandboxManager,
-    scope: InvocationScope,
-    guest: GuestProcess,
+    manager: SandboxManager, scope: InvocationScope
 ) -> None:
     async with manager.acquire(scope, uuid7()) as state:
         entered = asyncio.Event()
@@ -399,30 +264,28 @@ async def test_cancelled_acquisition_does_not_cancel_an_existing_peer(
         with pytest.raises(asyncio.CancelledError):
             await task
         assert len(state.invocations) == 1
-        assert guest.returncode is None
+        assert state.snapshot.phase == "ready"
     await manager.close()
 
 
 async def test_first_acquisitions_race_without_creating_two_vms(
-    manager: SandboxManager,
-    scope: InvocationScope,
-    guest: GuestProcess,
+    manager: SandboxManager, scope: InvocationScope, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     waiting, ready, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
     entered: asyncio.Queue[None] = asyncio.Queue()
+    prepare = AsyncMock(wraps=manager.state(scope.user_id).sandbox.prepare)
 
-    async def handshake() -> bytes:
+    async def preparing() -> None:
         waiting.set()
         await ready.wait()
-        guest.stream.receive.side_effect = guest.receive
-        return await guest.receive()
+        await prepare()
 
     async def run() -> None:
         async with manager.acquire(scope, uuid7()):
             await entered.put(None)
             await release.wait()
 
-    guest.stream.receive.side_effect = handshake
+    monkeypatch.setattr(manager.state(scope.user_id).sandbox, "prepare", preparing)
     first = asyncio.create_task(run())
     await waiting.wait()
     second = asyncio.create_task(run())
@@ -432,6 +295,7 @@ async def test_first_acquisitions_race_without_creating_two_vms(
     command = SbxSandbox.command
     assert isinstance(command, AsyncMock)
     assert sum(c.args[0] == "create" for c in command.await_args_list) == 1
+    prepare.assert_awaited_once()
     release.set()
     await asyncio.gather(first, second)
     await manager.close()

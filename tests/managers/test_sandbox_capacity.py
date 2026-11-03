@@ -6,15 +6,13 @@ from contextlib import AsyncExitStack
 from unittest.mock import AsyncMock
 
 import pytest
-from anyio.abc import ByteStream
 from uuid_utils.compat import uuid7
 
 from octomate.config.sandbox import SbxSandboxConfig
 from octomate.managers.sandbox import SandboxError, SandboxManager
-from octomate.nerve import Impulse, Nerve, Publication, SandboxTopic, UserTopic
+from octomate.nerve import Nerve, UserTopic
 from octomate.sandbox.sbx import SbxSandbox
-from octomate.schemas.sandbox import InvocationScope, SandboxAgentReady, SandboxProgress
-from tests.managers.test_sandbox import GuestProcess
+from octomate.schemas.sandbox import InvocationScope, SandboxProgress
 from tests.support.nerve import held
 from tests.test_sandbox_contracts import IMAGE
 
@@ -23,28 +21,7 @@ from tests.test_sandbox_contracts import IMAGE
 async def manager(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[SandboxManager]:
     manager = SandboxManager(SbxSandboxConfig(image=IMAGE, idle_timeout=60), Nerve())
 
-    async def open(sandbox: SbxSandbox) -> ByteStream:
-        guest = GuestProcess(
-            handshake=Publication(
-                topic=SandboxTopic(sandbox.user_id),
-                impulse=Impulse(
-                    SandboxAgentReady(
-                        user_id=sandbox.user_id,
-                        image=IMAGE,
-                        cpus=2,
-                        memory_mib=2048,
-                        accepts_invocations=False,
-                    )
-                ),
-            )
-            .model_dump_json()
-            .encode()
-            + b"\n"
-        )
-        return guest.stream
-
     monkeypatch.setattr(SbxSandbox, "prepare", AsyncMock())
-    monkeypatch.setattr(SbxSandbox, "open", open)
     monkeypatch.setattr(SbxSandbox, "stop", AsyncMock())
     try:
         yield manager
@@ -72,7 +49,7 @@ async def test_active_user_sandboxes_are_not_capped(
         )
         assert len(states) == 8
         assert len({state.sandbox.name for state in states}) == 8
-        assert all(state.ready is not None for state in states)
+        assert all(state.snapshot.phase == "ready" for state in states)
         assert all(len(state.invocations) == 1 for state in states)
         assert all(state.idle is None for state in states)
 
@@ -90,7 +67,7 @@ async def test_new_users_do_not_evict_an_idle_sandbox(
             await stack.enter_async_context(manager.acquire(scope, uuid7()))
         assert state.idle is timer
         assert not timer.cancelled()
-        assert state.ready is not None
+        assert state.snapshot.phase == "ready"
         assert manager.snapshot(idle).phase == "ready"
 
 
@@ -111,7 +88,7 @@ async def test_failed_stop_does_not_block_another_user(
         with pytest.raises(SandboxError, match="stop failed"):
             await manager.stop(first.user_id)
         async with manager.acquire(incoming, uuid7()) as state:
-            assert state.ready is not None
+            assert state.snapshot.phase == "ready"
             assert manager.state(first.user_id).needs_cleanup
             assert manager.snapshot(first).phase == "failed"
 
@@ -130,7 +107,7 @@ async def test_idle_timer_resets_on_reuse_and_stopped_sandbox_can_restart(
             assert reused is state
             assert timer.cancelled()
             await asyncio.sleep(0.03)
-            assert state.ready is not None
+            assert state.snapshot.phase == "ready"
             assert state.idle is None
             assert held(events) == []
         assert state.idle is not timer
@@ -141,11 +118,10 @@ async def test_idle_timer_resets_on_reuse_and_stopped_sandbox_can_restart(
         assert isinstance(stopped, SandboxProgress)
         assert stopping.phase == "stopping"
         assert stopped.phase == "stopped"
-    assert state.fiber is None
     assert not state.needs_cleanup
     async with manager.acquire(scope, uuid7()) as restarted:
         assert restarted is state
-        assert restarted.ready is not None
+        assert restarted.snapshot.phase == "ready"
 
 
 async def test_starting_sandbox_does_not_block_another_user(
@@ -169,8 +145,8 @@ async def test_starting_sandbox_does_not_block_another_user(
         await preparing.wait()
         try:
             ready = await stack.enter_async_context(manager.acquire(incoming, uuid7()))
-            assert ready.ready is not None
-            assert busy.ready is not None
+            assert ready.snapshot.phase == "ready"
+            assert busy.snapshot.phase == "ready"
             assert not pending.done()
         finally:
             release.set()

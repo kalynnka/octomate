@@ -20,8 +20,10 @@ from fastmcp.server.dependencies import get_http_headers
 from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyHttpUrl, SecretStr
 from pydantic_ai import RunContext
+from pydantic_ai.capabilities import Toolset
 from pydantic_ai.exceptions import ModelRetry
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai.mcp import MCPToolset
+from pydantic_ai.messages import InstructionPart, ModelMessage
 from pydantic_ai.models import Model
 from pydantic_ai.models.function import (
     AgentInfo,
@@ -37,9 +39,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.mcp import TentaclesToolset, tentacles_capability
+from octomate.config.base import OctomateConfig
 from octomate.database import async_session
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.oauth import OAuthConnector
@@ -69,14 +70,15 @@ from octomate.schemas.segments import MessageSegment
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.base import InklingOutput
+from octomate.tentacles.inkling.mcp import OctomateTools
 from octomate.tentacles.mcp import (
     BareMcpTentacle,
     OAuthMcpTentacle,
 )
 from tests.channels.slack.test_mcp import into
 from tests.support.managers import FakeConversationManager, fixed_session
-from tests.support.mcp import discover, install_tentacle
-from tests.support.users import a_user
+from tests.support.mcp import discover, install_tentacle, served_inkling_mcp
+from tests.support.users import a_user, auth_config
 
 ENCRYPTION_KEY = SecretStr(urlsafe_b64encode(bytes(range(32))).decode())
 LINEAR_URL = "https://mcp.linear.app/mcp"
@@ -139,7 +141,11 @@ async def a_linked_host() -> tuple[Octomate, Provider, UserProfile]:
     """A host whose registered `alice` may link `gh`, with her Slack profile."""
     await a_user("alice", profiles={"slack": "U1"})
     users = UserManager()
-    host = Octomate(users=users, oauth_encryption_key=ENCRYPTION_KEY)
+    host = Octomate(
+        config=OctomateConfig(auth=auth_config()),
+        users=users,
+        oauth_encryption_key=ENCRYPTION_KEY,
+    )
     tentacle = host.connect(Provider("gh", host))
     host.oauth.register(OAuthConnector(id="gh", flows=[StaticGitHubFlow()]))
     async with async_session() as session:
@@ -335,11 +341,17 @@ async def test_inkling_mounts_the_tentacles_deferred_for_the_person_of_its_turn(
     _host, tentacle, profile = await a_linked_host()
     ctx = RunContext(deps=None, model=TestModel(), usage=RunUsage())
 
-    capability = tentacles_capability(a_turn(profile), manager=tentacle.octomate.mcp)
+    client = MCPToolset[None](
+        tentacles_mcp(fixed_session(a_turn(profile)), manager=tentacle.octomate.mcp),
+        include_instructions=True,
+    )
+    capability = OctomateTools.capabilities(client)[-1]
+    assert isinstance(capability, Toolset)
     toolset = capability.get_toolset()
-    assert toolset is not None
-    tools = await toolset.get_tools(ctx)
-    instructions = await toolset.get_instructions(ctx)
+    assert isinstance(toolset, AbstractToolset)
+    async with toolset:
+        tools = await toolset.get_tools(ctx)
+        instructions = await toolset.get_instructions(ctx)
 
     # Deferred behind a catalog line, so a listing that differs per person never
     # touches the prompt prefix; before the link, the linking pair and nothing of
@@ -347,10 +359,12 @@ async def test_inkling_mounts_the_tentacles_deferred_for_the_person_of_its_turn(
     assert capability.defer_loading
     assert capability.id == "tentacles"
     assert "user's installed MCP tools" in str(capability.description)
-    assert isinstance(instructions, str)
-    assert "oauth_connect" in instructions
-    assert "The provider's own contract." not in instructions
-    assert "`gh` (Provider)" not in instructions
+    assert isinstance(instructions, list)
+    [instruction] = instructions
+    assert isinstance(instruction, InstructionPart)
+    assert "oauth_connect" in instruction.content
+    assert "The provider's own contract." not in instruction.content
+    assert "`gh` (Provider)" not in instruction.content
     assert set(tools) == {
         CONNECT_TOOL,
         CONFIRM_TOOL,
@@ -378,7 +392,7 @@ async def test_inkling_calls_a_tentacle_in_process_and_hears_a_refusal_as_a_retr
     await install_tentacle(tentacle, profile)
     async with upstream_of(upstream) as transport, host.mcp.lifespan():
         host.mcp.httpx_client_factory = into(transport)
-        toolset = TentaclesToolset(
+        toolset = MCPToolset[None](
             tentacles_mcp(fixed_session(a_turn(profile)), manager=host.mcp)
         )
         before = await toolset.get_tools(ctx)
@@ -402,8 +416,7 @@ async def test_inkling_calls_a_tentacle_in_process_and_hears_a_refusal_as_a_retr
             after[CALL_MCP_TOOL],
         )
 
-    # No client between the run and the server: a refusal is the retry Inkling
-    # corrects from, worded as every other runtime reads it; once linked, the
+    # MCP refusals are retries; once linked, the
     # call goes as the person and what comes back is what the provider said.
     assert "gh_list_repos" not in before
     assert "gh_list_repos" not in after
@@ -411,7 +424,9 @@ async def test_inkling_calls_a_tentacle_in_process_and_hears_a_refusal_as_a_retr
     assert seen == ["Bearer github-user-token"]
 
 
-async def test_a_run_mounts_the_tentacles_for_its_octomate_session() -> None:
+async def test_a_run_mounts_the_tentacles_for_its_octomate_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     host, _tentacle, profile = await a_linked_host()
     offered: list[tuple[dict[str, bool], str | None]] = []
 
@@ -434,14 +449,25 @@ async def test_a_run_mounts_the_tentacles_for_its_octomate_session() -> None:
     inkling = an_inkling(
         host, model=FunctionModel(stream_function=reply, model_name="scripted")
     )
-    async with inkling.run_stream_events(
-        "hello",
-        conversation_address=ChannelAddress(
-            channel_tentacle_id="slack", chat_type="dm", chat_id="D1", user_id="U1"
-        ),
-        thread_id=uuid7(),
-        capabilities=[GatewayCapability(session=a_turn(profile))],
-    ) as stream:
+    address = ChannelAddress(
+        channel_tentacle_id="slack", chat_type="dm", chat_id="D1", user_id="U1"
+    )
+    thread_id = uuid7()
+    session = a_turn(profile)
+    session.conversation_id = (
+        await inkling.resolve_conversation(thread_id, conversation_address=address)
+    ).id
+    session.conversation_address = address
+    async with (
+        served_inkling_mcp(host, monkeypatch),
+        host.gateway.driving(session),
+        inkling.run_stream_events(
+            "hello",
+            conversation_address=address,
+            thread_id=thread_id,
+            conversation_id=session.conversation_id,
+        ) as stream,
+    ):
         async for _event in stream:
             pass
 

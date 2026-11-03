@@ -22,10 +22,10 @@ import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from pydantic_ai import CallDeferred, RunContext
-from pydantic_ai.exceptions import ModelRetry
+from pydantic_ai.models.test import TestModel
+from pydantic_ai.usage import RunUsage
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from octomate.capabilities.gateway import GatewayCapability
 from octomate.config.mirrors import MirrorsConfig
 from octomate.database import async_session
 from octomate.managers import ThreadManager, UserManager
@@ -39,12 +39,16 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import ProjectSummary, TeleportDecision
 from octomate.schemas.user import UserProfile
+from octomate.tentacles.inkling.mcp import OctomateTools
+from octomate.types.json import JsonObject
 from tests.support.managers import (
+    FakeConversationManager,
     FakeThreadManager,
     a_project,
     a_registry,
     fixed_session,
 )
+from tests.support.mcp import core_tool_server
 from tests.support.users import a_user
 
 CHAT = ThreadKey("im", "thread", "c", "t1")
@@ -300,28 +304,37 @@ async def test_a_gateway_built_without_the_managers_is_a_wiring_bug() -> None:
         await session.dismiss()
 
 
-async def test_inkling_hears_a_refusal_as_a_retry(tmp_path: Path) -> None:
+async def test_mcp_tools_report_project_refusals(tmp_path: Path) -> None:
     harness = await a_harness(tmp_path, registered=False)
-    capability = GatewayCapability(session=harness.session)
-
-    with pytest.raises(ModelRetry, match="no registered user"):
-        await capability.inspect(FAKE_CONTEXT, "projects")
-    with pytest.raises(ModelRetry, match="no registered user"):
-        await capability.teleport(
-            FAKE_CONTEXT, "into inky", project="inky", new_thread=False
-        )
-    with pytest.raises(ModelRetry, match="about no project"):
-        await capability.dismiss(FAKE_CONTEXT)
+    async with Client(core_tool_server(harness.session)) as client:
+        with pytest.raises(ToolError, match="no registered user"):
+            await client.call_tool("gateway_inspect", {"reveal": "projects"})
+        with pytest.raises(ToolError, match="no registered user"):
+            await client.call_tool(
+                "gateway_teleport",
+                {"hint": "into inky", "project": "inky", "new_thread": False},
+            )
+        with pytest.raises(ToolError, match="about no project"):
+            await client.call_tool("gateway_dismiss", {})
 
 
 async def test_inkling_defers_the_move_for_the_graph_to_perform(tmp_path: Path) -> None:
     harness = await a_harness(tmp_path)
-    capability = GatewayCapability(session=harness.session)
+    async with Client(core_tool_server(harness.session)) as client:
 
-    with pytest.raises(CallDeferred) as deferred:
-        await capability.teleport(
-            FAKE_CONTEXT, "into inky", project="inky", new_thread=False
-        )
+        async def call(
+            name: str, args: JsonObject, *, metadata: JsonObject | None = None
+        ):
+            result = await client.call_tool(name, args, meta=metadata)
+            return result.data
+
+        with pytest.raises(CallDeferred) as deferred:
+            await OctomateTools.call(
+                RunContext(deps=None, model=TestModel(), usage=RunUsage()),
+                call,
+                "gateway_teleport",
+                {"hint": "into inky", "project": "inky", "new_thread": False},
+            )
 
     assert harness.session.conversation_address is not None
     assert deferred.value.metadata == {
@@ -347,6 +360,7 @@ async def test_an_mcp_runtime_reads_the_list_and_hears_a_refusal_as_a_tool_error
         fixed_session(harness.session),
         FakeThreadManager(),
         manager=McpManager(users=harness.threads.users, cipher=None),
+        conversations=FakeConversationManager(),
     )
 
     async with Client(server) as client:

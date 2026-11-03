@@ -38,7 +38,11 @@ from octomate.tentacles.mcp import BareMcpTentacle
 from tests.agent.test_mcp import ENCRYPTION_KEY, an_upstream, upstream_of
 from tests.channels.slack.test_mcp import into
 from tests.support.channels import FakeChannelTentacle
-from tests.support.managers import FakeThreadManager, fixed_session
+from tests.support.managers import (
+    FakeConversationManager,
+    FakeThreadManager,
+    fixed_session,
+)
 from tests.support.mcp import install_tentacle
 from tests.support.users import a_user
 
@@ -79,7 +83,10 @@ async def spells(
     session: OctomateSession,
 ) -> dict[str, SdkMcpTool[dict[str, JsonValue]]]:
     server = octomate_mcp(
-        fixed_session(session), FakeThreadManager(), manager=Octomate().mcp
+        fixed_session(session),
+        FakeThreadManager(),
+        manager=Octomate().mcp,
+        conversations=FakeConversationManager(),
     )
     return {tool.name: sdk_tool(tool) for tool in await server.list_tools()}
 
@@ -96,7 +103,10 @@ def the_text(result: dict[str, JsonValue]) -> str:
 
 async def test_the_server_config_is_the_sdk_in_process_shape() -> None:
     config = await octomate_mcp_server(
-        a_turn(), FakeThreadManager(), manager=Octomate().mcp
+        a_turn(),
+        FakeThreadManager(),
+        manager=Octomate().mcp,
+        conversations=FakeConversationManager(),
     )
 
     assert config["type"] == "sdk"
@@ -134,12 +144,15 @@ def test_the_instruction_names_the_tools_by_their_served_names() -> None:
         "gateway_scheme",
         "gateway_send",
         "gateway_dismiss",
+        "gateway_commission",
+        "gateway_whisper",
         "history_search",
     ):
         assert f"`{name}`" in instruction
     assert "mcp__" not in instruction
     assert "{" not in instruction
-    assert "commission" not in instruction
+    assert "`commission`" not in instruction
+    assert "`whisper`" not in instruction
 
 
 async def test_summon_records_the_decision_and_answers_with_the_sentence() -> None:
@@ -230,6 +243,7 @@ async def test_sdk_discovers_and_calls_provider_tools_through_fixed_helpers(
             fixed_session(session),
             FakeThreadManager(),
             manager=tentacle.octomate.mcp,
+            conversations=tentacle.octomate.conversations,
         )
         tools = {tool.name: sdk_tool(tool) for tool in await server.list_tools()}
         assert "answer" not in tools

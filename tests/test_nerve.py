@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import anyio
 import pytest
-from anyio.streams.memory import MemoryObjectSendStream
 from pydantic_ai.messages import PartDeltaEvent, TextPartDelta
 from uuid_utils.compat import uuid7
 
@@ -21,7 +20,7 @@ from octomate.nerve import (
     UserTopic,
 )
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.sandbox import CancelInvocation
+from octomate.schemas.sandbox import CancelInvocation, InvocationAccepted
 from octomate.schemas.thread import ThreadKey
 from tests.support.nerve import held
 
@@ -188,7 +187,7 @@ async def test_publisher_buffers_1024_and_drains_without_waiting_for_readers() -
         nerve.subscribe(ChannelTopic("web"), backlog=2) as behind,
     ):
         async with nerve.publish(None) as impulses:
-            assert isinstance(impulses, MemoryObjectSendStream)
+            assert isinstance(impulses, MemoryFiber)
             for impulse in sent[:-1]:
                 impulses.send_nowait(impulse)
             with pytest.raises(anyio.WouldBlock):
@@ -223,6 +222,53 @@ async def test_topic_publisher_preserves_impulses_and_drains_on_exit() -> None:
     assert not nerve.subscribers
 
 
+async def test_sandbox_signals_and_events_share_the_same_subscribers() -> None:
+    nerve = Nerve()
+    topic = SandboxTopic(uuid7())
+    invocation = uuid7()
+    sent: list[Impulse[NerveEvent]] = [
+        Impulse(CancelInvocation(invocation_id=invocation)),
+        Impulse(InvocationAccepted(invocation_id=invocation)),
+        Impulse(EVENT, invocation_id=invocation),
+    ]
+    for impulse in sent:
+        nerve.deliver(topic, impulse)
+    async with (
+        nerve.subscribe(topic) as first,
+        nerve.subscribe(topic) as second,
+        nerve.subscribe(UserTopic(topic.user_id)) as ui,
+    ):
+        assert held(first) == []
+        assert held(second) == []
+        async with nerve.publish(topic) as publisher:
+            for impulse in sent:
+                await publisher.send(impulse)
+        assert held(first) == sent
+        assert held(second) == sent
+        assert held(ui) == []
+    async with nerve.publish(topic) as publisher:
+        await publisher.send(sent[0])
+
+
+async def test_sandbox_overflow_disconnects_only_the_slow_subscriber() -> None:
+    nerve = Nerve()
+    topic = SandboxTopic(uuid7())
+    sent: list[Impulse[NerveEvent]] = [
+        Impulse(CancelInvocation(invocation_id=uuid7())),
+        Impulse(EVENT),
+    ]
+    async with (
+        nerve.subscribe(topic, backlog=1) as behind,
+        nerve.subscribe(topic) as current,
+    ):
+        for impulse in sent:
+            nerve.deliver(topic, impulse)
+        assert [item async for item in behind] == sent[:1]
+        assert held(current) == sent
+        nerve.deliver(topic, sent[0])
+        assert await current.receive() == sent[0]
+
+
 @pytest.mark.parametrize("routed", [False, True])
 async def test_supplied_memory_fibers_use_the_same_api_and_remain_caller_owned(
     routed: bool,
@@ -242,15 +288,15 @@ async def test_supplied_memory_fibers_use_the_same_api_and_remain_caller_owned(
             nerve.subscribe(topic, fiber=subscriber) as events,
             nerve.publish(HERE if routed else topic, fiber=publisher),
         ):
-            await publisher.send.send(sent)
+            await publisher.send(sent)
             assert await events.receive() == expected
         assert not publisher.closed
         assert not subscriber.closed
         assert not nerve.subscribers
         nerve.deliver(topic, sent)
-        assert held(subscriber.receive) == []
-        await publisher.send.send(sent)
-        assert await publisher.receive.receive() == sent
+        assert held(subscriber) == []
+        await publisher.send(sent)
+        assert await publisher.receive() == sent
     finally:
         publisher.close()
         subscriber.close()

@@ -266,7 +266,10 @@ async def in_memory(
     `transport`."""
     channel.octomate.mcp.httpx_client_factory = into(transport)
     server = octomate_mcp(
-        fixed_session(session), FakeThreadManager(), manager=channel.octomate.mcp
+        fixed_session(session),
+        FakeThreadManager(),
+        manager=channel.octomate.mcp,
+        conversations=channel.octomate.conversations,
     )
     async with channel.octomate.mcp.lifespan(), Client(server) as client:
         yield client

@@ -1,6 +1,6 @@
 """The public ACP endpoint drives registered agents through the real reflex graph."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
 from uuid import UUID
 
@@ -38,11 +38,14 @@ from octomate.tentacles.inkling.base import InklingTentacle
 from tests.agent.claude.test_tentacle import FakeClaudeClient
 from tests.support.agents import ScriptedStream, ScriptedTurn
 from tests.support.managers import a_project, a_registry
+from tests.support.mcp import served_inkling_mcp
 from tests.support.users import a_user, auth_config
 
 
 @pytest.fixture
-async def client(in_memory_engine: AsyncEngine) -> TestClient:
+async def client(
+    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> AsyncGenerator[TestClient]:
     app = Octomate(config=OctomateConfig(auth=auth_config()))
     for name in ("first", "second"):
         model = FunctionModel(
@@ -67,9 +70,11 @@ async def client(in_memory_engine: AsyncEngine) -> TestClient:
     user = await a_user("alice")
     assert app.auth is not None
     key = await app.auth.create_api_key(user.id, name="ACP client", scopes=["acp"])
-    return TestClient(
-        app, headers={"Authorization": f"Bearer {key.token.get_secret_value()}"}
-    )
+    async with served_inkling_mcp(app, monkeypatch, lifespan=False):
+        with TestClient(
+            app, headers={"Authorization": f"Bearer {key.token.get_secret_value()}"}
+        ) as client:
+            yield client
 
 
 def rpc(

@@ -17,6 +17,7 @@ from octomate.capabilities.harness.events import (
     ReflexAsleepEvent,
     wire_event_adapter,
 )
+from octomate.fibers import Fiber
 from octomate.nerve import ChannelTopic, Impulse
 from octomate.reflex.graph import ReflexGraphResult
 from octomate.schemas.awakes import AwakeSignal
@@ -41,9 +42,11 @@ async def settled(live: ObjectReceiveStream[Impulse]) -> list[JsonObject]:
 
 def held[ItemT](live: ObjectReceiveStream[ItemT]) -> list[ItemT]:
     """Everything the nerve has handed `live` that it has yet to read, taken now."""
-    # The nerve's fibers are memory streams, which can say what they hold.
-    assert isinstance(live, MemoryObjectReceiveStream)
-    return [live.receive_nowait() for _ in range(live.statistics().current_buffer_used)]
+    assert isinstance(live, Fiber | MemoryObjectReceiveStream)
+    receiver = live.receiver if isinstance(live, Fiber) else live
+    return [
+        live.receive_nowait() for _ in range(receiver.statistics().current_buffer_used)
+    ]
 
 
 @asynccontextmanager
@@ -60,7 +63,7 @@ async def drawing(*channels: ChannelTentacle) -> AsyncGenerator[None]:
             for fiber in channel.octomate.nerve.subscribers.get(
                 ChannelTopic(channel.id), set()
             ):
-                fiber.send.close()
+                fiber.close_send()
             if channel.siphon.reading is not None:
                 await channel.siphon.reading
             await channel.siphon.__aexit__(None, None, None)
@@ -73,7 +76,7 @@ async def drained(*channels: ChannelTentacle) -> None:
     while any(  # noqa: ASYNC110
         channel.siphon.lanes
         or any(
-            fiber.receive.statistics().current_buffer_used
+            fiber.receiver.statistics().current_buffer_used
             for fiber in channel.octomate.nerve.subscribers.get(
                 ChannelTopic(channel.id), set()
             )

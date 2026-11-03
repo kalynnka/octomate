@@ -16,6 +16,7 @@ from uuid_utils.compat import uuid7
 from octomate.config.sandbox import SbxSandboxConfig
 from octomate.managers.sandbox import SandboxManager
 from octomate.nerve import Nerve
+from octomate.sandbox.agent import run_agent
 from octomate.sandbox.sbx import SbxSandbox
 from octomate.schemas.sandbox import InvocationScope
 
@@ -93,7 +94,7 @@ async def test_single_user_resource_cost(tmp_path: Path) -> None:
     before = await host_usage()
     started = monotonic()
     try:
-        async with manager.acquire(scope, uuid7()):
+        async with run_agent(manager, scope, uuid7()):
             startup_seconds = monotonic() - started
             await asyncio.sleep(2)
             idle_start = await host_usage()
@@ -137,7 +138,7 @@ async def test_single_user_resource_cost(tmp_path: Path) -> None:
         await manager.stop(scope.user_id)
         stop_seconds = monotonic() - stopped
         resumed = monotonic()
-        async with manager.acquire(scope, uuid7()):
+        async with run_agent(manager, scope, uuid7()):
             resume_seconds = monotonic() - resumed
         report = {
             "host": f"{platform.system()} {platform.machine()}",

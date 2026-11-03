@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import aclosing, asynccontextmanager
+from datetime import UTC, datetime
 from functools import cached_property
 from pathlib import Path
 from types import MappingProxyType, TracebackType
@@ -41,6 +42,7 @@ from pydantic_ai.toolsets import AbstractToolset
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import AgentRouteModelName
 from octomate.schemas.agent import AgentInfo
+from octomate.schemas.auth import IssuedApiKey
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
     CommandCatalog,
@@ -63,6 +65,7 @@ from octomate.utils import drain_task
 if TYPE_CHECKING:
     from octomate.base import Octomate
     from octomate.capabilities.harness.deferred import DeferredSuspender
+    from octomate.managers.auth import AuthManager
     from octomate.managers.commands import CommandManager
     from octomate.managers.conversation import ConversationManager
     from octomate.managers.files import FileManager
@@ -87,6 +90,9 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     files: FileManager
     conversations: ConversationManager
     workspaces: WorkspaceManager
+    auth: AuthManager | None
+    api_keys: dict[UUID7, IssuedApiKey]  # One MCP credential per user for this agent.
+    api_key_lock: asyncio.Lock
 
     def __init__(
         self,
@@ -103,6 +109,43 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         self.projects = projects
         self.threads = threads
         self.files = files
+        self.auth = octomate.auth
+        self.api_keys = {}
+        self.api_key_lock = asyncio.Lock()
+
+    async def runtime_api_key(self, user_id: UUID7 | None) -> IssuedApiKey | None:
+        """Reuse the user's MCP credential, replacing it when its lifetime expires."""
+        auth = self.auth
+        if user_id is None or auth is None:
+            return None
+        async with self.api_key_lock:
+            issued = self.api_keys.get(user_id)
+            if issued is not None and (
+                issued.key.expires_at is None
+                or issued.key.expires_at > datetime.now(UTC)
+            ):
+                return issued
+            with anyio.CancelScope(shield=True):
+                if issued is not None:
+                    await auth.revoke_api_key(user_id, issued.key.id)
+                issued = await auth.create_api_key(
+                    user_id,
+                    name=f"{self.id} runtime",
+                    scopes=["mcp"],
+                    expires_at=datetime.now(UTC) + auth.config.runtime_api_key_lifetime,
+                )
+                self.api_keys[user_id] = issued
+            return issued
+
+    async def revoke_runtime_keys(self) -> None:
+        """Revoke this agent's credentials after its active runs have finished."""
+        async with self.api_key_lock:
+            api_keys, self.api_keys = self.api_keys, {}
+            auth = self.auth
+            if auth is None:
+                return
+            for issued in api_keys.values():
+                await auth.revoke_api_key(issued.key.user_id, issued.key.id)
 
     # Capability blurb the triage agent reads when routing to a reception agent.
     # Subclasses refine this default; overridable at init.
@@ -790,7 +833,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         owns (`conversation_id` is required, not optional), and it is fully
         non-interactive — every human interaction declines at once. What
         `capabilities` mounts is the runtime's to decide: inkling adds the
-        spawner's set to its own, claude reads it only for a `GatewayCapability`,
+        spawner's set to its own, Claude resolves its registered gateway session,
         and codex ignores it. The spawner passes its framing as `instructions`
         and stamps the run tree after the report returns.
         """

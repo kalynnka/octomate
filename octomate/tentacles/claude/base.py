@@ -78,7 +78,6 @@ from rich.style import Style
 from starlette.datastructures import Headers
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.deferred import DeferredSuspender, Interjections
 from octomate.capabilities.harness.events import (
     ActionBatchAnsweredEvent,
@@ -169,9 +168,9 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     `external_id` and replayed via `resume=` so Claude owns its own
     context across turns. Output is the run's final text (`str`); pydantic-ai
     run options that don't map onto Claude (custom output_type, toolsets,
-    capabilities, ...) are ignored — except a `GatewayCapability`, which mounts
-    the unified Octomate server as the turn's in-process MCP server. A `teleport` cast through
-    it interrupts the turn, which ends as the deferral the graph performs and
+    capabilities, ...) are ignored — the registered core session mounts
+    the unified Octomate server as the turn's in-process MCP server. A `teleport`
+    cast through it interrupts the turn, which ends as the deferral the graph performs and
     resumes the agent from — in a sub-thread, a crossing, or a project's
     workspace — and a resumed run opens from what the graph resolved it with.
     """
@@ -1104,14 +1103,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # have to name the directory before the process that will run there exists.
         workspace = self.workspaces.open(conversation.thread_id, project)
         run_cwd = str(workspace.path)
-        octomate_session = next(
-            (
-                capability.session
-                for capability in capabilities or ()
-                if isinstance(capability, GatewayCapability)
-            ),
-            None,
-        )
+        octomate_session = self.octomate.gateway.get(conversation.id)
         # The turn's server, mounted in process with the session closed over —
         # identity by closure, nothing on the wire names it. Its tools take the
         # normal tool-approval route like any other MCP tool; deliberately
@@ -1122,6 +1114,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 octomate_session,
                 self.threads,
                 manager=self.mcp,
+                conversations=self.conversations,
             )
         appended = "\n\n".join(
             part

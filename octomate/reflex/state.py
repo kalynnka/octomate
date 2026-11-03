@@ -22,7 +22,6 @@ from pydantic_ai.messages import UserContent
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_graph import BaseNode, End, GraphRunContext
 
-from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import (
     MessageSentEvent,
     RunEndedEvent,
@@ -535,12 +534,6 @@ class ReflexRuntime:
             conversation_id=state.conversation_id,
         )
         capabilities: list[AgentCapability[None]] = []
-        if session is not None:
-            capabilities.append(
-                GatewayCapability(
-                    session=session, conversations=ctx.deps.conversation_manager
-                )
-            )
         suspender = ReflexSuspender(
             action_manager=ctx.deps.action_manager,
             conversation_manager=ctx.deps.conversation_manager,

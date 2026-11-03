@@ -42,7 +42,6 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.events import (
     ActionBatchAnsweredEvent,
@@ -283,24 +282,24 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         spec: AgentSpecInput | None = None,
     ) -> ReactEventStream[str | RunOutputDataT]:
         """Run the supplied prompt in this agent's conversation and workspace."""
-        if any(
-            value is not None
-            for value in (
-                output_type,
-                deferred_tool_results,
-                instructions,
-                model_settings,
-                usage_limits,
-                usage,
-                metadata,
-                output_retries,
-                toolsets,
-                builtin_tools,
-                spec,
+        if (
+            any(
+                value is not None
+                for value in (
+                    output_type,
+                    deferred_tool_results,
+                    instructions,
+                    model_settings,
+                    usage_limits,
+                    usage,
+                    metadata,
+                    output_retries,
+                    toolsets,
+                    builtin_tools,
+                    spec,
+                )
             )
-        ) or any(
-            not isinstance(capability, GatewayCapability)
-            for capability in capabilities or []
+            or capabilities
         ):
             raise ValueError(
                 "Outbound ACP accepts text prompts, model and effort selection"

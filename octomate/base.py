@@ -511,6 +511,7 @@ class Octomate(FastAPI):
             kick=self.kick,
             bearers=self.bearers,
             manager=self.mcp,
+            conversations=self.conversations,
         )
         # Stateless: identity is per call, from the request, so there is nothing
         # for the transport to keep between calls. Mounted under the server's name

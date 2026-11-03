@@ -19,11 +19,16 @@ from octomate import Octomate
 from octomate.config.base import OctomateConfig
 from octomate.config.sandbox import NativeSandboxConfig, SbxSandboxConfig
 from octomate.managers.sandbox import SandboxError, SandboxManager
-from octomate.nerve import Impulse, Publication, SandboxTopic, publication_adapter
+from octomate.nerve import (
+    Impulse,
+    NerveEvent,
+    impulse_adapter,
+)
 from octomate.sandbox.sbx import SbxSandbox
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.sandbox import (
     ExecuteAgent,
+    InvocationAccepted,
     InvocationCompleted,
     InvocationResult,
     InvocationScope,
@@ -119,12 +124,13 @@ def test_invocation_and_terminal_history_round_trip_without_python_objects() -> 
         run_name="turn",
         workspace="/home/agent/workspace",
     )
-    topic = SandboxTopic(request.scope.user_id)
-    sent = Publication(topic=topic, impulse=Impulse(request))
-    assert publication_adapter.validate_json(sent.model_dump_json()) == sent
-    adapter = Publication.adapter(topic)
-    assert adapter.validate_json(sent.model_dump_json()) == sent.impulse
-    assert publication_adapter.validate_json(adapter.dump_json(sent.impulse)) == sent
+    sent = Impulse(request)
+    wire = impulse_adapter.dump_json(sent)
+    assert impulse_adapter.validate_json(wire) == sent
+    payload = json.loads(wire)
+    assert payload["event"]["kind"] == "execute"
+    assert "impulse" not in payload
+    assert "topic" not in payload
     result = InvocationCompleted(
         invocation_id=request.invocation_id,
         result=InvocationResult(
@@ -136,29 +142,34 @@ def test_invocation_and_terminal_history_round_trip_without_python_objects() -> 
             artifact_ids=[uuid7()],
         ),
     )
-    received = Publication(topic=topic, impulse=Impulse(result))
-    assert publication_adapter.validate_json(received.model_dump_json()) == received
-    assert adapter.validate_json(received.model_dump_json()) == received.impulse
+    received = Impulse(result)
     assert (
-        publication_adapter.validate_json(adapter.dump_json(received.impulse))
-        == received
+        impulse_adapter.validate_json(impulse_adapter.dump_json(received)) == received
     )
-    for key, value in [("version", 2), ("kind", "shell"), ("callback", "host")]:
-        payload = json.loads(sent.model_dump_json())
-        if key == "version":
-            payload[key] = value
-        else:
-            payload["impulse"]["event"][key] = value
+    for key, value in [("kind", "shell"), ("callback", "host")]:
+        payload = json.loads(wire)
+        payload["event"][key] = value
         with pytest.raises(ValidationError):
-            publication_adapter.validate_json(json.dumps(payload))
+            impulse_adapter.validate_json(json.dumps(payload))
 
 
 def test_nerve_preserves_native_stream_delta_and_invocation_correlation() -> None:
-    frame = Publication(
-        topic=SandboxTopic(uuid7()),
-        impulse=Impulse(
-            PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="hello")),
-            invocation_id=uuid7(),
-        ),
+    impulse = Impulse(
+        PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="hello")),
+        invocation_id=uuid7(),
     )
-    assert publication_adapter.validate_json(frame.model_dump_json()) == frame
+    assert impulse_adapter.validate_json(impulse_adapter.dump_json(impulse)) == impulse
+
+
+def test_impulse_adapter_accepts_signals_and_events_and_rejects_extra_fields() -> None:
+    messages: list[Impulse[NerveEvent]] = [
+        Impulse(InvocationAccepted(invocation_id=uuid7())),
+        Impulse(PartDeltaEvent(index=0, delta=TextPartDelta("hello"))),
+    ]
+    for impulse in messages:
+        wire = impulse_adapter.dump_json(impulse)
+        assert impulse_adapter.validate_json(wire) == impulse
+        payload = json.loads(wire)
+        payload["topic"] = {"kind": "user", "user_id": str(uuid7())}
+        with pytest.raises(ValidationError):
+            impulse_adapter.validate_json(json.dumps(payload))

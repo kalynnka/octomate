@@ -4,6 +4,10 @@
 
 ::: octomate.mcp.gateway
 
+::: octomate.mcp.todos
+
+::: octomate.tentacles.inkling.mcp
+
 ::: octomate.mcp.history
 
 ::: octomate.mcp.oauth

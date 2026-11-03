@@ -20,6 +20,7 @@ from fastmcp.exceptions import ValidationError as McpValidationError
 from fastmcp.tools import Tool
 from pydantic import JsonValue, ValidationError
 
+from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpManager
 from octomate.managers.thread import ThreadManager
@@ -64,13 +65,16 @@ async def octomate_mcp_server(
     thread_manager: ThreadManager,
     *,
     manager: McpManager,
+    conversations: ConversationManager,
 ) -> McpSdkServerConfig:
     """Mount the gateway, history, and the user's MCP tools in process for this turn."""
 
     async def fixed() -> OctomateSession:
         return session
 
-    server = octomate_mcp(fixed, thread_manager, manager=manager)
+    server = octomate_mcp(
+        fixed, thread_manager, manager=manager, conversations=conversations
+    )
     return create_sdk_mcp_server(
         OCTOMATE_SERVER_NAME,
         tools=[sdk_tool(tool) for tool in await server.list_tools()],

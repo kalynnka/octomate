@@ -11,6 +11,7 @@ from arcanus.materia.sqlalchemy import lazyload, noload, selectinload
 from fastapi import UploadFile
 from pydantic import UUID7, TypeAdapter
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
+from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.usage import RequestUsage
 from sqlalchemy import Select, and_, func, insert, literal, or_, select
 
@@ -176,13 +177,15 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         self,
         run_id: str,
         *,
-        parent_run_id: str,
+        parent_run_id: str | None,
         parent_tool_call_id: str | None,
     ) -> None:
         """Stamp a recorded run's place in the run tree, after the fact. The
         runner stays ignorant of why it ran; the caller that spawned it links
-        the turn to its own run and tool call once the child returns. A run
-        that recorded nothing has no row to link — not an error."""
+        the turn to its own run and tool call once the child returns. MCP callers
+        supply only the tool call id; saving the parent's tool result supplies
+        its run id. A run that recorded nothing has no row to link — not an error.
+        """
         async with async_session() as session:
             run = await session.one_or_none(
                 AgentRun, expressions=[AgentRun["id"] == run_id]
@@ -503,6 +506,30 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
             if reloaded is not None:
                 reloaded.runs.append(run)
                 reloaded.external_id = external_id
+            returned_calls = {
+                part.tool_call_id
+                for message in await run.messages
+                if isinstance(message, ModelRequest)
+                for part in message.parts
+                if isinstance(part, ToolReturnPart)
+            }
+            if returned_calls:
+                children = await session.list(
+                    AgentRun,
+                    limit=None,
+                    expressions=[
+                        AgentRun["parent_run_id"].is_(None),
+                        AgentRun["parent_tool_call_id"].in_(returned_calls),
+                        AgentRun["conversation_id"].in_(
+                            select(Conversation["id"]).where(
+                                Conversation["parent_conversation_id"]
+                                == conversation_id
+                            )
+                        ),
+                    ],
+                )
+                for child in children:
+                    child.parent_run_id = run.id
             await session.commit()
             await run.messages
         return run

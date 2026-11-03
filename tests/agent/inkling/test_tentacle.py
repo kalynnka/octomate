@@ -16,7 +16,7 @@ from pydantic_ai import (
     RunContext,
     ToolDenied,
 )
-from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.capabilities import AbstractCapability, Toolset
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models import ModelRequestContext
 from pydantic_ai.models.function import (
@@ -27,12 +27,13 @@ from pydantic_ai.models.function import (
 )
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+from pydantic_ai.toolsets import FunctionToolset
 from pydantic_graph import GraphRunContext
+from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.capabilities.ask import ASK_DEFERR_KIND, AskCapability
-from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.deferred import DeclineResolver, PostureResolver
 from octomate.capabilities.harness.events import ActionBatchEvent
@@ -43,7 +44,7 @@ from octomate.capabilities.harness.react import (
     ResolveDeferred,
     RunAgent,
 )
-from octomate.capabilities.todos import TodoCapability
+from octomate.config.base import OctomateConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
@@ -66,6 +67,8 @@ from tests.support.agents import (
 )
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import FakeConversation, FakeConversationManager
+from tests.support.mcp import core_tool_capabilities, served_inkling_mcp
+from tests.support.users import a_user, auth_config
 
 type InklingTestEvent = ReactStreamEvent[ScriptedOutput]
 
@@ -78,9 +81,8 @@ def _inkling_agent() -> Agent[None, InklingOutput]:
         output_type=[str, list[MessageSegment], DeferredToolRequests],
         capabilities=[
             AskCapability(),
-            TodoCapability(),
-            GatewayCapability(
-                session=OctomateSession(channel_routes={}, current_agent_id="inkling")
+            *core_tool_capabilities(
+                OctomateSession(channel_routes={}, current_agent_id="inkling")
             ),
         ],
         system_prompt=SYSTEM_PROMPT,
@@ -436,7 +438,11 @@ async def test_a_dont_ask_conversation_answers_its_own_questions() -> None:
     ],
 )
 async def test_a_teleport_follows_the_approval_posture(
-    mode: InklingPermissionMode, interactive: bool, approved: bool
+    mode: InklingPermissionMode,
+    interactive: bool,
+    approved: bool,
+    in_memory_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Teleport declares approval; the harness decides whether to ask or resolve it."""
     agent, _ = build_scripted_agent(
@@ -455,68 +461,76 @@ async def test_a_teleport_follows_the_approval_posture(
         agent_tentacle_id="inkling",
         permission_mode=mode,
     )
+    await a_user("alice", profiles={"im": "alice"})
+    host = Octomate(
+        config=OctomateConfig(auth=auth_config()), conversations=conversations
+    )
+    tentacle = InklingTentacle(
+        "inkling", host, agent=cast(Agent[None, InklingOutput], agent)
+    )
     suspender = StubSuspender()
     session = OctomateSession(
         channel_routes={},
         current_agent_id="inkling",
+        conversation_id=conversations.store[(_THREAD, "inkling", "")].id,
+        user_profile=await host.users.profile("im", "alice"),
         channels={"im": FakeChannelTentacle()},
         conversation_address=ChannelAddress(
             channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
         ),
     )
-    capabilities = [GatewayCapability(session=session)]
-    tentacle = _tentacle(agent, conversations)
 
-    result = await tentacle.run(
-        "take this elsewhere",
-        conversation_address=_test_conversation_address(),
-        thread_id=_THREAD,
-        output_type=STR_OUTPUT,
-        deferred_suspender=suspender,
-        capabilities=capabilities,
-        interactive=interactive,
-    )
+    async with served_inkling_mcp(host, monkeypatch), host.gateway.driving(session):
+        result = await tentacle.run(
+            "take this elsewhere",
+            conversation_address=_test_conversation_address(),
+            thread_id=_THREAD,
+            output_type=STR_OUTPUT,
+            deferred_suspender=suspender,
+            conversation_id=session.conversation_id,
+            interactive=interactive,
+        )
 
-    if not interactive or mode == "dontAsk":
-        assert result.output == "Staying here."
-        assert suspender.suspended == []
+        if not interactive or mode == "dontAsk":
+            assert result.output == "Staying here."
+            assert suspender.suspended == []
+            assert session.decision is None
+            return
+
+        [suspended] = suspender.suspended
+        if mode == "bypassPermissions":
+            assert session.decision is not None
+            assert suspended.approvals == []
+            assert [call.tool_name for call in suspended.calls] == ["teleport"]
+            assert suspended.metadata["call_tp_1"]["kind"] == TELEPORT_DEFER_KIND
+            return
+
+        assert suspended.calls == []
+        assert [call.tool_name for call in suspended.approvals] == ["teleport"]
         assert session.decision is None
-        return
+        [action] = DeferredActionCollection.validate_python(suspended)
+        assert isinstance(action, DeferredApproval)
+        assert action.args.tool_name == "teleport"
+        assert action.args.args["hint"] == "carrying on over here"
 
-    [suspended] = suspender.suspended
-    if mode == "bypassPermissions":
-        assert session.decision is not None
-        assert suspended.approvals == []
-        assert [call.tool_name for call in suspended.calls] == ["teleport"]
-        assert suspended.metadata["call_tp_1"]["kind"] == TELEPORT_DEFER_KIND
-        return
-
-    assert suspended.calls == []
-    assert [call.tool_name for call in suspended.approvals] == ["teleport"]
-    assert session.decision is None
-    [action] = DeferredActionCollection.validate_python(suspended)
-    assert isinstance(action, DeferredApproval)
-    assert action.args.tool_name == "teleport"
-    assert action.args.args["hint"] == "carrying on over here"
-
-    result = await tentacle.run(
-        None,
-        conversation_address=_test_conversation_address(),
-        thread_id=_THREAD,
-        output_type=STR_OUTPUT,
-        deferred_suspender=suspender,
-        capabilities=capabilities,
-        deferred_tool_results=DeferredToolResults(
-            approvals={"call_tp_1": approved}, metadata=suspended.metadata
-        ),
-    )
-    if approved:
-        assert session.decision is not None
-        assert isinstance(result.output, DeferredToolRequests)
-        assert result.output.metadata["call_tp_1"]["kind"] == TELEPORT_DEFER_KIND
-    else:
-        assert session.decision is None
-        assert result.output == "Staying here."
+        result = await tentacle.run(
+            None,
+            conversation_address=_test_conversation_address(),
+            thread_id=_THREAD,
+            output_type=STR_OUTPUT,
+            deferred_suspender=suspender,
+            conversation_id=session.conversation_id,
+            deferred_tool_results=DeferredToolResults(
+                approvals={"call_tp_1": approved}, metadata=suspended.metadata
+            ),
+        )
+        if approved:
+            assert session.decision is not None
+            assert isinstance(result.output, DeferredToolRequests)
+            assert result.output.metadata["call_tp_1"]["kind"] == TELEPORT_DEFER_KIND
+        else:
+            assert session.decision is None
+            assert result.output == "Staying here."
 
 
 async def test_a_question_batched_with_a_teleport_suspends_whole() -> None:
@@ -544,8 +558,8 @@ async def test_a_question_batched_with_a_teleport_suspends_whole() -> None:
         output_type=[str, DeferredToolRequests],
         capabilities=[
             AskCapability(),
-            GatewayCapability(
-                session=OctomateSession(
+            *core_tool_capabilities(
+                OctomateSession(
                     channel_routes={},
                     current_agent_id="inkling",
                     channels={"im": FakeChannelTentacle()},
@@ -909,12 +923,16 @@ async def test_subagent_run_mounts_the_tentacle_capabilities_too() -> None:
         thread_id=_THREAD,
         conversation_id=child.id,
     )
+
+    def selected_tool() -> str:
+        return "probe"
+
     await tentacle.subagent_run(
-        "work with todos",
+        "work with the selected tool",
         conversation_address=_test_conversation_address(),
         thread_id=_THREAD,
         conversation_id=child.id,
-        capabilities=[TodoCapability()],
+        capabilities=[Toolset(FunctionToolset([selected_tool], id="probe"))],
     )
 
     interactive_tools, accomplice_tools, chosen_tools = seen_tools
@@ -924,20 +942,23 @@ async def test_subagent_run_mounts_the_tentacle_capabilities_too() -> None:
     # What the spawner passes is added to that set, not substituted for it — so a
     # spawner must not pass a capability the tentacle already holds, since two
     # toolsets offering one name is a hard error.
-    assert "write_todos" in chosen_tools
+    assert "selected_tool" in chosen_tools
     assert "ask_questions" in chosen_tools
 
 
-async def test_inkling_default_includes_todo_capability() -> None:
-    """The todo capability is on by default: its tools are offered to the model."""
+async def test_inkling_loads_todo_tools_from_mcp() -> None:
+    """The shared MCP todos become visible when the model loads their group."""
 
     agent = _inkling_agent()
-    seen_tools: list[str] = []
+    seen_tools: list[list[str]] = []
 
     async def respond_stream(
         messages: list[ModelMessage], info: AgentInfo
-    ) -> AsyncIterator[str]:
-        seen_tools.extend(tool.name for tool in info.function_tools)
+    ) -> AsyncIterator[str | DeltaToolCalls]:
+        seen_tools.append([tool.name for tool in info.function_tools])
+        if len(seen_tools) == 1:
+            yield {0: DeltaToolCall(name="load_capability", json_args='{"id":"todos"}')}
+            return
         yield "ok"
 
     await agent.run(
@@ -946,8 +967,10 @@ async def test_inkling_default_includes_todo_capability() -> None:
         model=FunctionModel(stream_function=respond_stream, model_name="probe"),
     )
 
-    assert "write_todos" in seen_tools
-    assert "read_todos" in seen_tools
+    assert "write_todos" not in seen_tools[0]
+    assert "load_capability" in seen_tools[0]
+    assert "write_todos" in seen_tools[1]
+    assert "read_todos" in seen_tools[1]
 
 
 async def test_inkling_default_output_is_segments() -> None:

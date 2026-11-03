@@ -24,7 +24,7 @@ from uuid import uuid4
 
 import anyio
 from octomate_protocol.gateway import GatewayTool
-from pydantic_ai import AgentCapability, AgentRunResultEvent, AgentStreamEvent
+from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -39,21 +39,21 @@ octomate_package = types.ModuleType("octomate")
 octomate_package.__path__ = [str(REPO_ROOT / "octomate")]
 sys.modules.setdefault("octomate", octomate_package)
 
+from fastmcp import Client
+from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.base import Octomate
 from octomate.capabilities.ask import ASK_QUESTIONS_TOOL_NAME, AskCapability
-from octomate.capabilities.gateway import (
-    GatewayCapability,
-)
 from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.todos import TodoCapability
 from octomate.config import OctomateConfig, SlackChannelConfig
 from octomate.config.agents import AgentRouteModelName
 from octomate.config.agents.inkling import InklingConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import OctomateSession
+from octomate.managers.mcp import McpManager
 from octomate.managers.thread import ThreadManager
+from octomate.mcp.server import octomate_mcp
 from octomate.providers import ProviderRegistry
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress
@@ -68,6 +68,7 @@ from octomate.tentacles.inkling.base import (
     InklingOutput,
     InklingTentacle,
 )
+from octomate.tentacles.inkling.mcp import OctomateTools
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.slack.base import SlackTentacle
 from octomate.types.json import JsonObject
@@ -230,7 +231,7 @@ async def capture(
         deps_type=type(None),
         name="octomate-inkling",
         output_type=[str, list[MessageSegment], DeferredToolRequests],
-        capabilities=[AskCapability(), TodoCapability()],
+        capabilities=[AskCapability()],
         system_prompt=SYSTEM_PROMPT,
     )
     # A real channel, constructed but never served: the gate reads `surfaces` off
@@ -306,52 +307,52 @@ async def capture_case(
     thread = await threads.ensure(address)
     conversation = await conversations.ensure(thread.id, agent_tentacle_id="inkling")
     message_history = cast("list[ModelMessage]", list(conversation.messages))
-    capabilities: list[AgentCapability[None]] = []
+    routes: list[AgentRoute] = []
+    channels: dict[str, ChannelTentacle] = {}
+    agents: dict[str, AgentTentacle] = {}
     if case.private and dm_channel is not None:
-        capabilities.append(
-            GatewayCapability(
-                session=OctomateSession(
-                    channel_routes={
-                        address.channel_tentacle_id: [
-                            AgentRoute(
-                                agent_id="claude",
-                                model=subagent_model,
-                                claim=Claim(ability="coding work in a real repository"),
-                            )
-                        ]
-                    },
-                    current_agent_id="inkling",
-                    channels={dm_channel.id: dm_channel},
-                    conversation_address=address,
-                )
+        routes = [
+            AgentRoute(
+                agent_id="claude",
+                model=subagent_model,
+                claim=Claim(ability="coding work in a real repository"),
             )
-        )
+        ]
+        channels = {dm_channel.id: dm_channel}
     if case.subagents:
         if accomplice is None:
             raise RuntimeError("subagent capture requires an accomplice")
-        agents: dict[str, AgentTentacle] = {accomplice.id: accomplice}
-        capabilities.append(
-            GatewayCapability(
-                session=OctomateSession(
-                    channel_routes={
-                        address.channel_tentacle_id: [
-                            AgentRoute(
-                                agent_id=accomplice.id,
-                                model=subagent_model,
-                                claim=Claim(
-                                    ability="independent analysis for capture tests"
-                                ),
-                            )
-                        ]
-                    },
-                    current_agent_id="inkling",
-                    agents=agents,
-                    thread_id=thread.id,
-                    conversation_address=address,
-                ),
-                conversations=conversations,
+        agents = {accomplice.id: accomplice}
+        routes = [
+            AgentRoute(
+                agent_id=accomplice.id,
+                model=subagent_model,
+                claim=Claim(ability="independent analysis for capture tests"),
             )
-        )
+        ]
+    session = OctomateSession(
+        channel_routes={address.channel_tentacle_id: routes},
+        current_agent_id="inkling",
+        channels=channels,
+        agents=agents,
+        thread_id=thread.id,
+        conversation_id=conversation.id,
+        conversation_address=address,
+        nerve=threads.nerve,
+    )
+
+    async def resolve_session() -> OctomateSession:
+        return session
+
+    server = octomate_mcp(
+        resolve_session,
+        threads,
+        manager=McpManager(users=threads.users, cipher=None),
+        conversations=conversations,
+    )
+    capabilities = OctomateTools.capabilities(
+        MCPToolset(Client(server), process_tool_call=OctomateTools.call)
+    )
     commission_calls = 0
     commission_results = 0
     called_tools: set[str] = set()

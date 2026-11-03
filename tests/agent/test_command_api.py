@@ -33,7 +33,6 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.auth import current_user
-from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     MessageSentEvent,
@@ -1027,11 +1026,10 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
     assert not app.gateway.sessions
     user_capabilities.assert_awaited_once()
     assert isinstance(agent.suspender, ReflexSuspender)
-    gateway = next(
-        cap for cap in agent.capabilities or [] if isinstance(cap, GatewayCapability)
-    )
-    assert gateway.session.user_profile is not None
-    assert gateway.session.user_profile.user_id == user.id
+    gateway = agent.session
+    assert gateway is not None
+    assert gateway.user_profile is not None
+    assert gateway.user_profile.user_id == user.id
     thread = await app.threads.get(conversation.thread_id)
     assert thread is not None
     replies = [
