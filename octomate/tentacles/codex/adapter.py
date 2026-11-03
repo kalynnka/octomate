@@ -18,6 +18,7 @@ from openai_codex.generated.v2_all import (
     CommandExecutionStatus,
     CommandExecutionThreadItem,
     ConfigWarningNotification,
+    ContextCompactionThreadItem,
     DynamicToolCallStatus,
     DynamicToolCallThreadItem,
     ErrorNotification,
@@ -76,7 +77,7 @@ from pydantic_ai.messages import ModelRequest as PydanticModelRequest
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.usage import RequestUsage, RunUsage
 
-from octomate.capabilities.harness.events import StreamEvents
+from octomate.capabilities.harness.events import RunActivityChangedEvent, StreamEvents
 from octomate.tentacles.codex.html import visualization_text
 from octomate.types.json import JsonObject, JsonValue
 
@@ -457,6 +458,10 @@ class CodexRunAccumulator:
         self.thread_id = payload.thread_id
         self.turn_id = payload.turn_id
         item = payload.item.root
+        if isinstance(item, ContextCompactionThreadItem):
+            self.pending_events.append(event)
+            yield RunActivityChangedEvent(activity="compacting")
+            return
         if isinstance(item, CommandExecutionThreadItem):
             live_call = ToolCallPart(
                 tool_name="codex_command_execution",
@@ -608,7 +613,10 @@ class CodexRunAccumulator:
         self.thread_id = payload.thread_id
         self.turn_id = payload.turn_id
         item = payload.item.root
-        if isinstance(item, AgentMessageThreadItem | ExitedReviewModeThreadItem):
+        if isinstance(item, ContextCompactionThreadItem):
+            self.pending_events.append(event)
+            yield RunActivityChangedEvent(activity="working")
+        elif isinstance(item, AgentMessageThreadItem | ExitedReviewModeThreadItem):
             yield from self.complete_agent_message(item, event)
         elif isinstance(item, ReasoningThreadItem):
             yield from self.complete_reasoning(item, event)

@@ -11,7 +11,7 @@ import base64
 import logging
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, TypeVar, cast
+from typing import Any, Literal, TypeVar, cast
 
 from anthropic.types import Message as AnthropicMessage
 from anthropic.types import TextBlock as AnthropicTextBlock
@@ -23,6 +23,7 @@ from claude_agent_sdk import (
     ServerToolResultBlock,
     ServerToolUseBlock,
     StreamEvent,
+    SystemMessage,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -66,7 +67,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.usage import RequestUsage, RunUsage
 
-from octomate.capabilities.harness.events import StreamEvents
+from octomate.capabilities.harness.events import RunActivityChangedEvent, StreamEvents
 from octomate.tentacles.claude.transcript import (
     TranscriptAssistantLine,
     TranscriptUserLine,
@@ -97,6 +98,10 @@ FINISH_REASON_MAP: dict[str, FinishReason] = {
 
 usage_counts_adapter: TypeAdapter[dict[str, int]] = TypeAdapter(
     dict[str, OnErrorOmit[int]]
+)
+
+compaction_status_adapter: TypeAdapter[Literal["compacting"] | None] = TypeAdapter(
+    Literal["compacting"] | None
 )
 
 
@@ -316,6 +321,14 @@ class ClaudeRunAccumulator:
             yield from self._consume_assistant(message)
         elif isinstance(message, UserMessage):
             yield from self._consume_tool_results(message)
+        elif isinstance(message, SystemMessage):
+            if message.subtype == "status":
+                status = compaction_status_adapter.validate_python(
+                    message.data["status"]
+                )
+                yield RunActivityChangedEvent(activity=status or "working")
+            elif message.subtype == "compact_boundary":
+                yield RunActivityChangedEvent(activity="working")
         elif isinstance(message, ResultMessage):
             if message.session_id:
                 self.session_id = message.session_id
