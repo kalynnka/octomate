@@ -273,3 +273,18 @@ async def test_failed_status_presentation_does_not_break_message_delivery(
     assert present.await_count > 0
     assert texts(channel) == ["done"]
     assert not feeler.queues
+
+
+async def test_terminal_clear_bypasses_pending_label_throttle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(RecordingStatusFeeler, "update_interval", 10.0)
+    monkeypatch.setattr(RecordingStatusFeeler, "refresh_interval", float("inf"))
+    feeler = RecordingStatusFeeler()
+    feeler.feed(ADDRESS, RunActivityChangedEvent(activity="thinking"))
+    assert await feeler.next() == "Thinking…"
+    feeler.feed(ADDRESS, RunActivityChangedEvent(activity="writing"))
+    feeler.feed(ADDRESS, RunEndedEvent())
+    assert await feeler.next() == ""
+    await feeler.close()
+    assert feeler.presented.empty()

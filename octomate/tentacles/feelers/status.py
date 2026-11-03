@@ -34,8 +34,9 @@ from octomate.capabilities.harness.events import (
     WireEvent,
 )
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadKey
-from octomate.tentacles.feelers.output import humanize_tool_name
+from octomate.tentacles.feelers.output import SegmentsFeeler, humanize_tool_name
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ class StatusFeeler(ABC):
 
     timeout: ClassVar[float] = 120.0  # Silence dismisses the indicator, not the run.
     refresh_interval: ClassVar[float] = 1.0  # Bound repeated-label platform calls.
+    update_interval: ClassVar[float] = 0.0  # Minimum gap between changed labels.
 
     def __init__(self) -> None:
         self.queues: dict[ThreadKey, asyncio.Queue[StatusUpdate]] = {}
@@ -138,19 +140,22 @@ class StatusFeeler(ABC):
         deadline = loop.time() + self.timeout
         text = ""
         shown: str | None = None
-        shown_at = 0.0
+        shown_at = -float("inf")
         try:
             while True:
+                wake_at = deadline
+                if text and text != shown:
+                    wake_at = min(deadline, shown_at + self.update_interval)
                 try:
                     target, update, received_at = await asyncio.wait_for(
-                        queue.get(), max(0, deadline - loop.time())
+                        queue.get(), max(0, wake_at - loop.time())
                     )
                     address = target or address
+                    deadline = received_at + self.timeout
                 except TimeoutError:
-                    update, received_at = "", loop.time()
+                    update = None
                 if update is not None:
                     text = update
-                deadline = received_at + self.timeout
                 while not queue.empty():
                     target, update, received_at = queue.get_nowait()
                     address = target or address
@@ -158,9 +163,11 @@ class StatusFeeler(ABC):
                     deadline = received_at + self.timeout
                 if loop.time() >= deadline:
                     text = ""
-                if text != shown or (
-                    text and loop.time() - shown_at >= self.refresh_interval
-                ):
+                changed = text != shown and (
+                    not text or loop.time() - shown_at >= self.update_interval
+                )
+                refresh = text and loop.time() - shown_at >= self.refresh_interval
+                if changed or refresh:
                     await self.display(address, text)
                     shown, shown_at = text, loop.time()
                 if not text and queue.empty():
@@ -186,3 +193,24 @@ class StatusFeeler(ABC):
             except asyncio.CancelledError:
                 await pending
                 raise
+
+
+class PlainTextStatusFeeler(StatusFeeler):
+    """Infrequent activity notices for channels without editable indicators.
+
+    Sent notices remain historical messages. Clearing stops updates and sends no
+    completion claim; only the run's actual output reports its outcome.
+    """
+
+    update_interval: ClassVar[float] = 10.0
+    refresh_interval: ClassVar[float] = float("inf")
+
+    def __init__(self, segments: SegmentsFeeler) -> None:
+        super().__init__()
+        self.segments = segments
+
+    async def present(self, address: ChannelAddress, text: str) -> None:
+        if text:
+            await self.segments.present(
+                address, [TextSegment(data={"text": f"Activity update: {text}"})]
+            )

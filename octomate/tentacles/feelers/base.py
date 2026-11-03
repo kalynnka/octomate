@@ -42,7 +42,7 @@ class Feelers:
     oauth: OAuthFeeler
     # Saved artifacts presented independently of the run's reply.
     artifacts: ArtifactFeeler
-    status: StatusFeeler | None = None
+    status: StatusFeeler
 
     async def present(
         self, address: ChannelAddress, event: GatewayEvent | RunErrorEvent

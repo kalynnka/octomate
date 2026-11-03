@@ -27,6 +27,7 @@ from octomate.tentacles.feelers.output import (
     DefaultSegmentsFeeler,
     DefaultTimelineFeeler,
 )
+from octomate.tentacles.feelers.status import PlainTextStatusFeeler
 from octomate.tentacles.napcat import NapcatChromo, NapcatInk, NapcatTentacle
 from octomate.tentacles.napcat.schema import NapcatOutboundMessage
 from octomate.tentacles.siphon import Siphon
@@ -362,6 +363,7 @@ async def test_napcat_consume_renders_plain_answer_via_default_timeline() -> Non
     oauth = PlainTextOAuthFeeler(ink, markdown_feeler)
     host = FakeOctomate()
     channel.feelers = Feelers(
+        status=PlainTextStatusFeeler(DefaultSegmentsFeeler(ink=ink, chromo=chromo)),
         markdown=markdown_feeler,
         artifacts=PlainTextArtifactFeeler(
             artifacts=host.artifacts,

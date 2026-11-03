@@ -295,6 +295,7 @@ async def test_feelers_present_actions_splits_and_marks() -> None:
     target_address = _key("target")
 
     await Feelers(
+        status=FakeChannelTentacle().feelers.status,
         markdown=RecordingMarkdownFeeler(),
         artifacts=FakeChannelTentacle().feelers.artifacts,
         timeline=NoopTimeline(),
@@ -335,6 +336,7 @@ class HiccupTimeline(NoopTimeline):
 
 def plain_feelers() -> Feelers:
     return Feelers(
+        status=FakeChannelTentacle().feelers.status,
         markdown=RecordingMarkdownFeeler(),
         artifacts=FakeChannelTentacle().feelers.artifacts,
         timeline=NoopTimeline(),

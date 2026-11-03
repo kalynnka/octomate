@@ -149,7 +149,11 @@ class AcpTranslator:
                 return self.text_updates(str(segment))
             case FunctionToolCallEvent(part=part):
                 if part.tool_call_id in self.started_tools:
-                    return []
+                    return [
+                        acp.update_tool_call(
+                            tool_call_id=part.tool_call_id, status="in_progress"
+                        )
+                    ]
                 update = acp.start_tool_call(
                     tool_call_id=part.tool_call_id,
                     title=part.tool_name,

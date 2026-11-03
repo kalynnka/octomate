@@ -409,6 +409,10 @@ async def test_edit_and_typing_use_the_resolved_destination(
     edits: list[tuple[int, str | None, discord.AllowedMentions]] = []
     views: list[discord.ui.View | discord.ui.LayoutView] = []
     typing = RecordingTyping()
+    deleted: list[int] = []
+
+    async def delete(message: discord.PartialMessage) -> None:
+        deleted.append(message.id)
 
     async def edit(
         message: discord.PartialMessage,
@@ -423,6 +427,7 @@ async def test_edit_and_typing_use_the_resolved_destination(
 
     monkeypatch.setattr(client, "get_channel", lambda channel_id: channel)
     monkeypatch.setattr(discord.PartialMessage, "edit", edit)
+    monkeypatch.setattr(discord.PartialMessage, "delete", delete)
     monkeypatch.setattr(discord.TextChannel, "typing", lambda destination: typing)
     ink = DiscordInk(client)
 
@@ -441,6 +446,8 @@ async def test_edit_and_typing_use_the_resolved_destination(
     assert mentioned_user_ids(edits[0][2]) == [42]
     assert views[0] is discord.utils.MISSING
     assert typing.exited
+    await ink.delete_message(str(channel.id), "700")
+    assert deleted == [700]
 
     view = discord.ui.LayoutView(timeout=None)
     view.add_item(discord.ui.TextDisplay("Answers submitted"))

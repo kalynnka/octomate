@@ -22,6 +22,7 @@ from octomate.schemas.thread import ThreadArtifact, ThreadMessage
 from octomate.schemas.user import UserProfile
 from tests.agent.test_mcp_app_ledger import app_artifact as app_artifact
 from tests.channels.lark.fakes import FakeLarkInk, lark_channel
+from tests.support.channels import RecordingStatusFeeler
 from tests.support.nerve import drawing
 
 
@@ -48,6 +49,7 @@ async def test_artifact_card_stays_on_its_surface(
     host = channel.octomate
     host.config.artifacts.viewer_origin = AnyHttpUrl("https://console.example")
     channel.config.stream.enabled = mode == "stream"
+    channel.feelers.status = RecordingStatusFeeler()
     upstream = AsyncMock(side_effect=AssertionError("Cards must not load app HTML"))
     monkeypatch.setattr(host.mcp, "app_resource", upstream)
     address = ChannelAddress("lark", chat_type, chat_id, "ou_user", thread_id)
