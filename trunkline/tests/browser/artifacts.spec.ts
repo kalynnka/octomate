@@ -1,5 +1,6 @@
 import { test, expect, type Page, type Frame } from '@playwright/test'
 import { readFileSync } from 'node:fs'
+import type { ApiModelMessage, ApiThread, ApiThreadMessage } from '../../src/lib/api/events'
 
 const parentOrigin = 'http://127.0.0.1:5174'
 const sandboxOrigin = 'http://127.0.0.1:8765'
@@ -64,6 +65,117 @@ async function contentFrame(page: Page, label = 'row-a'): Promise<Frame> {
   }
   throw new Error(`Missing app frame: ${label}`)
 }
+
+for (const width of [1280, 390]) {
+  test(`artifact loading hints use the console status tokens at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    await page.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: '' }))
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    page.on('console', message => { if (message.type() === 'error') errors.push(message.text()) })
+    await mockViews(page)
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    await page.route('**/src/features/artifacts/ArtifactViewer.tsx', async route => {
+      await gate
+      await route.continue()
+    })
+    try {
+      await page.goto('/tests/browser/harness.html', { waitUntil: 'domcontentloaded' })
+      const hint = page.locator('#pm-row-a').getByRole('status')
+      await expect(hint).toHaveText('Loading artifact…')
+      await expect(hint).toHaveCSS('font-family', /Fira Code/)
+      await expect(hint).toHaveCSS('font-size', '8px')
+      await expect(hint).toHaveCSS('font-weight', '700')
+      await expect(hint).toHaveCSS('text-transform', 'uppercase')
+      await expect(hint).toHaveCSS('letter-spacing', '1.44px')
+      expect(await hint.evaluate(el => (el as HTMLElement).style.color)).toBe('var(--fg-3)')
+      await page.screenshot({ path: `/private/tmp/trunkline-status/artifact-hint-${width}.png` })
+      release()
+      await contentFrame(page)
+      await page.reload()
+      await contentFrame(page)
+      await expect(page.locator('vite-error-overlay')).toHaveCount(0)
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+      expect(errors).toEqual([])
+    } finally {
+      release()
+    }
+  })
+}
+
+test('page refresh keeps an early-saved artifact after its originating tool card', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: '' }))
+  await mockViews(page, { htmlArtifact: true, html: '<p id="result">Saved chart</p>' })
+  await page.routeWebSocket(/\/api\/trunkline\/live/, () => {})
+  const at = '2026-11-04T02:00:00Z'
+  const thread: ApiThread = {
+    id: 'thread', kind: 'thread', chat_type: 'thread', chat_id: 'owner',
+    channel_tentacle_id: 'trunkline', channel_thread_id: 'artifact-thread', title: 'Artifact order',
+    project_id: null, status: 'active', created_at: at, updated_at: at, handoffs: [],
+  }
+  const artifact: ApiThreadMessage = {
+    id: 'row-a', kind: 'artifact', artifact_id: 'app-a', thread_id: thread.id,
+    platform_message_id: null, reply_id: '', happened_at: at, created_at: at,
+    direction: 'outbound', actor_kind: 'agent', agent_tentacle_id: 'codex', sender: null, segments: [], message_text: '',
+  }
+  // The artifact was committed during the call, before the model messages at turn end.
+  const messages: ApiModelMessage[] = [
+    { id: 'zzz1', run_id: 'run', kind: 'response', timestamp: at, thread_messages: [artifact], parts: [
+      { part_kind: 'text', content: 'Creating the chart.' },
+      { part_kind: 'builtin-tool-call', tool_name: 'codex_mcp_tool_call', tool_call_id: 'chart-call', args: {} },
+      { part_kind: 'builtin-tool-return', tool_name: 'codex_mcp_tool_call', tool_call_id: 'chart-call', content: 'Chart ready' },
+    ] },
+    { id: 'zzz2', run_id: 'run', kind: 'response', timestamp: at, thread_messages: [], parts: [{ part_kind: 'text', content: 'The chart is ready.' }] },
+  ]
+  await page.route('**/api/trunkline/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    if (path.includes('/artifacts/')) return route.fallback()
+    if (path === '/api/trunkline/threads') return route.fulfill({ json: [thread] })
+    if (path === '/api/trunkline/threads/thread') return route.fulfill({ json: thread })
+    const items = path.endsWith('/conversations/messages') ? [...messages].reverse() : [artifact]
+    if (path.endsWith('/messages')) return route.fulfill({ json: { items, total: items.length, has_more: false, next_cursor: null } })
+    if (path.endsWith('/project')) return route.fulfill({ json: null })
+    if (path.endsWith('/usage') || path.endsWith('/permissions')) return route.fulfill({ json: {} })
+    if (path.endsWith('/health')) return route.fulfill({ json: { ok: true } })
+    if (path.endsWith('/operations')) return route.fulfill({ json: { source: null, barred: {}, teleport: { destinations: [], here: null, routes: {} }, summon: { destinations: [], here: null, routes: {} } } })
+    return route.fulfill({ json: [] })
+  })
+  const errors: string[] = []
+  page.on('pageerror', error => errors.push(error.message))
+  page.on('console', message => { if (message.type() === 'error') errors.push(message.text()) })
+  let release!: () => void
+  const loading = new Promise<void>(resolve => { release = resolve })
+  await page.route('**/src/features/artifacts/ArtifactViewer.tsx', async route => {
+    await loading
+    await route.continue()
+  })
+  try {
+    await page.goto('/threads/thread', { waitUntil: 'domcontentloaded' })
+    const hint = page.locator('#pm-row-a').getByRole('status')
+    await expect(hint).toHaveText('Loading artifact…')
+    await expect(hint).toHaveCSS('font-family', /Fira Code/)
+    await expect(hint).toHaveCSS('text-transform', 'uppercase')
+    await page.screenshot({ animations: 'disabled', path: '/private/tmp/trunkline-status/artifact-loading-console.png' })
+  } finally {
+    release()
+  }
+  for (const reload of [false, true]) {
+    if (reload) await page.reload()
+    const card = page.locator('#pm-row-a')
+    await expect(card.frameLocator('iframe').frameLocator('iframe').locator('#result')).toHaveText('Saved chart')
+    await expect(card).toHaveCount(1)
+    expect(await card.evaluate(el => el.previousElementSibling?.id)).toBe('pm-zzz1.1')
+    expect(await card.evaluate(el => el.nextElementSibling?.id)).toBe('pm-zzz2.0')
+  }
+  await expect(page).toHaveURL(/\/threads\/thread$/)
+  await expect(page).toHaveTitle('Trunkline · Octomate')
+  await expect(page.locator('vite-error-overlay')).toHaveCount(0)
+  await page.screenshot({ animations: 'disabled', path: '/private/tmp/trunkline-status/artifact-reloaded.png' })
+  expect(errors).toEqual([])
+})
 
 test('two ledger cards initialize independently and receive complete input before result', async ({ page }) => {
   const reads = await mockViews(page)
@@ -758,6 +870,8 @@ test('resource errors stay visible without mounting a sandbox', async ({ page })
   await page.goto('/tests/browser/harness.html')
   await expect(page.getByRole('alert')).toHaveCount(2)
   await expect(page.getByRole('alert').first()).toHaveText('Artifact installation unavailable')
+  await expect(page.getByRole('alert').first()).toHaveCSS('font-family', /Fira Code/)
+  await expect(page.getByRole('alert').first()).toHaveCSS('font-size', '8px')
   await expect(page.locator('iframe')).toHaveCount(0)
   expect(reads).toHaveLength(2)
 })

@@ -224,7 +224,12 @@ async def test_app_call_is_durable_before_publication(
         assert saved.result.is_error is fail
         assert result.meta is not None
         assert result.meta["uiOnly"] == {"state": "preserved"}
-        assert saved.result.meta == result.meta
+        assert saved.result.meta is not None
+        assert "octomate/artifactMessageId" not in saved.result.meta
+        assert result.meta == {
+            **saved.result.meta,
+            "octomate/artifactMessageId": str(event.message_id),
+        }
         public = wire_event_adapter.dump_json(event)
         assert b"uiOnly" not in public
         assert b"arguments" not in public

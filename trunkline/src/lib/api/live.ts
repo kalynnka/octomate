@@ -357,8 +357,10 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
 
   // Inbound rows keep their own write order and words after binding to a request.
   // An agent's outbound row is already represented by its model response.
+  const boundArtifacts = new Set(modelMessages.flatMap(message => message.thread_messages
+    .filter(row => row.kind === 'artifact').map(row => row.id)))
   const said = [
-    ...unbound.map((message) => ({ key: message.id, message, session: undefined })),
+    ...unbound.filter(message => !boundArtifacts.has(message.id)).map((message) => ({ key: message.id, message, session: undefined })),
     ...modelMessages.flatMap((request) =>
       request.kind !== 'request'
         ? []

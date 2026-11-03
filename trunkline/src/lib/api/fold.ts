@@ -463,6 +463,7 @@ export class TurnFold {
   private todos = new Map<string, WireTodo>()
   private subUids = new Map<string, string>()
   private sawReply = false
+  resultEnd: { uid: string; usage: string } | undefined
   private ended = false
   private sender: ApiUserProfile | null = null
   private questions = new Map<string, Extract<LedgerItem, { kind: 'ask' }>>()
@@ -617,10 +618,17 @@ export class TurnFold {
       case 'run_started':
         this.sender = event.sender ?? null
         break
-      case 'run_ended':
+      case 'run_ended': {
         this.closeThink()
         this.closeStream()
+        if (!event.outcome) break
+        const outcome = event.outcome === 'completed' ? 'complete' : event.outcome
+        const label = `run ${outcome}${this.resultEnd?.usage ?? ''}`
+        if (this.resultEnd) this.sink.patch(this.resultEnd.uid, { label })
+        else this.sink.push({ kind: 'end', label })
+        this.resultEnd = undefined
         break
+      }
       case 'enqueued_messages': {
         const requests = event.messages.filter(message => message.kind === 'request')
         const prompts = requests.flatMap(message => message.parts.filter(part => part.part_kind === 'user-prompt'))
@@ -775,12 +783,10 @@ export class TurnFold {
         }
         this.closeStream()
         const u = event.usage
-        this.sink.push({
-          kind: 'end',
-          label:
-            `run complete · ${u.requests} ${u.requests === 1 ? 'request' : 'requests'}` +
-            ` · ${u.input_tokens.toLocaleString('en-US')} tokens in · ${u.output_tokens.toLocaleString('en-US')} out`,
-        })
+        const usage = ` · ${u.requests} ${u.requests === 1 ? 'request' : 'requests'}` +
+          ` · ${u.input_tokens.toLocaleString('en-US')} tokens in · ${u.output_tokens.toLocaleString('en-US')} out`
+        const uid = this.sink.push({ kind: 'end', label: `run complete${usage}` })
+        this.resultEnd = { uid, usage }
         this.ended = true
         this.sink.done()
         break

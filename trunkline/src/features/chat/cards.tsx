@@ -189,9 +189,9 @@ function DiffBlock({ uid, index, diff }: { uid: string; index: number; diff: Ext
 
 function AgentRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'agent' }>; cardMax: string }) {
   return (
-    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" style={{ maxWidth: `min(100%, calc(${cardMax} + 34px))` }}>
       <CapsLabel style={{ textTransform: 'none' }}>{item.label}</CapsLabel>
-      <div style={{ maxWidth: cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)', textWrap: 'pretty' }}>
+      <div style={{ minWidth: 0, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)', textWrap: 'pretty' }}>
         {item.reply && <ReplyPreview reply={item.reply} />}
         {item.blocks.map((b, i) => {
           if (b.type === 'p')
@@ -213,7 +213,7 @@ function AgentRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'agent'
           return <DiffBlock key={i} uid={item.uid} index={i} diff={b.diff} />
         })}
       </div>
-      <div className="trk-message-actions" style={{ maxWidth: cardMax }}>
+      <div className="trk-message-actions">
         <CopyButton text={item.blocks.map(block => block.type === 'p' ? block.text : block.type === 'ul'
           ? block.items.map(line => `- ${line}`).join('\n')
           : `\`\`\`diff\n${block.diff.lines.map(line => line.text).join('\n')}\n\`\`\``).join('\n\n')}
@@ -1070,23 +1070,9 @@ function OAuthRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'oau
             : 'Open the authorization page and approve — the provider finishes the connection on its own.'}
         </p>
         {device && (
-          <div
-            onClick={() => void navigator.clipboard.writeText(item.code ?? '')}
-            title="click to copy"
-            style={{
-              display: 'inline-block',
-              marginTop: 10,
-              padding: '7px 14px',
-              border: '1px solid var(--color-gold)',
-              ...mono(16, 700),
-              letterSpacing: '.18em',
-              color: 'var(--fg-1)',
-              cursor: 'copy',
-              userSelect: 'all',
-            }}
-          >
-            {item.code}
-          </div>
+          <CopyButton text={item.code ?? ''} label="Copy device code" className="trk-oauth-copy">
+            <span className="trk-oauth-code">{item.code}</span>
+          </CopyButton>
         )}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
           <a
@@ -1149,7 +1135,7 @@ function StreamRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'strea
     return () => { cancelAnimationFrame(frame); cancelAnimationFrame(scroll) }
   }, [streaming])
   return (
-    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry" style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
+    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" style={{ maxWidth: `min(100%, calc(${cardMax} + 34px))`, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
       <CapsLabel style={{ textTransform: 'none' }}>{item.label ?? botLabel()}</CapsLabel>
       <Markdown text={streaming ? text : item.text} cursor={streaming} />
       <div className="trk-message-actions">
@@ -1165,7 +1151,7 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
   switch (item.kind) {
     case 'artifact':
       return <div id={`pm-${item.uid}`} className="lt-entry trk-artifact-row">
-        <Suspense fallback={<div role="status">Loading artifact…</div>}><ArtifactViewer artifactId={item.artifactId} messageId={item.uid} threadId={threadId} /></Suspense>
+        <Suspense fallback={<div role="status" style={{ ...statusNote, color: 'var(--fg-3)' }}>Loading artifact…</div>}><ArtifactViewer artifactId={item.artifactId} messageId={item.uid} threadId={threadId} /></Suspense>
       </div>
     case 'divider':
       return (
@@ -1221,13 +1207,13 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
       return <OAuthRow item={item} cardMax={cardMax} i={i} />
     case 'dots':
       return (
-        <div className="lt-fade-in" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '2px 0' }}>
-          <span className="lt-dots">
+        <div className="trk-activity" role="status" aria-atomic="true" title={item.label} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '2px 0' }}>
+          <span className="lt-dots" aria-hidden="true" style={{ flexShrink: 0 }}>
             <i />
             <i />
             <i />
           </span>
-          <CapsLabel>{item.label}</CapsLabel>
+          <CapsLabel style={{ ...ellipsis, minWidth: 0, color: item.attention ? 'var(--color-gold)' : 'var(--fg-3)' }}>{item.label}</CapsLabel>
         </div>
       )
     case 'stream':
