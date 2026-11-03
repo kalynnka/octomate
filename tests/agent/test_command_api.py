@@ -39,6 +39,8 @@ from octomate.capabilities.harness.events import (
     MessageSentEvent,
     ReflexAsleepEvent,
     ReflexAwakeEvent,
+    ReflexPhaseChangedEvent,
+    RunActivityChangedEvent,
     RunEndedEvent,
     RunResultEvent,
     RunStartedEvent,
@@ -842,8 +844,10 @@ async def test_http_execution_preserves_arguments_and_replays_saved_outcome(
         carried
         == [
             ReflexAwakeEvent(),
+            ReflexPhaseChangedEvent(phase="preparing"),
             MessageSentEvent(segments=segments),
-            ReflexAsleepEvent(),
+            ReflexPhaseChangedEvent(phase="finalizing"),
+            ReflexAsleepEvent(outcome="completed"),
         ]
         * 2
     )
@@ -929,10 +933,12 @@ async def test_http_execution_uses_manager_refusals(
     }.get(refusal, refusal)
     assert carried == [
         ReflexAwakeEvent(),
+        ReflexPhaseChangedEvent(phase="preparing"),
         MessageSentEvent(
             segments=[TextSegment(data={"text": outcome.outcome.message})]
         ),
-        ReflexAsleepEvent(),
+        ReflexPhaseChangedEvent(phase="finalizing"),
+        ReflexAsleepEvent(outcome="failed"),
     ]
     assert not agent.invocations
     async with async_session() as session:
@@ -992,8 +998,10 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
     assert command_outcome(response) == outcome
     assert command_outcome(replay) == outcome
     # The replay presents no run: the reflex wakes and falls asleep.
-    awake, started, sent, answered, ended, *rest = carried
+    awake, preparing, started, working, sent, answered, ended, *rest = carried
     assert awake == ReflexAwakeEvent()
+    assert preparing == ReflexPhaseChangedEvent(phase="preparing")
+    assert working == RunActivityChangedEvent(activity="working")
     sender = await app.users.profile(address.channel_tentacle_id, address.user_id)
     assert sender is not None
     assert isinstance(started, RunStartedEvent)
@@ -1004,7 +1012,15 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
     assert isinstance(answered, RunResultEvent)
     assert answered.output == "Done"
     assert isinstance(ended, RunEndedEvent)
-    assert rest == [ReflexAsleepEvent(), ReflexAwakeEvent(), ReflexAsleepEvent()]
+    assert ended.outcome == "completed"
+    assert rest == [
+        ReflexPhaseChangedEvent(phase="finalizing"),
+        ReflexAsleepEvent(outcome="completed"),
+        ReflexAwakeEvent(),
+        ReflexPhaseChangedEvent(phase="preparing"),
+        ReflexPhaseChangedEvent(phase="finalizing"),
+        ReflexAsleepEvent(outcome="completed"),
+    ]
     if address.channel_tentacle_id == "im":
         channel = app.channels[address.channel_tentacle_id]
         assert isinstance(channel, FakeChannelTentacle)
@@ -1072,7 +1088,9 @@ async def test_command_presents_a_persisted_reflex_approval(
             )
         carried = published(live)
     assert command_outcome(response) == CommandOutcomeEvent(outcome=CommandResult())
-    _, started, asked, *_ = carried
+    _, preparing, started, working, asked, *_ = carried
+    assert preparing == ReflexPhaseChangedEvent(phase="preparing")
+    assert working == RunActivityChangedEvent(activity="working")
     sender = await app.users.profile(address.channel_tentacle_id, address.user_id)
     assert sender is not None
     assert isinstance(started, RunStartedEvent)
@@ -1081,7 +1099,8 @@ async def test_command_presents_a_persisted_reflex_approval(
     assert started.sender.id == sender.id
     assert isinstance(asked, ActionBatchEvent)
     assert len(asked.approvals) == 1
-    assert carried[-1] == ReflexAsleepEvent()
+    assert asked.blocks_run is True
+    assert carried[-1] == ReflexAsleepEvent(outcome="deferred")
     batch = await app.deferred_actions.get_batch(uuid.UUID(asked.batch_id))
     if address.channel_tentacle_id == "im":
         [approval] = await batch.approvals

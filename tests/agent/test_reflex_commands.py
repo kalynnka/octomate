@@ -23,6 +23,8 @@ from octomate.capabilities.harness.events import (
     MessageSentEvent,
     ReflexAsleepEvent,
     ReflexAwakeEvent,
+    ReflexPhaseChangedEvent,
+    RunActivityChangedEvent,
     RunEndedEvent,
     RunResultEvent,
     RunStartedEvent,
@@ -552,11 +554,13 @@ async def test_a_commands_events_reach_its_trunkline_thread(
         received = [impulse.event for impulse in held(live)]
     assert [type(event) for event in received] == [
         ReflexAwakeEvent,
+        ReflexPhaseChangedEvent,
         *(
-            [RunStartedEvent, RunResultEvent, RunEndedEvent]
+            [RunStartedEvent, RunActivityChangedEvent, RunResultEvent, RunEndedEvent]
             if model_run
             else [MessageSentEvent]
         ),
+        ReflexPhaseChangedEvent,
         ReflexAsleepEvent,
     ]
     assert len(agent.invocations) == 1

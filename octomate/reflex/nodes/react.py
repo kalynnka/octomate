@@ -11,7 +11,9 @@ from pydantic_ai.messages import UserContent
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_graph import BaseNode, End, GraphRunContext
 
+from octomate.capabilities.harness.events import ReflexPhaseChangedEvent
 from octomate.capabilities.harness.react import ReactStreamEvent
+from octomate.nerve import Impulse
 from octomate.reflex.state import (
     ReflexDeps,
     ReflexGraphResult,
@@ -53,6 +55,12 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         try:
             return await self.react(ctx)
         finally:
+            await ctx.deps.impulses.send(
+                Impulse(
+                    ReflexPhaseChangedEvent(phase="finalizing"),
+                    ctx.state.target.address if ctx.state.target else None,
+                )
+            )
             if ctx.state.thread is not None:
                 await ctx.deps.workspaces.save(ctx.state.thread)
 
