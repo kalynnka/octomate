@@ -9,6 +9,7 @@ from octomate.models.auth import (
     UserSession,
 )
 from octomate.models.base import Base
+from octomate.models.compactions import Compaction, ExternalCompaction
 from octomate.models.conversation import Conversation, ConversationRun
 from octomate.models.deferred import (
     DeferredAction,
@@ -62,6 +63,7 @@ __all__ = [
     "Base",
     "BearerMcp",
     "Binary",
+    "Compaction",
     "Conversation",
     "ConversationRun",
     "DeferredAction",
@@ -69,6 +71,7 @@ __all__ = [
     "DeferredApprovalAction",
     "DeferredQuestionAction",
     "ExternalAgentRun",
+    "ExternalCompaction",
     "File",
     "Gif",
     "Handoff",

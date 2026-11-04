@@ -18,6 +18,7 @@ from arcanus.dataclass import rebuild_dataclass
 
 from octomate.schemas import (
     actions,
+    compactions,
     conversation,
     deferred,
     events,
@@ -53,6 +54,7 @@ __all__ = [
     "MessageEvent",
     "MessageSegment",
     "actions",
+    "compactions",
     "conversation",
     "deferred",
     "events",
