@@ -126,7 +126,7 @@ async def test_shutdown_retrieves_receiver_failure_and_closes_http(
         await channel.ws_client._disconnect()
         await failed.wait()
         with pytest.raises(RuntimeError, match="reconnect failed"):
-            await channel.__aexit__()
+            await channel.__aexit__(None, None, None)
 
     assert channel.ping_task is None
     assert channel.ink.http is None

@@ -1,0 +1,166 @@
+"""Opt-in single-user baseline; synthetic load does not represent an agent run."""
+
+import asyncio
+import json
+import os
+import platform
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from time import monotonic
+
+import pytest
+import sh
+from pydantic import BaseModel
+from uuid_utils.compat import uuid7
+
+from octomate.config.sandbox import SbxSandboxConfig
+from octomate.managers.sandbox import SandboxManager
+from octomate.nerve import Nerve
+from octomate.sandbox.sbx import SbxSandbox
+from octomate.schemas.sandbox import InvocationScope
+
+
+class GuestMemory(BaseModel):
+    total_mib: float
+    available_mib: float
+    agent_rss_mib: float
+
+
+@dataclass
+class HostUsage:
+    executable: str
+    rss_mib: float
+    cpu_seconds: float
+
+
+async def host_usage() -> dict[int, HostUsage]:
+    process = sh.Command("ps")(
+        "-axo", "pid=,rss=,time=,comm=", _async=True, _return_cmd=True, _tty_out=False
+    )
+    await process
+    result: dict[int, HostUsage] = {}
+    for line in process.stdout.decode().splitlines():
+        pid, rss, cpu, executable = line.split(None, 3)
+        if Path(executable).name not in {"sbx", "containerd-shim-nerdbox-v1"}:
+            continue
+        days, _, clock = cpu.rpartition("-")
+        seconds = float(days or 0) * 86400
+        parts = clock.split(":")
+        seconds += sum(float(value) * 60**i for i, value in enumerate(reversed(parts)))
+        result[int(pid)] = HostUsage(
+            executable=Path(executable).name,
+            rss_mib=int(rss) / 1024,
+            cpu_seconds=seconds,
+        )
+    return result
+
+
+async def sample_load(sandbox: SbxSandbox, pids: set[int]) -> float:
+    peak_rss_mib = 0.0
+    async with asyncio.TaskGroup() as tasks:
+        load = tasks.create_task(
+            sandbox.command(
+                "exec",
+                sandbox.name,
+                "/opt/octomate/.venv/bin/python",
+                "-c",
+                "import hashlib,time; data=bytearray(256*1024*1024); "
+                "end=time.monotonic()+5\n"
+                "while time.monotonic()<end: hashlib.sha256(data).digest()",
+            )
+        )
+        while not load.done():
+            sample = await host_usage()
+            peak_rss_mib = max(peak_rss_mib, sum(sample[pid].rss_mib for pid in pids))
+            await asyncio.sleep(0.25)
+    return peak_rss_mib
+
+
+@pytest.mark.timeout(600)
+async def test_single_user_resource_cost(tmp_path: Path) -> None:
+    image = os.environ.get("SBX_TEST_IMAGE")
+    if not image:
+        pytest.fail("Set SBX_TEST_IMAGE to the immutable, built sandbox agent image")
+    config = SbxSandboxConfig(image=image)
+    manager = SandboxManager(config, Nerve())
+    scope = InvocationScope(user_id=uuid7(), mode="sbx", conversation_id=uuid7())
+    sandbox = manager.state(scope.user_id).sandbox
+    assert isinstance(sandbox, SbxSandbox)
+    assert (
+        sandbox.name
+        not in (await sandbox.command("ls", quiet=True)).decode().splitlines()
+    )
+    before = await host_usage()
+    started = monotonic()
+    try:
+        async with manager.acquire(scope, uuid7()):
+            startup_seconds = monotonic() - started
+            await asyncio.sleep(2)
+            idle_start = await host_usage()
+            pids = idle_start.keys() - before.keys()
+            assert any(
+                idle_start[pid].executable == "containerd-shim-nerdbox-v1"
+                for pid in pids
+            ), "No new sbx VM shim found; host accounting needs updating"
+            sampled = monotonic()
+            await asyncio.sleep(5)
+            idle_end = await host_usage()
+            idle_cpu_percent = (
+                100
+                * sum(
+                    idle_end[pid].cpu_seconds - idle_start[pid].cpu_seconds
+                    for pid in pids
+                )
+                / (monotonic() - sampled)
+            )
+            guest = GuestMemory.model_validate_json(
+                await sandbox.command(
+                    "exec",
+                    sandbox.name,
+                    "/opt/octomate/.venv/bin/python",
+                    "-c",
+                    "import json; from pathlib import Path; "
+                    "m={k:int(v.split()[0]) for k,v in "
+                    "(line.split(':',1) for line in Path('/proc/meminfo').read_text().splitlines())}; "
+                    "rss=0\n"
+                    "for p in Path('/proc').glob('[0-9]*/cmdline'):\n"
+                    " if b'\\x00octomate.sandbox.entrypoint\\x00' in p.read_bytes():\n"
+                    "  rss+=next(int(line.split()[1]) for line in "
+                    "(p.parent/'status').read_text().splitlines() if line.startswith('VmRSS:'))\n"
+                    "print(json.dumps(dict(total_mib=m['MemTotal']/1024, "
+                    "available_mib=m['MemAvailable']/1024, agent_rss_mib=rss/1024)))",
+                )
+            )
+            assert guest.agent_rss_mib > 0
+            peak_rss_mib = await sample_load(sandbox, pids)
+        stopped = monotonic()
+        await manager.stop(scope.user_id)
+        stop_seconds = monotonic() - stopped
+        resumed = monotonic()
+        async with manager.acquire(scope, uuid7()):
+            resume_seconds = monotonic() - resumed
+        report = {
+            "host": f"{platform.system()} {platform.machine()}",
+            "logical_cpus": os.cpu_count(),
+            "image": image,
+            "configured_cpus": config.cpus,
+            "configured_memory_mib": config.memory_mib,
+            "startup_seconds": startup_seconds,
+            "stop_seconds": stop_seconds,
+            "resume_seconds": resume_seconds,
+            "idle_processes": {pid: asdict(idle_end[pid]) for pid in pids},
+            "idle_host_rss_mib": sum(idle_end[pid].rss_mib for pid in pids),
+            "idle_cpu_percent_one_core": idle_cpu_percent,
+            "guest": guest.model_dump(),
+            "synthetic_load_mib": 256,
+            "loaded_host_peak_rss_mib": peak_rss_mib,
+            "scope": "new sbx attachment and VM shim RSS; excludes shared daemon, disk and real agent workloads",
+        }
+        output = tmp_path / "sandbox-resources.json"
+        output.write_text(json.dumps(report, indent=2) + "\n")
+        print(output.read_text())
+        print(f"Resource report: {output}")
+    finally:
+        await manager.close()
+        if sandbox.managed:
+            await sandbox.command("rm", "--force", sandbox.name)

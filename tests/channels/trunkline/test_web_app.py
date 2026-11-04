@@ -118,7 +118,7 @@ async def _post(
     project: str | None = None,
 ) -> list[JsonObject]:
     key = ThreadKey.from_address(_console_address(thread_id))
-    with channel.octomate.nerve.subscribe(ThreadTopic(key)) as live:
+    async with channel.octomate.nerve.subscribe(ThreadTopic(key)) as live:
         await channel.handle_directive(
             TrunklineDirective(
                 user=console_user(),
@@ -140,7 +140,7 @@ async def _send(
     """Post a directive over HTTP and wait for its turn to settle, as the console
     does on the thread's socket."""
     key = ThreadKey.from_address(_console_address(thread_key))
-    with octomate.nerve.subscribe(ThreadTopic(key)) as live:
+    async with octomate.nerve.subscribe(ThreadTopic(key)) as live:
         response = await client.post(
             f"/api/trunkline/threads/{thread_key}/messages", json=body
         )
@@ -1651,7 +1651,7 @@ async def test_batch_resolve_resolves_and_streams(
         assert busy.json()["detail"] == "A turn is still running in this thread."
         assert (await octomate.deferred_actions.get_batch(batch.id)).status == "pending"
 
-        with octomate.nerve.subscribe(ThreadTopic(thread.key)) as live:
+        async with octomate.nerve.subscribe(ThreadTopic(thread.key)) as live:
             response = await client.post(
                 f"/api/trunkline/batches/{batch.id}/resolve",
                 json={"approvals": {str(approval_id): True}},

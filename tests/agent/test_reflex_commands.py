@@ -547,7 +547,9 @@ async def test_a_commands_events_reach_its_trunkline_thread(
     if model_run:
         agent.behavior = "stream_complete"
         monkeypatch.setattr(agent, "events", events)
-    with app.nerve.subscribe(ThreadTopic(ThreadKey.from_address(address))) as live:
+    async with app.nerve.subscribe(
+        ThreadTopic(ThreadKey.from_address(address))
+    ) as live:
         await kicked(app, signal)
         received = [impulse.event for impulse in held(live)]
     assert [type(event) for event in received] == [

@@ -16,8 +16,9 @@ import asyncio
 import logging
 import math
 from collections.abc import AsyncGenerator
-from contextlib import ExitStack, suppress
-from typing import TYPE_CHECKING
+from contextlib import AbstractAsyncContextManager, suppress
+from types import TracebackType
+from typing import TYPE_CHECKING, Self
 
 import anyio
 from anyio.abc import ObjectReceiveStream
@@ -57,24 +58,34 @@ class Siphon:
         self.channel = channel
         # Each thread's lane: the impulses it has yet to draw.
         self.lanes: dict[ThreadKey, MemoryObjectSendStream[Impulse]] = {}
-        self.subscription = ExitStack()
+        self.subscription: (
+            AbstractAsyncContextManager[ObjectReceiveStream[Impulse]] | None
+        ) = None
         self.reading: asyncio.Task[None] | None = None
 
-    def start(self) -> None:
+    async def __aenter__(self) -> Self:
         """Subscribe to the channel's addresses now, so nothing published from
-        here on is missed, and read in the background until `stop`."""
+        here on is missed, and read in the background until the context exits."""
         nerve = self.channel.octomate.nerve
-        impulses = self.subscription.enter_context(
-            nerve.subscribe(ChannelTopic(self.channel.id))
-        )
+        self.subscription = nerve.subscribe(ChannelTopic(self.channel.id))
+        impulses = await self.subscription.__aenter__()
         self.reading = asyncio.create_task(self.read(impulses))
+        return self
 
-    async def stop(self) -> None:
-        if self.reading is not None:
-            self.reading.cancel()
-            with suppress(asyncio.CancelledError):
-                await self.reading
-        self.subscription.close()
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        try:
+            if self.reading is not None:
+                self.reading.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self.reading
+        finally:
+            if self.subscription is not None:
+                await self.subscription.__aexit__(exc_type, exc, traceback)
 
     async def read(self, impulses: ObjectReceiveStream[Impulse]) -> None:
         """Hand each impulse to its thread's lane, opening one where none is."""

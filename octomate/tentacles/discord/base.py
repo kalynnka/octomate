@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import replace
+from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self
 
 import discord
@@ -191,10 +192,20 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
             await self.close()
             raise
 
-    async def __aexit__(self, *exc: object) -> None:
-        await self.close(*exc)
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        await self.close(exc_type, exc, traceback)
 
-    async def close(self, *exc: object) -> None:
+    async def close(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc: BaseException | None = None,
+        traceback: TracebackType | None = None,
+    ) -> None:
         await self.client.close()
         if self.gateway_task is not None:
             gateway_task = self.gateway_task
@@ -206,7 +217,7 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
         if ingest_tasks:
             await asyncio.gather(*ingest_tasks, return_exceptions=True)
         self.ingest_tasks.clear()
-        await super().__aexit__(*exc)
+        await super().__aexit__(exc_type, exc, traceback)
 
     async def on_message(self, message: discord.Message) -> None:
         client_user = self.client.user
