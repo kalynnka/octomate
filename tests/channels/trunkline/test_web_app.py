@@ -23,7 +23,11 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.auth import current_user
 from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.events import ThreadTitleChangedEvent
+from octomate.capabilities.harness.events import (
+    RunActivityChangedEvent,
+    RunEndedEvent,
+    ThreadTitleChangedEvent,
+)
 from octomate.config import OctomateConfig
 from octomate.config.agents import DeepseekConfig
 from octomate.config.agents.common import Claim
@@ -345,8 +349,66 @@ async def test_a_console_watches_a_thread_over_its_live_socket(
         await socket.leave()
 
     assert "part_start" in first
-    assert first[-2:] == ["run_result", "run_ended"]
-    assert second[-2:] == ["run_result", "run_ended"]
+    assert first[-3:] == ["run_result", "run_ended", "reflex_phase_changed"]
+    assert second[-3:] == ["run_result", "run_ended", "reflex_phase_changed"]
+
+
+async def test_thread_activity_is_not_delivered_to_an_unauthorized_socket() -> None:
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    channel = await _register(octomate, agent)
+    await _post(channel, "private work")
+    thread = await octomate.threads.ensure(_console_address())
+    topic = ThreadTopic(thread.key)
+    owner = ConsoleSocket(octomate, f"thread_id={thread.id}")
+    assert (await owner.outbound.get())["type"] == "websocket.accept"
+    try:
+        other = User(username="other")
+        octomate.dependency_overrides[current_user] = lambda: other
+        denied = ConsoleSocket(octomate, f"thread_id={thread.id}")
+        refused = await asyncio.wait_for(denied.outbound.get(), 1)
+        await denied.task
+        assert refused["type"] == "websocket.close"
+        assert refused["code"] == 1008
+        assert len(octomate.nerve.subscribers[topic]) == 1
+        event = RunActivityChangedEvent(
+            activity="thinking", display_text="Private work"
+        )
+        octomate.nerve.deliver(topic, Impulse(event))
+        received = await asyncio.wait_for(owner.outbound.get(), 1)
+        assert json.loads(received["text"]) == event.model_dump(mode="json")
+        assert denied.outbound.empty()
+    finally:
+        await owner.leave()
+    assert octomate.nerve.subscribers == {}
+
+
+async def test_late_and_reconnected_sockets_only_receive_new_activity() -> None:
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    channel = await _register(octomate, agent)
+    await _post(channel, "completed before subscribing")
+    thread = await octomate.threads.ensure(_console_address())
+    topic = ThreadTopic(thread.key)
+    for event in (
+        RunActivityChangedEvent(activity="thinking"),
+        RunActivityChangedEvent(activity="writing"),
+    ):
+        octomate.nerve.deliver(topic, Impulse(event))
+        socket = ConsoleSocket(octomate, f"thread_id={thread.id}")
+        assert (await socket.outbound.get())["type"] == "websocket.accept"
+        try:
+            assert socket.outbound.empty()
+            octomate.nerve.deliver(topic, Impulse(event))
+            octomate.nerve.deliver(topic, Impulse(RunEndedEvent(outcome="completed")))
+            received = await asyncio.wait_for(socket.outbound.get(), 1)
+            assert json.loads(received["text"]) == event.model_dump(mode="json")
+            ended = await asyncio.wait_for(socket.outbound.get(), 1)
+            assert json.loads(ended["text"])["event_kind"] == "run_ended"
+            assert socket.outbound.empty()
+        finally:
+            await socket.leave()
+    assert octomate.nerve.subscribers == {}
 
 
 async def test_a_directive_on_an_awake_thread_is_refused_and_leaves_no_row(
@@ -402,10 +464,11 @@ async def test_directive_streams_native_events(
     kinds = [event["event_kind"] for event in payload]
 
     assert "part_start" in kinds
-    assert kinds[-2:] == ["run_result", "run_ended"]
+    assert kinds[-3:] == ["run_result", "run_ended", "reflex_phase_changed"]
     assert "run_error" not in kinds
     assert "all done!" in _streamed_text(payload)
-    run_result = payload[-2]
+    assert payload[-1]["phase"] == "finalizing"
+    run_result = payload[-3]
     usage = run_result["usage"]
     assert isinstance(usage, dict)
     requests = usage["requests"]
@@ -563,9 +626,10 @@ async def test_routes_offer_and_run_all_registered_agents(
         channel, "hello", model=f"inkling{ROUTE_SEP}{RECEPTION_MODEL}"
     )
 
-    assert [event["event_kind"] for event in payload[-2:]] == [
+    assert [event["event_kind"] for event in payload[-3:]] == [
         "run_result",
         "run_ended",
+        "reflex_phase_changed",
     ]
     assert "from inkling" in _streamed_text(payload)
     thread = await octomate.threads.ensure(_console_address())
@@ -612,7 +676,7 @@ async def test_model_choices_keep_only_the_configured_entry_default(
     reply = await _post(channel, "one", model=selected_route)
     await _post(channel, "two", model=selected_route)
 
-    assert reply[-2]["output"] == "handled"
+    assert reply[-3]["output"] == "handled"
     assert [turn.model for turn in agent.turns] == [None, None]
     thread = await octomate.threads.ensure(_console_address())
     assert thread.active_model is None

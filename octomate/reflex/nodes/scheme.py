@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from pydantic_graph import BaseNode, End, GraphRunContext
 
-from octomate.capabilities.harness.events import GatewayEvent
+from octomate.capabilities.harness.events import GatewayEvent, ReflexPhaseChangedEvent
 from octomate.nerve import Impulse
 from octomate.reflex.nodes.react import React
 from octomate.reflex.state import (
@@ -48,6 +48,9 @@ class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         origin = self.origin
         if origin.address is None:
             raise ValueError("Scheme requires a resolved origin")
+        await ctx.deps.impulses.send(
+            Impulse(ReflexPhaseChangedEvent(phase="moving"), origin.address)
+        )
         # Where the gate resolved this to: this channel's direct messages, or another
         # channel's, with the account there taken from the identity registry.
         target = self.request.destination

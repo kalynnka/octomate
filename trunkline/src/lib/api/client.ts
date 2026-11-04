@@ -218,6 +218,7 @@ export const fetchThreadBatches = (id: string) =>
 export function watchThread(
   thread: { id: string } | { key: string },
   onEvent: (event: WireEvent) => void,
+  signal?: AbortSignal,
 ): Promise<{ close: () => void; closed: Promise<void> }> {
   const query = 'id' in thread
     ? `thread_id=${encodeURIComponent(thread.id)}`
@@ -225,15 +226,27 @@ export function watchThread(
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
   const socket = new WebSocket(`${scheme}://${location.host}/api/trunkline/live?${query}`)
   return new Promise((resolve, reject) => {
-    const fail = () => reject(new Error('The live socket could not be opened.'))
-    socket.onmessage = (message) => onEvent(JSON.parse(String(message.data)) as WireEvent)
-    socket.onerror = fail
-    socket.onclose = fail
-    socket.onopen = () => {
-      socket.onerror = null
-      const closed = new Promise<void>((done) => { socket.onclose = () => done() })
-      resolve({ close: () => socket.close(), closed })
+    const close = () => {
+      socket.onmessage = null
+      socket.onopen = null
+      socket.close()
+      reject(new Error('The live socket was closed.'))
     }
+    const closed = new Promise<void>((done) => {
+      socket.onclose = () => {
+        socket.onmessage = null
+        socket.onopen = null
+        socket.onerror = null
+        signal?.removeEventListener('abort', close)
+        reject(new Error('The live socket could not be opened.'))
+        done()
+      }
+    })
+    socket.onmessage = (message) => onEvent(JSON.parse(String(message.data)) as WireEvent)
+    socket.onerror = close
+    socket.onopen = () => resolve({ close, closed })
+    signal?.addEventListener('abort', close, { once: true })
+    if (signal?.aborted) close()
   })
 }
 

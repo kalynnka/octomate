@@ -59,6 +59,66 @@ for (const width of [1280, 390]) {
       expect(errors).toEqual([])
     })
 
+    test('device code and its adjacent button copy with press feedback', async ({ page }) => {
+      const errors: string[] = []
+      page.on('pageerror', error => errors.push(error.message))
+      page.on('console', message => { if (message.type() === 'error') errors.push(message.text()) })
+      await page.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: '' }))
+      await page.goto('/tests/browser/markdown.html')
+      await expect(page).toHaveTitle('Message rendering test')
+      await page.getByRole('button', { name: 'Reasoning', exact: true }).click()
+      await page.getByRole('button', { name: 'Dark', exact: true }).click()
+      const card = page.locator('#pm-device-code')
+      const button = card.getByRole('button', { name: 'Copy device code', exact: true })
+      const code = button.locator('.trk-oauth-code')
+      const icon = button.locator(':scope > svg')
+      await expect(code).toHaveText('ABCD-1234')
+      await expect(icon).toHaveCount(1)
+      for (const target of [code, icon]) {
+        await target.hover()
+        await expect(button).toHaveCSS('cursor', 'default')
+        await page.mouse.down()
+        await expect(icon).not.toHaveCSS('transform', 'none')
+        await expect(code).not.toHaveCSS('transform', 'none')
+        await page.mouse.up()
+        await expect(button.getByRole('status')).toHaveText('Copied')
+        await expect(page.locator('html')).toHaveAttribute('data-copied', 'ABCD-1234')
+        expect(await page.evaluate(() => getSelection()?.toString())).toBe('')
+        await expect(icon).toHaveCSS('transform', 'none')
+        await expect(code).toHaveCSS('transform', 'none')
+        await page.evaluate(() => document.documentElement.removeAttribute('data-copied'))
+      }
+      await code.dblclick()
+      expect(await page.evaluate(() => getSelection()?.toString())).toBe('')
+      await page.evaluate(() => document.documentElement.removeAttribute('data-copied'))
+      await button.focus()
+      await page.keyboard.down('Space')
+      await expect(icon).not.toHaveCSS('transform', 'none')
+      await expect(code).not.toHaveCSS('transform', 'none')
+      await page.keyboard.up('Space')
+      await expect(page.locator('html')).toHaveAttribute('data-copied', 'ABCD-1234')
+      await expect(icon).toHaveCSS('transform', 'none')
+      await expect(code).toHaveCSS('transform', 'none')
+      const codeBounds = (await code.boundingBox())!
+      const iconBounds = (await icon.boundingBox())!
+      expect(iconBounds.x).toBeGreaterThan(codeBounds.x + codeBounds.width)
+      expect(Math.abs(iconBounds.y + iconBounds.height / 2 - codeBounds.y - codeBounds.height / 2)).toBeLessThan(1)
+      await page.emulateMedia({ reducedMotion: 'reduce' })
+      for (const target of [code, icon]) {
+        await target.hover()
+        await page.mouse.down()
+        await expect(icon).toHaveCSS('transform', 'none')
+        await expect(code).toHaveCSS('transform', 'none')
+        await page.mouse.up()
+        await expect(button.getByRole('status')).toHaveText('Copied')
+      }
+      await expect(card.getByRole('link', { name: 'Authorize ↗' })).toHaveAttribute('href', 'https://github.com/login/device')
+      await expect(page.locator('vite-error-overlay')).toHaveCount(0)
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+      await card.screenshot({ animations: 'disabled', path: `/private/tmp/trunkline-status/code-press-${width}.png` })
+      expect(errors).toEqual([])
+    })
+
     test('user and agent messages reveal Copy on hover or focus and retain their Markdown source', async ({ page }) => {
       const errors: string[] = []
       page.on('pageerror', error => errors.push(error.message))
@@ -100,13 +160,21 @@ for (const width of [1280, 390]) {
           const box = el.getBoundingClientRect()
           const icon = el.querySelector('svg')!.getBoundingClientRect()
           return {
-            bottom: actions === actions.parentElement!.lastElementChild && box.top >= body.bottom,
+            bottom: actions === actions.parentElement!.lastElementChild,
+            below: box.top >= body.bottom,
+            bottomGap: Math.abs(box.bottom - body.bottom),
+            rightGap: (box.left - body.right) / (box.width / Number.parseFloat(getComputedStyle(el).width)),
             square: Math.abs(box.width - box.height),
             centerX: Math.abs(icon.x + icon.width / 2 - box.x - box.width / 2),
             centerY: Math.abs(icon.y + icon.height / 2 - box.y - box.height / 2),
           }
         })
         expect(position.bottom).toBe(true)
+        if (row === user) expect(position.below).toBe(true)
+        else {
+          expect(position.bottomGap).toBeLessThan(1)
+          expect(position.rightGap).toBeCloseTo(8, 0)
+        }
         expect(position.square).toBeLessThan(1)
         expect(position.centerX).toBeLessThan(1)
         expect(position.centerY).toBeLessThan(1)

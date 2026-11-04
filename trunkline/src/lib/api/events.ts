@@ -311,6 +311,8 @@ export interface WireDeferredApproval extends WireDeferredAction {
 export interface ActionBatchEvent {
   event_kind: 'action_batch'
   batch_id: string
+  response_mode?: 'live' | 'resume' | null
+  blocks_run?: boolean | null
   questions: WireDeferredQuestion[]
   approvals: WireDeferredApproval[]
 }
@@ -350,8 +352,15 @@ export interface RunStartedEvent {
   sender?: ApiUserProfile | null
 }
 
+export interface RunActivityChangedEvent {
+  event_kind: 'run_activity_changed'
+  activity: 'working' | 'thinking' | 'using_tools' | 'writing' | 'compacting'
+  display_text?: string | null
+}
+
 export interface RunEndedEvent {
   event_kind: 'run_ended'
+  outcome?: 'completed' | 'failed' | 'cancelled' | 'deferred' | null
 }
 
 export interface RunResultEvent {
@@ -393,6 +402,12 @@ export interface ReflexAwakeEvent {
  *  thread's socket carries it last. */
 export interface ReflexAsleepEvent {
   event_kind: 'reflex_asleep'
+  outcome?: 'completed' | 'failed' | 'cancelled' | 'deferred' | 'handed_off' | null
+}
+
+export interface ReflexPhaseChangedEvent {
+  event_kind: 'reflex_phase_changed'
+  phase: 'preparing' | 'routing' | 'moving' | 'finalizing'
 }
 
 /** What a channel adds to an address to show it. `inside` marks a place to
@@ -463,11 +478,13 @@ export type WireEvent =
   | SubagentStartedEvent
   | SubagentSettledEvent
   | RunStartedEvent
+  | RunActivityChangedEvent
   | RunEndedEvent
   | RunResultEvent
   | RunErrorEvent
   | GatewayEvent
   | ReflexAwakeEvent
+  | ReflexPhaseChangedEvent
   | ReflexAsleepEvent
 
 /** A command's saved outcome. During a live run its feedback streams before

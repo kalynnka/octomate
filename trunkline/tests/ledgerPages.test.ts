@@ -323,10 +323,10 @@ test('artifact references survive pagination with their row identity and no text
 
 for (const text of ['Here is the chart.', '']) {
   test(`captured HTML stays after its originating response on reload (${text ? 'caption' : 'reference only'})`, () => {
-    const artifact: ApiThreadMessage = { ...said('052', '', 'system'), direction: 'outbound', kind: 'artifact', artifact_id: 'saved-html' }
+    const artifact: ApiThreadMessage = { ...said('019', '', 'system'), direction: 'outbound', kind: 'artifact', artifact_id: 'saved-html' }
     const response: ApiModelMessage = { ...answer, parts: [{ part_kind: 'text', content: text }], thread_messages: [artifact] }
     const next: ApiModelMessage = { ...prompt, id: '060', thread_messages: [said('055', 'Next question', 'human')] }
-    const detail = liveThreadDetail(reads([prompt, response, next], [], { model: null, unbound: null }))
+    const detail = liveThreadDetail(reads([prompt, response, next], [artifact], { model: null, unbound: null }))
     assert.deepEqual(detail.ledger.map(item => item.kind), text
       ? ['session-open', 'user', 'agent', 'artifact', 'user']
       : ['session-open', 'user', 'artifact', 'user'])

@@ -248,8 +248,7 @@ class DiscordTimelineState(TimelineState):
 
 
 class DiscordTimelineFeeler(TimelineFeeler):
-    """Opens a `DiscordTimelineState` under a typing indicator, or the answer-only
-    default timeline when streaming is disabled."""
+    """Open a streaming timeline, or the answer-only default when disabled."""
 
     def __init__(
         self,
@@ -284,35 +283,34 @@ class DiscordTimelineFeeler(TimelineFeeler):
     async def open(self, address: ChannelAddress) -> AsyncGenerator[TimelineState]:
         chat_id = address.chat_id or address.user_id
         channel_thread_id = address.channel_thread_id or chat_id
-        async with self.ink.typing(channel_thread_id):
-            if not self.stream_config.enabled:
-                async with self.default.open(address) as state:
-                    yield state
-                return
-
-            state = DiscordTimelineState(
-                ink=self.ink,
-                chromo=self.chromo,
-                address=address,
-                chat_id=chat_id,
-                chat_type=address.chat_type,
-                channel_thread_id=channel_thread_id,
-                answer_batcher=TextStreamBatcher(
-                    flush_interval=self.stream_config.flush_interval,
-                    min_chars=self.stream_config.min_chars,
-                    max_chars=self.stream_config.max_chars,
-                    fold_threshold=self.stream_config.fold_threshold,
-                    clock=self.clock,
-                ),
-                ask_questions=self.ask_questions,
-                approvals=self.approvals,
-                oauth=self.oauth,
-                deferred_actions=self.deferred_actions,
-            )
-            try:
+        if not self.stream_config.enabled:
+            async with self.default.open(address) as state:
                 yield state
-            finally:
-                await state.finish()
+            return
+
+        state = DiscordTimelineState(
+            ink=self.ink,
+            chromo=self.chromo,
+            address=address,
+            chat_id=chat_id,
+            chat_type=address.chat_type,
+            channel_thread_id=channel_thread_id,
+            answer_batcher=TextStreamBatcher(
+                flush_interval=self.stream_config.flush_interval,
+                min_chars=self.stream_config.min_chars,
+                max_chars=self.stream_config.max_chars,
+                fold_threshold=self.stream_config.fold_threshold,
+                clock=self.clock,
+            ),
+            ask_questions=self.ask_questions,
+            approvals=self.approvals,
+            oauth=self.oauth,
+            deferred_actions=self.deferred_actions,
+        )
+        try:
+            yield state
+        finally:
+            await state.finish()
 
 
 @dataclass

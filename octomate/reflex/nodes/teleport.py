@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pydantic_ai.tools import DeferredToolResults
 from pydantic_graph import BaseNode, End, GraphRunContext
 
+from octomate.capabilities.harness.events import ReflexPhaseChangedEvent
+from octomate.nerve import Impulse
 from octomate.reflex.crossing import announce_crossing, open_crossing
 from octomate.reflex.nodes.react import React
 from octomate.reflex.state import (
@@ -48,6 +50,9 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         if origin.address is None or state.thread is None:
             raise ValueError("Teleport requires a resolved origin and thread")
         origin_address = origin.address
+        await ctx.deps.impulses.send(
+            Impulse(ReflexPhaseChangedEvent(phase="moving"), origin_address)
+        )
         source = state.thread
         hint = self.request.hint or "Octomate is continuing this request here."
         sentence = "Continuing the conversation here."
@@ -271,8 +276,15 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         if state.handoff is not None:
             await state.handoff.land(ctx.deps, state.thread, state.decision)
             state.handoff = None
+        await ctx.deps.impulses.send(
+            Impulse(ReflexPhaseChangedEvent(phase="finalizing"), state.target.address)
+        )
         await ctx.deps.workspaces.save(state.thread)
-        return End(ReflexResult(decision=state.decision, target=state.target))
+        return End(
+            ReflexResult(
+                decision=state.decision, target=state.target, outcome="handed_off"
+            )
+        )
 
     async def bind(
         self,

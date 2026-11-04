@@ -44,6 +44,7 @@ export function Harness() {
       { type: 'diff', diff: { file: 'demo.py', adds: 1, dels: 0, lines: [{ tone: 'add', text: '+ ready = True' }] } },
     ] },
     { kind: 'stream', uid: 'copy-stream', text: 'A **native** reply with `code`.', streaming: false },
+    { kind: 'oauth', uid: 'device-code', label: 'GitHub', code: 'ABCD-1234', uri: 'https://github.com/login/device', connectorId: 'personal/github' },
   ]
   const { setTheme } = useConsole.getState().actions
   return <main style={{ maxWidth: 900, margin: '24px auto', padding: 16, fontFamily: 'var(--font-cn)', fontSize: 16 }}>

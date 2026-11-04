@@ -26,6 +26,7 @@ from octomate.tentacles.lark.feelers.output import (
     LarkTimelineFeeler,
 )
 from octomate.tentacles.lark.feelers.questions import LarkAskQuestionFeeler
+from octomate.tentacles.lark.feelers.status import LarkStatusFeeler
 from octomate.tentacles.lark.schema import LarkOutboundMessage, LarkStreamCard
 from octomate.tentacles.siphon import Siphon
 from tests.support.channels import FakeOctomate
@@ -42,10 +43,14 @@ class FakeLarkInk(LarkInk):
         self.stream_updates: list[tuple[LarkStreamCard, str, int]] = []
         self.finalized: list[tuple[LarkStreamCard, int]] = []
         self.patched: list[tuple[str, str]] = []
+        self.deleted: list[str] = []
         self.uploaded: list[bytes] = []
         self.fail_interactive_send = False
         self.fail_stream_create = False
         self.fail_stream_update = False
+
+    async def delete_message(self, message_id: str) -> None:
+        self.deleted.append(message_id)
 
     async def upload_media(self, data: bytes) -> str | None:
         self.uploaded.append(data)
@@ -208,6 +213,7 @@ def compose_lark_feelers(
     oauth = LarkOAuthFeeler(ink)
     actions = deferred_actions or DeferredActionManager()
     channel.feelers = Feelers(
+        status=LarkStatusFeeler(ink),
         markdown=markdown_feeler,
         artifacts=LarkArtifactFeeler(
             artifacts=channel.octomate.artifacts,

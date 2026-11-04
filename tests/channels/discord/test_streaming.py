@@ -176,7 +176,7 @@ def discord_channel(
     return channel
 
 
-async def test_disabled_stream_uses_typing_then_sends_the_final_answer() -> None:
+async def test_disabled_stream_sends_the_final_answer_without_owning_typing() -> None:
     ink = RecordingDiscordInk()
     channel = discord_channel(ink, DiscordStreamConfig(enabled=False))
     text = "x" * 2001
@@ -188,7 +188,7 @@ async def test_disabled_stream_uses_typing_then_sends_the_final_answer() -> None
     )
 
     assert message_id == "801"
-    assert ink.typing_events == [("enter", "500"), ("exit", "500")]
+    assert ink.typing_events == []
     assert ink.edits == []
     assert [send.chat_id for send in ink.sends] == ["400", "400"]
     assert [send.chat_type for send in ink.sends] == ["thread", "thread"]
@@ -287,7 +287,7 @@ async def test_mid_run_notice_rotates_without_rendering_thinking_or_tools() -> N
     notice_edits = [edit.content for edit in ink.edits if edit.message_id == "801"]
     assert notice_edits[-1] == "The docs don't cover this — I'm trying another way."
     assert final_edits[-1] == "Found it: pinning the dependency fixes the flake."
-    assert ink.typing_events == [("enter", "500"), ("exit", "500")]
+    assert ink.typing_events == []
 
 
 async def test_todo_and_native_segment_rotate_the_answer_messages(
@@ -345,7 +345,7 @@ async def test_cancellation_settles_the_partial_answer_once() -> None:
 
     assert len(ink.sends) == 1
     assert [edit.content for edit in ink.edits] == ["partial"]
-    assert ink.typing_events == [("enter", "500"), ("exit", "500")]
+    assert ink.typing_events == []
 
 
 async def test_failed_stream_edit_falls_back_to_a_complete_message(

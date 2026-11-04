@@ -7,6 +7,8 @@ from dataclasses import dataclass, replace
 
 from pydantic_graph import BaseNode, GraphRunContext
 
+from octomate.capabilities.harness.events import ReflexPhaseChangedEvent
+from octomate.nerve import Impulse
 from octomate.reflex.nodes.react import React
 from octomate.reflex.state import (
     PendingHandoff,
@@ -39,6 +41,9 @@ class Route(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             raise ValueError("Route requires a resolved source target")
 
         source_address = source_target.address
+        await ctx.deps.impulses.send(
+            Impulse(ReflexPhaseChangedEvent(phase="routing"), source_address)
+        )
         # Who owns the chat, not who owns this kick: a chat room's sub-thread is
         # opened fresh every time, and the owner a handoff pinned is the chat's.
         chat = (

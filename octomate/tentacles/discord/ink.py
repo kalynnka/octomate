@@ -211,6 +211,10 @@ class DiscordInk(Ink[DiscordOutboundMessage]):
         )
         return str(message.id)
 
+    async def delete_message(self, channel_id: str, message_id: str) -> None:
+        destination = await self.resolve_messageable(channel_id)
+        await destination.get_partial_message(int(message_id)).delete()
+
     @asynccontextmanager
     async def typing(self, channel_id: str) -> AsyncGenerator[None]:
         async def keep_typing() -> None:

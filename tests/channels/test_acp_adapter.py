@@ -30,8 +30,11 @@ from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     ReflexAsleepEvent,
+    ReflexAwakeEvent,
     ResultSegmentEvent,
     ResultTextDeltaEvent,
+    RunActivityChangedEvent,
+    RunEndedEvent,
     RunResultEvent,
     RunStartedEvent,
     WireEvent,
@@ -179,7 +182,11 @@ def test_run_start_resets_answer_tracking_but_preserves_announced_tool_ids() -> 
         == []
     )
 
-    assert translator.translate(call) == []
+    resumed = translator.translate(call)
+    assert len(resumed) == 1
+    assert isinstance(resumed[0], schema.ToolCallProgress)
+    assert resumed[0].tool_call_id == "call-1"
+    assert resumed[0].status == "in_progress"
     assert (
         len(
             translator.translate(
@@ -204,7 +211,11 @@ def test_tool_call_and_result_preserve_ids_and_structured_payloads() -> None:
     assert update.title == "lookup"
     assert update.status == "in_progress"
     assert update.raw_input == {"query": "ACP"}
-    assert translator.translate(call) == []
+    resumed = translator.translate(call)
+    assert len(resumed) == 1
+    assert isinstance(resumed[0], schema.ToolCallProgress)
+    assert resumed[0].tool_call_id == "call-1"
+    assert resumed[0].status == "in_progress"
 
     result = translator.translate(
         FunctionToolResultEvent(
@@ -378,3 +389,17 @@ def test_tool_payload_serializes_models_and_binary_data() -> None:
 
     assert isinstance(binary_update, schema.ToolCallProgress)
     assert binary_update.raw_output == "AP8="
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        ReflexAwakeEvent(),
+        RunActivityChangedEvent(activity="thinking", display_text="Pondering"),
+        RunEndedEvent(),
+    ],
+)
+def test_general_activity_does_not_fabricate_acp_thoughts_or_answers(
+    event: WireEvent,
+) -> None:
+    assert AcpTranslator().translate(event) == []

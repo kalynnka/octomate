@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Disclose, Fold } from '@/components/Fold'
 import { Icon } from '@/components/Icon'
+import { ThreadActivity } from '@/components/ThreadActivity'
 import { TextSwap } from '@/components/TextSwap'
 import { display, ellipsis, label, mono } from '@/components/text'
 import { useChannels, useThreads } from '@/lib/api/hooks'
@@ -27,6 +28,7 @@ const toneColor: Record<ThreadTone, string> = {
 interface ThreadRow {
   /** the row's own id — unique, and what React keys on */
   id: string
+  threadKey?: string
   /** the short chip shown under the title */
   tag: string
   title: string
@@ -310,6 +312,7 @@ export function ThreadsSidebar() {
                 ? [
                     {
                       id: 'THR-NEW',
+                      threadKey: selThreadId,
                       tag: ntStarted ? selThreadId : 'THR-NEW',
                       title: ntTitle || 'untitled — new thread',
                       stColor: 'var(--color-gold)',
@@ -320,6 +323,7 @@ export function ThreadsSidebar() {
                 : []),
               ...ths.map((t) => ({
                 id: t.id,
+                threadKey: c.id === 'trunkline' ? t.key : undefined,
                 tag: t.tag ?? t.id,
                 title: t.title,
                 stColor: toneColor[t.tone],
@@ -537,9 +541,7 @@ export function ThreadsSidebar() {
                           <span style={{ ...mono(8.5, 700), color: c.brand, whiteSpace: 'nowrap', flexShrink: 0 }}>
                             <TextSwap>{t.tag}</TextSwap>
                           </span>
-                          <span style={{ ...mono(8.5), color: 'var(--fg-3)', ...ellipsis }}>
-                            <TextSwap style={{ ...ellipsis }}>{t.agent}</TextSwap>
-                          </span>
+                          <ThreadActivity id={t.id} threadKey={t.threadKey} enabled={!folded} fallback={t.agent} />
                         </div>
                       </button>
                       </div>

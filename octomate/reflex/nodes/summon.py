@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 
 from pydantic_graph import BaseNode, GraphRunContext
 
-from octomate.capabilities.harness.events import GatewayEvent
+from octomate.capabilities.harness.events import GatewayEvent, ReflexPhaseChangedEvent
 from octomate.nerve import Impulse
 from octomate.reflex.nodes.react import React
 from octomate.reflex.state import (
@@ -43,6 +43,9 @@ class Summon(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             raise ValueError("Summon requires a decision and source target")
         if not isinstance(decision, SummonDecision):
             raise ValueError("Summon requires a summon decision")
+        await ctx.deps.impulses.send(
+            Impulse(ReflexPhaseChangedEvent(phase="moving"), source_target.address)
+        )
         source_address = source_target.address
         target_address = target.address
         if target_address is None:

@@ -39,6 +39,7 @@ from octomate.schemas.mcp import (
     Mcp,
     McpAppInvocation,
     McpAppResource,
+    McpAppResultMeta,
     McpAppToolMeta,
     McpAuthorizationResult,
     McpAuthorizationStatus,
@@ -598,7 +599,16 @@ class McpManager(Manager, Locks[UUID7]):
                 message_id=message.id, artifact_id=message.artifact_id
             ),
         )
-        return result
+        return result.model_copy(
+            update={
+                "meta": {
+                    **(result.meta or {}),
+                    **McpAppResultMeta(artifact_message_id=message.id).model_dump(
+                        mode="json", by_alias=True
+                    ),
+                }
+            }
+        )
 
     async def app_resource(
         self, user: User, installation_id: UUID7, invocation: McpAppInvocation

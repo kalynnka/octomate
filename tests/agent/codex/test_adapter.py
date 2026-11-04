@@ -46,7 +46,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from octomate.capabilities.harness.events import StreamEvents
+from octomate.capabilities.harness.events import RunActivityChangedEvent, StreamEvents
 from octomate.tentacles.codex.adapter import CodexRunAccumulator, map_usage
 from octomate.tentacles.feelers.output import render_stream_event_delta
 
@@ -1017,3 +1017,34 @@ def test_map_usage_uses_last_usage_snapshot() -> None:
 
     assert usage.input_tokens == 2
     assert usage.output_tokens == 1
+
+
+def test_compaction_items_emit_activity_without_fabricating_tools() -> None:
+    acc = CodexRunAccumulator()
+    item = ThreadItem.model_validate({"id": "compact-1", "type": "contextCompaction"})
+    started = notification(
+        "item/started",
+        ItemStartedNotification(
+            item=item, started_at_ms=1, thread_id="thread-1", turn_id="turn-1"
+        ),
+    )
+    ended = notification(
+        "item/completed",
+        ItemCompletedNotification(
+            item=item, completed_at_ms=2, thread_id="thread-1", turn_id="turn-1"
+        ),
+    )
+
+    assert list(acc.consume(started)) == [
+        RunActivityChangedEvent(activity="compacting", display_text=None)
+    ]
+    assert list(acc.consume(ended)) == [
+        RunActivityChangedEvent(activity="working", display_text=None)
+    ]
+    assert acc.messages == []
+    assert acc.native_tools == {}
+    for event, method in zip(
+        acc.pending_events, ["item/started", "item/completed"], strict=True
+    ):
+        assert isinstance(event, dict)
+        assert event["method"] == method

@@ -127,7 +127,7 @@ from octomate.schemas.deferred import (
     QuestionRequest,
 )
 from octomate.schemas.files import Jsonl
-from octomate.schemas.mcp import McpAppInvocation
+from octomate.schemas.mcp import McpAppInvocation, McpAppResultMeta
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
@@ -1909,6 +1909,21 @@ class CodexTentacle(AgentTentacle[str, None]):
                     artifact_messages[payload.item.root.id] = [
                         event.message_id for event in artifacts
                     ]
+                if (
+                    isinstance(notification.payload, ItemCompletedNotification)
+                    and isinstance(
+                        item := notification.payload.item.root, McpToolCallThreadItem
+                    )
+                    and item.server == "octomate_driven"
+                    and item.result is not None
+                    and (
+                        reference := McpAppResultMeta.model_validate(
+                            item.result.field_meta or {}
+                        )
+                    ).artifact_message_id
+                    is not None
+                ):
+                    artifact_messages[item.id] = [reference.artifact_message_id]
                 for event in chain(accumulator.consume(notification), artifacts):
                     yield event
                 if (
