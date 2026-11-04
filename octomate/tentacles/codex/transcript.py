@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import (
     AwareDatetime,
@@ -45,6 +45,46 @@ class RolloutLine(BaseModel):
 
 
 rollout_line_adapter = TypeAdapter(RolloutLine)
+
+
+class CompactedItem(BaseModel):
+    """A committed context replacement, independent of turn lifecycle events."""
+
+    message: str = Field(description="Readable summary; empty for opaque compaction.")
+    replacement_history: list[JsonObject] | None = Field(
+        default=None,
+        description="Native replacement items, including retained context and provider checkpoints.",
+    )
+    compaction_response_id: str | None = Field(
+        default=None,
+        description="Provider response ID of the compaction request, when reported.",
+    )
+
+
+class EncryptedCompactionItem(BaseModel):
+    """An opaque provider checkpoint carried in replacement history."""
+
+    type: Literal["compaction", "compaction_summary"]
+    id: str | None = None
+    encrypted_content: str
+
+
+class ContextCompactionItem(BaseModel):
+    """A context-compaction item that may omit its encrypted content."""
+
+    type: Literal["context_compaction"]
+    id: str | None = None
+    encrypted_content: str | None = None
+
+
+compaction_item_adapter: TypeAdapter[
+    EncryptedCompactionItem | ContextCompactionItem
+] = TypeAdapter(
+    Annotated[
+        EncryptedCompactionItem | ContextCompactionItem,
+        Field(discriminator="type"),
+    ]
+)
 
 
 class UserMessageContent(BaseModel):

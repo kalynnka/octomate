@@ -21,6 +21,7 @@ from octomate_protocol.visualizations import HtmlSnapshot
 from pydantic import ValidationError
 from pydantic_ai.messages import (
     AgentStreamEvent,
+    CompactionPart,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     ModelMessage,
@@ -47,6 +48,8 @@ from octomate.managers.thread import ThreadManager
 from octomate.nerve import Impulse
 from octomate.schemas.artifacts import HtmlArtifact
 from octomate.schemas.conversation import ChannelAddress, Conversation
+from octomate.schemas.messages import ModelRequest as StoredModelRequest
+from octomate.schemas.messages import ModelResponse as StoredModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import (
     CODEX_NATIVE_ID,
@@ -57,10 +60,12 @@ from octomate.telemetry import codex_logfire
 from octomate.tentacles.codex.adapter import CODEX_PROVIDER_NAME, codex_metadata
 from octomate.tentacles.codex.html import visualization_text
 from octomate.tentacles.codex.transcript import (
+    CompactedItem,
     RolloutLine,
     SessionMetadata,
     TurnPermissions,
     UserMessageItem,
+    compaction_item_adapter,
     payload_type,
     rollout_line_adapter,
     session_metadata_adapter,
@@ -387,6 +392,9 @@ class CodexTranscriptTailer:
         *,
         visualizations: list[HtmlSnapshot] | None = None,
     ) -> None:
+        if line.type == "compacted":
+            await self.record_compaction(state, line, start, end)
+            return
         kind = payload_type(line)
         if line.type == "session_meta":
             try:
@@ -548,6 +556,10 @@ class CodexTranscriptTailer:
         start: int,
         end: int,
     ) -> None:
+        if line.type == "compacted":
+            if tail.own_turns_started:
+                await self.record_compaction(state, line, start, end, tail=tail)
+            return
         kind = payload_type(line)
         if line.type == "event_msg" and kind == "task_started":
             turn_id = line.payload.get("turn_id")
@@ -597,6 +609,69 @@ class CodexTranscriptTailer:
                 if not turn.answer and isinstance(fallback, str):
                     turn.answer = fallback
                 await self.close_subagent_turn(state, tail)
+
+    async def record_compaction(
+        self,
+        state: TailState,
+        line: RolloutLine,
+        start: int,
+        end: int,
+        *,
+        tail: SubagentTail | None = None,
+    ) -> None:
+        """Capture summary/checkpoint content without changing the archived turn."""
+        try:
+            item = CompactedItem.model_validate(line.payload)
+            checkpoints = [
+                compaction_item_adapter.validate_python(raw)
+                for raw in item.replacement_history or []
+                if raw.get("type")
+                in {"compaction", "compaction_summary", "context_compaction"}
+            ]
+        except ValidationError:
+            logger.debug("skipping malformed Codex compaction")
+            return
+        messages: list[StoredModelRequest | StoredModelResponse] = []
+        if item.message:
+            messages.append(
+                StoredModelRequest(
+                    parts=[UserPromptPart(item.message, timestamp=line.timestamp)],
+                    timestamp=line.timestamp,
+                    metadata=codex_metadata(),
+                )
+            )
+        messages.extend(
+            StoredModelResponse(
+                parts=[
+                    CompactionPart(
+                        id=checkpoint.id,
+                        provider_name=CODEX_PROVIDER_NAME,
+                        provider_details={
+                            "encrypted_content": checkpoint.encrypted_content
+                        }
+                        if checkpoint.encrypted_content is not None
+                        else None,
+                    )
+                ],
+                timestamp=line.timestamp,
+                provider_name=CODEX_PROVIDER_NAME,
+                provider_response_id=item.compaction_response_id,
+                metadata=codex_metadata(),
+            )
+            for checkpoint in checkpoints
+        )
+        conversation = tail.conversation if tail is not None else state.conversation
+        assert conversation is not None
+        await self.conversation_manager.record_external_compaction(
+            conversation,
+            native_id=CODEX_NATIVE_ID,
+            native_session_id=tail.thread_id if tail is not None else state.session_id,
+            source=str(tail.path if tail is not None else state.transcript_path),
+            start_offset=start,
+            end_offset=end,
+            happened_at=line.timestamp,
+            messages=messages,
+        )
 
     async def close_subagent_turn(self, state: TailState, tail: SubagentTail) -> None:
         turn = tail.open_turn

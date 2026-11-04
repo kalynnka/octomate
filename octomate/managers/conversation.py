@@ -6,10 +6,10 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal, TypeVar
 
-from arcanus import Cursor, Page
+from arcanus import Cursor, Page, RelationCollection
 from arcanus.materia.sqlalchemy import lazyload, noload, selectinload
 from fastapi import UploadFile
-from pydantic import UUID7, TypeAdapter
+from pydantic import UUID7, AwareDatetime, TypeAdapter
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.usage import RequestUsage
 from sqlalchemy import Select, and_, func, insert, literal, or_, select
@@ -17,7 +17,8 @@ from sqlalchemy import Select, and_, func, insert, literal, or_, select
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.files import FileManager
-from octomate.schemas.conversation import Conversation, ConversationRun
+from octomate.schemas.compactions import ExternalCompaction
+from octomate.schemas.conversation import Conversation, ConversationKey, ConversationRun
 from octomate.schemas.files import FileVariant, Jsonl
 from octomate.schemas.messages import ModelMessage, ModelRequest, ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
@@ -47,7 +48,7 @@ def own_runs(thread_id: UUID7) -> Select[tuple[str]]:
     )
 
 
-class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
+class ConversationManager(Manager, Locks[ConversationKey]):
     """Resolves and persists agent `Conversation` entities, and owns their model
     message history.
 
@@ -57,6 +58,66 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
     `(thread_id, agent_tentacle_id, subagent_id)`: every sender in a group thread
     keys to the same owning agent's conversation, regardless of who woke it.
     """
+
+    async def record_external_compaction(
+        self,
+        conversation: Conversation,
+        *,
+        native_id: str,
+        native_session_id: str,
+        source: str,
+        start_offset: int,
+        end_offset: int,
+        happened_at: AwareDatetime,
+        messages: list[ModelRequest | ModelResponse],
+    ) -> ExternalCompaction | None:
+        """Record one completed transcript observation, including driven sessions.
+
+        Replaying the same byte range is a no-op. An active runtime binding owns
+        the observation when present; otherwise the native conversation does.
+        """
+        async with (
+            self.lock(conversation.key),
+            async_session() as session,
+        ):
+            if await session.scalar(
+                select(
+                    select(ExternalCompaction["id"])
+                    .where(
+                        ExternalCompaction["native_id"] == native_id,
+                        ExternalCompaction["native_session_id"] == native_session_id,
+                        ExternalCompaction["source"] == source,
+                        ExternalCompaction["start_offset"] == start_offset,
+                        ExternalCompaction["end_offset"] == end_offset,
+                    )
+                    .exists()
+                )
+            ):
+                return None
+            owner = await session.one_or_none(
+                Conversation,
+                expressions=[
+                    Conversation["external_id"] == native_session_id,
+                    Conversation["id"] != conversation.id,
+                ],
+                options=[
+                    noload(Conversation["runs"]),
+                    noload(Conversation["messages"]),
+                ],
+            )
+            compaction = ExternalCompaction(
+                conversation_id=owner.id if owner is not None else conversation.id,
+                native_id=native_id,
+                native_session_id=native_session_id,
+                source=source,
+                start_offset=start_offset,
+                end_offset=end_offset,
+                happened_at=happened_at,
+                messages=RelationCollection(messages),
+            )
+            session.add(compaction)
+            await session.commit()
+            return compaction
 
     async def latest_model(self, conversation_id: UUID7) -> str | None:
         """Read the last reported model without loading the conversation's history."""
@@ -116,7 +177,9 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
             )
         # Serialize first sightings so the loser reads the committed row.
         async with async_session() as session:
-            async with self.lock((thread_id, agent_tentacle_id, subagent_id)):
+            async with self.lock(
+                ConversationKey(thread_id, agent_tentacle_id, subagent_id)
+            ):
                 conversation = await session.one_or_none(
                     Conversation,
                     options=[
