@@ -21,6 +21,7 @@ from octomate.tentacles.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer, TailState
 from octomate.tentacles.codex.transcript import rollout_line_adapter
 from octomate.tentacles.locks import SessionLocks
+from octomate.types.json import JsonObject
 from tests.support.managers import a_loaded_thread, a_thread
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
@@ -298,10 +299,19 @@ async def test_hooks_reserve_identity_and_only_rollout_writes_messages(
     await tailer.shutdown()
 
 
-@pytest.mark.parametrize("supported", [True, False])
+@pytest.mark.parametrize(
+    ("sandbox", "supported"),
+    [
+        ({"type": "workspace-write"}, True),
+        ({"type": "read-only"}, False),
+        ({"type": "workspace-write", "network_access": True}, False),
+    ],
+)
 async def test_turn_settings_are_captured_at_context_and_persisted_at_completion(
+    sandbox: JsonObject,
     supported: bool,
     impulses: ObjectSendStream[Impulse],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     octomate = Octomate()
     _, tailer = wired(octomate)
@@ -320,9 +330,7 @@ async def test_turn_settings_are_captured_at_context_and_persisted_at_completion
                     "model": "gpt-6-luna",
                     "approval_policy": "on-request",
                     "approvals_reviewer": "auto_review",
-                    "sandbox_policy": {
-                        "type": "workspace-write" if supported else "read-only"
-                    },
+                    "sandbox_policy": sandbox,
                 },
             },
         ],
@@ -330,6 +338,11 @@ async def test_turn_settings_are_captured_at_context_and_persisted_at_completion
     assert state.open_turn is not None
     assert state.open_turn.model_name == "gpt-6-luna"
     assert state.open_turn.permission_mode == ("auto_review" if supported else None)
+    if not supported:
+        assert "history sync continues, but forking is unavailable" in caplog.text
+        assert "sandbox_policy" in caplog.text
+    if sandbox.get("network_access"):
+        assert "network_access: Input should be False" in caplog.text
     assert state.conversation is not None
     assert not (await octomate.conversations.get(state.conversation.id)).runs
     await feed_records(
@@ -341,6 +354,7 @@ async def test_turn_settings_are_captured_at_context_and_persisted_at_completion
     completed = await octomate.conversations.get(state.conversation.id)
     assert completed.runs[-1].model_name == "gpt-6-luna"
     assert completed.runs[-1].permission_mode == ("auto_review" if supported else None)
+    assert [message.message_text for message in completed.runs[-1].messages] == ["done"]
     await tailer.shutdown()
 
 

@@ -31,9 +31,26 @@
 .lt-fade-in { animation: lt-fade-in var(--motion-entry) var(--ease-out) both; animation-delay: calc(var(--i, 0) * 70ms); }
 .lt-fade-out{ animation: lt-fade-out var(--motion-base) var(--ease-out) both; pointer-events: none; }
 
+.trk-activity { --trk-shimmer-base: var(--fg-3); }
+.trk-activity[data-attention] { --trk-shimmer-base: var(--color-gold); }
 .trk-activity .lt-dots i { background: var(--fg-3); }
 .trk-activity-motion { animation: lt-fade-up var(--motion-base) var(--ease-out) both; --entry-rise: 4px; }
 .trk-activity-motion[data-exiting] { animation: lt-fade-out var(--motion-fast) var(--ease-out) both; pointer-events: none; }
+@keyframes trk-text-shimmer {
+  from { background-position: 100% 0; }
+  85%, to { background-position: 0% 0; }
+}
+@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+  .trk-trace-label[data-running],
+  .trk-activity .lt-text-swap {
+    background-image: linear-gradient(100deg, var(--trk-shimmer-base, var(--fg-2)) 38%, var(--fg-1) 50%, var(--trk-shimmer-base, var(--fg-2)) 62%);
+    background-size: 300% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: trk-text-shimmer 2.6s linear infinite;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .trk-activity-motion { animation-name: lt-fade-in; animation-duration: 80ms; }
   .trk-activity-motion[data-exiting] { animation-duration: 80ms; }

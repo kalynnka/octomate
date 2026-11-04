@@ -123,6 +123,8 @@ export type ToolDetail =
     }
   | { type: 'summon'; rows: [string, string][] }
 
+export type CommandActivity = 'read' | 'list' | 'search' | 'command'
+
 export interface AskOption {
   label: string
   sum: string
@@ -183,6 +185,8 @@ export type LedgerItem =
       status: 'run' | 'done'
       badge?: { label: string; tone: 'gold' | 'terra' }
       detail: ToolDetail
+      /** Command classifications supplied by the harness, before display arguments are clipped. */
+      activities?: CommandActivity[]
       defaultOpen?: boolean
     }
   | { kind: 'file'; uid: string; name: string; rev: string; note: string }

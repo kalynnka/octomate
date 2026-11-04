@@ -47,6 +47,24 @@ class RolloutLine(BaseModel):
 rollout_line_adapter = TypeAdapter(RolloutLine)
 
 
+class ParsedCommand(BaseModel):
+    """Codex's classification of one command in a native execution item."""
+
+    type: Literal["read", "list_files", "search", "unknown"]
+
+
+class CompletedCommandItem(BaseModel):
+    """An executed command recorded separately from its outer tool call."""
+
+    type: Literal["CommandExecution"]
+    id: str
+    command: list[str]
+    cwd: str
+    parsed_cmd: list[ParsedCommand]
+    status: Literal["completed", "failed", "declined"]
+    aggregated_output: str
+
+
 class UserMessageContent(BaseModel):
     """A user-role content part; only input text is imported."""
 

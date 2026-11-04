@@ -39,8 +39,9 @@ beforeEach(() => {
   installLiveSocket()
   mock.timers.enable({ apis: ['setTimeout'] })
 })
-afterEach(() => {
+afterEach(async () => {
   releases.splice(0).forEach(release => release())
+  await tick()
   queryClient.clear()
   mock.timers.reset()
   mock.restoreAll()
@@ -164,9 +165,24 @@ test('sidebar and chat share observation; selecting another thread preserves the
   assert.equal(text('second'), 'Moving')
   assert.equal(first.closed, false)
   row()
+  await tick()
   assert.equal(first.closed, true)
   assert.equal(text(), undefined)
   assert.equal(text('second'), 'Moving')
+})
+
+test('moving a running row keeps its shared socket and activity through the effect handoff', async () => {
+  const release = observe()
+  await tick()
+  const socket = LiveSocket.last()
+  socket.deliver(thinking)
+  const first = activity.useActivity.getState()['id:first']
+  release()
+  observe()
+  await tick()
+  assert.equal(socket.closed, false)
+  assert.equal(LiveSocket.opened.length, 1)
+  assert.equal(activity.useActivity.getState()['id:first'], first)
 })
 
 test('expiry leaves ordering, timestamps, run ownership and pending controls untouched', async () => {
@@ -225,6 +241,7 @@ test('a handshake failure reconnects, but cleanup prevents further attempts', as
   socket.close()
   await tick()
   release()
+  await tick()
   mock.timers.tick(240_000)
   assert.equal(LiveSocket.opened.length, 2)
   assert.equal(text(), undefined)

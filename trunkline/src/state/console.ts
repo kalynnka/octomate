@@ -141,8 +141,10 @@ export const syncRails = (source: 'chat' | 'timeline') => {
   const fold = from.getBoundingClientRect().top + RAIL_LEAD
   let lead: [HTMLElement, HTMLElement] | null = null
   for (const row of rail.querySelectorAll<HTMLElement>('[data-uid]')) {
-    const card = document.getElementById(`pm-${row.dataset.uid}`)
-    if (card === null) continue
+    const target = document.getElementById(`pm-${row.dataset.uid}`)
+    if (target === null) continue
+    const group = target.closest<HTMLDetailsElement>('details.trk-trace-group')
+    const card = group && !group.open ? group : target
     const pair: [HTMLElement, HTMLElement] = source === 'chat' ? [card, row] : [row, card]
     if (pair[0].getBoundingClientRect().top > fold) break
     lead = pair
@@ -165,7 +167,9 @@ export const goLedgerTarget = (tgt?: string) => {
   if (window.matchMedia('(max-width: 599px), (max-height: 519px) and (max-width: 999px)').matches) {
     useConsole.getState().actions.closeOverlays()
   }
-  log.scrollTo({ top: Math.max(0, el.offsetTop - 46), behavior: 'smooth' })
+  const group = el.closest<HTMLDetailsElement>('details.trk-trace-group')
+  if (group) group.open = true
+  log.scrollTo({ top: Math.max(0, log.scrollTop + el.getBoundingClientRect().top - log.getBoundingClientRect().top - 46), behavior: 'smooth' })
   el.tabIndex = -1
   el.focus({ preventScroll: true })
   el.classList.remove('trk-flash')
@@ -606,16 +610,19 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     let fold: TurnFold | undefined
     const turnItems = new Set<string>()
     let reflex = false
+    let joined = false
     const shown = () => viewing === watching && get().selThreadId === thId && !streamingOn.has(thId)
     const onEvent = (event: WireEvent) => {
       if (!shown()) return
+      const joining = fold === undefined && ['part_start', 'part_delta', 'function_tool_call', 'output_tool_call'].includes(event.event_kind)
       if (event.event_kind === 'artifact_available') {
         set((s) => ({ live: withArtifact(s.live, event, s.detail?.ledger) }))
-      } else if (event.event_kind === 'reflex_awake' || (event.event_kind === 'run_started' && !reflex)) {
+      } else if (joining || event.event_kind === 'reflex_awake' || (event.event_kind === 'run_started' && !reflex)) {
         // A replay replaces only the unfinished turn, keeping earlier turns mounted.
         if (fold) set(s => ({ live: s.live.filter(item => !turnItems.has(item.uid)) }))
         turnItems.clear()
         reflex = event.event_kind === 'reflex_awake'
+        joined = joining
         fold = new TurnFold({
           push: (item) => {
             if (!shown()) return 'stale'
@@ -635,7 +642,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         set({ running: true })
         if (!reflex) fold.feed(event)
       } else if (event.event_kind === 'reflex_asleep' || (event.event_kind === 'run_ended' && !reflex)) {
-        if (fold && !reflex) {
+        if (fold && !reflex && !joined) {
           fold.feed(event)
           set({ running: false })
         } else void reloadSettled(thId, () => fold === undefined)

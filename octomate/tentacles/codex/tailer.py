@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -57,6 +58,7 @@ from octomate.telemetry import codex_logfire
 from octomate.tentacles.codex.adapter import CODEX_PROVIDER_NAME, codex_metadata
 from octomate.tentacles.codex.html import visualization_text
 from octomate.tentacles.codex.transcript import (
+    CompletedCommandItem,
     RolloutLine,
     SessionMetadata,
     TurnPermissions,
@@ -458,7 +460,9 @@ class CodexTranscriptTailer:
             return
         if line.type != "event_msg":
             return
-        if kind == "token_count":
+        if kind == "item_completed" and turn.native is not None:
+            await turn.native.fold(self.consume_completed_command(turn, line))
+        elif kind == "token_count":
             turn.usage = self.parse_usage(line.payload)
         elif kind == "sub_agent_activity":
             child_thread_id = line.payload.get("agent_thread_id")
@@ -588,7 +592,10 @@ class CodexTranscriptTailer:
             return
         if line.type != "event_msg":
             return
-        if kind == "token_count":
+        if kind == "item_completed":
+            for _ in self.consume_completed_command(turn, line):
+                pass
+        elif kind == "token_count":
             turn.usage = self.parse_usage(line.payload)
         elif kind in {"task_complete", "turn_aborted"}:
             ended_id = line.payload.get("turn_id")
@@ -830,10 +837,88 @@ class CodexTranscriptTailer:
             turn.permission_mode = TurnPermissions.model_validate(
                 line.payload
             ).permission_mode
-        except ValueError:
+        except ValueError as error:
             # Keep ingesting history; an unknown preset makes this turn unforkable.
             turn.permission_mode = None
-            logger.warning("Codex turn %s has unsupported permissions", turn.turn_id)
+            reason = str(error)
+            if isinstance(error, ValidationError):
+                reason = "; ".join(
+                    f"{'.'.join(map(str, detail['loc']))}: {detail['msg']}"
+                    for detail in error.errors(
+                        include_input=False, include_context=False, include_url=False
+                    )
+                )
+            logger.warning(
+                "Codex turn %s has no matching permission preset; "
+                "history sync continues, but forking is unavailable: %s",
+                turn.turn_id,
+                reason,
+            )
+
+    @staticmethod
+    def consume_completed_command(
+        turn: OpenTurn, line: RolloutLine
+    ) -> Iterator[AgentStreamEvent]:
+        payload = line.payload.get("item")
+        if not isinstance(payload, dict) or payload.get("type") != "CommandExecution":
+            return
+        item = CompletedCommandItem.model_validate(payload)
+        if item.id in turn.pending_calls or any(
+            isinstance(part, NativeToolCallPart) and part.tool_call_id == item.id
+            for message in turn.messages
+            for part in message.parts
+        ):
+            return
+        call = NativeToolCallPart(
+            tool_name="codex_command_execution",
+            tool_call_id=item.id,
+            args={
+                "command": shlex.join(item.command),
+                "cwd": item.cwd,
+                "status": item.status,
+                "commandActions": [{"type": action.type} for action in item.parsed_cmd],
+            },
+            provider_name=CODEX_PROVIDER_NAME,
+        )
+        outcome = (
+            "success"
+            if item.status == "completed"
+            else "denied"
+            if item.status == "declined"
+            else "failed"
+        )
+        result = NativeToolReturnPart(
+            tool_name=call.tool_name,
+            tool_call_id=item.id,
+            content=item.aggregated_output,
+            outcome=outcome,
+            provider_name=CODEX_PROVIDER_NAME,
+        )
+        turn.messages.append(
+            ModelResponse(
+                parts=[call, result],
+                timestamp=line.timestamp,
+                provider_name=CODEX_PROVIDER_NAME,
+                provider_response_id=item.id,
+                metadata=codex_metadata(),
+            )
+        )
+        yield FunctionToolCallEvent(
+            part=ToolCallPart(
+                tool_name=call.tool_name,
+                tool_call_id=item.id,
+                args=call.args,
+                provider_name=CODEX_PROVIDER_NAME,
+            )
+        )
+        yield FunctionToolResultEvent(
+            part=ToolReturnPart(
+                tool_name=call.tool_name,
+                tool_call_id=item.id,
+                content=result.content,
+                outcome=outcome,
+            )
+        )
 
     @staticmethod
     def consume_response_item(

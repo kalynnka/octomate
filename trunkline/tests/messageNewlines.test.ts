@@ -206,11 +206,38 @@ for (const format of [undefined, 'reasoning', 'summary'] as const) {
     assert.equal(cards[0].item.kind === 'think' && cards[0].item.thinking, false)
     const html = renderToStaticMarkup(createElement(LedgerRow, { item: { ...cards[0].item, uid: cards[0].id }, cardMax: '100%' }))
     assert.ok(html.includes('aria-expanded="false"'))
-    assert.equal((html.match(/>Unavailable<\/span>/g) ?? []).length, 1)
+    assert.equal((html.match(/>\(unavailable\)<\/span>/g) ?? []).length, 1)
     assert.ok(html.includes('no readable reasoning text or summary'))
     assert.ok(html.includes('trk-thinking-format'))
-    assert.ok(!html.includes('>Summary</span>'))
+    assert.ok(!html.includes('>(summary)</span>'))
     assert.ok(!html.includes('trk-print-caret'))
+  })
+}
+
+for (const [streamed, elapsed, expected] of [[false, 5000, ''], [true, 250, '<1s'], [true, 4200, '4s']] as const) {
+  test(`thinking duration is ${expected || 'unknown'} for ${streamed ? 'streamed' : 'completed'} reasoning`, (t) => {
+    let now = 1000
+    t.mock.method(Date, 'now', () => now)
+    const items: LedgerItem[] = []
+    const fold = new TurnFold({
+      push(draft) { const uid = `part-${items.length}`; items.push({ ...draft, uid }); return uid },
+      patch(uid, patch) { Object.assign(items.find(item => item.uid === uid)!, patch) },
+      done() {},
+    })
+    const part: ThinkingPart = { part_kind: 'thinking', content: 'Checking', provider_name: 'openai_codex' }
+    fold.feed({ event_kind: 'part_start', index: 0, part })
+    if (streamed) fold.feed({ event_kind: 'part_delta', index: 0, delta: { part_delta_kind: 'thinking', content_delta: ' files' } })
+    now += elapsed
+    if (streamed) {
+      fold.feed({ event_kind: 'function_tool_call', part: { part_kind: 'tool-call', tool_name: 'Read', tool_call_id: 'read', args: {} } })
+      now += 5000
+    }
+    fold.feed({ event_kind: 'part_end', index: 0, part: { ...part, content: 'Checked files' } })
+    assert.equal(items[0].kind, 'think')
+    if (items[0].kind !== 'think') return
+    assert.equal(items[0].dur, expected)
+    assert.equal(items[0].thinking, false)
+    assert.equal(items[0].text, 'Checked files')
   })
 }
 
@@ -249,6 +276,31 @@ test('live and replayed reasoning retain their formats and authoritative complet
     assert.deepEqual({ ...replayed[index].item, uid: item.uid, dur: item.dur }, item)
   }
 })
+
+for (const serialized of [false, true]) {
+  test(`command classifications survive ${serialized ? 'serialized' : 'structured'} arguments and display clipping live and on replay`, () => {
+    const args = { command: 'cat app.py', padding: '.'.repeat(800), commandActions: [{ type: 'read' }, { type: 'list_files' }, { type: 'search' }, { type: 'read' }, { type: 'unknown' }] }
+    const part = { part_kind: 'tool-call' as const, tool_name: 'codex_command_execution', tool_call_id: 'command', args: serialized ? JSON.stringify(args) : args }
+    const items: LedgerItem[] = []
+    const fold = new TurnFold({
+      push(draft) { items.push({ ...draft, uid: 'command' }); return 'command' },
+      patch(uid, patch) { Object.assign(items.find(item => item.uid === uid)!, patch) },
+      done() {},
+    })
+    fold.feed({ event_kind: 'function_tool_call', part })
+    fold.feed({ event_kind: 'function_tool_result', part: { part_kind: 'tool-return', tool_name: part.tool_name, tool_call_id: part.tool_call_id, content: 'Contents' } })
+    const replayed = replayRun([
+      { id: 'call', run_id: 'run', kind: 'response', timestamp: '2026-11-04T10:00:00Z', thread_messages: [], parts: [part] },
+      { id: 'result', run_id: 'run', kind: 'request', timestamp: null, thread_messages: [], parts: [{ part_kind: 'tool-return', tool_name: part.tool_name, tool_call_id: part.tool_call_id, content: 'Contents' }] },
+    ], 'Codex')
+    for (const item of [items[0], replayed[0].item]) {
+      assert.equal(item.kind, 'tool')
+      if (item.kind !== 'tool') continue
+      assert.deepEqual(item.activities, ['read', 'list', 'search', 'command'])
+      assert.ok(item.detail.type === 'plain' && !item.detail.args.includes('commandActions'))
+    }
+  })
+}
 
 test('progress messages stay separate and completed plans use the final harness text', () => {
   const items: LedgerItem[] = []

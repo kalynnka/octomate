@@ -657,6 +657,39 @@ for (const reflex of [false, true]) {
   })
 }
 
+test('joining after a native turn starts renders tools immediately and reconciles the missed history on completion', async () => {
+  const opening = { ...detail, key: 'joined-native' }
+  const getDetail = mock.method(api, 'getThreadDetail', async () => opening)
+  await useConsole.getState().actions.selectThread('codex-native', opening.key)
+  const watching = await socketOn(`thread_id=${opening.key}`)
+  const reads = getDetail.mock.callCount()
+  watching.deliver({ event_kind: 'function_tool_call', part: {
+    part_kind: 'tool-call', tool_name: 'exec_command', tool_call_id: 'late-call', args: { cmd: 'sleep 12' },
+  } })
+  const tool = useConsole.getState().live.find(item => item.kind === 'tool')
+  assert.equal(tool?.status, 'run')
+  assert.equal(useConsole.getState().running, true)
+  assert.equal(getDetail.mock.callCount(), reads)
+  watching.deliver({ event_kind: 'function_tool_result', part: {
+    part_kind: 'tool-return', tool_name: 'exec_command', tool_call_id: 'late-call', content: 'complete',
+  } })
+  const complete = useConsole.getState().live.find(item => item.kind === 'tool')
+  assert.ok(complete)
+  assert.equal(complete?.status, 'done')
+  assert.equal(complete?.detail.type === 'plain' && complete.detail.res, 'complete')
+  const settled: ThreadDetail = { ...opening, msgCount: 2, ledger: [
+    { kind: 'think', uid: 'missed-thinking', text: 'Earlier work', thinking: false, dur: '' },
+    { ...complete, uid: 'saved-tool' },
+  ] }
+  getDetail.mock.mockImplementation(async () => settled)
+  watching.deliver({ event_kind: 'run_ended', thread_message_id: 'reply' })
+  for (let at = 0; at < 200 && useConsole.getState().detail?.msgCount !== 2; at++) await tick()
+  assert.equal(getDetail.mock.callCount(), reads + 1)
+  assert.deepEqual(useConsole.getState().detail?.ledger, settled.ledger)
+  assert.deepEqual(useConsole.getState().live, [])
+  assert.equal(useConsole.getState().running, false)
+})
+
 test('a missed turn reads its history without clearing the next tailed turn already folding', async () => {
   const opening = { ...detail, key: 'consecutive-native' }
   const getDetail = mock.method(api, 'getThreadDetail', async () => opening)

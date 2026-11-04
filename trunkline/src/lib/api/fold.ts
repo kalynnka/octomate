@@ -17,7 +17,7 @@ import type {
   WireSegment,
   WireTodo,
 } from '@/lib/api/events'
-import type { AskAnswer, AskQuestion, LedgerItem, LedgerItemDraft } from '@/lib/api/types'
+import type { AskAnswer, AskQuestion, CommandActivity, LedgerItem, LedgerItemDraft } from '@/lib/api/types'
 
 /**
  * A batch's unanswered actions as feeler cards. Both sources reach this: the
@@ -271,6 +271,23 @@ function toolIcon(name: string): 'search' | 'file-diff' | 'send' | 'file' {
   return 'file'
 }
 
+function commandActivities(name: string, args: ToolCallPart['args']): CommandActivity[] | undefined {
+  if (name !== 'codex_command_execution') return undefined
+  let payload: unknown
+  try { payload = typeof args === 'string' ? JSON.parse(args) : args } catch { return undefined }
+  if (!payload || typeof payload !== 'object' || !('commandActions' in payload) || !Array.isArray(payload.commandActions)) return undefined
+  const actions: unknown[] = payload.commandActions
+  const activities = new Set<CommandActivity>()
+  for (const action of actions) {
+    if (!action || typeof action !== 'object' || !('type' in action)) continue
+    if (action.type === 'read') activities.add('read')
+    if (action.type === 'search') activities.add('search')
+    if (action.type === 'listFiles' || action.type === 'list_files') activities.add('list')
+    if (action.type === 'unknown') activities.add('command')
+  }
+  return activities.size ? [...activities] : undefined
+}
+
 /** A child run reachable from a parent's spawn call, keyed by that call's id —
  * how the replay knows a tool card is really a subagent card. */
 export interface ReplayChild {
@@ -353,6 +370,7 @@ export function replayRun(
         kind: 'tool',
         name,
         icon: toolIcon(name),
+        activities: commandActivities(name, args),
         status: 'run',
         detail: { type: 'plain', args: clipped, res: '' },
       }
@@ -361,6 +379,7 @@ export function replayRun(
       kind: 'tool',
       name,
       icon: toolIcon(name),
+      activities: commandActivities(name, args),
       status: 'done',
       badge: settled.failed ? { label: 'failed', tone: 'terra' } : undefined,
       detail: {
@@ -457,7 +476,7 @@ export class TurnFold {
   private streamIndex: number | null = null
   private streamText = ''
   private thinkIndex: number | null = null
-  private thinkParts = new Map<number, { uid: string; text: string; started: number }>()
+  private thinkParts = new Map<number, { uid: string; text: string; started: number | null }>()
   private toolUids = new Map<string, { uid: string; args: string }>()
   private planUid: string | null = null
   private todos = new Map<string, WireTodo>()
@@ -489,9 +508,9 @@ export class TurnFold {
   private closeThink(index = this.thinkIndex) {
     if (index === null) return
     const part = this.thinkParts.get(index)
-    if (!part) return
-    const secs = Math.max(1, Math.round((Date.now() - part.started) / 1000))
-    this.sink.patch(part.uid, { dur: `${secs}s`, thinking: false })
+    if (!part || this.thinkIndex !== index) return
+    const elapsed = part.started === null ? null : Date.now() - part.started
+    this.sink.patch(part.uid, { dur: elapsed === null ? '' : elapsed < 1000 ? '<1s' : `${Math.round(elapsed / 1000)}s`, thinking: false })
     if (this.thinkIndex === index) this.thinkIndex = null
   }
 
@@ -531,14 +550,14 @@ export class TurnFold {
           format: thinkingFormat(part),
         })
         this.thinkIndex = index
-        this.thinkParts.set(index, { uid, text: part.content, started: Date.now() })
+        this.thinkParts.set(index, { uid, text: part.content, started: null })
         break
       }
       case 'builtin-tool-call':
-        this.openTool(part.tool_call_id, part.tool_name, argsText(part.args))
+        this.openTool(part.tool_call_id, part.tool_name, part.args)
         break
       case 'builtin-tool-return':
-        this.settleTool(part.tool_call_id, contentText(part.content))
+        this.settleTool(part.tool_call_id, contentText(part.content), part.outcome !== undefined && part.outcome !== 'success')
         break
       case 'compaction':
         this.sink.push({ kind: 'divider', label: 'context compacted' })
@@ -549,7 +568,7 @@ export class TurnFold {
     }
   }
 
-  private openTool(callId: string, name: string, args: string) {
+  private openTool(callId: string, name: string, args: ToolCallPart['args']) {
     // Reply text after the tool belongs to a new block, not the pre-tool one.
     this.closeStream()
     const question = this.nativeAgent !== undefined ? nativeQuestion(callId, name, args, this.nativeAgent) : null
@@ -558,11 +577,12 @@ export class TurnFold {
       this.questions.set(callId, { ...question, uid })
       return
     }
-    const clipped = clip(args)
+    const clipped = clip(argsText(args))
     const uid = this.sink.push({
       kind: 'tool',
       name,
       icon: toolIcon(name),
+      activities: commandActivities(name, args),
       status: 'run',
       detail: { type: 'plain', args: clipped, res: '' },
     })
@@ -663,6 +683,7 @@ export class TurnFold {
           case 'thinking': {
             const part = this.thinkParts.get(event.index)
             if (part && event.delta.content_delta) {
+              part.started ??= Date.now()
               part.text += event.delta.content_delta
               this.sink.patch(part.uid, { text: part.text })
             }
@@ -686,7 +707,7 @@ export class TurnFold {
       case 'function_tool_call': {
         const part: ToolCallPart = event.part
         this.closeThink()
-        this.openTool(part.tool_call_id, part.tool_name, argsText(part.args))
+        this.openTool(part.tool_call_id, part.tool_name, part.args)
         break
       }
       case 'function_tool_result':

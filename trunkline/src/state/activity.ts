@@ -111,8 +111,12 @@ export function observeActivity(id: string, byKey = false): () => void {
     if (released) return
     released = true
     if (--active.readers) return
-    active.stop()
-    observers.delete(key)
+    // React can replay effects when a keyed row moves; keep its live status through that handoff.
+    queueMicrotask(() => {
+      if (active.readers) return
+      active.stop()
+      observers.delete(key)
+    })
   }
 }
 

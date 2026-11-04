@@ -152,6 +152,15 @@ for (const width of [1280, 390]) {
       await stream.hover()
       await stream.getByRole('button', { name: 'Copy message', exact: true }).click()
       await expect(page.locator('html')).toHaveAttribute('data-copied', 'A **native** reply with `code`.')
+      for (const row of [stream, page.locator('#pm-claude-reply')]) {
+        const gap = await row.evaluate(el => {
+          const range = document.createRange()
+          range.selectNodeContents(el.querySelector('.trk-md p')!)
+          return el.querySelector('.trk-message-copy')!.getBoundingClientRect().left - range.getBoundingClientRect().right
+        })
+        expect(gap).toBeGreaterThanOrEqual(0)
+        expect(gap).toBeLessThan(20)
+      }
       for (const row of [user, progress, agent, stream]) {
         const button = row.getByRole('button', { name: 'Copy message', exact: true })
         const position = await button.evaluate(el => {

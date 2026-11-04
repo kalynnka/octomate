@@ -14,6 +14,7 @@ import { Icon, type IconName } from '@/components/Icon'
 import { Disclose, Fold } from '@/components/Fold'
 import { Markdown } from '@/components/Markdown'
 import { CopyButton } from '@/components/CopyButton'
+import { toolSummary, type TraceGroup } from './trace'
 import { cardKind, display, ellipsis, fieldLabel, label, metaLine, microMeta, microSection, mono, sectionLabel, serif, statusNote } from '@/components/text'
 
 const ArtifactViewer = lazy(() => import('@/features/artifacts/ArtifactViewer').then(module => ({ default: module.ArtifactViewer })))
@@ -187,10 +188,10 @@ function DiffBlock({ uid, index, diff }: { uid: string; index: number; diff: Ext
   )
 }
 
-function AgentRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'agent' }>; cardMax: string }) {
+function AgentRow({ item, cardMax, showAgentLabel }: { item: Extract<LedgerItem, { kind: 'agent' }>; cardMax: string; showAgentLabel: boolean }) {
   return (
-    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" style={{ maxWidth: `min(100%, calc(${cardMax} + 34px))` }}>
-      <CapsLabel style={{ textTransform: 'none' }}>{item.label}</CapsLabel>
+    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" data-agent-label={showAgentLabel ? '' : undefined} style={{ maxWidth: `min(100%, calc(${cardMax} + 34px))` }}>
+      {showAgentLabel && <CapsLabel style={{ textTransform: 'none' }}>{item.label}</CapsLabel>}
       <div style={{ minWidth: 0, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)', textWrap: 'pretty' }}>
         {item.reply && <ReplyPreview reply={item.reply} />}
         {item.blocks.map((b, i) => {
@@ -268,7 +269,25 @@ function CodeRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'code' }
   )
 }
 
-function ThinkRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'think' }>; cardMax: string; i?: number }) {
+export function TraceGroupRow({ group, cardMax }: { group: TraceGroup; cardMax: string }) {
+  const content = group.items.map(item => <LedgerRow key={item.uid} item={item} cardMax="100%" />)
+  const style = { '--trk-trace-max': cardMax } as CSSProperties
+  const tools = group.items.filter(item => item.kind === 'tool')
+  const thinking = group.items.some(item => item.kind === 'think' && item.thinking)
+  const summary = tools.length ? toolSummary(tools) : thinking ? 'Thinking' : 'Thought'
+  return (
+    <details className="trk-trace-group" style={style} open={group.active}>
+      <summary className="trk-trace-summary hov-wash" title={summary}>
+        <Icon name={tools.length ? 'wrench' : 'sparkle'} />
+        <span className="trk-trace-title trk-trace-label" data-running={thinking || tools.some(item => item.status === 'run') ? '' : undefined}>{summary}</span>
+        <Disclose />
+      </summary>
+      <div className="trk-trace-items">{content}</div>
+    </details>
+  )
+}
+
+function ThinkRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'think' }>; cardMax: string }) {
   // Open while the model is still thinking, folded the moment it stops: the
   // reasoning is worth watching live and worth getting out of the way after.
   // An explicit toggle is remembered by uid and outlives the transition.
@@ -280,20 +299,20 @@ function ThinkRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'thi
   return (
     <div
       id={`pm-${item.uid}`}
-      className="lt-entry"
-      style={{ '--i': i ?? 0, maxWidth: cardMax, position: 'relative', border: '1px solid var(--line-divider)', background: 'var(--card-bg)' } as CSSProperties}
+      className="trk-trace-row"
+      data-expanded={open ? '' : undefined}
+      style={{ '--trk-trace-max': cardMax } as CSSProperties}
     >
-      <Brackets />
+      {open && <Brackets />}
       <button type="button" className="trk-thinking-toggle hov-wash" aria-expanded={open} onClick={() => toggleCardOpen(item.uid, item.thinking)}>
-        <Disclose open={open} style={{ ...mono(11), ...ghost3, width: 12 }} />
         <Icon name="sparkle" style={{ color: 'var(--fg-2)' }} />
-        <span style={{ ...cardKind, color: 'var(--fg-1)' }}>Thinking</span>
-        {badge && <span className="trk-thinking-format" title={badge === 'Summary' ? 'A summary of reasoning provided by the harness' : 'No readable reasoning text or summary was supplied'}><TextSwap>{badge}</TextSwap></span>}
+        <span className="trk-trace-label" data-running={item.thinking ? '' : undefined} style={{ font: 'var(--meta)' }}>Thinking{badge && <> <span className="trk-thinking-format" title={badge === 'Summary' ? 'A summary of reasoning provided by the harness' : 'No readable reasoning text or summary was supplied'}><TextSwap>{`(${badge.toLowerCase()})`}</TextSwap></span></>}</span>
+        <Disclose open={open} />
         <span style={{ flex: 1 }} />
-        {item.dur && <TextSwap style={{ ...metaLine, color: 'var(--fg-3)' }}>{item.dur}</TextSwap>}
+        {item.dur && <span className="trk-tool-status" style={{ color: 'var(--fg-3)' }} title={item.thinking ? 'Thinking in progress' : 'Observed reasoning stream duration'}><span aria-hidden="true" style={{ width: 5, height: 5, borderRadius: 'var(--radius-dot)', background: 'currentColor' }} /><TextSwap style={metaLine}>{item.dur}</TextSwap></span>}
       </button>
       <Fold open={open}>
-        <div style={{ borderTop: '1px solid var(--line-divider)', padding: '10px 12px' }}>
+        <div inert={!open} style={{ borderTop: '1px solid var(--line-divider)', padding: '10px 12px' }}>
           <div className="trk-thinking-content" style={{ ...serif(13), lineHeight: 1.65, color: recorded ? 'var(--fg-2)' : 'var(--fg-1)' }}>
             {recorded ? <Markdown text={item.text} cursor={item.thinking} /> : <p style={{ margin: 0, fontStyle: 'italic' }}>
               This transcript records a reasoning block but contains no readable reasoning text or summary.
@@ -543,34 +562,32 @@ function ToolDetailView({ detail }: { detail: ToolDetail }) {
   )
 }
 
-function ToolRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'tool' }>; cardMax: string; i?: number }) {
+function ToolRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'tool' }>; cardMax: string }) {
   const open = useConsole((s) => s.open[item.uid] ?? item.defaultOpen ?? false)
   const { toggleCardOpen } = useConsole((s) => s.actions)
-  const summon = item.icon === 'summon'
+  const status = item.status === 'run' ? 'run' : item.badge?.label === 'failed' ? 'failed' : 'done'
+  const color = status === 'run' ? 'var(--color-teal)' : status === 'failed' ? 'var(--color-red)' : 'var(--color-sage)'
   return (
     <div
       id={`pm-${item.uid}`}
-      className="lt-entry"
-      style={
-        {
-          '--i': i ?? 0,
-          maxWidth: cardMax,
-          position: 'relative',
-          background: 'var(--card-bg)',
-          border: summon ? '1px solid var(--color-terra)' : '1px solid var(--line-divider)',
-        } as CSSProperties
-      }
+      className="trk-trace-row"
+      data-expanded={open ? '' : undefined}
+      data-failed={status === 'failed' ? '' : undefined}
+      style={{ '--trk-trace-max': cardMax } as CSSProperties}
     >
-      {!summon && <Brackets />}
-      <div
+      {open && <Brackets />}
+      <button
+        type="button"
+        className="trk-tool-toggle hov-wash"
+        aria-expanded={open}
         onClick={() => toggleCardOpen(item.uid, item.defaultOpen ?? false)}
-        style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 13px', background: 'var(--card-bg)', cursor: 'pointer' }}
       >
-        <Disclose open={open} style={{ ...mono(11), ...ghost3, width: 12 }} />
-        <Icon name={toolIcon[item.icon] ?? 'search'} style={{ color: summon ? 'var(--color-terra)' : 'var(--fg-1)' }} />
-        <span style={{ ...cardKind, color: 'var(--fg-1)' }}>Tool</span>
-        <span style={{ ...mono(12, 700), color: 'var(--color-accent)' }}>{item.name}</span>
-        {item.badge && (
+        <Icon name={toolIcon[item.icon] ?? 'search'} />
+        <span style={{ font: 'var(--meta)' }}>Tool</span>
+        <span className="trk-tool-name trk-trace-label" data-running={status === 'run' ? '' : undefined} style={mono(11)}>{item.name}</span>
+        <Disclose open={open} />
+        <span style={{ flex: 1 }} />
+        {item.badge && item.badge.label !== 'failed' && (
           <span
             style={{
               ...sectionLabel,
@@ -582,13 +599,14 @@ function ToolRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'tool
             {item.badge.label}
           </span>
         )}
-        <span style={{ flex: 1 }} />
         {item.dur && <TextSwap style={{ ...mono(8), ...ghost3 }}>{item.dur}</TextSwap>}
-        <span style={{ width: 5, height: 5, borderRadius: 9999, background: item.status === 'run' ? 'var(--color-accent)' : 'var(--color-sage)', animation: item.status === 'run' ? 'trkPulse 1.2s infinite' : undefined }} />
-        <TextSwap style={{ ...statusNote, color: item.status === 'run' ? 'var(--color-accent)' : 'var(--color-sage)' }}>{item.status === 'run' ? 'run' : 'done'}</TextSwap>
-      </div>
+        <span className="trk-tool-status" style={{ color }}>
+          <span style={{ width: 5, height: 5, borderRadius: 'var(--radius-dot)', background: color }} />
+          <TextSwap>{status}</TextSwap>
+        </span>
+      </button>
       <Fold open={open}>
-        <div>
+        <div inert={!open}>
           <ToolDetailView detail={item.detail} />
         </div>
       </Fold>
@@ -1104,7 +1122,7 @@ function Rule({ children }: { children?: ReactNode }) {
   )
 }
 
-function StreamRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'stream' }>; cardMax: string }) {
+function StreamRow({ item, cardMax, showAgentLabel }: { item: Extract<LedgerItem, { kind: 'stream' }>; cardMax: string; showAgentLabel: boolean }) {
   const running = useConsole((s) => s.running)
   const streaming = item.streaming && running
   const target = useRef(item.text)
@@ -1135,8 +1153,8 @@ function StreamRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'strea
     return () => { cancelAnimationFrame(frame); cancelAnimationFrame(scroll) }
   }, [streaming])
   return (
-    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" style={{ maxWidth: `min(100%, calc(${cardMax} + 34px))`, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
-      <CapsLabel style={{ textTransform: 'none' }}>{item.label ?? botLabel()}</CapsLabel>
+    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" data-agent-label={showAgentLabel ? '' : undefined} style={{ maxWidth: `min(100%, calc(${cardMax} + 34px))`, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
+      {showAgentLabel && <CapsLabel style={{ textTransform: 'none' }}>{item.label ?? botLabel()}</CapsLabel>}
       <Markdown text={streaming ? text : item.text} cursor={streaming} />
       <div className="trk-message-actions">
         <CopyButton text={streaming ? text : item.text} label="Copy message" className="trk-message-copy" />
@@ -1146,7 +1164,7 @@ function StreamRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'strea
 }
 
 /** Dispatch a ledger item to its card. `i` staggers entry animations. */
-export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: string; i?: number }) {
+export function LedgerRow({ item, cardMax, i, showAgentLabel = true }: { item: LedgerItem; cardMax: string; i?: number; showAgentLabel?: boolean }) {
   const threadId = useConsole((s) => s.selThreadId)
   switch (item.kind) {
     case 'artifact':
@@ -1186,15 +1204,15 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
     case 'user':
       return <UserRow item={item} />
     case 'agent':
-      return <AgentRow item={item} cardMax={cardMax} />
+      return <AgentRow item={item} cardMax={cardMax} showAgentLabel={showAgentLabel} />
     case 'code':
       return <CodeRow item={item} cardMax={cardMax} />
     case 'think':
-      return <ThinkRow item={item} cardMax={cardMax} i={i} />
+      return <ThinkRow item={item} cardMax={cardMax} />
     case 'plan':
       return <PlanRow item={item} cardMax={cardMax} i={i} />
     case 'tool':
-      return <ToolRow item={item} cardMax={cardMax} i={i} />
+      return <ToolRow item={item} cardMax={cardMax} />
     case 'file':
       return <FileRow item={item} cardMax={cardMax} />
     case 'sub':
@@ -1207,7 +1225,7 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
       return <OAuthRow item={item} cardMax={cardMax} i={i} />
     case 'dots':
       return (
-        <div className="trk-activity" role="status" aria-atomic="true" title={item.label} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '2px 0' }}>
+        <div className="trk-activity" data-attention={item.attention ? '' : undefined} role="status" aria-atomic="true" title={item.label} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '2px 0' }}>
           <span className="lt-dots" aria-hidden="true" style={{ flexShrink: 0 }}>
             <i />
             <i />
@@ -1217,7 +1235,7 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
         </div>
       )
     case 'stream':
-      return <StreamRow item={item} cardMax={cardMax} />
+      return <StreamRow item={item} cardMax={cardMax} showAgentLabel={showAgentLabel} />
     case 'end':
       return (
         <div id={`pm-${item.uid}`} style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 2 }}>
