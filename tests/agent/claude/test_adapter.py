@@ -869,6 +869,38 @@ def test_compaction_status_uses_standard_labels_and_clears_at_end(
     assert acc.messages == []
 
 
+def test_requesting_status_uses_standard_working_label() -> None:
+    acc = ClaudeRunAccumulator()
+    message = parse_message(
+        {"type": "system", "subtype": "status", "status": "requesting"}
+    )
+
+    assert isinstance(message, SystemMessage)
+    assert list(acc.consume(message)) == [RunActivityChangedEvent(activity="working")]
+    assert acc.messages == []
+
+
+@pytest.mark.parametrize("subtype", ["status", "compact_boundary"])
+def test_command_activity_requires_a_model_run(subtype: str) -> None:
+    acc = ClaudeRunAccumulator()
+    message = parse_message(
+        {"type": "system", "subtype": subtype, "status": "compacting"}
+    )
+    assert isinstance(message, SystemMessage)
+    assert list(acc.consume(message, command=True)) == []
+    list(
+        acc.consume(
+            AssistantMessage(content=[TextBlock(text="Checking")], model="claude"),
+            command=True,
+        )
+    )
+    assert list(acc.consume(message, command=True)) == [
+        RunActivityChangedEvent(
+            activity="compacting" if subtype == "status" else "working"
+        )
+    ]
+
+
 def test_compaction_boundary_without_start_does_not_announce_compacting() -> None:
     acc = ClaudeRunAccumulator()
     boundary = parse_message({"type": "system", "subtype": "compact_boundary"})

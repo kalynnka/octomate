@@ -31,6 +31,7 @@
 .lt-fade-in { animation: lt-fade-in var(--motion-entry) var(--ease-out) both; animation-delay: calc(var(--i, 0) * 70ms); }
 .lt-fade-out{ animation: lt-fade-out var(--motion-base) var(--ease-out) both; pointer-events: none; }
 
+.trk-activity .lt-dots i { background: var(--fg-3); }
 .trk-activity-motion { animation: lt-fade-up var(--motion-base) var(--ease-out) both; --entry-rise: 4px; }
 .trk-activity-motion[data-exiting] { animation: lt-fade-out var(--motion-fast) var(--ease-out) both; pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {

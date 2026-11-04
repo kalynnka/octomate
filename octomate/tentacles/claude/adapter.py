@@ -100,8 +100,8 @@ usage_counts_adapter: TypeAdapter[dict[str, int]] = TypeAdapter(
     dict[str, OnErrorOmit[int]]
 )
 
-compaction_status_adapter: TypeAdapter[Literal["compacting"] | None] = TypeAdapter(
-    Literal["compacting"] | None
+status_adapter: TypeAdapter[Literal["compacting", "requesting"] | None] = TypeAdapter(
+    Literal["compacting", "requesting"] | None
 )
 
 
@@ -322,11 +322,14 @@ class ClaudeRunAccumulator:
         elif isinstance(message, UserMessage):
             yield from self._consume_tool_results(message)
         elif isinstance(message, SystemMessage):
+            # A direct command can compact without producing a model run.
+            if command and not self.usage.requests:
+                return
             if message.subtype == "status":
-                status = compaction_status_adapter.validate_python(
-                    message.data["status"]
+                status = status_adapter.validate_python(message.data["status"])
+                yield RunActivityChangedEvent(
+                    activity="compacting" if status == "compacting" else "working"
                 )
-                yield RunActivityChangedEvent(activity=status or "working")
             elif message.subtype == "compact_boundary":
                 yield RunActivityChangedEvent(activity="working")
         elif isinstance(message, ResultMessage):
