@@ -4,9 +4,11 @@ import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import AsyncExitStack
 from dataclasses import replace
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
+from arcanus.materia.sqlalchemy import selectinload
 from openai_codex import AsyncTurnHandle, SkillInput, TextInput, TurnResult
 from openai_codex._run import _collect_async_turn_result
 from openai_codex.api import ApprovalMode, Sandbox
@@ -17,6 +19,7 @@ from openai_codex.generated.v2_all import (
     GetAccountRateLimitsResponse,
     GetAccountResponse,
     ItemCompletedNotification,
+    ItemStartedNotification,
     ListMcpServerStatusResponse,
     ReasoningEffort,
     ReviewTarget,
@@ -28,6 +31,7 @@ from openai_codex.generated.v2_all import (
 )
 from openai_codex.models import Notification
 from pydantic_ai import AgentRunResultEvent
+from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
@@ -35,14 +39,16 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.config import ChannelConfig
 from octomate.config.agents import CodexConfig
+from octomate.database import async_session
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
     CommandInvocation,
     CommandResult,
 )
+from octomate.schemas.compactions import Compaction
 from octomate.schemas.events import MessageEvent
-from octomate.schemas.thread import ThreadCommand
+from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadCommand
 from octomate.schemas.triage import Claim
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.codex import CodexTentacle
@@ -914,6 +920,123 @@ async def test_native_controls_resume_saved_threads_without_an_agent_run(
     assert receipt.outcome == outcome
 
 
+@pytest.mark.parametrize("completed_at", [None, 1784196000])
+async def test_compact_command_persists_completed_items_without_creating_a_run(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+    monkeypatch: pytest.MonkeyPatch,
+    completed_at: int | None,
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    await agent.conversations.set_external_id(conversation, "existing")
+    runtime_config = FakeCodex.last_config
+    reset_fake_codex(text_script("", thread_id="existing"))
+    terminal = FakeCodex.script[-1].payload
+    assert isinstance(terminal, TurnCompletedNotification)
+    terminal.turn.completed_at = completed_at
+    checkpoint = Notification(
+        method="item/completed",
+        payload=ItemCompletedNotification.model_validate(
+            {
+                "threadId": "existing",
+                "turnId": "turn-1",
+                "completedAtMs": 1784196000000,
+                "item": {"type": "contextCompaction", "id": "manual-compaction"},
+            }
+        ),
+    )
+    FakeCodex.script[:0] = [checkpoint, checkpoint]
+    handle = AsyncMock(spec=AsyncTurnHandle)
+    handle.run.return_value = await _collect_async_turn_result(
+        FakeTurn().stream(), turn_id="turn-1"
+    )
+    monkeypatch.setattr(agent.ink, "start_command", AsyncMock(return_value=handle))
+    [outcome] = [
+        event
+        async for event in agent.execute_command(
+            context, CommandInvocation(command_id="builtin:compact")
+        )
+    ]
+    assert isinstance(outcome, CommandResult)
+    async with async_session() as session:
+        rows = await session.list(
+            Compaction, options=[selectinload(Compaction["messages"])]
+        )
+    assert len(rows) == 1
+    compaction = rows[0]
+    assert type(compaction) is Compaction
+    assert compaction.conversation_id == conversation.id
+    assert compaction.native_id == CODEX_NATIVE_ID
+    assert compaction.native_session_id == "existing"
+    assert compaction.native_compaction_id == "manual-compaction"
+    assert compaction.trigger == "manual"
+    assert compaction.happened_at == (
+        datetime.fromtimestamp(completed_at, UTC) if completed_at is not None else None
+    )
+    assert not compaction.messages
+    assert not (await agent.conversations.get(conversation.id)).runs
+    assert runtime_config is not None
+    assert "features.hooks=false" in runtime_config.config_overrides
+
+
+@pytest.mark.parametrize("completed", [False, True])
+@pytest.mark.parametrize("failed", [False, True])
+async def test_automatic_compactions_persist_independently_of_the_run_outcome(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+    completed: bool,
+    failed: bool,
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    script = (
+        failed_script("model failed", thread_id="thread-new")
+        if failed
+        else text_script("answer", thread_id="thread-new")
+    )
+    checkpoint = Notification(
+        method="item/completed" if completed else "item/started",
+        payload=(
+            ItemCompletedNotification if completed else ItemStartedNotification
+        ).model_validate(
+            {
+                "threadId": "thread-new",
+                "turnId": "turn-1",
+                "completedAtMs": 1784196000000,
+                "startedAtMs": 1784195999000,
+                "item": {"type": "contextCompaction", "id": "auto-compaction"},
+            }
+        ),
+    )
+    reset_fake_codex([checkpoint, checkpoint, *script])
+    if failed:
+        with pytest.raises(AgentRunError, match="model failed"):
+            await agent.run(
+                "ask", conversation_address=KEY, thread_id=conversation.thread_id
+            )
+    else:
+        await agent.run(
+            "ask", conversation_address=KEY, thread_id=conversation.thread_id
+        )
+    async with async_session() as session:
+        rows = await session.list(
+            Compaction, options=[selectinload(Compaction["messages"])]
+        )
+    assert len(rows) == int(completed)
+    if completed:
+        assert rows[0].native_session_id == "thread-new"
+        assert rows[0].native_compaction_id == "auto-compaction"
+        assert rows[0].trigger == "auto"
+        assert rows[0].happened_at == datetime.fromtimestamp(1784196000, UTC)
+        assert not rows[0].messages
+    stored = await agent.conversations.get(conversation.id)
+    assert len(stored.runs) == 1
+    assert [message.message_text for message in stored.messages] == (
+        ["ask", "model failed"] if failed else ["ask", "answer"]
+    )
+
+
 async def test_mcp_inspection_is_thread_scoped_and_reads_all_pages(
     execution: tuple[CodexTentacle, CommandContext, AsyncMock],
 ) -> None:
@@ -1077,6 +1200,8 @@ async def test_compact_waits_and_records_only_a_command_receipt(
     )
     assert isinstance(receipt, ThreadCommand)
     assert receipt.outcome == outcome
+    async with async_session() as session:
+        assert await session.count(Compaction) == 0
 
 
 @pytest.mark.parametrize("branch", ["", "main"])

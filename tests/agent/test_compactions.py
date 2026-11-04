@@ -1,5 +1,6 @@
 """Completed transformation identities round-trip through the shared persistence layer."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta, timezone
 from unittest.mock import Mock
 
@@ -28,6 +29,39 @@ from octomate.schemas.compactions import (
 from octomate.schemas.messages import ModelMessage, ModelRequest, ModelResponse
 from octomate.types.compactions import CompactionTrigger
 from tests.support.managers import a_thread
+
+
+async def test_driven_compactions_are_deduplicated_by_native_session_and_item(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    manager = ConversationManager()
+    conversation = await manager.ensure(await a_thread(), agent_tentacle_id="codex")
+    results = await asyncio.gather(
+        *(
+            manager.record_driven_compaction(
+                conversation,
+                native_id="codex",
+                native_session_id=session_id,
+                native_compaction_id="same-item",
+                trigger="manual",
+                happened_at=None,
+            )
+            for session_id in ("first-session", "first-session", "second-session")
+        )
+    )
+    assert sum(result is not None for result in results) == 2
+    async with async_session() as session:
+        rows = await session.list(
+            Compaction, options=[selectinload(Compaction["messages"])]
+        )
+    assert len(rows) == 2
+    assert {row.native_session_id for row in rows} == {
+        "first-session",
+        "second-session",
+    }
+    assert all(type(row) is Compaction for row in rows)
+    assert all(row.happened_at is None and not row.messages for row in rows)
+    assert not (await manager.get(conversation.id)).runs
 
 
 @pytest.mark.parametrize("trigger", ["manual", "auto", "unknown"])

@@ -17,7 +17,7 @@ from sqlalchemy import Select, and_, func, insert, literal, or_, select
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.files import FileManager
-from octomate.schemas.compactions import ExternalCompaction
+from octomate.schemas.compactions import Compaction, ExternalCompaction
 from octomate.schemas.conversation import Conversation, ConversationKey, ConversationRun
 from octomate.schemas.files import FileVariant, Jsonl
 from octomate.schemas.messages import ModelMessage, ModelRequest, ModelResponse
@@ -28,6 +28,7 @@ from octomate.schemas.thread import (
     ThreadLedger,
     ThreadMessage,
 )
+from octomate.types.compactions import CompactionTrigger
 from octomate.types.permissions import AgentPermissionMode
 
 RunT = TypeVar("RunT", bound=AgentRun)
@@ -58,6 +59,42 @@ class ConversationManager(Manager, Locks[ConversationKey]):
     `(thread_id, agent_tentacle_id, subagent_id)`: every sender in a group thread
     keys to the same owning agent's conversation, regardless of who woke it.
     """
+
+    async def record_driven_compaction(
+        self,
+        conversation: Conversation,
+        *,
+        native_id: str,
+        native_session_id: str,
+        native_compaction_id: str,
+        trigger: CompactionTrigger,
+        happened_at: AwareDatetime | None,
+    ) -> Compaction | None:
+        """Persist a completed native item once, without inventing unavailable content."""
+        async with self.lock(conversation.key), async_session() as session:
+            if await session.scalar(
+                select(
+                    select(Compaction["id"])
+                    .where(
+                        Compaction["native_id"] == native_id,
+                        Compaction["native_session_id"] == native_session_id,
+                        Compaction["native_compaction_id"] == native_compaction_id,
+                    )
+                    .exists()
+                )
+            ):
+                return None
+            compaction = Compaction(
+                conversation_id=conversation.id,
+                native_id=native_id,
+                native_session_id=native_session_id,
+                native_compaction_id=native_compaction_id,
+                trigger=trigger,
+                happened_at=happened_at,
+            )
+            session.add(compaction)
+            await session.commit()
+            return compaction
 
     async def record_external_compaction(
         self,

@@ -52,6 +52,7 @@ from openai_codex.errors import MethodNotFoundError
 from openai_codex.generated.v2_all import (
     AgentMessageThreadItem,
     BaseBranchReviewTarget,
+    ContextCompactionThreadItem,
     GuardianApprovalReviewStatus,
     ItemCompletedNotification,
     ItemGuardianApprovalReviewCompletedNotification,
@@ -61,6 +62,7 @@ from openai_codex.generated.v2_all import (
     ReasoningSummary,
     ReasoningSummaryValue,
     ReviewTarget,
+    ThreadItem,
     ThreadTokenUsageUpdatedNotification,
     TurnStatus,
     UncommittedChangesReviewTarget,
@@ -156,6 +158,7 @@ from octomate.tentacles.codex.tailer import CodexTranscriptTailer
 from octomate.tentacles.codex.transcript import RolloutLine, rollout_line_adapter
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
+from octomate.types.compactions import CompactionTrigger
 from octomate.types.json import JsonObject
 from octomate.types.permissions import PermissionMode
 from octomate.utils import drain_task
@@ -1082,6 +1085,15 @@ class CodexTentacle(AgentTentacle[str, None]):
                         if completed.error
                         else f"Codex compaction {completed.status.value}.",
                     )
+                await self.capture_compactions(
+                    conversation,
+                    thread_id=thread_id,
+                    items=completed.items,
+                    trigger="manual",
+                    happened_at=datetime.fromtimestamp(completed.completed_at, UTC)
+                    if completed.completed_at is not None
+                    else None,
+                )
                 return CommandResult(
                     segments=[
                         TextSegment(data={"text": "Conversation context compacted."})
@@ -1106,6 +1118,31 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
         text = f"Planning mode {'disabled' if argument == 'off' else 'enabled'} for subsequent turns."
         return CommandResult(segments=[TextSegment(data={"text": text})])
+
+    async def capture_compactions(
+        self,
+        conversation: Conversation,
+        *,
+        thread_id: str,
+        items: list[ThreadItem],
+        trigger: CompactionTrigger,
+        happened_at: datetime | None,
+    ) -> None:
+        """Record completed items; the app-server exposes no summary or checkpoint body."""
+        for entry in items:
+            item = entry.root
+            if not isinstance(item, ContextCompactionThreadItem):
+                continue
+            if conversation.external_id != thread_id:
+                raise ValueError("Compaction belongs to a different native session")
+            await self.conversations.record_driven_compaction(
+                conversation,
+                native_id=CODEX_NATIVE_ID,
+                native_session_id=thread_id,
+                native_compaction_id=item.id,
+                trigger=trigger,
+                happened_at=happened_at,
+            )
 
     async def token_usage_status(self, conversation: Conversation | None) -> str:
         """Render the latest recorded native usage snapshot for this Codex session.
@@ -1884,6 +1921,16 @@ class CodexTentacle(AgentTentacle[str, None]):
                     # A batch the turn paused on, or its answer, for whoever draws the run.
                     yield notification
                     continue
+                if isinstance(notification.payload, ItemCompletedNotification):
+                    await self.capture_compactions(
+                        conversation,
+                        thread_id=notification.payload.thread_id,
+                        items=[notification.payload.item],
+                        trigger="auto",
+                        happened_at=datetime.fromtimestamp(
+                            notification.payload.completed_at_ms / 1000, UTC
+                        ),
+                    )
                 artifacts = await self.capture_html(
                     notification,
                     workspace=workspace.path,
