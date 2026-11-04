@@ -48,7 +48,12 @@ from pydantic_ai.capabilities import NativeTool
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.messages import (
     FinalResultEvent,
+    FunctionToolCallEvent,
     ModelMessage,
+    PartStartEvent,
+    TextPart,
+    ThinkingPart,
+    ToolCallPart,
     UserContent,
 )
 from pydantic_ai.models import KnownModelName, Model
@@ -61,6 +66,7 @@ from pydantic_graph import End
 from octomate.capabilities.harness.events import (
     ResultSegmentEvent,
     ResultTextDeltaEvent,
+    RunActivityChangedEvent,
     StreamEvents,
 )
 from octomate.schemas.segments import (
@@ -196,6 +202,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                     build_run_context(run.ctx), node=node
                 )
                 if self.is_model_request_node(node):
+                    yield RunActivityChangedEvent(activity="working")
                     # The model node streams thinking/pre-output events unchanged.
                     # Plain-text output (FinalResultEvent.tool_name is None) keeps
                     # streaming its native text events after the final result is
@@ -248,6 +255,23 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                                 first_token = time.perf_counter()
                                 react_logfire.info("llm.first_token")
                             streamed_events += 1
+                            if isinstance(event, PartStartEvent) and isinstance(
+                                event.part, ThinkingPart
+                            ):
+                                yield RunActivityChangedEvent(activity="thinking")
+                            elif isinstance(event, PartStartEvent) and isinstance(
+                                event.part, TextPart
+                            ):
+                                yield RunActivityChangedEvent(activity="writing")
+                            elif isinstance(event, PartStartEvent) and isinstance(
+                                event.part, ToolCallPart
+                            ):
+                                yield RunActivityChangedEvent(activity="working")
+                            elif (
+                                isinstance(event, FinalResultEvent)
+                                and event.tool_name is not None
+                            ):
+                                yield RunActivityChangedEvent(activity="writing")
                             if isinstance(event, FinalResultEvent):
                                 final_event = event
                                 continue
@@ -335,6 +359,8 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                     # events stashed on a ToolReturn) reach the consumer.
                     async with node.stream(run.ctx) as tool_stream:
                         async for tool_event in tool_stream:
+                            if isinstance(tool_event, FunctionToolCallEvent):
+                                yield RunActivityChangedEvent(activity="using_tools")
                             yield tool_event
                 # `wrap_node_run` → `on_node_run_error` → `after_node_run`, around the
                 # step that advances the graph. The context is rebuilt so those hooks

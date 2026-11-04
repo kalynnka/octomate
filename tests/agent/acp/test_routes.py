@@ -528,6 +528,7 @@ async def test_agent_permissions_and_cancellation(
             frame = socket.receive_json()
             assert frame.get("id") != "prompt", frame
             if frame.get("method") == "session/request_permission":
+                assert frame["params"]["toolCall"]["status"] == "pending"
                 break
         if decision != "disconnect":
             # Configuration remains usable while a request waits for human input.
@@ -716,6 +717,7 @@ async def test_native_live_approval_returns_to_existing_run(
             frame = socket.receive_json()
             assert frame.get("id") != "prompt", frame
             if frame.get("method") == "session/request_permission":
+                assert frame["params"]["toolCall"]["status"] == "pending"
                 break
         socket.send_json(
             {

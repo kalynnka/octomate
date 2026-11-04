@@ -12,6 +12,8 @@ import httpx
 import lark_oapi as lark
 import pytest
 from lark_oapi.api.im.v1 import (
+    DeleteMessageRequest,
+    DeleteMessageResponse,
     GetChatMembersRequest,
     GetChatResponse,
     ListChat,
@@ -363,3 +365,27 @@ async def test_lark_lists_and_accepts_only_groups_the_requester_is_in() -> None:
         await ink.prepare_address(ChannelAddress("lark", "group", "oc_z", "ou_alice"))
     with pytest.raises(ValueError, match="nothing to open"):
         await ink.list_addresses(one_to_one, "oc_a")
+
+
+@pytest.mark.parametrize("code", [0, 230002])
+async def test_recall_status_message_checks_sdk_result(
+    code: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ink = LarkInk("app", SecretStr("secret"))
+    im = ink.client.im
+    assert im is not None
+    assert im.v1 is not None
+    delete = AsyncMock(
+        return_value=DeleteMessageResponse({"code": code, "msg": "result"})
+    )
+    monkeypatch.setattr(im.v1.message, "adelete", delete)
+    if code:
+        with pytest.raises(RuntimeError, match="Lark recall failed"):
+            await ink.delete_message("om_status")
+    else:
+        await ink.delete_message("om_status")
+    delete.assert_awaited_once()
+    assert delete.await_args is not None
+    request = delete.await_args.args[0]
+    assert isinstance(request, DeleteMessageRequest)
+    assert request.message_id == "om_status"

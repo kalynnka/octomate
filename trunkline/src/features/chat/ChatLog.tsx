@@ -1,5 +1,7 @@
-import { useLayoutEffect, useRef, type CSSProperties } from 'react'
+import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { nearChatBottom, useConsole } from '@/state/console'
+import { useThreadActivity } from '@/state/activity'
+import { useThreadSummary } from '@/lib/api/hooks'
 import { LedgerRow } from './cards'
 import { label, mono, display, statusNote } from '@/components/text'
 
@@ -7,11 +9,14 @@ const CARD_MAX = 'var(--trk-card-max)'
 
 export function ChatLog() {
   const threadId = useConsole((s) => s.selThreadId)
+  const channel = useConsole((s) => s.selChannel)
+  const thread = useThreadSummary(threadId)
   const detail = useConsole((s) => s.detail)
   const live = useConsole((s) => s.live)
   const notices = useConsole((s) => s.notices)
   const ledgerN = useConsole((s) => s.ledgerN)
   const ntOn = useConsole((s) => s.ntOn)
+  const activity = useThreadActivity(threadId, ntOn ? threadId : channel === 'trunkline' ? thread?.key ?? detail?.sendKey : undefined, Boolean(threadId) || ntOn)
   const ntAgent = useConsole((s) => s.ntAgent)
   const ntModel = useConsole((s) => s.ntModel)
   const sbFold = useConsole((s) => s.sbFold)
@@ -44,7 +49,14 @@ export function ChatLog() {
   // them off the relay once the ones in hand run out.
   const visible = ledger.slice(-ledgerN)
   const saved = new Set(ledger.map((item) => item.uid))
-  const items = [...visible, ...live.filter((item) => !saved.has(item.uid))]
+  const rows = [...visible, ...live.filter((item) => !saved.has(item.uid))]
+  const dispatch = rows.findLast((item) => item.kind === 'dots')
+  const items = rows.filter((item) => item.kind !== 'dots')
+  const status = activity ?? (dispatch && { text: dispatch.label, attention: false })
+  const [shown, setShown] = useState({ threadId, status })
+  if (shown.threadId !== threadId || (status && (status.text !== shown.status?.text || status.attention !== shown.status?.attention))) {
+    setShown({ threadId, status })
+  }
   const earlier = visible.length < ledger.length || detail?.earlier === true
   const blank = ntOn && live.length === 0
 
@@ -110,18 +122,25 @@ export function ChatLog() {
           </div>
         )}
         {items.map((item, i) => (
-          // Motion runs newest-first: the stagger index counts up from the
-          // bottom, so the latest page rises while earlier reveals stay calm.
-          <LedgerRow
-            key={item.uid}
-            item={item}
-            cardMax={CARD_MAX}
-            i={Math.min(items.length - 1 - i, 7)}
-          />
+          // The newest page enters first; earlier reveals stay calm.
+          <LedgerRow key={item.uid} item={item} cardMax={CARD_MAX} i={Math.min(items.length - 1 - i, 7)} />
         ))}
         {notices.map((item) => (
           <LedgerRow key={item.uid} item={item} cardMax={CARD_MAX} />
         ))}
+        {shown.status && (
+          <div
+            key={`activity-${threadId}`}
+            className="trk-activity-motion"
+            data-exiting={status ? undefined : ''}
+            aria-hidden={status ? undefined : true}
+            onAnimationEnd={event => {
+              if (event.target === event.currentTarget && !status) setShown({ threadId, status: undefined })
+            }}
+          >
+            <LedgerRow item={{ kind: 'dots', uid: 'activity', label: shown.status.text, attention: shown.status.attention }} cardMax={CARD_MAX} />
+          </div>
+        )}
       </div>
     </div>
   )

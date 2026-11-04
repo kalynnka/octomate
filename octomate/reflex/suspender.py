@@ -132,7 +132,7 @@ class ReflexSuspender:
             batch = await self.persist(requests, response_mode="resume")
             self.suspended_batch_id = batch.id
             span.set_attribute("batch_id", str(batch.id))
-            return ActionBatchEvent.from_batch(batch)
+            return ActionBatchEvent.from_batch(batch, blocks_run=True)
 
     async def pause(
         self, requests: DeferredToolRequests, *, batch_id: UUID7
@@ -152,7 +152,7 @@ class ReflexSuspender:
                 requests, response_mode="live", batch_id=batch_id
             )
             span.set_attribute("batch_id", str(batch.id))
-            return ActionBatchEvent.from_batch(batch)
+            return ActionBatchEvent.from_batch(batch, blocks_run=True)
 
     async def request(self, requests: DeferredToolRequests) -> ActionBatchEvent:
         """Persist a resumable batch while the caller keeps running.
@@ -162,7 +162,7 @@ class ReflexSuspender:
         """
         self.continuation_decision()
         batch = await self.persist(requests, response_mode="resume")
-        return ActionBatchEvent.from_batch(batch)
+        return ActionBatchEvent.from_batch(batch, blocks_run=False)
 
     async def persist(
         self,

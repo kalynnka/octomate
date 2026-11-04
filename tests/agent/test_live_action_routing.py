@@ -172,6 +172,8 @@ async def test_a_reply_reaches_the_live_request(
 
     assert response is not None
     stored = await app.deferred_actions.get_batch(UUID(batch.batch_id))
+    assert batch.response_mode == "live"
+    assert batch.blocks_run is True
     assert stored.response_mode == "live"
     assert stored.status == "resolved"
     assert not agent.pendings
@@ -319,3 +321,27 @@ async def test_an_answer_that_finds_its_thread_busy_waits_out_the_turn(
         run.assert_not_awaited()
     await answering
     run.assert_awaited_once()
+
+
+async def test_async_question_does_not_block_its_live_run(
+    live_agent: tuple[LiveAgent, Conversation],
+) -> None:
+    agent, conversation = live_agent
+    suspender = a_suspender(agent, conversation)
+    event = await suspender.request(
+        DeferredToolRequests(
+            calls=[
+                ToolCallPart(
+                    "ask_questions",
+                    {"questions": [{"question": "Which option?"}]},
+                    "question-1",
+                )
+            ]
+        )
+    )
+    assert event.response_mode == "resume"
+    assert event.blocks_run is False
+    assert suspender.suspended_batch_id is None
+    assert (
+        await agent.octomate.deferred_actions.get_batch(UUID(event.batch_id))
+    ).status == "pending"

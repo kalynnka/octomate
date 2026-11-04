@@ -11,12 +11,15 @@ from claude_agent_sdk import (
     ServerToolResultBlock,
     ServerToolUseBlock,
     StreamEvent,
+    SystemMessage,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
 )
+from claude_agent_sdk._internal.message_parser import parse_message
+from pydantic import ValidationError
 from pydantic_ai.messages import (
     BinaryContent,
     FunctionToolCallEvent,
@@ -40,6 +43,7 @@ from pydantic_ai.messages import (
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
+from octomate.capabilities.harness.events import RunActivityChangedEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.tentacles.claude.adapter import (
     ClaudeRunAccumulator,
@@ -842,3 +846,96 @@ def test_adapter_falls_back_to_block_render_without_partial_stream() -> None:
     assert empty.output_tokens == 0
     assert empty.cache_write_tokens == 0
     assert empty.cache_read_tokens == 0
+
+
+@pytest.mark.parametrize("end_subtype", ["status", "compact_boundary"])
+def test_compaction_status_uses_standard_labels_and_clears_at_end(
+    end_subtype: str,
+) -> None:
+    acc = ClaudeRunAccumulator()
+    started = parse_message(
+        {"type": "system", "subtype": "status", "status": "compacting"}
+    )
+    ended = parse_message({"type": "system", "subtype": end_subtype, "status": None})
+
+    assert isinstance(started, SystemMessage)
+    assert isinstance(ended, SystemMessage)
+    assert list(acc.consume(started)) == [
+        RunActivityChangedEvent(activity="compacting", display_text=None)
+    ]
+    assert list(acc.consume(ended)) == [
+        RunActivityChangedEvent(activity="working", display_text=None)
+    ]
+    assert acc.messages == []
+
+
+def test_requesting_status_uses_standard_working_label() -> None:
+    acc = ClaudeRunAccumulator()
+    message = parse_message(
+        {"type": "system", "subtype": "status", "status": "requesting"}
+    )
+
+    assert isinstance(message, SystemMessage)
+    assert list(acc.consume(message)) == [RunActivityChangedEvent(activity="working")]
+    assert acc.messages == []
+
+
+@pytest.mark.parametrize("subtype", ["status", "compact_boundary"])
+def test_command_activity_requires_a_model_run(subtype: str) -> None:
+    acc = ClaudeRunAccumulator()
+    message = parse_message(
+        {"type": "system", "subtype": subtype, "status": "compacting"}
+    )
+    assert isinstance(message, SystemMessage)
+    assert list(acc.consume(message, command=True)) == []
+    list(
+        acc.consume(
+            AssistantMessage(content=[TextBlock(text="Checking")], model="claude"),
+            command=True,
+        )
+    )
+    assert list(acc.consume(message, command=True)) == [
+        RunActivityChangedEvent(
+            activity="compacting" if subtype == "status" else "working"
+        )
+    ]
+
+
+def test_compaction_boundary_without_start_does_not_announce_compacting() -> None:
+    acc = ClaudeRunAccumulator()
+    boundary = parse_message({"type": "system", "subtype": "compact_boundary"})
+
+    assert isinstance(boundary, SystemMessage)
+    assert list(acc.consume(boundary)) == [RunActivityChangedEvent(activity="working")]
+
+
+def test_child_task_progress_is_not_a_parent_activity_label() -> None:
+    acc = ClaudeRunAccumulator()
+    child = parse_message(
+        {
+            "type": "system",
+            "subtype": "task_progress",
+            "task_id": "child-1",
+            "tool_use_id": "agent-call-1",
+            "description": "Searching the codebase",
+            "last_tool_name": "Grep",
+            "usage": {"total_tokens": 12, "tool_uses": 1, "duration_ms": 20},
+            "uuid": str(uuid7()),
+            "session_id": "session-1",
+        }
+    )
+
+    assert isinstance(child, SystemMessage)
+    assert list(acc.consume(child)) == []
+    assert acc.messages == []
+
+
+def test_compaction_status_validates_the_sdk_payload() -> None:
+    acc = ClaudeRunAccumulator()
+    message = parse_message(
+        {"type": "system", "subtype": "status", "status": "invented-spinner-verb"}
+    )
+
+    assert isinstance(message, SystemMessage)
+    with pytest.raises(ValidationError):
+        list(acc.consume(message))

@@ -31,6 +31,7 @@ from octomate.tentacles.slack.feelers.artifacts import SlackArtifactFeeler
 from octomate.tentacles.slack.feelers.oauth import SlackOAuthFeeler
 from octomate.tentacles.slack.feelers.output import SlackTimelineFeeler
 from octomate.tentacles.slack.feelers.questions import SlackAskQuestionFeeler
+from octomate.tentacles.slack.feelers.status import SlackStatusFeeler
 from octomate.tentacles.slack.ink import SlackInk as SlackInkType
 from octomate.tentacles.slack.schema import (
     SlackBlock,
@@ -278,6 +279,7 @@ def compose_slack_feelers(
     actions = deferred_actions or DeferredActionManager()
     channel.feelers = Feelers(
         markdown=markdown_feeler,
+        status=SlackStatusFeeler(ink),
         artifacts=SlackArtifactFeeler(
             artifacts=channel.octomate.artifacts,
             users=channel.octomate.users,

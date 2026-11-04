@@ -31,6 +31,14 @@
 .lt-fade-in { animation: lt-fade-in var(--motion-entry) var(--ease-out) both; animation-delay: calc(var(--i, 0) * 70ms); }
 .lt-fade-out{ animation: lt-fade-out var(--motion-base) var(--ease-out) both; pointer-events: none; }
 
+.trk-activity .lt-dots i { background: var(--fg-3); }
+.trk-activity-motion { animation: lt-fade-up var(--motion-base) var(--ease-out) both; --entry-rise: 4px; }
+.trk-activity-motion[data-exiting] { animation: lt-fade-out var(--motion-fast) var(--ease-out) both; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .trk-activity-motion { animation-name: lt-fade-in; animation-duration: 80ms; }
+  .trk-activity-motion[data-exiting] { animation-duration: 80ms; }
+}
+
 .lt-text-swap { display: inline-grid; min-width: 0; max-width: 100%; vertical-align: bottom; }
 .lt-text-swap > span { grid-area: 1 / 1; min-width: 0; overflow: hidden; text-overflow: inherit; white-space: inherit; }
 .lt-text-old { pointer-events: none; user-select: none; animation: lt-fade-out var(--motion-fast) var(--ease-out) both; }

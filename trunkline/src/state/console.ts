@@ -737,6 +737,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     let fold = turnFold()
     const feed = (event: CommandStreamEvent) => {
       received++
+      if (event.event_kind === 'run_activity_changed' || event.event_kind === 'reflex_phase_changed') clearDots()
       if (event.event_kind === 'artifact_available') {
         clearDots()
         edit((live) => withArtifact(live, event, here() ? get().detail?.ledger : undefined))
@@ -801,6 +802,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         return
       }
       if (event.event_kind === 'reflex_awake') {
+        clearDots()
         woke = true
         return
       }
@@ -809,7 +811,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         settle()
         return
       }
-      if (event.event_kind === 'run_ended') return
       if (event.event_kind === 'action_batch_answered') {
         markAnswered(selId, event)
         return

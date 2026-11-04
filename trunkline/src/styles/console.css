@@ -783,7 +783,20 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
 .trk-copy-button:focus-visible { outline: 2px solid var(--fg-2); outline-offset: 2px; }
 .trk-copy-button[data-state='copied'] { color: var(--color-sage); }
 .trk-copy-button[data-state='failed'] { color: var(--color-red); }
+.trk-oauth-copy { width: auto; height: auto; flex: 0 1 auto; gap: 8px; margin-top: 10px; border: 0; cursor: default; user-select: none; }
+.trk-oauth-copy:hover { background: transparent; }
+.trk-oauth-copy > svg { padding: 7px; box-sizing: content-box; border-radius: var(--radius-soft-sm); }
+.trk-oauth-copy > :is(svg, .trk-oauth-code) { transition: transform var(--motion-fast) var(--ease-out); }
+.trk-oauth-copy:is(:active, [data-pressed]) > :is(svg, .trk-oauth-code) { transform: translateY(1px) scale(.97); transition-duration: 0s; background: var(--hover); }
+.trk-oauth-code { padding: 7px 14px; border: 1px solid var(--color-gold); font: 700 16px/1.5 var(--font-mono); letter-spacing: .18em; color: var(--fg-1); }
+@media (prefers-reduced-motion: reduce) {
+  .trk-oauth-copy > :is(svg, .trk-oauth-code) { transition: none; }
+  .trk-oauth-copy:is(:active, [data-pressed]) > :is(svg, .trk-oauth-code) { transform: none; }
+}
 .trk-message-actions { display: flex; align-items: center; min-height: 26px; }
+.trk-agent-message { display: grid; grid-template-columns: minmax(0, 1fr) 26px; gap: 6px 8px; }
+.trk-agent-message > :first-child { grid-column: 1 / -1; }
+.trk-agent-message > .trk-message-actions { align-self: end; }
 .trk-message-copy { opacity: 0; pointer-events: none; transition: opacity var(--motion-fast) var(--ease-out); }
 .lt-message-entry:hover > .trk-message-actions > .trk-message-copy,
 .lt-message-entry:focus-within > .trk-message-actions > .trk-message-copy { opacity: 1; pointer-events: auto; }
