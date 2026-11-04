@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Self
 
-from arcanus import BaseTransmuter
+from arcanus import BaseTransmuter, RelationCollection, Relationships
 from arcanus.base import Identity
 from pydantic import (
     UUID7,
@@ -20,6 +20,7 @@ from uuid_utils.compat import uuid7
 from octomate.models.compactions import Compaction as CompactionModel
 from octomate.models.compactions import ExternalCompaction as ExternalCompactionModel
 from octomate.schemas.base import sqlalchemy_materia
+from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.types.compactions import CompactionTrigger
 
 
@@ -61,6 +62,9 @@ class Compaction(BaseTransmuter):
     native_compaction_id: str | None = Field(
         default=None,
         description="Native transformation identifier, when the source supplies one.",
+    )
+    messages: RelationCollection[ModelRequest | ModelResponse] = Relationships(
+        description="Messages created or rewritten by this compaction; retained messages keep their original owner.",
     )
 
 

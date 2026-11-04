@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import UUID7
 from sqlalchemy import ForeignKey, Integer, String, Uuid
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base, MapperArgs, UTCDateTime
 from octomate.types.compactions import CompactionTrigger
+
+if TYPE_CHECKING:
+    from octomate.models.messages import ModelMessage
 
 
 class Compaction(Base, TransmuterProxiedMixin):
@@ -71,6 +74,13 @@ class Compaction(Base, TransmuterProxiedMixin):
         String,
         nullable=True,
         comment="Native transformation identifier, when the source supplies one.",
+    )
+    messages: Mapped[list[ModelMessage]] = relationship(
+        "ModelMessage",
+        back_populates="compaction",
+        cascade="all",
+        order_by="ModelMessage.id",
+        lazy="raise_on_sql",
     )
 
 

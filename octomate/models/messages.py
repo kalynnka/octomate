@@ -7,13 +7,14 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import UUID7, JsonValue
-from sqlalchemy import JSON, ForeignKey, String, Uuid
+from sqlalchemy import JSON, CheckConstraint, ForeignKey, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base, MapperArgs, UTCDateTime
 
 if TYPE_CHECKING:
+    from octomate.models.compactions import Compaction
     from octomate.models.runs import AgentRun
     from octomate.models.thread import ThreadMessage
 
@@ -23,17 +24,35 @@ class ModelMessage(Base, TransmuterProxiedMixin):
     or a response."""
 
     __tablename__ = "model_messages"
+    __table_args__ = (
+        CheckConstraint(
+            "(run_id IS NOT NULL AND compaction_id IS NULL) OR "
+            "(run_id IS NULL AND compaction_id IS NOT NULL)",
+            name="ck_model_messages_single_owner",
+        ),
+    )
     __mapper_args__: ClassVar[MapperArgs] = {
         "polymorphic_on": "kind",
         "polymorphic_abstract": True,
     }
 
     id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
-    run_id: Mapped[str] = mapped_column(
+    run_id: Mapped[str | None] = mapped_column(
         String,
         ForeignKey("agent_runs.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
+    )
+    compaction_id: Mapped[UUID7 | None] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "compactions.id",
+            name="fk_model_messages_compaction_id_compactions",
+            ondelete="CASCADE",
+        ),
+        nullable=True,
+        index=True,
+        comment="Compaction that created or rewrote this message; NULL for original run messages.",
     )
 
     kind: Mapped[str] = mapped_column(String, nullable=False, index=True)
@@ -88,8 +107,11 @@ class ModelMessage(Base, TransmuterProxiedMixin):
     )
     message_text: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
-    run: Mapped[AgentRun] = relationship(
+    run: Mapped[AgentRun | None] = relationship(
         "AgentRun", back_populates="messages", lazy="raise_on_sql"
+    )
+    compaction: Mapped[Compaction | None] = relationship(
+        "Compaction", back_populates="messages", lazy="raise_on_sql"
     )
     thread_messages: Mapped[list[ThreadMessage]] = relationship(
         "ThreadMessage",

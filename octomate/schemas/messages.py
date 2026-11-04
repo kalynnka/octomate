@@ -83,6 +83,10 @@ class ModelMessage(BaseTransmuter, ABC):
 
     id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
     run_id: str | None = None
+    compaction_id: UUID7 | None = Field(
+        default=None,
+        description="Compaction that created or rewrote this message; None for original run messages.",
+    )
     conversation_id: str | None = None
     timestamp: AwareDatetime | None = None
     role: Literal["user", "assistant"] = "assistant"
@@ -105,6 +109,10 @@ class ModelRequest(Transmuter, PydanticModelRequest):
     its parts."""
 
     id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
+    compaction_id: UUID7 | None = Field(
+        default=None,
+        description="Compaction that created or rewrote this message; None for original run messages.",
+    )
     timestamp: AwareDatetime | None = None
     metadata: Annotated[JsonObject | None, Field(alias="meta")] = None
     role: Literal["user", "assistant"] = "assistant"
@@ -142,6 +150,10 @@ class ModelResponse(Transmuter, PydanticModelResponse):
     including what it delivered through `send`."""
 
     id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
+    compaction_id: UUID7 | None = Field(
+        default=None,
+        description="Compaction that created or rewrote this message; None for original run messages.",
+    )
     timestamp: AwareDatetime = Field(default_factory=now_utc)
     metadata: Annotated[JsonObject | None, Field(alias="meta")] = None
     workspace_ref: WorkspaceRef | None = Field(

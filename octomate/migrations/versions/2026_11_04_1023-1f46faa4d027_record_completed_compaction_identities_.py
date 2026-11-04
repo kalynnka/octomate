@@ -1,7 +1,6 @@
-"""Keep completed transformations identifiable without requiring a model run.
+"""Store completed transformations and their content without inventing a model run.
 
-Only identity and source provenance are introduced here. Existing model messages,
-run membership, and command receipts are unchanged.
+Original run messages, run membership, and command receipts are preserved.
 
 Revision ID: 1f46faa4d027
 Revises: 1a83da0aa445
@@ -101,9 +100,52 @@ def upgrade() -> None:
         )
         batch_op.create_index(batch_op.f("ix_compactions_kind"), ["kind"], unique=False)
 
+    with op.batch_alter_table("model_messages", schema=None) as batch_op:
+        batch_op.add_column(
+            sa.Column(
+                "compaction_id",
+                sa.Uuid(),
+                nullable=True,
+                comment="Compaction that created or rewrote this message; NULL for original run messages.",
+            )
+        )
+        batch_op.alter_column("run_id", existing_type=sa.VARCHAR(), nullable=True)
+        batch_op.create_check_constraint(
+            "ck_model_messages_single_owner",
+            "(run_id IS NOT NULL AND compaction_id IS NULL) OR (run_id IS NULL AND compaction_id IS NOT NULL)",
+        )
+        batch_op.create_index(
+            batch_op.f("ix_model_messages_compaction_id"),
+            ["compaction_id"],
+            unique=False,
+        )
+        batch_op.create_foreign_key(
+            "fk_model_messages_compaction_id_compactions",
+            "compactions",
+            ["compaction_id"],
+            ["id"],
+            ondelete="CASCADE",
+        )
+
 
 def downgrade() -> None:
     """Downgrade schema."""
+    compaction_message = op.get_bind().scalar(
+        sa.text("SELECT 1 FROM model_messages WHERE compaction_id IS NOT NULL LIMIT 1")
+    )
+    if compaction_message is not None:
+        raise RuntimeError(
+            "Cannot remove compaction ownership while compaction-owned messages exist."
+        )
+    with op.batch_alter_table("model_messages", schema=None) as batch_op:
+        batch_op.drop_constraint(
+            "fk_model_messages_compaction_id_compactions", type_="foreignkey"
+        )
+        batch_op.drop_index(batch_op.f("ix_model_messages_compaction_id"))
+        batch_op.drop_constraint("ck_model_messages_single_owner", type_="check")
+        batch_op.alter_column("run_id", existing_type=sa.VARCHAR(), nullable=False)
+        batch_op.drop_column("compaction_id")
+
     with op.batch_alter_table("compactions", schema=None) as batch_op:
         batch_op.drop_index(batch_op.f("ix_compactions_kind"))
         batch_op.drop_index(batch_op.f("ix_compactions_conversation_id"))
