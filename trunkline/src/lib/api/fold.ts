@@ -264,28 +264,62 @@ function clip(text: string): string {
   return text.length > TRUNC ? `${text.slice(0, TRUNC)} …` : text
 }
 
-function toolIcon(name: string): 'search' | 'file-diff' | 'send' | 'file' {
-  if (/search|grep|find|history/i.test(name)) return 'search'
-  if (/edit|diff|write|apply/i.test(name)) return 'file-diff'
-  if (/send|relay|message/i.test(name)) return 'send'
-  return 'file'
+function toolIcon(name: string): Extract<LedgerItem, { kind: 'tool' }>['icon'] {
+  const tool = name.toLowerCase().split(/__|\./).at(-1)!
+  if (tool === 'exec') return 'code'
+  if (/^(bash|shell|shell_command|exec_command|codex_command_execution|write_stdin)$/.test(tool)) return 'terminal'
+  if (/search|grep|find|glob|history/.test(tool)) return 'search'
+  if (/edit|diff|write|apply|file_change/.test(tool)) return 'file-diff'
+  if (/send|relay|message/.test(tool)) return 'send'
+  if (/^(read|read_file|read_text_file|read_multiple_files)$/.test(tool)) return 'file'
+  return 'wrench'
 }
 
-function commandActivities(name: string, args: ToolCallPart['args']): CommandActivity[] | undefined {
-  if (name !== 'codex_command_execution') return undefined
+function toolPresentation(name: string, args: ToolCallPart['args']): Pick<Extract<LedgerItem, { kind: 'tool' }>, 'icon' | 'activities' | 'action'> {
+  const tool = name.toLowerCase().split(/__|\./).at(-1)!
+  const presentation: ReturnType<typeof toolPresentation> = { icon: toolIcon(name) }
+  if (tool === 'exec') presentation.action = { kind: 'code', target: 'code' }
+  if (tool === 'apply_patch') presentation.action = { kind: 'edit', target: 'files' }
   let payload: unknown
-  try { payload = typeof args === 'string' ? JSON.parse(args) : args } catch { return undefined }
-  if (!payload || typeof payload !== 'object' || !('commandActions' in payload) || !Array.isArray(payload.commandActions)) return undefined
-  const actions: unknown[] = payload.commandActions
-  const activities = new Set<CommandActivity>()
-  for (const action of actions) {
-    if (!action || typeof action !== 'object' || !('type' in action)) continue
-    if (action.type === 'read') activities.add('read')
-    if (action.type === 'search') activities.add('search')
-    if (action.type === 'listFiles' || action.type === 'list_files') activities.add('list')
-    if (action.type === 'unknown') activities.add('command')
+  try { payload = typeof args === 'string' ? JSON.parse(args) : args } catch { return presentation }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return presentation
+  const fields = payload as Record<string, unknown>
+  const path = [fields.file_path, fields.path, fields.filePath].find((value): value is string => typeof value === 'string')
+  const query = [fields.query, fields.pattern].find((value): value is string => typeof value === 'string')
+  const command = [fields.command, fields.cmd].find((value): value is string => typeof value === 'string')
+  if (/^(read|read_file|read_text_file|read_multiple_files)$/.test(tool)) {
+    const paths = Array.isArray(fields.paths) ? fields.paths.filter((value): value is string => typeof value === 'string') : path ? [path] : []
+    presentation.action = { kind: 'read', target: paths.map(value => value.split(/[\\/]/).at(-1)).join(', ') || 'files' }
+  } else if (/^(bash|shell|shell_command|exec_command|codex_command_execution)$/.test(tool)) {
+    presentation.action = { kind: 'command', target: command || 'a command' }
+  } else if (/^(search|web_search|codex_web_search|grep|glob)$/.test(tool)) {
+    presentation.action = { kind: 'search', target: query || '' }
+  } else if (/^(edit|write|write_file|edit_file|apply_patch|codex_file_change)$/.test(tool)) {
+    presentation.action = { kind: 'edit', target: path?.split(/[\\/]/).at(-1) || 'files' }
+  } else if (/^(toolsearch|tool_search|tool_search_tool_regex|search_tools|list_tools|mcp_list_tools)$/.test(tool)) {
+    presentation.action = { kind: 'load', target: query ? `tools: ${query}` : 'tools' }
   }
-  return activities.size ? [...activities] : undefined
+  if (tool === 'codex_command_execution' && Array.isArray(fields.commandActions)) {
+    const actions = fields.commandActions.filter((value): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value))
+    const activities = new Set<CommandActivity>()
+    for (const action of actions) {
+      if (action.type === 'read') activities.add('read')
+      if (action.type === 'search') activities.add('search')
+      if (action.type === 'listFiles' || action.type === 'list_files') activities.add('list')
+      if (action.type === 'unknown') activities.add('command')
+    }
+    if (activities.size) presentation.activities = [...activities]
+    if (activities.size === 1) {
+      const kind = [...activities][0]
+      const targets = actions.map(action => kind === 'read' ? action.name ?? action.path : kind === 'search' ? action.query : kind === 'list' ? action.path : action.cmd)
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        .map(value => kind === 'read' ? value.split(/[\\/]/).at(-1)! : value)
+      presentation.action = { kind, target: [...new Set(targets)].join(kind === 'command' ? '; ' : ', ') || (kind === 'command' ? command || 'a command' : kind === 'search' ? '' : 'files') }
+      presentation.icon = kind === 'read' || kind === 'list' ? 'file' : kind === 'search' ? 'search' : 'terminal'
+    }
+  }
+  if (presentation.action) presentation.action.target = clip(presentation.action.target.replace(/\s+/g, ' ').trim())
+  return presentation
 }
 
 /** A child run reachable from a parent's spawn call, keyed by that call's id —
@@ -369,8 +403,7 @@ export function replayRun(
       return {
         kind: 'tool',
         name,
-        icon: toolIcon(name),
-        activities: commandActivities(name, args),
+        ...toolPresentation(name, args),
         status: 'run',
         detail: { type: 'plain', args: clipped, res: '' },
       }
@@ -378,8 +411,7 @@ export function replayRun(
     return {
       kind: 'tool',
       name,
-      icon: toolIcon(name),
-      activities: commandActivities(name, args),
+      ...toolPresentation(name, args),
       status: 'done',
       badge: settled.failed ? { label: 'failed', tone: 'terra' } : undefined,
       detail: {
@@ -581,8 +613,7 @@ export class TurnFold {
     const uid = this.sink.push({
       kind: 'tool',
       name,
-      icon: toolIcon(name),
-      activities: commandActivities(name, args),
+      ...toolPresentation(name, args),
       status: 'run',
       detail: { type: 'plain', args: clipped, res: '' },
     })

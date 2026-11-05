@@ -55,7 +55,11 @@ from octomate.schemas.thread import (
 )
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import codex_logfire
-from octomate.tentacles.codex.adapter import CODEX_PROVIDER_NAME, codex_metadata
+from octomate.tentacles.codex.adapter import (
+    CODEX_PROVIDER_NAME,
+    codex_metadata,
+    model_json,
+)
 from octomate.tentacles.codex.html import visualization_text
 from octomate.tentacles.codex.transcript import (
     CompletedCommandItem,
@@ -838,7 +842,7 @@ class CodexTranscriptTailer:
                 line.payload
             ).permission_mode
         except ValueError as error:
-            # Keep ingesting history; an unknown preset makes this turn unforkable.
+            # Custom native permissions are valid history, but not a forkable preset.
             turn.permission_mode = None
             reason = str(error)
             if isinstance(error, ValidationError):
@@ -848,7 +852,7 @@ class CodexTranscriptTailer:
                         include_input=False, include_context=False, include_url=False
                     )
                 )
-            logger.warning(
+            logger.debug(
                 "Codex turn %s has no matching permission preset; "
                 "history sync continues, but forking is unavailable: %s",
                 turn.turn_id,
@@ -876,7 +880,7 @@ class CodexTranscriptTailer:
                 "command": shlex.join(item.command),
                 "cwd": item.cwd,
                 "status": item.status,
-                "commandActions": [{"type": action.type} for action in item.parsed_cmd],
+                "commandActions": [model_json(action) for action in item.parsed_cmd],
             },
             provider_name=CODEX_PROVIDER_NAME,
         )

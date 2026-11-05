@@ -51,6 +51,16 @@ class ParsedCommand(BaseModel):
     """Codex's classification of one command in a native execution item."""
 
     type: Literal["read", "list_files", "search", "unknown"]
+    cmd: str | None = Field(
+        default=None, description="Command text classified by Codex."
+    )
+    name: str | None = Field(default=None, description="Display name of the read file.")
+    path: str | None = Field(
+        default=None, description="File or directory targeted by the command."
+    )
+    query: str | None = Field(
+        default=None, description="Search query recorded by Codex."
+    )
 
 
 class CompletedCommandItem(BaseModel):

@@ -384,7 +384,9 @@ def test_native_command_items_keep_classifications_without_duplicate_calls(
     assert isinstance(call, FunctionToolCallEvent)
     assert isinstance(result, FunctionToolResultEvent)
     assert isinstance(result.part, ToolReturnPart)
-    assert call.part.args_as_dict()["commandActions"] == [{"type": "read"}]
+    assert call.part.args_as_dict()["commandActions"] == [
+        {"type": "read", "cmd": "cat app.py", "name": "app.py", "path": "/repo/app.py"}
+    ]
     assert (
         result.part.outcome
         == {"completed": "success", "failed": "failed", "declined": "denied"}[status]

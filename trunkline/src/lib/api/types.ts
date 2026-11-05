@@ -180,13 +180,15 @@ export type LedgerItem =
       kind: 'tool'
       uid: string
       name: string
-      icon: 'search' | 'file-diff' | 'summon' | 'send' | 'file'
+      icon: 'search' | 'file-diff' | 'summon' | 'send' | 'file' | 'code' | 'terminal' | 'wrench'
       dur?: string
       status: 'run' | 'done'
       badge?: { label: string; tone: 'gold' | 'terra' }
       detail: ToolDetail
       /** Command classifications supplied by the harness, before display arguments are clipped. */
       activities?: CommandActivity[]
+      /** Recorded action and target, extracted before display arguments are clipped. */
+      action?: { kind: CommandActivity | 'edit' | 'code' | 'load'; target: string }
       defaultOpen?: boolean
     }
   | { kind: 'file'; uid: string; name: string; rev: string; note: string }

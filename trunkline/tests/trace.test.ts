@@ -32,9 +32,20 @@ test('messages, actions and run boundaries end the group', () => {
   ]
   for (const boundary of boundaries) {
     assert.deepEqual(traceRows([read, boundary, command], true), [
-      { kind: 'trace', uid: read.uid, items: [read], active: false }, boundary,
+      read, boundary,
       { kind: 'trace', uid: command.uid, items: [command], active: true },
     ])
+  }
+})
+
+test('finished single-item groups render the original thinking or tool item directly', () => {
+  const thinking: Extract<LedgerItem, { kind: 'think' }> = { kind: 'think', uid: 'thinking', dur: '', text: '**Next step**', format: 'summary', thinking: false }
+  const failed: typeof read = { ...read, badge: { label: 'failed', tone: 'terra' } }
+  for (const item of [thinking, read, failed]) {
+    assert.deepEqual(traceRows([item], true), [{ kind: 'trace', uid: item.uid, items: [item], active: true }])
+    const rows = traceRows([item], false)
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0], item)
   }
 })
 

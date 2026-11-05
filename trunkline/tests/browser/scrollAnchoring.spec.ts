@@ -63,18 +63,21 @@ for (const width of [1280, 390]) {
       await page.goto('/threads/thread-a', { waitUntil: 'domcontentloaded' })
       await expect(page).toHaveTitle('Trunkline · Octomate')
       const log = page.locator('#trk-chatlog')
+      const composerGap = await log.evaluate(el => {
+        const bounds = el.getBoundingClientRect()
+        return (document.querySelector('.trk-composer-frame')!.getBoundingClientRect().top - bounds.bottom) / (bounds.height / el.clientHeight)
+      })
+      expect(composerGap).toBeCloseTo(16, 0)
       await expect(log.getByText('End of latest answer.', { exact: true })).toBeVisible()
       await page.evaluate(async () => { await document.fonts.ready })
       await expect.poll(() => log.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(2)
       await expect(log.locator('svg.pele')).toHaveCount(0)
       const height = await log.evaluate(el => el.scrollHeight)
       if (expanding) {
-        const group = log.locator('details.trk-trace-group')
-        const summary = group.locator('summary')
-        const summaryBefore = (await summary.boundingBox())!.y
-        await summary.click()
-        await expect(group).toHaveAttribute('open', '')
-        expect((await summary.boundingBox())!.y).toBeCloseTo(summaryBefore, 0)
+        await expect(log.locator('details.trk-trace-group')).toHaveCount(0)
+        await page.evaluate(async () => {
+          await Promise.allSettled(document.getAnimations().filter(animation => animation.effect?.getComputedTiming().iterations !== Infinity).map(animation => animation.finished))
+        })
         const button = log.locator('.trk-tool-toggle')
         if (mode === 'expand-bottom') await button.evaluate(el => {
           const log = document.getElementById('trk-chatlog')!

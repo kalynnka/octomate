@@ -277,6 +277,89 @@ test('live and replayed reasoning retain their formats and authoritative complet
   }
 })
 
+test('tool icons distinguish execution, files and unknown tools in live calls and replay', () => {
+  for (const [name, icon] of [
+    ['exec', 'code'], ['functions.exec', 'code'], ['mcp__tools__exec', 'code'],
+    ['exec_command', 'terminal'], ['Bash', 'terminal'], ['shell_command', 'terminal'],
+    ['codex_command_execution', 'terminal'], ['functions.write_stdin', 'terminal'],
+    ['Read', 'file'], ['mcp__search__read_file', 'file'],
+    ['Grep', 'search'], ['Glob', 'search'], ['web_search', 'search'],
+    ['apply_patch', 'file-diff'], ['codex_file_change', 'file-diff'],
+    ['send_message', 'send'], ['mcp__files__unknown', 'wrench'],
+  ] as const) {
+    const part = { part_kind: 'tool-call' as const, tool_name: name, tool_call_id: 'tool', args: {} }
+    const result = { part_kind: 'tool-return' as const, tool_name: name, tool_call_id: 'tool', content: 'Done' }
+    const items: LedgerItem[] = []
+    const fold = new TurnFold({
+      push(draft) { items.push({ ...draft, uid: 'tool' }); return 'tool' },
+      patch(uid, patch) { Object.assign(items.find(item => item.uid === uid)!, patch) },
+      done() {},
+    })
+    fold.feed({ event_kind: 'function_tool_call', part })
+    for (const status of ['run', 'done'] as const) {
+      if (status === 'done') fold.feed({ event_kind: 'function_tool_result', part: result })
+      const replayed = replayRun([
+        { id: 'call', run_id: 'run', kind: 'response', timestamp: '2026-11-05T00:00:00Z', thread_messages: [], parts: [part] },
+        { id: 'result', run_id: 'run', kind: 'request', timestamp: null, thread_messages: [], parts: status === 'done' ? [result] : [] },
+      ], 'Codex')
+      assert.equal(items[0].kind === 'tool' && items[0].icon, icon, `${name} live ${status}`)
+      assert.equal(replayed[0].item.kind === 'tool' && replayed[0].item.icon, icon, `${name} replay ${status}`)
+    }
+  }
+})
+
+for (const serialized of [false, true]) {
+  test(`tool briefs use ${serialized ? 'serialized' : 'structured'} recorded targets before clipping in live calls and replay`, () => {
+    for (const [name, args, kind, target] of [
+      ['Read', { file_path: '/work/MEMORY.md' }, 'read', 'MEMORY.md'],
+      ['mcp__filesystem__read_multiple_files', { paths: ['/work/a.py', '/work/b.py'] }, 'read', 'a.py, b.py'],
+      ['Bash', { command: 'git status --short' }, 'command', 'git status --short'],
+      ['functions.exec_command', { cmd: 'git diff\n--stat' }, 'command', 'git diff --stat'],
+      ['Grep', { pattern: 'TODO' }, 'search', 'TODO'],
+      ['Edit', { file_path: '/work/app.py' }, 'edit', 'app.py'],
+      ['ToolSearch', { query: 'files' }, 'load', 'tools: files'],
+      ['codex_command_execution', { command: 'cat /work/MEMORY.md', padding: '.'.repeat(800), commandActions: [{ type: 'read', path: '/work/MEMORY.md' }] }, 'read', 'MEMORY.md'],
+      ['codex_command_execution', { command: 'rg FIXME /work', commandActions: [{ type: 'search', query: 'FIXME', path: '/work' }] }, 'search', 'FIXME'],
+      ['codex_command_execution', { command: 'ls /work', commandActions: [{ type: 'list_files', path: '/work' }] }, 'list', '/work'],
+      ['codex_command_execution', { command: '/bin/zsh -lc "git status --short"', commandActions: [{ type: 'unknown', cmd: 'git status --short' }] }, 'command', 'git status --short'],
+    ] as const) {
+      const part = { part_kind: 'tool-call' as const, tool_name: name, tool_call_id: 'brief', args: serialized ? JSON.stringify(args) : args }
+      const result = { part_kind: 'tool-return' as const, tool_name: name, tool_call_id: 'brief', content: 'Finished' }
+      const items: LedgerItem[] = []
+      const fold = new TurnFold({
+        push(draft) { items.push({ ...draft, uid: 'brief' }); return 'brief' },
+        patch(uid, patch) { Object.assign(items.find(item => item.uid === uid)!, patch) },
+        done() {},
+      })
+      fold.feed({ event_kind: 'function_tool_call', part })
+      assert.equal(items[0].kind, 'tool')
+      assert.deepEqual(items[0].kind === 'tool' && items[0].action, { kind, target })
+      fold.feed({ event_kind: 'function_tool_result', part: result })
+      const replayed = replayRun([
+        { id: 'call', run_id: 'run', kind: 'response', timestamp: '2026-11-05T00:00:00Z', thread_messages: [], parts: [part] },
+        { id: 'result', run_id: 'run', kind: 'request', timestamp: null, thread_messages: [], parts: [result] },
+      ], 'Codex')
+      assert.deepEqual({ ...replayed[0].item, uid: 'brief' }, items[0])
+      const html = renderToStaticMarkup(createElement(LedgerRow, { item: items[0], cardMax: '100%' }))
+      assert.ok(!html.includes('>Tool</span>'))
+      assert.ok(html.includes(target))
+      if (kind === 'read') assert.equal(items[0].kind === 'tool' && items[0].icon, 'file')
+    }
+  })
+}
+
+test('freeform code gets a brief while unknown tools and incomplete JSON keep their original names', () => {
+  const cards = replayRun([{
+    id: 'call', run_id: 'run', kind: 'response', timestamp: '2026-11-05T00:00:00Z', thread_messages: [], parts: [
+      { part_kind: 'tool-call', tool_name: 'exec', tool_call_id: 'code', args: 'const result = await tools.read_file(...)' },
+      { part_kind: 'tool-call', tool_name: 'apply_patch', tool_call_id: 'patch', args: '*** Begin Patch\n*** Update File: app.py\n*** End Patch' },
+      { part_kind: 'tool-call', tool_name: 'Read', tool_call_id: 'partial', args: '{"file_path":' },
+      { part_kind: 'tool-call', tool_name: 'custom_tool', tool_call_id: 'unknown', args: { command: 'not necessarily a shell command' } },
+    ],
+  }], 'Codex')
+  assert.deepEqual(cards.map(card => card.item.kind === 'tool' && card.item.action), [{ kind: 'code', target: 'code' }, { kind: 'edit', target: 'files' }, undefined, undefined])
+})
+
 for (const serialized of [false, true]) {
   test(`command classifications survive ${serialized ? 'serialized' : 'structured'} arguments and display clipping live and on replay`, () => {
     const args = { command: 'cat app.py', padding: '.'.repeat(800), commandActions: [{ type: 'read' }, { type: 'list_files' }, { type: 'search' }, { type: 'read' }, { type: 'unknown' }] }

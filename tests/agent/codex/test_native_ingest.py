@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -313,6 +314,7 @@ async def test_turn_settings_are_captured_at_context_and_persisted_at_completion
     impulses: ObjectSendStream[Impulse],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level(logging.DEBUG, logger="octomate.tentacles.codex.tailer")
     octomate = Octomate()
     _, tailer = wired(octomate)
     state, _ = await tailer.attach_remote(
@@ -343,6 +345,11 @@ async def test_turn_settings_are_captured_at_context_and_persisted_at_completion
         assert "sandbox_policy" in caplog.text
     if sandbox.get("network_access"):
         assert "network_access: Input should be False" in caplog.text
+    assert all(
+        record.levelno < logging.WARNING
+        for record in caplog.records
+        if record.name == "octomate.tentacles.codex.tailer"
+    )
     assert state.conversation is not None
     assert not (await octomate.conversations.get(state.conversation.id)).runs
     await feed_records(

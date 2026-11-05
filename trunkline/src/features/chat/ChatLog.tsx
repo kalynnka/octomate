@@ -95,8 +95,8 @@ export function ChatLog() {
           if (distance > 0) {
             const behavior = log.style.scrollBehavior
             log.style.scrollBehavior = matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
-            // scrollTop uses layout pixels consistently under the console's CSS zoom.
-            log.scrollTop += distance
+            // Round up in layout pixels to preserve the reveal gap under CSS zoom.
+            log.scrollTop += Math.ceil(distance)
             log.style.scrollBehavior = behavior
           }
         })

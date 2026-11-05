@@ -30,6 +30,25 @@ for (const width of [1280, 390]) {
     await claude.getByRole('button').focus()
     await page.keyboard.press('Enter')
     await expect(claude.locator('strong')).toBeVisible()
+    for (const summary of [codex, claude]) {
+      const paragraphs = summary.locator('.trk-thinking-content .trk-md > p')
+      await expect(paragraphs).toHaveCount(2)
+      await expect(paragraphs.first()).toHaveCSS('display', 'inline')
+      expect(await paragraphs.nth(1).evaluate(el => getComputedStyle(el, '::before').content)).toBe('" · "')
+      expect(await paragraphs.first().evaluate(el => getComputedStyle(el, '::before').content)).toBe('none')
+      const textStart = await paragraphs.evaluateAll(elements => elements.map(el => {
+        const range = document.createRange()
+        range.selectNodeContents(el)
+        const bounds = range.getClientRects()[0]
+        return { x: bounds.x, y: bounds.y }
+      }))
+      if (width === 1280) {
+        expect(textStart[1].y).toBeCloseTo(textStart[0].y, 0)
+        expect(textStart[1].x).toBeGreaterThan(textStart[0].x)
+      }
+    }
+    await expect(reasoning.locator('.trk-md > p').first()).toHaveCSS('display', 'block')
+    expect(await reasoning.locator('.trk-md > p').nth(1).evaluate(el => getComputedStyle(el, '::before').content)).toBe('none')
     await expect(unavailable.getByRole('button').getByText('(unavailable)', { exact: true })).toHaveCount(1)
     await expect(unavailable.getByRole('button')).toHaveAttribute('aria-expanded', 'false')
     await expect(unavailable.locator('.trk-thinking-format')).toHaveText('(unavailable)')

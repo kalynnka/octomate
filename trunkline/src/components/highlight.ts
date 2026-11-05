@@ -10,6 +10,9 @@ export function highlightCode(block: HTMLElement) {
     if (caret) code.append(caret)
   }
   const name = grammar?.name || language
-  block.querySelector('.trk-code-header > span')!.textContent = name
-  block.querySelector('[role="region"]')!.setAttribute('aria-label', `${name} code`)
+  const header = block.querySelector('.trk-code-header > span')
+  if (header) {
+    header.textContent = name
+    block.querySelector('[role="region"]')!.setAttribute('aria-label', `${name} code`)
+  }
 }

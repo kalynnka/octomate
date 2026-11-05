@@ -3,7 +3,7 @@
  * design comp. Chat rows carry id "pm-{uid}" (session rules use their own
  * uid) so the timeline can jump to them.
  */
-import { Fragment, lazy, Suspense, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { Fragment, lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { answerText, botLabel } from '@/lib/api/fold'
 import type { AgentBlock, AskAnswer, LedgerItem, MessageReply, QueueChip, ToolDetail } from '@/lib/api/types'
 import { useAuth } from '@/state/auth'
@@ -278,6 +278,7 @@ export function TraceGroupRow({ group, cardMax }: { group: TraceGroup; cardMax: 
   return (
     <details className="trk-trace-group" style={style} open={group.active}>
       <summary className="trk-trace-summary hov-wash" title={summary}>
+        <span className="trk-trace-hover-brackets" aria-hidden="true"><Brackets size={6} /></span>
         <Icon name={tools.length ? 'wrench' : 'sparkle'} />
         <span className="trk-trace-title trk-trace-label" data-running={thinking || tools.some(item => item.status === 'run') ? '' : undefined}>{summary}</span>
         <Disclose />
@@ -305,6 +306,7 @@ function ThinkRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'think'
     >
       {open && <Brackets />}
       <button type="button" className="trk-thinking-toggle hov-wash" aria-expanded={open} onClick={() => toggleCardOpen(item.uid, item.thinking)}>
+        {!open && <span className="trk-trace-hover-brackets" aria-hidden="true"><Brackets size={6} /></span>}
         <Icon name="sparkle" style={{ color: 'var(--fg-2)' }} />
         <span className="trk-trace-label" data-running={item.thinking ? '' : undefined} style={{ font: 'var(--meta)' }}>Thinking{badge && <> <span className="trk-thinking-format" title={badge === 'Summary' ? 'A summary of reasoning provided by the harness' : 'No readable reasoning text or summary was supplied'}><TextSwap>{`(${badge.toLowerCase()})`}</TextSwap></span></>}</span>
         <Disclose open={open} />
@@ -313,7 +315,7 @@ function ThinkRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'think'
       </button>
       <Fold open={open}>
         <div inert={!open} style={{ borderTop: '1px solid var(--line-divider)', padding: '10px 12px' }}>
-          <div className="trk-thinking-content" style={{ ...serif(13), lineHeight: 1.65, color: recorded ? 'var(--fg-2)' : 'var(--fg-1)' }}>
+          <div className="trk-thinking-content" data-summary={item.format === 'summary' ? '' : undefined} style={{ ...serif(13), lineHeight: 1.65, color: recorded ? 'var(--fg-2)' : 'var(--fg-1)' }}>
             {recorded ? <Markdown text={item.text} cursor={item.thinking} /> : <p style={{ margin: 0, fontStyle: 'italic' }}>
               This transcript records a reasoning block but contains no readable reasoning text or summary.
             </p>}
@@ -392,27 +394,52 @@ function PlanRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'plan
   )
 }
 
-const toolIcon: Record<string, IconName> = {
+const toolIcon: Record<Extract<LedgerItem, { kind: 'tool' }>['icon'], IconName> = {
   search: 'search',
   'file-diff': 'fileDiff',
   summon: 'userPlus',
   send: 'send',
   file: 'file',
+  code: 'code',
+  terminal: 'terminal',
+  wrench: 'wrench',
 }
 
-function ToolDetailView({ detail }: { detail: ToolDetail }) {
+function ToolPayload({ text, active }: { text: string; active: boolean }) {
+  const root = useRef<HTMLPreElement>(null)
+  const payload = useMemo(() => {
+    try {
+      const value: unknown = JSON.parse(text)
+      if (value !== null && typeof value === 'object') return { text: JSON.stringify(value, null, 2), language: 'json' }
+    } catch { /* Tool text may be plain output or an incomplete JSON fragment. */ }
+    const diff = /^(?:diff --git |--- [^\n]*\r?\n\+\+\+ )/.test(text)
+    return { text, language: diff ? 'diff' : undefined }
+  }, [text])
+  useEffect(() => {
+    if (!active || !payload.language) return
+    let cancelled = false
+    const block = root.current!
+    void import('@/components/highlight').then(({ highlightCode }) => {
+      if (!cancelled) highlightCode(block)
+    })
+    return () => { cancelled = true }
+  }, [active, payload])
+  return <pre ref={root} className="trk-md trk-tool-payload" data-language={payload.language} tabIndex={payload.language === 'diff' ? 0 : undefined} role={payload.language === 'diff' ? 'region' : undefined} aria-label={payload.language === 'diff' ? 'Tool diff' : undefined}><code>{payload.text}</code></pre>
+}
+
+function ToolDetailView({ detail, open }: { detail: ToolDetail; open: boolean }) {
   const heading = (t: string) => <span style={{ ...statusNote, color: 'var(--fg-3)' }}>{t}</span>
   if (detail.type === 'plain') {
     return (
       <>
         <div style={{ borderTop: '1px solid var(--line-divider)', padding: '10px 14px' }}>
           {heading('Arguments')}
-          <pre style={{ margin: '6px 0 0', ...mono(11.5), lineHeight: 1.6, color: 'var(--fg-1)', whiteSpace: 'pre-wrap' }}>{detail.args}</pre>
+          <ToolPayload text={detail.args} active={open} />
         </div>
         {detail.res && (
-          <div style={{ borderTop: '1px solid var(--line-divider)', padding: '10px 14px' }}>
+          <div style={{ borderTop: '1px solid var(--line-divider)', padding: '10px 14px', color: 'var(--fg-2)' }}>
             {heading('Result')}
-            <pre style={{ margin: '6px 0 0', ...mono(11.5), lineHeight: 1.6, color: 'var(--fg-2)', whiteSpace: 'pre-wrap' }}>{detail.res}</pre>
+            <ToolPayload text={detail.res} active={open} />
           </div>
         )}
       </>
@@ -567,6 +594,8 @@ function ToolRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'tool' }
   const { toggleCardOpen } = useConsole((s) => s.actions)
   const status = item.status === 'run' ? 'run' : item.badge?.label === 'failed' ? 'failed' : 'done'
   const color = status === 'run' ? 'var(--color-teal)' : status === 'failed' ? 'var(--color-red)' : 'var(--color-sage)'
+  const verbs = { read: ['Reading', 'Read'], list: ['Listing', 'Listed'], search: ['Searching', 'Searched'], command: ['Running', 'Ran'], edit: ['Editing', 'Edited'], code: ['Running', 'Ran'], load: ['Loading', 'Loaded'] }
+  const brief = item.action ? `${verbs[item.action.kind][status === 'run' ? 0 : 1]} ${item.action.target}`.trim() : item.name
   return (
     <div
       id={`pm-${item.uid}`}
@@ -582,9 +611,10 @@ function ToolRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'tool' }
         aria-expanded={open}
         onClick={() => toggleCardOpen(item.uid, item.defaultOpen ?? false)}
       >
-        <Icon name={toolIcon[item.icon] ?? 'search'} />
-        <span style={{ font: 'var(--meta)' }}>Tool</span>
-        <span className="trk-tool-name trk-trace-label" data-running={status === 'run' ? '' : undefined} style={mono(11)}>{item.name}</span>
+        {!open && <span className="trk-trace-hover-brackets" aria-hidden="true"><Brackets size={6} /></span>}
+        <Icon name={toolIcon[item.icon]} />
+        {!item.action && <span style={{ font: 'var(--meta)' }}>Tool</span>}
+        <span className="trk-tool-name" title={item.action ? `${item.name}\n${brief}` : item.name} style={mono(11)}><span className="trk-trace-label" data-running={status === 'run' ? '' : undefined}>{brief}</span></span>
         <Disclose open={open} />
         <span style={{ flex: 1 }} />
         {item.badge && item.badge.label !== 'failed' && (
@@ -607,7 +637,7 @@ function ToolRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'tool' }
       </button>
       <Fold open={open}>
         <div inert={!open}>
-          <ToolDetailView detail={item.detail} />
+          <ToolDetailView detail={item.detail} open={open} />
         </div>
       </Fold>
     </div>

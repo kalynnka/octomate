@@ -41,7 +41,10 @@ for (const width of [1280, 390]) {
         { part_kind: 'tool-return', tool_name: 'Read', tool_call_id: 'read', content: 'Menu bar item initialized.' },
         { part_kind: 'tool-return', tool_name: 'Search', tool_call_id: 'search', content: 'Search timed out.', outcome: 'failed' },
       ] },
-      { id: '300', run_id: 'run', kind: 'response', timestamp, thread_messages: [], parts: [{ part_kind: 'text', content: 'The log was read. Documentation search failed.' }] },
+      { id: '300', run_id: 'run', kind: 'response', timestamp, thread_messages: [], parts: [
+        { part_kind: 'text', content: 'The log was read. Documentation search failed.' },
+        { part_kind: 'thinking', content: '**Checking the result**', provider_details: { reasoning_format: 'summary' } },
+      ] },
       { id: '310', run_id: 'run', kind: 'response', timestamp, thread_messages: [], parts: [{ part_kind: 'text', content: 'No files were changed.' }] },
     ]
     const sockets = new Set<WebSocketRoute>()
@@ -83,9 +86,18 @@ for (const width of [1280, 390]) {
     const thought = page.locator('[id="pm-100.0"]')
     const read = page.locator('[id="pm-100.1"]')
     const search = page.locator('[id="pm-100.2"]')
-    await expect(log.locator('.trk-thinking-toggle')).toHaveCount(1)
+    await expect(log.locator('.trk-thinking-toggle')).toHaveCount(2)
     await expect(log.locator('.trk-tool-toggle')).toHaveCount(2)
     const group = log.locator('details.trk-trace-group').first()
+    const singleThought = log.locator('.trk-ledger-col > [id="pm-300.1"]')
+    await expect(singleThought).toBeVisible()
+    await expect(singleThought.getByRole('button')).toHaveAttribute('aria-expanded', 'false')
+    expect((await singleThought.boundingBox())!.width).toBeCloseTo((await group.boundingBox())!.width, 0)
+    expect((await singleThought.boundingBox())!.x).toBeCloseTo((await group.boundingBox())!.x, 0)
+    await singleThought.getByRole('button').press('Enter')
+    await expect(singleThought.locator('strong')).toBeVisible()
+    await singleThought.screenshot({ animations: 'disabled', path: `/private/tmp/trunkline-single-thinking-${width}.png` })
+    await singleThought.getByRole('button').press('Enter')
     await expect(group.locator('summary')).toHaveText('Read files, searched▸')
     await expect(group.locator('summary > .lt-disclose')).toHaveCSS('transform', 'none')
     await expect(group).not.toHaveAttribute('open')
@@ -122,9 +134,15 @@ for (const width of [1280, 390]) {
     const gap = await search.evaluate(el => el.getBoundingClientRect().top - el.previousElementSibling!.getBoundingClientRect().bottom)
     expect(gap).toBeLessThanOrEqual(3)
     await expect(thought.getByRole('button')).toContainText('Thinking (summary)')
-    await expect(read.getByRole('button')).toContainText('Tool')
-    await expect(read.locator('.trk-tool-name')).toHaveText('Read')
+    await expect(read.getByRole('button')).not.toContainText('Tool')
+    await expect(read.locator('.trk-tool-name')).toHaveText('Read OpenUsage.log')
+    await expect(read.locator('.trk-tool-name')).toHaveAttribute('title', 'Read\nRead OpenUsage.log')
     await expect(read.locator('.trk-tool-name')).toHaveCSS('font-weight', '400')
+    await thought.getByRole('button').hover()
+    await expect(thought.locator('.trk-trace-hover-brackets')).toHaveCSS('opacity', '1')
+    await expect(thought.locator('.trk-trace-hover-brackets > span')).toHaveCount(4)
+    await page.mouse.move(0, 0)
+    await expect(thought.locator('.trk-trace-hover-brackets')).toHaveCSS('opacity', '0')
     await expect(search.getByRole('button')).toContainText('failed')
     await expect(search.locator('.trk-tool-failure')).toHaveCount(0)
     await expect(search.locator('.lt-fold')).toHaveCSS('height', '0px')
@@ -206,7 +224,9 @@ for (const width of [1280, 390]) {
     await expect(liveThought.getByRole('button')).toHaveAttribute('aria-expanded', 'false')
     await expect(thinkingLabel).toHaveCSS('animation-name', 'none')
     const liveTool = log.locator('.trk-trace-row:has(.trk-tool-toggle)').last()
-    await expect(liveTool.getByRole('button')).toContainText('exec_command')
+    await expect(liveTool.locator('.trk-tool-name')).toHaveText('Running plutil -p /Applications/OpenUsage.app/Contents/Info.plist')
+    await expect(liveGroup.locator('.trk-tool-name').nth(1)).toHaveText('Read OpenUsage.log')
+    await expect(liveTool.locator('.trk-tool-name')).toHaveCSS('text-overflow', 'ellipsis')
     await expect(liveTool.locator('.trk-tool-status')).toHaveText('run')
     const thinkingTime = liveThought.locator('.trk-tool-status [data-text-current]')
     await expect(thinkingTime).toContainText('s')
@@ -220,12 +240,13 @@ for (const width of [1280, 390]) {
     for (const theme of ['dark', 'light']) {
       await page.getByRole('button', { name: `Switch to ${theme}`, exact: true }).press('Enter')
       await expect(liveGroup.locator('.trk-trace-title')).toHaveCSS('animation-name', 'trk-text-shimmer')
-      await expect(liveTool.locator('.trk-tool-name')).toHaveCSS('animation-name', 'trk-text-shimmer')
-      await expect(liveGroup.locator('.trk-tool-name').first()).toHaveCSS('animation-name', 'none')
+      await expect(liveTool.locator('.trk-tool-name > .trk-trace-label')).toHaveCSS('animation-name', 'trk-text-shimmer')
+      await expect(liveGroup.locator('.trk-tool-name > .trk-trace-label').first()).toHaveCSS('animation-name', 'none')
+      await expect(liveTool.locator('.trk-tool-name')).not.toHaveCSS('color', 'rgba(0, 0, 0, 0)')
       await liveGroup.screenshot({ path: `/private/tmp/trunkline-tools-shimmer-${width}-${theme}.png` })
     }
     await page.emulateMedia({ reducedMotion: 'reduce' })
-    for (const label of [liveGroup.locator('.trk-trace-title'), liveTool.locator('.trk-tool-name')]) {
+    for (const label of [liveGroup.locator('.trk-trace-title'), liveTool.locator('.trk-tool-name > .trk-trace-label')]) {
       await expect(label).toHaveCSS('animation-name', 'none')
       await expect(label).not.toHaveCSS('color', 'rgba(0, 0, 0, 0)')
     }
@@ -242,7 +263,8 @@ for (const width of [1280, 390]) {
     await expect(liveGroup).not.toHaveAttribute('open')
     await expect(liveGroup.locator('summary')).toHaveText('Loaded tools, read files, ran a command▸')
     await expect(liveGroup.locator('.trk-trace-title')).toHaveCSS('animation-name', 'none')
-    await expect(liveTool.locator('.trk-tool-name')).toHaveCSS('animation-name', 'none')
+    await expect(liveTool.locator('.trk-tool-name > .trk-trace-label')).toHaveCSS('animation-name', 'none')
+    await expect(liveTool.locator('.trk-tool-name')).toHaveText('Ran plutil -p /Applications/OpenUsage.app/Contents/Info.plist')
     await page.emulateMedia({ reducedMotion: 'reduce' })
     await liveGroup.locator('summary').press('Enter')
     await expect(liveThought.getByRole('button')).toHaveAttribute('aria-expanded', 'true')
@@ -294,10 +316,21 @@ for (const width of [1280, 390]) {
     const joinedTool = log.locator('.trk-trace-row').filter({ has: page.locator('.trk-tool-name', { hasText: 'late_probe' }) })
     await expect(joinedTool).toBeVisible()
     await expect(joinedTool.locator('.trk-tool-status')).toHaveText('run')
+    const joinedId = await joinedTool.getAttribute('id')
+    await expect(log.locator('details.trk-trace-group')).toHaveCount(2)
+    await joinedTool.getByRole('button').press('Enter')
     send({ event_kind: 'function_tool_result', part: {
       part_kind: 'tool-return', tool_name: 'late_probe', tool_call_id: 'late-probe', content: 'complete',
     } })
     await expect(joinedTool.locator('.trk-tool-status')).toHaveText('done')
+    await expect(log.locator('details.trk-trace-group')).toHaveCount(2)
+    send({ event_kind: 'run_result', output: 'Complete.', usage: { requests: 1, tool_calls: 1, input_tokens: 12, output_tokens: 4, cache_read_tokens: 0, cache_write_tokens: 0 } })
+    await expect(log.locator('details.trk-trace-group')).toHaveCount(1)
+    await expect(log.locator(`.trk-ledger-col > [id="${joinedId}"]`)).toBeVisible()
+    await expect(joinedTool.getByRole('button')).toHaveAttribute('aria-expanded', 'true')
+    await expect(joinedTool.locator('pre').last()).toHaveText('complete')
+    await joinedTool.getByRole('button').press('Enter')
+    await expect(joinedTool.getByRole('button')).toHaveAttribute('aria-expanded', 'false')
     const boundaries: LedgerItem[] = [
       { kind: 'user', uid: 'prompt', t: '', who: 'Owner', text: 'Continue.' },
       { kind: 'end', uid: 'ended', label: 'run complete' },

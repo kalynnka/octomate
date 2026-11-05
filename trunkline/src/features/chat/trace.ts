@@ -20,7 +20,7 @@ export function traceRows(items: LedgerItem[], running: boolean): (LedgerItem | 
   }
   const last = rows.at(-1)
   if (last?.kind === 'trace') last.active = running
-  return rows
+  return rows.map(row => row.kind === 'trace' && !row.active && row.items.length === 1 ? row.items[0] : row)
 }
 
 /** Summarize known tool capabilities, without guessing from commands or output. */
