@@ -100,6 +100,7 @@ from octomate.tentacles.deepseek.adapter import (
 )
 from octomate.tentacles.deepseek.catalog import FORK_COMMAND, DeepseekCommandDescriptor
 from octomate.tentacles.deepseek.client import DeepseekApiClient
+from octomate.tentacles.deepseek.compactions import DeepseekCompactions
 from octomate.tentacles.deepseek.hooks import DeepseekHookInput
 from octomate.tentacles.deepseek.ingest import DeepseekHookIngest
 from octomate.tentacles.deepseek.ink import DeepseekInk, TurnFrame
@@ -611,6 +612,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 conversation.id
             )
         )
+        assert conversation.external_id is not None
+        compactions = DeepseekCompactions(
+            self.conversations, conversation, conversation.external_id
+        )
         entered = False
         settled = False
         run_id = str(uuid7())
@@ -625,6 +630,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             if isinstance(frame, SessionAssistantFrame):
                 events = accumulator.consume_assistant_stream(frame)
             else:
+                await compactions.consume(frame.event)
                 data = frame.event.data
                 if (
                     isinstance(data, dict)
@@ -1153,6 +1159,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                             )
                         )
                         prompted = True
+                        compactions = DeepseekCompactions(
+                            self.conversations, conversation, session_id
+                        )
                         while not accumulator.turn_ended:
                             frame = await queue.get()
                             if isinstance(
@@ -1170,6 +1179,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                                 ):
                                     yield event
                                 continue
+                            await compactions.consume(frame.event)
                             if (
                                 self.config.instrument
                                 and frame.event.type != "assistant/chunk"

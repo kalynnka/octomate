@@ -36,6 +36,7 @@ from claude_agent_sdk import (
     PermissionResultDeny,
     PreToolUseHookInput,
     ResultMessage,
+    SystemMessage,
     ToolPermissionContext,
 )
 from claude_agent_sdk.types import Message, SystemPromptPreset
@@ -131,7 +132,11 @@ from octomate.tentacles.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.claude.ink import ClaudeInk
 from octomate.tentacles.claude.mcp import octomate_mcp_server
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
-from octomate.tentacles.claude.transcript import relocate_session, transcripts_dir
+from octomate.tentacles.claude.transcript import (
+    CompactBoundary,
+    relocate_session,
+    transcripts_dir,
+)
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
 from octomate.types.json import JsonObject
@@ -718,6 +723,25 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         )
         return catalog
 
+    async def record_compaction(
+        self, conversation: Conversation, message: Message
+    ) -> None:
+        """Persist the SDK's completed boundary before yielding its presentation."""
+        if (
+            not isinstance(message, SystemMessage)
+            or message.subtype != "compact_boundary"
+        ):
+            return
+        boundary = CompactBoundary.model_validate(message.data)
+        await self.conversations.record_driven_compaction(
+            conversation,
+            native_id=CLAUDE_NATIVE_ID,
+            native_session_id=boundary.session_id,
+            native_compaction_id=boundary.uuid,
+            trigger=boundary.metadata.trigger,
+            happened_at=boundary.timestamp,
+        )
+
     async def execute_command(
         self,
         context: CommandContext,
@@ -1248,6 +1272,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                         continue
                     if command is not None and isinstance(message, ResultMessage):
                         command_result = message
+                    await self.record_compaction(conversation, message)
                     for event in accumulator.consume(
                         message, command=command is not None
                     ):

@@ -69,6 +69,7 @@ class ConversationManager(Manager, Locks[ConversationKey]):
         native_compaction_id: str,
         trigger: CompactionTrigger,
         happened_at: AwareDatetime | None,
+        messages: list[ModelRequest | ModelResponse] | None = None,
     ) -> Compaction | None:
         """Persist a completed native item once, without inventing unavailable content."""
         async with self.lock(conversation.key), async_session() as session:
@@ -91,6 +92,7 @@ class ConversationManager(Manager, Locks[ConversationKey]):
                 native_compaction_id=native_compaction_id,
                 trigger=trigger,
                 happened_at=happened_at,
+                messages=RelationCollection(messages or []),
             )
             session.add(compaction)
             await session.commit()
@@ -103,10 +105,12 @@ class ConversationManager(Manager, Locks[ConversationKey]):
         native_id: str,
         native_session_id: str,
         source: str,
-        start_offset: int,
-        end_offset: int,
+        start_offset: int | None,
+        end_offset: int | None,
         happened_at: AwareDatetime,
         messages: list[ModelRequest | ModelResponse],
+        native_compaction_id: str | None = None,
+        trigger: CompactionTrigger = "unknown",
     ) -> ExternalCompaction | None:
         """Record one completed transcript observation, including driven sessions.
 
@@ -117,35 +121,68 @@ class ConversationManager(Manager, Locks[ConversationKey]):
             self.lock(conversation.key),
             async_session() as session,
         ):
-            if await session.scalar(
-                select(
-                    select(ExternalCompaction["id"])
-                    .where(
-                        ExternalCompaction["native_id"] == native_id,
-                        ExternalCompaction["native_session_id"] == native_session_id,
-                        ExternalCompaction["source"] == source,
-                        ExternalCompaction["start_offset"] == start_offset,
-                        ExternalCompaction["end_offset"] == end_offset,
-                    )
-                    .exists()
+            identity = (
+                Compaction["native_compaction_id"] == native_compaction_id
+                if native_compaction_id is not None
+                else and_(
+                    ExternalCompaction["source"] == source,
+                    ExternalCompaction["start_offset"] == start_offset,
+                    ExternalCompaction["end_offset"] == end_offset,
                 )
-            ):
-                return None
-            owner = await session.one_or_none(
-                Conversation,
-                expressions=[
-                    Conversation["external_id"] == native_session_id,
-                    Conversation["id"] != conversation.id,
-                ],
-                options=[
-                    noload(Conversation["runs"]),
-                    noload(Conversation["messages"]),
-                ],
             )
+            expressions = [
+                Compaction["native_id"] == native_id,
+                Compaction["native_session_id"] == native_session_id,
+                identity,
+            ]
+            existing = None
+            if native_compaction_id is None:
+                if await session.scalar(
+                    select(select(Compaction["id"]).where(*expressions).exists())
+                ):
+                    return None
+            else:
+                existing = await session.one_or_none(
+                    Compaction,
+                    expressions=expressions,
+                    options=[selectinload(Compaction["messages"])] if messages else [],
+                )
+            if existing is not None:
+                add_messages = bool(messages) and not existing.messages
+                if add_messages:
+                    existing.messages.extend(messages)
+                if existing.happened_at is None:
+                    existing.happened_at = happened_at
+                if existing.trigger == "unknown":
+                    existing.trigger = trigger
+                if (
+                    add_messages
+                    and isinstance(existing, ExternalCompaction)
+                    and existing.source == source
+                ):
+                    existing.end_offset = end_offset
+                await session.commit()
+                return None
+            owner = None
+            if not conversation.subagent_id:
+                owner = await session.one_or_none(
+                    Conversation,
+                    expressions=[
+                        Conversation["external_id"] == native_session_id,
+                        Conversation["id"] != conversation.id,
+                        Conversation["subagent_id"] == "",
+                    ],
+                    options=[
+                        noload(Conversation["runs"]),
+                        noload(Conversation["messages"]),
+                    ],
+                )
             compaction = ExternalCompaction(
                 conversation_id=owner.id if owner is not None else conversation.id,
                 native_id=native_id,
                 native_session_id=native_session_id,
+                native_compaction_id=native_compaction_id,
+                trigger=trigger,
                 source=source,
                 start_offset=start_offset,
                 end_offset=end_offset,

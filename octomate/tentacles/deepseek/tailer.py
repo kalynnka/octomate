@@ -35,6 +35,7 @@ from octomate.tentacles.deepseek.adapter import (
     DeepseekRunAccumulator,
     deepseek_metadata,
 )
+from octomate.tentacles.deepseek.compactions import DeepseekCompactions
 from octomate.tentacles.deepseek.wire import (
     HistoryEntry,
     SessionEvent,
@@ -151,6 +152,7 @@ class TailState:
     address: ChannelAddress  # The native surface resolved by the tentacle.
     impulses: ObjectSendStream[Impulse]  # The publisher open for this connection.
     conversation: Conversation | None = None
+    compactions: DeepseekCompactions | None = None
     recorded: set[str] = field(default_factory=set)
     floor: int = -1
     prompts: list[PendingPrompt] = field(default_factory=list)
@@ -213,6 +215,12 @@ class DeepseekEventTailer:
             thread.id, agent_tentacle_id=DEEPSEEK_NATIVE_ID
         )
         state.recorded = state.conversation.native_run_ids
+        state.compactions = DeepseekCompactions(
+            self.conversation_manager,
+            state.conversation,
+            session_id,
+            source=str(transcript_path),
+        )
         state.context_window = await self.conversation_manager.latest_context_window(
             state.conversation.id
         )
@@ -270,6 +278,8 @@ class DeepseekEventTailer:
 
     async def process_entry(self, state: TailState, entry: HistoryEntry) -> None:
         event = entry.event
+        assert state.compactions is not None
+        await state.compactions.consume(event)
         if event.seq <= state.floor:
             return
         if event.type == "request/context":

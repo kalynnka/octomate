@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
 from claude_agent_sdk._internal.message_parser import parse_message
-from claude_agent_sdk.types import Message, ResultMessage
+from claude_agent_sdk.types import Message, ResultMessage, SystemMessage
 from pydantic import TypeAdapter
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import (
@@ -28,16 +28,19 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import ChannelConfig
 from octomate.config.agents import ClaudeCodeConfig
+from octomate.database import async_session
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
     CommandInvocation,
     CommandResult,
 )
+from octomate.schemas.compactions import Compaction
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadCommand
@@ -210,6 +213,12 @@ async def test_direct_commands_persist_receipts_and_native_session_without_model
     stored = await agent.conversations.get(conversation.id)
     assert stored.external_id == streams[script][-1]["session_id"]
     assert len(await stored.runs) == 1
+    async with async_session() as session:
+        compactions = await session.list(Compaction)
+    assert len(compactions) == (1 if script == "compact" else 0)
+    if compactions:
+        assert compactions[0].conversation_id == conversation.id
+        assert compactions[0].trigger == "manual"
     receipt = await agent.threads.find_message(
         conversation.thread_id, "direct", "inbound"
     )
@@ -218,6 +227,68 @@ async def test_direct_commands_persist_receipts_and_native_session_without_model
     assert agent.driven_sessions == {}
     assert client.__aenter__.await_count == client.__aexit__.await_count
     build_result.assert_not_called()
+
+
+@pytest.mark.parametrize("command", [False, True])
+@pytest.mark.parametrize("interrupted", [False, True])
+async def test_completed_compaction_survives_later_stream_failure(
+    execution: tuple[
+        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+    ],
+    streams: dict[str, list[JsonObject]],
+    command: bool,
+    interrupted: bool,
+) -> None:
+    agent, context, client, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    script = streams["compact" if command else "skill"]
+    if not command:
+        script.insert(
+            1,
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "uuid": str(uuid7()),
+                "session_id": script[-1]["session_id"],
+                "compact_metadata": {"trigger": "auto"},
+            },
+        )
+
+    async def messages() -> AsyncGenerator[Message]:
+        async for message in native_messages(script):
+            yield message
+            if (
+                interrupted
+                and isinstance(message, SystemMessage)
+                and message.subtype == "compact_boundary"
+            ):
+                raise RuntimeError("Stream failed after compaction")
+
+    async def execute() -> None:
+        if command:
+            async for _ in agent.execute_command(
+                context, CommandInvocation(command_id="compact")
+            ):
+                pass
+            return
+        await agent.run(
+            "continue",
+            conversation_address=context.address,
+            conversation_id=conversation.id,
+            thread_id=conversation.thread_id,
+        )
+
+    client.receive_response.side_effect = messages
+    if interrupted:
+        with pytest.raises(RuntimeError, match="Stream failed after compaction"):
+            await execute()
+    else:
+        await execute()
+    async with async_session() as session:
+        [row] = await session.list(Compaction)
+    assert row.trigger == ("manual" if command else "auto")
+    assert row.conversation_id == conversation.id
 
 
 @pytest.mark.parametrize("command", [False, True])

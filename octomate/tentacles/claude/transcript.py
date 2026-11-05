@@ -10,8 +10,17 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from anthropic.types import Message as AnthropicMessage
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
+from pydantic import (
+    AliasChoices,
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+)
 
+from octomate.types.compactions import CompactionTrigger
 from octomate.types.json import JsonObject
 
 logger = logging.getLogger(__name__)
@@ -38,6 +47,23 @@ class TranscriptSessionLine(TranscriptSchema):
     entrypoint: str
 
 
+class CompactMetadata(TranscriptSchema):
+    """Completion metadata shared by the SDK and transcript boundary."""
+
+    trigger: CompactionTrigger = "unknown"
+
+
+class CompactBoundary(TranscriptSchema):
+    """A completed Claude compaction, identified by its boundary UUID."""
+
+    uuid: str
+    session_id: str = Field(validation_alias=AliasChoices("session_id", "sessionId"))
+    metadata: CompactMetadata = Field(
+        validation_alias=AliasChoices("compact_metadata", "compactMetadata")
+    )
+    timestamp: AwareDatetime | None = None
+
+
 class TranscriptUserMessage(TranscriptSchema):
     """The `message` of a user line: a plain prompt, or its raw content blocks."""
 
@@ -56,6 +82,7 @@ class TranscriptUserLine(TranscriptSessionLine):
     prompt_id: str = Field(alias="promptId")
     prompt_source: str | None = Field(default=None, alias="promptSource")
     permission_mode: str | None = Field(default=None, alias="permissionMode")
+    is_compact_summary: bool = Field(default=False, alias="isCompactSummary")
     origin: JsonObject | None = None
     source_tool_assistant_uuid: str | None = Field(
         default=None, alias="sourceToolAssistantUUID"
@@ -78,6 +105,9 @@ class TranscriptSystemLine(TranscriptSessionLine):
     type: Literal["system"]
     subtype: str
     level: str
+    compact_metadata: CompactMetadata | None = Field(
+        default=None, alias="compactMetadata"
+    )
     error: JsonObject | None = None
     max_retries: int | None = Field(default=None, alias="maxRetries")
     retry_attempt: int | None = Field(default=None, alias="retryAttempt")

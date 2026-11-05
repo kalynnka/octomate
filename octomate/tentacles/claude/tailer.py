@@ -17,11 +17,13 @@ from anyio.abc import ObjectSendStream
 from octomate_protocol.stream import SESSION_FILE
 from pydantic import ValidationError
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
+from pydantic_ai.messages import UserPromptPart
 
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
 from octomate.nerve import Impulse
 from octomate.schemas.conversation import ChannelAddress, Conversation
+from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import (
     CLAUDE_NATIVE_ID,
@@ -41,6 +43,7 @@ from octomate.tentacles.claude.transcript import (
 )
 from octomate.tentacles.locks import SessionLocks
 from octomate.tentacles.tailer import NativeTurn
+from octomate.types.compactions import CompactionTrigger
 from octomate.types.permissions import is_claude_mode
 
 logger = logging.getLogger(__name__)
@@ -387,6 +390,9 @@ class ClaudeTranscriptTailer:
         if isinstance(line, TranscriptUserLine):
             if line.is_sidechain:
                 return
+            if line.is_compact_summary:
+                await self.record_compaction(state, line, start, end)
+                return
             await self.harvest_subagent_call(state, line)
             if line.prompt_source is not None:
                 await self.close_turn(state)
@@ -400,12 +406,61 @@ class ClaudeTranscriptTailer:
             if state.open_turn is not None:
                 await self.fold(state, line, end)
         elif isinstance(line, TranscriptSystemLine):
+            if line.subtype == "compact_boundary" and not line.is_sidechain:
+                await self.record_compaction(state, line, start, end)
+                return
             # Claude writes it once the turn's `Stop` hooks have run, delivered or
             # not: a server down through the stop never hears the hook.
             if line.subtype == "stop_hook_summary" and not line.is_sidechain:
                 await self.close_turn(state)
         elif isinstance(line, TranscriptAiTitleLine):
             await self.record_title(state, line.ai_title)
+
+    async def record_compaction(
+        self,
+        state: TailState,
+        line: TranscriptSystemLine | TranscriptUserLine,
+        start: int,
+        end: int,
+        *,
+        tail: SubagentTail | None = None,
+    ) -> None:
+        """Keep the boundary and its following summary outside model runs and chat."""
+        conversation = tail.conversation if tail is not None else state.conversation
+        assert conversation is not None
+        messages: list[ModelRequest | ModelResponse] = []
+        trigger: CompactionTrigger = "unknown"
+        if isinstance(line, TranscriptSystemLine):
+            if line.compact_metadata is None:
+                return
+            native_compaction_id = line.uuid
+            trigger = line.compact_metadata.trigger
+        else:
+            native_compaction_id = line.parent_uuid
+            if native_compaction_id is None:
+                return
+            messages.append(
+                ModelRequest(
+                    parts=[
+                        UserPromptPart(
+                            prompt_text(line.message), timestamp=line.timestamp
+                        )
+                    ],
+                    timestamp=line.timestamp,
+                )
+            )
+        await self.conversation_manager.record_external_compaction(
+            conversation,
+            native_id=CLAUDE_NATIVE_ID,
+            native_session_id=state.session_id,
+            native_compaction_id=native_compaction_id,
+            trigger=trigger,
+            source=str(tail.path if tail is not None else state.transcript_path),
+            start_offset=start,
+            end_offset=end,
+            happened_at=line.timestamp,
+            messages=messages,
+        )
 
     async def record_title(self, state: TailState, title: str) -> None:
         """Carry the name Claude gave this session onto the rows that show it.
@@ -701,6 +756,15 @@ class ClaudeTranscriptTailer:
         neither parent rule applies). Each turn's `promptId` is the *parent* turn
         that drove it; a resumed subagent opens its next turn on whatever user line
         arrives first, which is measured to be a tool result, not a prompt."""
+        if (
+            isinstance(line, TranscriptSystemLine)
+            and line.subtype == "compact_boundary"
+        ):
+            await self.record_compaction(state, line, start, end, tail=tail)
+            return
+        if isinstance(line, TranscriptUserLine) and line.is_compact_summary:
+            await self.record_compaction(state, line, start, end, tail=tail)
+            return
         if isinstance(line, TranscriptUserLine):
             turn = tail.open_turn
             if turn is None or line.prompt_id != turn.prompt_id:
