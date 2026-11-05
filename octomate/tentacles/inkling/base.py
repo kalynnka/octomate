@@ -68,7 +68,7 @@ from octomate.capabilities.harness.react import (
     resolve_conversation,
 )
 from octomate.capabilities.mcp import tentacles_capability
-from octomate.config.agents import AgentRouteModelName
+from octomate.config.agents import AgentRouteModelName, InklingConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.segments import MessageSegment
@@ -163,6 +163,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     """Inkling agent wrapper with pydantic-ai-style run entrypoints."""
 
     brand_color: ClassVar[Style | None] = Style(color="#C29145", bold=True)
+    config: InklingConfig | None = None
 
     agent: Agent[None, InklingOutput] = field(init=False)
     mcp: McpManager = field(init=False)
@@ -175,8 +176,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     user_scoped_capabilities: list[UserScopedCapability[None]] = field(init=False)
     conversation_manager: ConversationManager = field(init=False)
     deferred_resolver: DeferredResolver | None = None
-    # The posture a conversation that declares none of its own runs under. Unlike
-    # claude and codex, inkling takes no config object, so its default arrives here.
+    # The posture a conversation that declares none of its own runs under.
     permission_mode: InklingPermissionMode = "default"
     request_limit: int = 256
     # Separate auxiliary model; None follows the model chosen for the turn.
@@ -225,6 +225,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         permission_mode: InklingPermissionMode = "default",
         request_limit: int = 256,
         gateway: bool = True,
+        config: InklingConfig | None = None,
     ) -> None:
         super().__init__(
             id=id,
@@ -234,6 +235,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             threads=octomate.threads,
             files=octomate.files,
         )
+        self.config = config
         self.mcp = octomate.mcp
         self.workspaces = octomate.workspaces
         self.permission_mode = permission_mode

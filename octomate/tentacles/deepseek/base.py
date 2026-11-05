@@ -212,6 +212,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
 
     # DeepSeek's own blue, so dsh's lines read as dsh's in a shared console.
     brand_color: ClassVar[Style | None] = Style(color="#4D6BFE", bold=True)
+    default_icon_url: ClassVar[str | None] = "/agent-icons/deepseek.svg"
 
     description: str = "WIP DeepSeek Harness coding agent for repository-aware software engineering tasks."
 

@@ -49,6 +49,14 @@ test('finished single-item groups render the original thinking or tool item dire
   }
 })
 
+test('consecutive activity from different agents keeps separate groups', () => {
+  const first = { ...read, agentId: 'codex' }
+  const second = { ...command, agentId: 'claude' }
+  assert.deepEqual(traceRows([first, second], true), [
+    first, { kind: 'trace', uid: second.uid, items: [second], active: true },
+  ])
+})
+
 test('tool summaries describe recorded capabilities and deduplicate repeated calls', () => {
   const load = { ...read, uid: 'load', name: 'ToolSearch' }
   assert.equal(toolSummary([load, read, command]), 'Loaded tools, read files, running a command')

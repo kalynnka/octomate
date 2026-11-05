@@ -251,7 +251,7 @@ test('live and replayed reasoning retain their formats and authoritative complet
     },
     patch(uid, patch) { Object.assign(items.find(item => item.uid === uid)!, patch) },
     done() {},
-  })
+  }, 'Codex')
   const parts: ThinkingPart[] = [
     { part_kind: 'thinking', content: '**Reasoning**', provider_name: 'deepseek' },
     { part_kind: 'thinking', content: '**Summary**', provider_name: 'codex', provider_details: { reasoning_format: 'summary' } },
@@ -330,7 +330,7 @@ for (const serialized of [false, true]) {
         push(draft) { items.push({ ...draft, uid: 'brief' }); return 'brief' },
         patch(uid, patch) { Object.assign(items.find(item => item.uid === uid)!, patch) },
         done() {},
-      })
+      }, 'Codex')
       fold.feed({ event_kind: 'function_tool_call', part })
       assert.equal(items[0].kind, 'tool')
       assert.deepEqual(items[0].kind === 'tool' && items[0].action, { kind, target })
@@ -423,8 +423,8 @@ for (const [agent, label] of [
       id: 'response', run_id: 'run', kind: 'response', timestamp: '2026-10-30T10:00:00Z', thread_messages: [],
       parts: [{ part_kind: 'text', content: 'Answer' }],
     }], agent ?? 'agent')
-    assert.deepEqual(replayed[0].item, { kind: 'agent', label, blocks: [{ type: 'p', text: 'Answer' }] })
-    assert.deepEqual(items[0], { ...replayed[0].item, uid: 'reply' })
+    assert.deepEqual(replayed[0].item, { kind: 'agent', agentId: agent ?? 'agent', label, blocks: [{ type: 'p', text: 'Answer' }] })
+    assert.deepEqual(items[0], { ...replayed[0].item, agentId: agent, uid: 'reply' })
     const html = renderToStaticMarkup(createElement(LedgerRow, { item: items[0], cardMax: '100%' }))
     assert.ok(html.includes(`>${label}</span>`))
   })

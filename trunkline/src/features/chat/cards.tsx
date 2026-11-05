@@ -50,6 +50,16 @@ function CapsLabel({ children, style }: { children: ReactNode; style?: CSSProper
   return <span style={{ ...metaLine, color: 'var(--fg-3)', ...style }}>{typeof children === 'string' || typeof children === 'number' ? <TextSwap>{children}</TextSwap> : children}</span>
 }
 
+export function AgentLabel({ label, iconUrl }: { label: string; iconUrl?: string | null }) {
+  const [failed, setFailed] = useState<string>()
+  const icon = iconUrl && failed !== iconUrl
+  return <span className="trk-agent-label" data-agent-label="" style={{ ...metaLine, color: 'var(--fg-3)', textTransform: 'none' }}>
+    {icon ? <>{label.replace(/\([^()]*\)$/, '')}<span className="trk-agent-icon" role="img" aria-label={label} title={label} style={{ maskImage: `url(${JSON.stringify(iconUrl)})` }}>
+      <img src={iconUrl} alt="" aria-hidden="true" crossOrigin="anonymous" referrerPolicy="no-referrer" onError={() => setFailed(iconUrl)} />
+    </span></> : label}
+  </span>
+}
+
 function UserChips({ chips, width }: { chips: QueueChip[]; width: string }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, width }}>
@@ -190,8 +200,8 @@ function DiffBlock({ uid, index, diff }: { uid: string; index: number; diff: Ext
 
 function AgentRow({ item, cardMax, showAgentLabel }: { item: Extract<LedgerItem, { kind: 'agent' }>; cardMax: string; showAgentLabel: boolean }) {
   return (
-    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" data-agent-label={showAgentLabel ? '' : undefined} style={{ maxWidth: `min(100%, calc(${cardMax} + 34px))` }}>
-      {showAgentLabel && <CapsLabel style={{ textTransform: 'none' }}>{item.label}</CapsLabel>}
+    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" style={{ maxWidth: `min(100%, calc(${cardMax} + 34px))` }}>
+      {showAgentLabel && <AgentLabel label={item.label} />}
       <div style={{ minWidth: 0, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)', textWrap: 'pretty' }}>
         {item.reply && <ReplyPreview reply={item.reply} />}
         {item.blocks.map((b, i) => {
@@ -1183,8 +1193,8 @@ function StreamRow({ item, cardMax, showAgentLabel }: { item: Extract<LedgerItem
     return () => { cancelAnimationFrame(frame); cancelAnimationFrame(scroll) }
   }, [streaming])
   return (
-    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" data-agent-label={showAgentLabel ? '' : undefined} style={{ maxWidth: `min(100%, calc(${cardMax} + 34px))`, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
-      {showAgentLabel && <CapsLabel style={{ textTransform: 'none' }}>{item.label ?? botLabel()}</CapsLabel>}
+    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" style={{ maxWidth: `min(100%, calc(${cardMax} + 34px))`, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
+      {showAgentLabel && <AgentLabel label={item.label ?? botLabel()} />}
       <Markdown text={streaming ? text : item.text} cursor={streaming} />
       <div className="trk-message-actions">
         <CopyButton text={streaming ? text : item.text} label="Copy message" className="trk-message-copy" />

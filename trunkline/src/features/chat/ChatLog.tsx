@@ -1,9 +1,9 @@
-import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { Fragment, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { nearChatBottom, useConsole } from '@/state/console'
 import { useThreadActivity } from '@/state/activity'
-import { useThreadSummary } from '@/lib/api/hooks'
+import { useAgents, useThreadSummary } from '@/lib/api/hooks'
 import { botLabel } from '@/lib/api/fold'
-import { LedgerRow, TraceGroupRow } from './cards'
+import { AgentLabel, LedgerRow, TraceGroupRow } from './cards'
 import { traceRows } from './trace'
 import { label, mono, display, statusNote } from '@/components/text'
 
@@ -13,6 +13,7 @@ export function ChatLog() {
   const threadId = useConsole((s) => s.selThreadId)
   const channel = useConsole((s) => s.selChannel)
   const thread = useThreadSummary(threadId)
+  const { data: agents } = useAgents(true, false)
   const detail = useConsole((s) => s.detail)
   const live = useConsole((s) => s.live)
   const running = useConsole((s) => s.running)
@@ -163,17 +164,20 @@ export function ChatLog() {
           </div>
         )}
         {traceRows(items, running).map((item, i) => {
-          if (item.kind === 'trace') return <TraceGroupRow key={item.uid} group={item} cardMax={CARD_MAX} />
-          let showAgentLabel = true
-          if (item.kind === 'agent' || item.kind === 'stream') {
-            const label = item.label ?? botLabel()
-            showAgentLabel = label !== assistantLabel
-            assistantLabel = label
+          const first = item.kind === 'trace' ? item.items[0] : item
+          let heading
+          if (first.kind === 'agent' || first.kind === 'stream' || first.kind === 'think' || first.kind === 'tool') {
+            const label = first.kind === 'agent' || first.kind === 'stream' ? first.label ?? botLabel(first.agentId) : botLabel(first.agentId)
+            const author = first.agentId ?? label
+            if (author !== assistantLabel) heading = <AgentLabel label={label} iconUrl={agents?.find(agent => agent.id === first.agentId)?.icon_url} />
+            assistantLabel = author
           } else if (item.kind === 'user' || item.kind === 'end' || item.kind === 'session-open') {
             assistantLabel = undefined
           }
           // The newest page enters first; earlier reveals stay calm.
-          return <LedgerRow key={item.uid} item={item} cardMax={CARD_MAX} showAgentLabel={showAgentLabel} i={Math.min(items.length - 1 - i, 7)} />
+          return <Fragment key={item.uid}>{heading}{item.kind === 'trace'
+            ? <TraceGroupRow group={item} cardMax={CARD_MAX} />
+            : <LedgerRow item={item} cardMax={CARD_MAX} showAgentLabel={false} i={Math.min(items.length - 1 - i, 7)} />}</Fragment>
         })}
         {notices.map((item) => (
           <LedgerRow key={item.uid} item={item} cardMax={CARD_MAX} />

@@ -96,6 +96,7 @@ from octomate.schemas.thread import (
     ThreadMessage,
 )
 from octomate.schemas.user import ProfileInfo, User, UserProfile
+from octomate.tentacles.trunkline.activity import watch_activity
 from octomate.tentacles.trunkline.base import (
     ROUTE_SEP,
     RouteLockedError,
@@ -717,6 +718,16 @@ def build_trunkline_live_router(channel: TrunklineTentacle) -> APIRouter:
     the console router runs the same-origin write guard on every request, and a
     handshake has no method for that guard to read."""
     router = APIRouter(prefix="/api/trunkline", tags=["trunkline"])
+
+    @router.websocket("/live/activity")
+    async def live_activity(
+        websocket: WebSocket,
+        user: Annotated[User, Depends(current_user)],
+        threads: Annotated[ThreadManager, Depends(thread_manager)],
+    ) -> None:
+        await watch_activity(
+            websocket, channel.octomate.nerve, threads, user.id, channel.id
+        )
 
     @router.websocket("/live/user")
     async def watch_user(

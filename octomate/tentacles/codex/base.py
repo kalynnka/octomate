@@ -310,6 +310,7 @@ class CodexTentacle(AgentTentacle[str, None]):
     # OpenAI's own green, so Codex's lines read as Codex's in a console it shares
     # with every other tentacle.
     brand_color: ClassVar[Style | None] = Style(color="#10A37F", bold=True)
+    default_icon_url: ClassVar[str | None] = "/agent-icons/openai.svg"
 
     description: str = (
         "Codex coding agent for repository-aware software engineering tasks."

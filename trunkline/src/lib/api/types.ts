@@ -166,11 +166,11 @@ export type LedgerItem =
       tone: 'plain' | 'summon'
     }
   | { kind: 'user'; uid: string; t: string; who: string; userId?: string | null; text: string; reply?: MessageReply; chips?: QueueChip[] }
-  | { kind: 'agent'; uid: string; label: string; blocks: AgentBlock[]; reply?: MessageReply }
+  | { kind: 'agent'; uid: string; agentId?: string; label: string; blocks: AgentBlock[]; reply?: MessageReply }
   | { kind: 'code'; uid: string; lang: string; lines: string[] }
   /** `thinking` is false once the part closed — the card folds itself then,
    *  the way `stream.streaming` marks a reply as settled */
-  | { kind: 'think'; uid: string; dur: string; text: string; thinking: boolean; format?: 'reasoning' | 'summary' }
+  | { kind: 'think'; uid: string; agentId?: string; dur: string; text: string; thinking: boolean; format?: 'reasoning' | 'summary' }
   | {
       kind: 'plan'
       uid: string
@@ -179,6 +179,7 @@ export type LedgerItem =
   | {
       kind: 'tool'
       uid: string
+      agentId?: string
       name: string
       icon: 'search' | 'file-diff' | 'summon' | 'send' | 'file' | 'code' | 'terminal' | 'wrench'
       dur?: string
@@ -240,7 +241,7 @@ export type LedgerItem =
       connectorId: string
     }
   | { kind: 'dots'; uid: string; label: string; attention?: boolean }
-  | { kind: 'stream'; uid: string; text: string; streaming: boolean; label?: string }
+  | { kind: 'stream'; uid: string; agentId?: string; text: string; streaming: boolean; label?: string }
   | { kind: 'end'; uid: string; label: string }
   | { kind: 'notice'; uid: string; text: string; tone?: 'error' | 'warning' | 'info' }
 

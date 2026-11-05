@@ -810,8 +810,11 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
 }
 .trk-message-actions { display: flex; align-items: center; min-height: 26px; }
 .trk-agent-message { display: grid; width: fit-content; grid-template-columns: minmax(0, 1fr) 26px; gap: 6px 8px; }
-.trk-agent-message[data-agent-label] > :first-child { grid-column: 1 / -1; }
+.trk-agent-message > .trk-agent-label { grid-column: 1 / -1; }
 .trk-agent-message > .trk-message-actions { align-self: end; }
+.trk-agent-label { display: inline-flex; align-items: center; gap: 6px; }
+.trk-agent-icon { display: inline-flex; width: 14px; height: 14px; background: currentColor; mask: no-repeat center / contain; }
+.trk-agent-icon img { width: 100%; height: 100%; opacity: 0; }
 .trk-message-copy { opacity: 0; pointer-events: none; transition: opacity var(--motion-fast) var(--ease-out); }
 .lt-message-entry:hover > .trk-message-actions > .trk-message-copy,
 .lt-message-entry:focus-within > .trk-message-actions > .trk-message-copy { opacity: 1; pointer-events: auto; }

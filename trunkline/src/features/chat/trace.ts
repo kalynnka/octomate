@@ -12,7 +12,7 @@ export function traceRows(items: LedgerItem[], running: boolean): (LedgerItem | 
       continue
     }
     let group = rows.at(-1)
-    if (group?.kind !== 'trace') {
+    if (group?.kind !== 'trace' || group.items[0]?.agentId !== item.agentId) {
       group = { kind: 'trace', uid: item.uid, items: [], active: false }
       rows.push(group)
     }

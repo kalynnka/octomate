@@ -461,8 +461,10 @@ export function replayRun(
   for (const message of messages) {
     if (message.kind !== 'response') continue
     for (const [n, part] of message.parts.entries()) {
-      const push = (item: LedgerItemDraft) =>
+      const push = (item: LedgerItemDraft) => {
+        if (item.kind === 'agent' || item.kind === 'stream' || item.kind === 'think' || item.kind === 'tool') item.agentId = agent
         cards.push({ id: `${message.id}.${n}`, message: message.id, item })
+      }
       switch (part.part_kind) {
         case 'thinking':
           // No duration survives the row, and a made-up one would be a claim.
@@ -553,6 +555,7 @@ export class TurnFold {
       this.streamText = text
       this.streamUid = this.sink.push({
         kind: 'stream',
+        agentId: this.nativeAgent,
         label: botLabel(this.nativeAgent),
         text,
         streaming: true,
@@ -576,6 +579,7 @@ export class TurnFold {
         this.closeThink()
         const uid = this.sink.push({
           kind: 'think',
+          agentId: this.nativeAgent,
           dur: '…',
           text: part.content,
           thinking: true,
@@ -612,6 +616,7 @@ export class TurnFold {
     const clipped = clip(argsText(args))
     const uid = this.sink.push({
       kind: 'tool',
+      agentId: this.nativeAgent,
       name,
       ...toolPresentation(name, args),
       status: 'run',
@@ -775,6 +780,7 @@ export class TurnFold {
         this.closeStream()
         this.sink.push({
           kind: 'agent',
+          agentId: this.nativeAgent,
           label: botLabel(this.nativeAgent),
           blocks: event.segments.map((segment) => ({
             type: 'p',

@@ -407,6 +407,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         item: {
           kind: 'agent',
           uid: message.id,
+          agentId: message.agent_tentacle_id ?? undefined,
           label: botLabel(message.agent_tentacle_id),
           blocks: [{ type: 'p', text }],
           ...(reply && { reply }),
@@ -422,6 +423,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         item: {
           kind: 'agent',
           uid: `${message.id}.outcome`,
+          agentId: message.agent_tentacle_id ?? undefined,
           label: botLabel(message.agent_tentacle_id),
           blocks: feedback.map((text) => ({ type: 'p', text })),
         },
@@ -460,7 +462,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
       const outbound = message.thread_messages.find((row) => row.direction === 'outbound' && row.kind !== 'artifact')
       return outbound ? [[message.id, { label: botLabel(outbound.agent_tentacle_id ?? conversation?.agent_tentacle_id), reply: replyOf(outbound) }] as const] : []
     }))
-    for (const card of replayRun(messages, runtime.native ? runtime.label : agent, children, runtime.native === true)) {
+    for (const card of replayRun(messages, agent, children, runtime.native === true)) {
       if (card.item.kind === 'ask' && card.item.nativeCallId) {
         card.item = nativeQuestionAnswered(card.item, questionReplies)
       }

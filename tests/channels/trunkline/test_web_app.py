@@ -10,7 +10,15 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi.routing import APIRoute, APIWebSocketRoute
-from pydantic_ai.messages import ModelMessage, ToolCallPart, UserPromptPart
+from pydantic_ai.messages import (
+    FunctionToolResultEvent,
+    ModelMessage,
+    PartDeltaEvent,
+    TextPartDelta,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.settings import ThinkingLevel
@@ -29,7 +37,7 @@ from octomate.capabilities.harness.events import (
     ThreadTitleChangedEvent,
 )
 from octomate.config import OctomateConfig
-from octomate.config.agents import DeepseekConfig
+from octomate.config.agents import DeepseekConfig, InklingConfig
 from octomate.config.agents.common import Claim
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import async_session
@@ -53,6 +61,7 @@ from octomate.tentacles.trunkline import (
     TrunklineTentacle,
     build_trunkline_router,
 )
+from octomate.tentacles.trunkline import activity as trunkline_activity
 from octomate.tentacles.trunkline.base import (
     ROUTE_SEP,
     RouteLockedError,
@@ -299,18 +308,150 @@ async def test_user_sockets_subscribe_only_to_the_authenticated_user(
     assert octomate.nerve.subscribers == {}
 
 
-async def test_user_socket_requires_sign_in(in_memory_engine: AsyncEngine) -> None:
+@pytest.mark.parametrize(
+    "path", ["/api/trunkline/live/user", "/api/trunkline/live/activity"]
+)
+async def test_user_socket_requires_sign_in(
+    in_memory_engine: AsyncEngine, path: str
+) -> None:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
     octomate.connect(
         TrunklineTentacle(
             "trunkline", octomate, config=TrunklineChannelConfig(agents=["inkling"])
         )
     )
-    socket = ConsoleSocket(octomate, path="/api/trunkline/live/user")
+    socket = ConsoleSocket(octomate, path=path)
     refused = await asyncio.wait_for(socket.outbound.get(), 1)
     await socket.task
     assert refused["type"] == "websocket.http.response.start"
     assert refused["status"] == 401
+    assert octomate.nerve.subscribers == {}
+
+
+async def test_activity_socket_multiplexes_without_streaming_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = 100.0
+    monkeypatch.setattr(trunkline_activity, "monotonic", lambda: clock)
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent)
+    socket = ConsoleSocket(octomate, path="/api/trunkline/live/activity")
+    assert (await socket.outbound.get())["type"] == "websocket.accept"
+    # Nerve exposes the subscription registry, without a readiness notification.
+    keys = [f"thread-{i}" for i in range(30)]
+    topics = [
+        ThreadTopic(ThreadKey.from_address(_console_address(key))) for key in keys
+    ]
+    try:
+        socket.inbound.put_nowait(
+            {"type": "websocket.receive", "text": json.dumps({"thread_keys": keys})}
+        )
+        async with asyncio.timeout(1):
+            while len(octomate.nerve.subscribers) < 30:  # noqa: ASYNC110
+                await asyncio.sleep(0)
+        for topic in topics:
+            for _ in range(100):
+                octomate.nerve.deliver(
+                    topic,
+                    Impulse(
+                        PartDeltaEvent(
+                            index=0, delta=TextPartDelta(content_delta="private output")
+                        )
+                    ),
+                )
+        for _ in keys:
+            received = await asyncio.wait_for(socket.outbound.get(), 1)
+            assert "private output" not in received["text"]
+            assert json.loads(received["text"])["event"]["activity"] == "writing"
+        async with asyncio.timeout(1):
+            while any(  # noqa: ASYNC110
+                fiber.receive.statistics().current_buffer_used
+                for fibers in octomate.nerve.subscribers.values()
+                for fiber in fibers
+            ):
+                await asyncio.sleep(0)
+        assert socket.outbound.empty()
+        heartbeat = FunctionToolResultEvent(
+            part=ToolReturnPart(
+                tool_name="tool", tool_call_id="call", content="private result"
+            )
+        )
+        octomate.nerve.deliver(topics[0], Impulse(heartbeat))
+        await asyncio.sleep(0)
+        assert socket.outbound.empty()
+        clock += 30
+        octomate.nerve.deliver(topics[0], Impulse(heartbeat))
+        refreshed = await asyncio.wait_for(socket.outbound.get(), 1)
+        assert json.loads(refreshed["text"])["event"]["activity"] == "writing"
+        assert "private result" not in refreshed["text"]
+        socket.inbound.put_nowait(
+            {"type": "websocket.receive", "text": json.dumps({"thread_keys": keys[:1]})}
+        )
+        async with asyncio.timeout(1):
+            while len(octomate.nerve.subscribers) != 1:  # noqa: ASYNC110
+                await asyncio.sleep(0)
+        octomate.nerve.deliver(topics[0], Impulse(RunEndedEvent()))
+        ended = await asyncio.wait_for(socket.outbound.get(), 1)
+        assert json.loads(ended["text"])["event"]["event_kind"] == "run_ended"
+    finally:
+        await socket.leave()
+    assert octomate.nerve.subscribers == {}
+
+
+async def test_activity_socket_checks_thread_access_and_scopes_new_keys() -> None:
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    channel = await _register(octomate, agent)
+    await _post(channel, "private work")
+    thread = await octomate.threads.ensure(_console_address())
+    socket = ConsoleSocket(octomate, path="/api/trunkline/live/activity")
+    assert (await socket.outbound.get())["type"] == "websocket.accept"
+    socket.inbound.put_nowait(
+        {
+            "type": "websocket.receive",
+            "text": json.dumps({"thread_ids": [str(thread.id)]}),
+        }
+    )
+    topic = ThreadTopic(thread.key)
+    async with asyncio.timeout(1):
+        while topic not in octomate.nerve.subscribers:  # noqa: ASYNC110
+            await asyncio.sleep(0)
+    octomate.nerve.deliver(topic, Impulse(RunActivityChangedEvent(activity="thinking")))
+    received = await asyncio.wait_for(socket.outbound.get(), 1)
+    assert json.loads(received["text"])["key"] == f"id:{thread.id}"
+    await socket.leave()
+
+    other = User(username="other")
+    octomate.dependency_overrides[current_user] = lambda: other
+    denied = ConsoleSocket(octomate, path="/api/trunkline/live/activity")
+    assert (await denied.outbound.get())["type"] == "websocket.accept"
+    denied.inbound.put_nowait(
+        {
+            "type": "websocket.receive",
+            "text": json.dumps({"thread_ids": [str(thread.id)]}),
+        }
+    )
+    refused = await asyncio.wait_for(denied.outbound.get(), 1)
+    await denied.task
+    assert refused["type"] == "websocket.close"
+    assert refused["code"] == 1008
+    assert octomate.nerve.subscribers == {}
+
+    scoped = ConsoleSocket(octomate, path="/api/trunkline/live/activity")
+    assert (await scoped.outbound.get())["type"] == "websocket.accept"
+    scoped.inbound.put_nowait(
+        {"type": "websocket.receive", "text": json.dumps({"thread_keys": ["thread-1"]})}
+    )
+    async with asyncio.timeout(1):
+        while not octomate.nerve.subscribers:  # noqa: ASYNC110
+            await asyncio.sleep(0)
+    assert topic not in octomate.nerve.subscribers
+    assert (
+        ThreadTopic(ThreadKey("trunkline", "thread", str(other.id), "thread-1"))
+        in octomate.nerve.subscribers
+    )
+    await scoped.leave()
     assert octomate.nerve.subscribers == {}
 
 
@@ -1105,6 +1246,9 @@ async def test_the_agents_endpoint_reports_each_routes_effort_vocabulary(
     inkling, _ = build_scripted_agent(["from inkling"])
     await _register_routes(octomate, {"inkling": inkling})
     tentacle = octomate.agents["inkling"]
+    tentacle.config = InklingConfig.model_validate(
+        {"models": [{"name": RECEPTION_MODEL}], "icon_url": "/agent-icons/custom.svg"}
+    )
     tentacle.set_model_catalog(
         dict(tentacle.models),
         {RECEPTION_MODEL: Claim("triage and reply", efforts=("low", "high"))},
@@ -1118,6 +1262,7 @@ async def test_the_agents_endpoint_reports_each_routes_effort_vocabulary(
     ) as client:
         [listed] = (await client.get("/api/trunkline/agents")).json()
 
+    assert listed["icon_url"] == "/agent-icons/custom.svg"
     assert listed["routes"] == [
         {
             "agent_id": "inkling",

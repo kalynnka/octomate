@@ -21,7 +21,21 @@ for (const width of [1280, 390]) {
       summon: { destinations: [], here: null, routes: {}, reason: 'No agents' },
     }
     const sockets = new Map<string, Set<WebSocketRoute>>()
+    const watched = new Set<string>()
+    let activitySocket: WebSocketRoute
     await page.routeWebSocket(/\/api\/trunkline\/live/, socket => {
+      if (new URL(socket.url()).pathname.endsWith('/activity')) {
+        activitySocket = socket
+        sockets.set('activity', new Set([socket]))
+        socket.onMessage(message => {
+          const request = JSON.parse(String(message)) as { thread_ids: string[]; thread_keys: string[] }
+          watched.clear()
+          request.thread_ids.forEach(id => watched.add(id))
+          request.thread_keys.forEach(key => watched.add(key))
+        })
+        socket.onClose(() => sockets.delete('activity'))
+        return
+      }
       const query = new URL(socket.url()).searchParams
       const target = query.get('thread_id') ?? query.get('thread_key') ?? 'user'
       const group = sockets.get(target) ?? new Set<WebSocketRoute>()
@@ -29,7 +43,7 @@ for (const width of [1280, 390]) {
       group.add(socket)
       socket.onClose(() => group.delete(socket))
     })
-    const send = (id: string, event: WireEvent) => { for (const socket of sockets.get(id) ?? []) socket.send(JSON.stringify(event)) }
+    const send = (id: string, event: WireEvent) => activitySocket.send(JSON.stringify({ key: `id:${id}`, event, attention: false }))
     // Every request stays in the fixture, away from the developer's backend and database.
     await page.route(url => url.pathname.startsWith('/api/'), async route => {
       const path = new URL(route.request().url()).pathname
@@ -57,7 +71,8 @@ for (const width of [1280, 390]) {
     await expect(nativeRows).toHaveCount(12)
     await expect(nativeRows.first()).toHaveAttribute('data-thread-id', 'native-00')
     await expect(slackRows.first()).toHaveAttribute('data-thread-id', 'slack-0')
-    await expect.poll(() => sockets.get('native-10')?.size ?? 0).toBeGreaterThan(0)
+    await expect.poll(() => watched.has('native-10')).toBe(true)
+    expect([...sockets.values()].reduce((total, group) => total + group.size, 0)).toBe(3)
     const running = sidebar.locator('[data-thread-id="native-10"]')
     const original = await running.elementHandle()
     send('native-10', { event_kind: 'run_activity_changed', activity: 'using_tools' })
@@ -65,12 +80,12 @@ for (const width of [1280, 390]) {
     await expect(running).toHaveAttribute('data-running', '')
     await expect(running.locator('.trk-thread-title')).toHaveCSS('font-weight', '600')
     expect(await running.evaluate((element, previous) => element === previous, original)).toBe(true)
-    await expect.poll(() => sockets.get('native-03')?.size ?? 0).toBeGreaterThan(0)
+    await expect.poll(() => watched.has('native-03')).toBe(true)
     send('native-03', { event_kind: 'run_activity_changed', activity: 'thinking' })
     await expect(nativeRows.nth(0)).toHaveAttribute('data-thread-id', 'native-03')
     await expect(nativeRows.nth(1)).toHaveAttribute('data-thread-id', 'native-10')
     await expect(nativeRows.nth(2)).toHaveAttribute('data-thread-id', 'native-00')
-    await expect.poll(() => sockets.get('slack-1')?.size ?? 0).toBeGreaterThan(0)
+    await expect.poll(() => watched.has('slack-1')).toBe(true)
     send('slack-1', { event_kind: 'run_activity_changed', activity: 'working' })
     await expect(slackRows.first()).toHaveAttribute('data-thread-id', 'slack-1')
     await expect(nativeRows.first()).toHaveAttribute('data-thread-id', 'native-03')
@@ -80,6 +95,7 @@ for (const width of [1280, 390]) {
     await expect(nativeRows.nth(1)).toHaveAttribute('data-thread-id', 'native-00')
     await running.click()
     await expect(running).toHaveAttribute('aria-current', 'page')
+    await expect.poll(() => [...sockets.values()].reduce((total, group) => total + group.size, 0)).toBe(3)
     if (width === 390) {
       await page.keyboard.press('Escape')
       await page.getByRole('button', { name: 'Show channels', exact: true }).first().click()

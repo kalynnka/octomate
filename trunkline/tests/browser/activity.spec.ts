@@ -22,7 +22,20 @@ for (const width of [1280, 390]) {
       summon: { destinations: [], here: null, routes: {}, reason: 'No agents' },
     }
     const sockets = new Map<string, Set<WebSocketRoute>>()
+    const watched = new Set<string>()
+    let activitySocket: WebSocketRoute
+    const statuses = new Map<string, WireEvent>()
     await page.routeWebSocket(/\/api\/trunkline\/live/, socket => {
+      if (new URL(socket.url()).pathname.endsWith('/activity')) {
+        activitySocket = socket
+        socket.onMessage(message => {
+          const request = JSON.parse(String(message)) as { thread_ids: string[]; thread_keys: string[] }
+          watched.clear()
+          request.thread_ids.forEach(id => watched.add(`id:${id}`))
+          request.thread_keys.forEach(key => watched.add(`key:${key}`))
+        })
+        return
+      }
       const query = new URL(socket.url()).searchParams
       const target = query.get('thread_id') ?? query.get('thread_key') ?? 'user'
       const group = sockets.get(target) ?? new Set<WebSocketRoute>()
@@ -33,6 +46,15 @@ for (const width of [1280, 390]) {
     const send = (thread: ApiThread, ...events: WireEvent[]) => {
       for (const target of [thread.id, thread.channel_thread_id!]) {
         for (const socket of sockets.get(target) ?? []) for (const event of events) socket.send(JSON.stringify(event))
+      }
+      for (const key of [`id:${thread.id}`, `key:${thread.channel_thread_id}`].filter(key => watched.has(key))) {
+        for (const event of events) {
+          const heartbeat = event.event_kind === 'part_end'
+          const status = heartbeat ? statuses.get(key) : event
+          if (!status) continue
+          statuses.set(key, status)
+          activitySocket.send(JSON.stringify({ key, event: status, attention: status.event_kind === 'action_batch' }))
+        }
       }
     }
     // Isolate every request from the developer's backend and database.
@@ -62,7 +84,7 @@ for (const width of [1280, 390]) {
     const sidebar = page.locator('#trk-sb-panel')
     if (width === 390) await page.getByRole('button', { name: 'Show channels', exact: true }).first().click()
     await expect(sidebar.getByRole('button', { name: /Background research/ })).toBeVisible()
-    await expect.poll(() => sockets.get(second.id)?.size).toBe(1)
+    await expect.poll(() => watched.has(`id:${second.id}`)).toBe(true)
     send(second, { event_kind: 'run_activity_changed', activity: 'thinking', display_text: 'Pondering octopuses…' })
     const background = sidebar.locator(`[data-thread-activity="${second.id}"]`)
     await expect(background).toHaveText('Pondering octopuses')

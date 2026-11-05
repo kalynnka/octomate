@@ -49,6 +49,7 @@ from octomate.capabilities.harness.events import (
     ActionBatchEvent,
 )
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
+from octomate.config.acp import AcpAgentConfig
 from octomate.config.agents import AgentRouteModelName, Claim
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
@@ -58,7 +59,7 @@ from octomate.schemas.deferred import MAX_QUESTION_CHOICES, DeferredActionBatch
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.acp.adapter import json_value_adapter
-from octomate.tentacles.acp.client import AcpProvider, NativeAcpClient, NativeAcpSession
+from octomate.tentacles.acp.client import NativeAcpClient, NativeAcpSession
 from octomate.tentacles.acp.elicitation import AcpForm, AcpFormValidationError
 from octomate.tentacles.acp.history import AcpHistory
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
@@ -82,20 +83,15 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
     """
 
     in_process: ClassVar[bool] = True
-    provider: AcpProvider
-    configured_permission_mode: str | None
+    config: AcpAgentConfig
     provider_permission_mode: str | None = None
-    approval_timeout: float | None
 
     def __init__(
         self,
         id: str,
         octomate: Octomate,
         *,
-        provider: AcpProvider,
-        gateway: bool = True,
-        permission_mode: str | None = None,
-        approval_timeout: float | None = 3600.0,
+        config: AcpAgentConfig,
     ) -> None:
         super().__init__(
             id=id,
@@ -105,10 +101,8 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             threads=octomate.threads,
             files=octomate.files,
         )
-        self.provider = provider
-        self.gateway = gateway
-        self.configured_permission_mode = permission_mode
-        self.approval_timeout = approval_timeout
+        self.config = config
+        self.gateway = config.gateway
         self.pendings = {}
         self.conversations = octomate.conversations
         self.workspaces = octomate.workspaces
@@ -126,7 +120,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
 
         with TemporaryDirectory(prefix="octomate-acp-") as cwd:
             async with NativeAcpClient.connect(
-                self.provider,
+                self.config.provider,
                 handle,
                 schema.InitializeRequest(
                     protocol_version=acp.PROTOCOL_VERSION,
@@ -138,8 +132,8 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                 )
                 self.permission_modes = session.permission_modes
                 self.provider_permission_mode = session.permission_mode
-                if self.configured_permission_mode is not None:
-                    self.check_permission_mode(self.configured_permission_mode)
+                if self.config.permission_mode is not None:
+                    self.check_permission_mode(self.config.permission_mode)
                 self.models = (
                     {option.value: option.value for option in session.models}
                     if session.model_option is not None
@@ -177,7 +171,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
 
     @property
     def default_permission_mode(self) -> str | None:
-        return self.configured_permission_mode or self.provider_permission_mode
+        return self.config.permission_mode or self.provider_permission_mode
 
     def resolve_model(
         self, model: AgentRouteModelName | None = None
@@ -335,7 +329,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         model: str | None,
         effort: str | None,
     ) -> AsyncGenerator[ReactStreamEvent[str]]:
-        provider = self.provider
+        provider = self.config.provider
         if thread_id is None:
             raise ValueError("agent run requires a thread_id to own its conversation")
         if isinstance(user_prompt, str):
@@ -450,7 +444,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             await native.select_effort(client.connection, effort)
             await native.select_mode(
                 client.connection,
-                conversation.permission_mode or self.configured_permission_mode,
+                conversation.permission_mode or self.config.permission_mode,
             )
             request = schema.PromptRequest(
                 session_id=session_id, prompt=[acp.text_block(text)]
@@ -624,7 +618,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             updates.put_nowait(await suspender.pause(requests, batch_id=batch_id))
             batch: DeferredActionBatch | None = None
             complete = False
-            async with asyncio.timeout(self.approval_timeout):
+            async with asyncio.timeout(self.config.approval_timeout):
                 while not complete:
                     response = await future
                     future = asyncio.get_running_loop().create_future()

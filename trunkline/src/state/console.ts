@@ -33,7 +33,7 @@ import type {
 } from '@/lib/api/events'
 import { queryClient } from '@/lib/queryClient'
 import { batchFeelers, TurnFold } from '@/lib/api/fold'
-import { channelMeta, holdingBack, liveThreadDetail, withOlderPage } from '@/lib/api/live'
+import { holdingBack, liveThreadDetail, withOlderPage } from '@/lib/api/live'
 import { useAuth } from '@/state/auth'
 import { COMMAND_CONTROLS } from '@/features/chat/commands'
 import { withArtifact } from '@/features/artifacts/ledger'
@@ -638,7 +638,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
             } else patchLive(patch)
           },
           done: () => {},
-        }, get().detail?.sessions.at(-1)?.agent ?? (event.event_kind === 'run_started' ? channelMeta(event.address.channel_tentacle_id).label : undefined), [...(get().detail?.ledger ?? []), ...get().live])
+        }, get().detail?.sessions.at(-1)?.agent ?? (event.event_kind === 'run_started' ? event.address.channel_tentacle_id : undefined), [...(get().detail?.ledger ?? []), ...get().live])
         set({ running: true })
         if (!reflex) fold.feed(event)
       } else if (event.event_kind === 'reflex_asleep' || (event.event_kind === 'run_ended' && !reflex)) {

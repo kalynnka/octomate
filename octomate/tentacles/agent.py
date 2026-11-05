@@ -39,7 +39,7 @@ from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import AgentRouteModelName
+from octomate.config.agents import AgentConfig, AgentRouteModelName
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
@@ -87,6 +87,8 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     files: FileManager
     conversations: ConversationManager
     workspaces: WorkspaceManager
+    # Programmatically assembled agents may have no deployment config.
+    config: AgentConfig | None = None
 
     def __init__(
         self,
@@ -118,11 +120,20 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
 
     # Native hook/stream identity for this runtime, shared by its configured agents.
     native_id: ClassVar[str | None] = None
+    # Browser-loadable brand mark, replaceable by the deployment's agent config.
+    default_icon_url: ClassVar[str | None] = None
+
+    @property
+    def icon_url(self) -> str | None:
+        if self.config is not None and self.config.icon_url is not None:
+            return self.config.icon_url
+        return self.default_icon_url
 
     @property
     def info(self) -> AgentInfo:
         return AgentInfo(
             id=self.id,
+            icon_url=self.icon_url,
             description=self.description,
             gateway=self.gateway,
             default_model=self.default_model,

@@ -31,7 +31,10 @@ for (const width of [1280, 390]) {
       summon: { destinations: [], here: null, routes: {}, reason: 'No agents' },
     }
     const messages: ApiModelMessage[] = [
-      { id: '050', run_id: 'run', kind: 'response', timestamp, thread_messages: [], parts: [{ part_kind: 'text', content: 'I’ll read the log and search the documentation.' }] },
+      { id: '050', run_id: 'run', kind: 'response', timestamp, thread_messages: [], parts: [
+        { part_kind: 'thinking', content: '**Preparing the inspection**', provider_details: { reasoning_format: 'summary' } },
+        { part_kind: 'text', content: 'I’ll read the log and search the documentation.' },
+      ] },
       { id: '100', run_id: 'run', kind: 'response', timestamp, thread_messages: [], parts: [
         { part_kind: 'thinking', content: '**Applying surgical UI changes**\n\n**Checking trace border tokens**', provider_details: { reasoning_format: 'summary' } },
         { part_kind: 'tool-call', tool_name: 'Read', tool_call_id: 'read', args: { file_path: 'OpenUsage.log' } },
@@ -57,6 +60,10 @@ for (const width of [1280, 390]) {
       if (path === '/api/artifacts/config') return route.fulfill({ json: { path: '/artifacts' } })
       if (path === '/api/trunkline/threads') return route.fulfill({ json: [thread] })
       if (path === '/api/trunkline/threads/thread-a') return route.fulfill({ json: thread })
+      if (path === '/api/trunkline/agents') return route.fulfill({ json: ['codex', 'claude', 'deepseek', 'custom', 'broken'].map(id => ({
+        id, icon_url: id === 'custom' ? null : id === 'broken' ? '/broken-agent.svg' : `/agent-icons/${id === 'codex' ? 'openai' : id}.svg`,
+        description: '', gateway: true, default_model: null, permission_modes: [], default_permission_mode: null, routes: [], driven_sessions: 0, native_sessions: 1,
+      })) })
       if (path.endsWith('/thread-a/conversations')) return route.fulfill({ json: [conversation] })
       if (path.endsWith('/thread-a/conversations/messages')) return route.fulfill({ json: { items: messages, total: messages.length, has_more: false, next_cursor: null } })
       if (path.endsWith('/thread-a/messages')) return route.fulfill({ json: { items: [], total: 0, has_more: false, next_cursor: null } })
@@ -74,7 +81,9 @@ for (const width of [1280, 390]) {
     const log = page.locator('#trk-chatlog')
     await expect(log.locator('.trk-agent-message')).toHaveCount(3)
     await expect(log.locator('[data-agent-label]')).toHaveCount(1)
-    await expect(log.locator('[data-agent-label]')).toHaveAttribute('id', 'pm-050.0')
+    await expect(log.locator('[data-agent-label]')).toHaveText('Octomate')
+    await expect(log.getByRole('img', { name: 'Octomate(Codex)' })).toBeVisible()
+    expect(await log.locator('[id="pm-050.0"]').evaluate(el => el.previousElementSibling?.hasAttribute('data-agent-label'))).toBe(true)
     for (const id of ['300.0', '310.0']) {
       const message = log.locator(`[id="pm-${id}"]`)
       const bounds = await message.locator('.trk-md').boundingBox()
@@ -86,7 +95,7 @@ for (const width of [1280, 390]) {
     const thought = page.locator('[id="pm-100.0"]')
     const read = page.locator('[id="pm-100.1"]')
     const search = page.locator('[id="pm-100.2"]')
-    await expect(log.locator('.trk-thinking-toggle')).toHaveCount(2)
+    await expect(log.locator('.trk-thinking-toggle')).toHaveCount(3)
     await expect(log.locator('.trk-tool-toggle')).toHaveCount(2)
     const group = log.locator('details.trk-trace-group').first()
     const singleThought = log.locator('.trk-ledger-col > [id="pm-300.1"]')
@@ -348,7 +357,7 @@ for (const width of [1280, 390]) {
         ] } })
       }, boundary)
       await expect(log.locator('[data-agent-label]')).toHaveCount(boundary.kind === 'agent' ? 3 : 2)
-      await expect(log.locator('#pm-after')).toHaveAttribute('data-agent-label', '')
+      expect(await log.locator('#pm-after').evaluate(el => el.previousElementSibling?.hasAttribute('data-agent-label'))).toBe(true)
     }
     await page.evaluate(async () => {
       const path = '/src/state/console.ts'
@@ -356,7 +365,35 @@ for (const width of [1280, 390]) {
       useConsole.setState({ ledgerN: 1 })
     })
     await expect(log.locator('[data-agent-label]')).toHaveCount(1)
-    await expect(log.locator('#pm-after')).toHaveAttribute('data-agent-label', '')
+    expect(await log.locator('#pm-after').evaluate(el => el.previousElementSibling?.hasAttribute('data-agent-label'))).toBe(true)
+    await page.route('**/broken-agent.svg', route => route.fulfill({ contentType: 'image/svg+xml', body: 'not an image' }))
+    for (const agentId of ['codex', 'claude', 'deepseek', 'custom', 'broken']) {
+      await page.evaluate(async agentId => {
+        const path = '/src/state/console.ts'
+        const { useConsole } = await import(path)
+        useConsole.setState({ ledgerN: 100, running: false, live: [], detail: { ...useConsole.getState().detail, ledger: [
+          { kind: 'think', uid: `think-${agentId}`, agentId, dur: '', text: '**Checking the result**', thinking: false, format: 'summary' },
+          { kind: 'agent', uid: `reply-${agentId}`, agentId, label: `Octomate(${agentId[0].toUpperCase() + agentId.slice(1)})`, blocks: [{ type: 'p', text: 'Inspection complete.' }] },
+        ] } })
+      }, agentId)
+      const identity = log.locator('[data-agent-label]')
+      await expect(identity).toHaveCount(1)
+      expect(await log.locator('.trk-thinking-toggle').evaluate(el => el.closest('.trk-trace-row')!.previousElementSibling?.hasAttribute('data-agent-label'))).toBe(true)
+      if (agentId === 'custom' || agentId === 'broken') {
+        await expect(identity).toHaveText(`Octomate(${agentId[0].toUpperCase() + agentId.slice(1)})`)
+        await expect(identity.locator('img')).toHaveCount(0)
+      } else {
+        await expect(identity).toHaveText('Octomate')
+        await expect.poll(() => identity.locator('img').evaluate(el => (el as HTMLImageElement).naturalWidth)).toBeGreaterThan(0)
+        await expect(identity.getByRole('img')).not.toHaveCSS('mask-image', 'none')
+      }
+      if (agentId === 'codex') {
+        for (const theme of ['light', 'dark']) {
+          await page.getByRole('button', { name: `Switch to ${theme}`, exact: true }).press('Enter')
+          await log.locator('.trk-ledger-col').screenshot({ animations: 'disabled', path: `/private/tmp/trunkline-agent-identity-${width}-${theme}.png` })
+        }
+      }
+    }
     await expect(page.locator('vite-error-overlay')).toHaveCount(0)
     expect(errors).toEqual([])
   })

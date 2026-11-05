@@ -1254,6 +1254,48 @@ def test_acp_connects_only_when_configured_and_enabled(
         assert "/api/acp" not in routes
 
 
+@pytest.mark.parametrize("agent_type", ["codex", "claude", "deepseek", "acp_agent"])
+@pytest.mark.parametrize("icon_url", [None, "/custom-agent.svg", ""])
+def test_agent_icons_keep_runtime_defaults_and_configured_overrides(
+    monkeypatch: pytest.MonkeyPatch, agent_type: str, icon_url: str | None
+) -> None:
+    application = importlib.import_module("octomate.app")
+    config = OctomateConfig.model_validate(
+        {
+            "tentacles": {
+                "coding": {
+                    "type": agent_type,
+                    "icon_url": icon_url,
+                    **(
+                        {"provider": {"command": "custom-agent"}}
+                        if agent_type == "acp_agent"
+                        else {}
+                    ),
+                }
+            }
+        }
+    )
+    monkeypatch.setattr(application, "config", config)
+    with patch("logfire.configure"), patch("logging.basicConfig"):
+        host = application.create_app()
+    defaults = {
+        "codex": "/agent-icons/openai.svg",
+        "claude": "/agent-icons/claude.svg",
+        "deepseek": "/agent-icons/deepseek.svg",
+        "acp_agent": None,
+    }
+    assert host.agents["coding"].info.icon_url == (
+        defaults[agent_type] if icon_url is None else icon_url
+    )
+    agent_config = host.agents["coding"].config
+    assert agent_config is not None
+    for override in ["/updated-agent.svg", "", None]:
+        agent_config.icon_url = override
+        assert host.agents["coding"].info.icon_url == (
+            defaults[agent_type] if override is None else override
+        )
+
+
 @pytest.mark.parametrize("public_api", [False, True])
 def test_acp_harnesses_are_independent_of_the_public_api(
     monkeypatch: pytest.MonkeyPatch, public_api: bool
@@ -1291,8 +1333,8 @@ def test_acp_harnesses_are_independent_of_the_public_api(
     second = app.agents["second"]
     assert isinstance(first, AcpAgentTentacle)
     assert isinstance(second, AcpAgentTentacle)
-    assert first.provider.command == "first-agent"
-    assert first.provider.args == ["--acp"]
+    assert first.config.provider.command == "first-agent"
+    assert first.config.provider.args == ["--acp"]
     assert first.gateway
     assert not second.gateway
     routes = [
