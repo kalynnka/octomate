@@ -11,8 +11,14 @@ from octomate.schemas.conversation import Conversation
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.thread import DEEPSEEK_NATIVE_ID
 from octomate.tentacles.deepseek.adapter import deepseek_metadata
-from octomate.tentacles.deepseek.wire import ContentBlock, SessionEvent, text_of
+from octomate.tentacles.deepseek.wire import (
+    ContentBlock,
+    SessionEvent,
+    UserMessageData,
+    text_of,
+)
 from octomate.types.compactions import CompactionTrigger
+from octomate.types.json import JsonValue
 
 
 class CompactionSummary(BaseModel):
@@ -35,6 +41,14 @@ class CompactionEnd(BaseModel):
     error: str | None = None
 
 
+class CompactionCheckpointSource(BaseModel):
+    """The source identity on the concrete replacement user message."""
+
+    model_config = PERMISSIVE
+
+    compaction_id: str = Field(alias="compactionId")
+
+
 class DeepseekCompactions:
     """Pair summaries with completed transformations before any presentation."""
 
@@ -43,6 +57,7 @@ class DeepseekCompactions:
     session_id: str
     source: str | None
     summaries: dict[str, tuple[CompactionSummary, SessionEvent]]
+    checkpoints: dict[str, tuple[UserMessageData, SessionEvent]]
 
     def __init__(
         self,
@@ -57,11 +72,20 @@ class DeepseekCompactions:
         self.session_id = session_id
         self.source = source
         self.summaries = {}
+        self.checkpoints = {}
 
     async def consume(self, event: SessionEvent) -> None:
-        if event.type not in {"compaction/summary", "compaction/end"}:
+        if event.type not in {"compaction/summary", "compaction/end", "user/message"}:
             return
         try:
+            if event.type == "user/message":
+                checkpoint = UserMessageData.model_validate(event.data)
+                if checkpoint.source.kind == "compact-checkpoint":
+                    source = CompactionCheckpointSource.model_validate(
+                        checkpoint.source.model_dump(by_alias=True)
+                    )
+                    self.checkpoints[source.compaction_id] = checkpoint, event
+                return
             if event.type == "compaction/summary":
                 summary = CompactionSummary.model_validate(event.data)
                 self.summaries[summary.compaction_id] = summary, event
@@ -70,20 +94,23 @@ class DeepseekCompactions:
         except ValidationError:
             return
         pending = self.summaries.pop(end.compaction_id, None)
+        checkpoint = self.checkpoints.pop(end.compaction_id, None)
         if end.error is not None or pending is None:
             return
         summary, summary_event = pending
         timestamp = datetime.fromtimestamp(event.time / 1000, tz=UTC)
+        content = text_of(
+            checkpoint[0].content if checkpoint is not None else summary.summary
+        )
+        provenance: list[JsonValue] = [summary_event.model_dump(mode="json")]
+        if checkpoint is not None:
+            provenance.append(checkpoint[1].model_dump(mode="json"))
+        provenance.append(event.model_dump(mode="json"))
         messages: list[ModelRequest | ModelResponse] = [
             ModelRequest(
-                parts=[UserPromptPart(text_of(summary.summary), timestamp=timestamp)],
+                parts=[UserPromptPart(content, timestamp=timestamp)],
                 timestamp=timestamp,
-                metadata=deepseek_metadata(
-                    [
-                        summary_event.model_dump(mode="json"),
-                        event.model_dump(mode="json"),
-                    ]
-                ),
+                metadata=deepseek_metadata(provenance),
             )
         ]
         trigger: CompactionTrigger = (

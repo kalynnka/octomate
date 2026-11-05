@@ -47,10 +47,26 @@ class TranscriptSessionLine(TranscriptSchema):
     entrypoint: str
 
 
+class CompactSummaryAnchor(TranscriptSchema):
+    """The summary message UUID anchoring Claude's retained messages."""
+
+    anchor_uuid: str | None = Field(
+        default=None, validation_alias=AliasChoices("anchor_uuid", "anchorUuid")
+    )
+
+
 class CompactMetadata(TranscriptSchema):
     """Completion metadata shared by the SDK and transcript boundary."""
 
     trigger: CompactionTrigger = "unknown"
+    preserved_messages: CompactSummaryAnchor | None = Field(
+        default=None,
+        validation_alias=AliasChoices("preserved_messages", "preservedMessages"),
+    )
+    preserved_segment: CompactSummaryAnchor | None = Field(
+        default=None,
+        validation_alias=AliasChoices("preserved_segment", "preservedSegment"),
+    )
 
 
 class CompactBoundary(TranscriptSchema):

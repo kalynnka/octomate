@@ -724,7 +724,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         return catalog
 
     async def record_compaction(
-        self, conversation: Conversation, message: Message
+        self, conversation: Conversation, message: Message, *, cwd: Path
     ) -> None:
         """Persist the SDK's completed boundary before yielding its presentation."""
         if (
@@ -741,6 +741,17 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             trigger=boundary.metadata.trigger,
             happened_at=boundary.timestamp,
         )
+        messages = await self.ink.compaction_messages(boundary, cwd=cwd)
+        if messages:
+            await self.conversations.record_driven_compaction(
+                conversation,
+                native_id=CLAUDE_NATIVE_ID,
+                native_session_id=boundary.session_id,
+                native_compaction_id=boundary.uuid,
+                trigger=boundary.metadata.trigger,
+                happened_at=boundary.timestamp,
+                messages=messages,
+            )
 
     async def execute_command(
         self,
@@ -1272,7 +1283,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                         continue
                     if command is not None and isinstance(message, ResultMessage):
                         command_result = message
-                    await self.record_compaction(conversation, message)
+                    await self.record_compaction(
+                        conversation,
+                        message,
+                        cwd=workspace.path,
+                    )
                     for event in accumulator.consume(
                         message, command=command is not None
                     ):

@@ -9,6 +9,7 @@ No real provider or application database was used.
 """
 
 import asyncio
+import json
 from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack
 from dataclasses import replace
@@ -16,7 +17,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from claude_agent_sdk import ClaudeAgentOptions
+from arcanus.materia.sqlalchemy import selectinload
+from claude_agent_sdk import ClaudeAgentOptions, project_key_for_directory
 from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import Message, ResultMessage, SystemMessage
 from pydantic import TypeAdapter
@@ -71,6 +73,103 @@ async def native_messages(messages: list[JsonObject]) -> AsyncGenerator[Message]
         message = parse_message(raw)
         assert message is not None
         yield message
+
+
+@pytest.mark.parametrize("command", [False, True])
+@pytest.mark.parametrize("anchor", ["messages", "segment", "missing", "partial"])
+async def test_driven_compaction_reads_its_summary_from_sdk_history(
+    execution: tuple[
+        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+    ],
+    streams: dict[str, list[JsonObject]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    command: bool,
+    anchor: str,
+) -> None:
+    agent, context, client, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    native_session_id = str(uuid7())
+    boundary_id, summary_id, retained_id = (str(uuid7()) for _ in range(3))
+    metadata: JsonObject = {"trigger": "manual" if command else "auto"}
+    if anchor in {"messages", "partial"}:
+        metadata["preserved_messages"] = {
+            "anchor_uuid": summary_id,
+            "uuids": [retained_id],
+        }
+    if anchor in {"segment", "partial"}:
+        metadata["preserved_segment"] = {"anchor_uuid": summary_id}
+    if anchor == "partial":
+        metadata["preserved_messages"] = {}
+    boundary: JsonObject = {
+        "type": "system",
+        "subtype": "compact_boundary",
+        "uuid": boundary_id,
+        "session_id": native_session_id,
+        "compact_metadata": metadata,
+    }
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    project = tmp_path / "projects" / project_key_for_directory(str(context.cwd))
+    project.mkdir(parents=True)
+    entries: list[JsonObject] = [
+        {
+            "type": "system",
+            "subtype": "compact_boundary",
+            "uuid": boundary_id,
+            "parentUuid": None,
+        },
+        {
+            "type": "user",
+            "uuid": summary_id,
+            "parentUuid": boundary_id,
+            "sessionId": native_session_id,
+            "isCompactSummary": True,
+            "message": {"role": "user", "content": "Authoritative SDK summary"},
+        },
+        {
+            "type": "user",
+            "uuid": retained_id,
+            "parentUuid": summary_id,
+            "sessionId": native_session_id,
+            "message": {"role": "user", "content": "Retained original"},
+        },
+    ]
+    (project / f"{native_session_id}.jsonl").write_text(
+        "\n".join(json.dumps(entry) for entry in entries) + "\n"
+    )
+    script = [
+        entry
+        for entry in streams["compact" if command else "skill"]
+        if entry.get("subtype") != "compact_boundary"
+    ]
+    script.insert(1, boundary)
+    script[-1]["session_id"] = native_session_id
+    client.receive_response.side_effect = lambda: native_messages(script)
+    if command:
+        async for _ in agent.execute_command(
+            context, CommandInvocation(command_id="compact")
+        ):
+            pass
+    else:
+        await agent.run(
+            "continue",
+            conversation_address=context.address,
+            conversation_id=conversation.id,
+            thread_id=conversation.thread_id,
+        )
+    async with async_session() as session:
+        [stored] = await session.list(
+            Compaction, options=[selectinload(Compaction["messages"])]
+        )
+    assert stored.native_compaction_id == boundary_id
+    expected = [] if anchor == "missing" else ["Authoritative SDK summary"]
+    assert [message.message_text for message in stored.messages] == expected
+    if stored.messages:
+        assert stored.messages[0].run_id is None
+    assert all(
+        message.message_text != "Retained original" for message in stored.messages
+    )
 
 
 async def paused_native_messages(

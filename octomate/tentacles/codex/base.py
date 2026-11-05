@@ -1088,6 +1088,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 await self.capture_compactions(
                     conversation,
                     thread_id=thread_id,
+                    turn_id=completed.id,
                     items=completed.items,
                     trigger="manual",
                     happened_at=datetime.fromtimestamp(completed.completed_at, UTC)
@@ -1124,11 +1125,12 @@ class CodexTentacle(AgentTentacle[str, None]):
         conversation: Conversation,
         *,
         thread_id: str,
+        turn_id: str,
         items: list[ThreadItem],
         trigger: CompactionTrigger,
         happened_at: datetime | None,
     ) -> None:
-        """Record completed items; the app-server exposes no summary or checkpoint body."""
+        """Record completed identities, then enrich them from their matching rollout."""
         for entry in items:
             item = entry.root
             if not isinstance(item, ContextCompactionThreadItem):
@@ -1143,6 +1145,17 @@ class CodexTentacle(AgentTentacle[str, None]):
                 trigger=trigger,
                 happened_at=happened_at,
             )
+            messages = await self.ink.compaction_messages(thread_id, turn_id, item.id)
+            if messages:
+                await self.conversations.record_driven_compaction(
+                    conversation,
+                    native_id=CODEX_NATIVE_ID,
+                    native_session_id=thread_id,
+                    native_compaction_id=item.id,
+                    trigger=trigger,
+                    happened_at=happened_at,
+                    messages=messages,
+                )
 
     async def token_usage_status(self, conversation: Conversation | None) -> str:
         """Render the latest recorded native usage snapshot for this Codex session.
@@ -1909,6 +1922,16 @@ class CodexTentacle(AgentTentacle[str, None]):
                 review=review,
             )
             resources.enter_context(self.track_turn(conversation.id, turn))
+            completed_items: list[ThreadItem] = []
+            resources.push_async_callback(
+                self.capture_compactions,
+                conversation,
+                thread_id=codex_thread_id,
+                turn_id=turn.id,
+                items=completed_items,
+                trigger="auto",
+                happened_at=None,
+            )
             # Closed with the turn's other resources, so its reader never outlives it.
             notifications = await resources.enter_async_context(
                 contextlib.aclosing(interjections.around(turn.stream()))
@@ -1922,9 +1945,11 @@ class CodexTentacle(AgentTentacle[str, None]):
                     yield notification
                     continue
                 if isinstance(notification.payload, ItemCompletedNotification):
+                    completed_items.append(notification.payload.item)
                     await self.capture_compactions(
                         conversation,
                         thread_id=notification.payload.thread_id,
+                        turn_id=notification.payload.turn_id,
                         items=[notification.payload.item],
                         trigger="auto",
                         happened_at=datetime.fromtimestamp(

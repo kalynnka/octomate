@@ -63,8 +63,16 @@ def compaction_events(*, manual: bool = True, failed: bool = False) -> list[Json
             "user/message",
             {
                 "role": "user",
-                "content": [{"type": "text", "text": "Earlier work summarized"}],
-                "source": {"kind": "compaction"},
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "<summary>Earlier work summarized</summary>",
+                    }
+                ],
+                "source": {
+                    "kind": "compact-checkpoint",
+                    "compactionId": lifecycle["compactionId"],
+                },
             },
         ),
         ev(
@@ -106,7 +114,7 @@ async def test_native_compactions_between_turns_and_replay_preserve_archive(
     assert row.conversation_id == conversation.id
     assert row.trigger == ("manual" if manual else "auto")
     [message] = row.messages
-    assert message.message_text == "Earlier work summarized"
+    assert message.message_text == "<summary>Earlier work summarized</summary>"
     assert message.run_id is None
     assert message.compaction_id == row.id
     assert message.metadata is not None
@@ -178,7 +186,7 @@ async def test_driven_command_compaction_has_summary_without_a_model_run(
             Compaction, options=[selectinload(Compaction["messages"])]
         )
     assert row.kind == "octomate"
-    assert row.messages[0].message_text == "Earlier work summarized"
+    assert row.messages[0].message_text == "<summary>Earlier work summarized</summary>"
     assert not (await app.conversations.get(conversation.id)).runs
 
 
@@ -209,4 +217,4 @@ async def test_automatic_driven_compaction_survives_the_enclosing_run(
             Compaction, options=[selectinload(Compaction["messages"])]
         )
     assert row.trigger == "auto"
-    assert row.messages[0].message_text == "Earlier work summarized"
+    assert row.messages[0].message_text == "<summary>Earlier work summarized</summary>"

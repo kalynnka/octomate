@@ -14,7 +14,10 @@ from pydantic import (
     TypeAdapter,
     model_validator,
 )
+from pydantic_ai.messages import CompactionPart, UserPromptPart
 
+from octomate.schemas.messages import ModelRequest, ModelResponse
+from octomate.tentacles.codex.adapter import CODEX_PROVIDER_NAME, codex_metadata
 from octomate.tentacles.codex.schemas import PermissionProfile
 from octomate.types.json import JsonObject
 from octomate.types.permissions import CodexPermissionMode
@@ -59,6 +62,63 @@ class CompactedItem(BaseModel):
         default=None,
         description="Provider response ID of the compaction request, when reported.",
     )
+
+    def to_messages(
+        self, timestamp: AwareDatetime
+    ) -> list[ModelRequest | ModelResponse]:
+        """Normalize created summaries/checkpoints; retained messages keep their owner."""
+        checkpoints = [
+            compaction_item_adapter.validate_python(raw)
+            for raw in self.replacement_history or []
+            if raw.get("type")
+            in {"compaction", "compaction_summary", "context_compaction"}
+        ]
+        messages: list[ModelRequest | ModelResponse] = []
+        if self.message:
+            messages.append(
+                ModelRequest(
+                    parts=[UserPromptPart(self.message, timestamp=timestamp)],
+                    timestamp=timestamp,
+                    metadata=codex_metadata(),
+                )
+            )
+        messages.extend(
+            ModelResponse(
+                parts=[
+                    CompactionPart(
+                        id=checkpoint.id,
+                        provider_name=CODEX_PROVIDER_NAME,
+                        provider_details={
+                            "encrypted_content": checkpoint.encrypted_content
+                        }
+                        if checkpoint.encrypted_content is not None
+                        else None,
+                    )
+                ],
+                timestamp=timestamp,
+                provider_name=CODEX_PROVIDER_NAME,
+                provider_response_id=self.compaction_response_id,
+                metadata=codex_metadata(),
+            )
+            for checkpoint in checkpoints
+        )
+        return messages
+
+
+class CompletedCompactionItem(BaseModel):
+    """The native rollout's completed context-compaction item."""
+
+    type: Literal["ContextCompaction"]
+    id: str
+
+
+class CompactionCompletedEvent(BaseModel):
+    """The source item identity following a committed replacement."""
+
+    type: Literal["item_completed"]
+    thread_id: str
+    turn_id: str
+    item: CompletedCompactionItem
 
 
 class EncryptedCompactionItem(BaseModel):

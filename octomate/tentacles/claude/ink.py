@@ -15,11 +15,19 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     PermissionMode,
     fork_session,
+    get_session_messages,
 )
 from claude_agent_sdk.types import Message
+from pydantic_ai.messages import UserPromptPart
 
+from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.tentacles.claude.catalog import ClaudeCommandDescriptor, ClaudeServerInfo
-from octomate.tentacles.claude.transcript import relocate_session
+from octomate.tentacles.claude.transcript import (
+    CompactBoundary,
+    TranscriptUserMessage,
+    prompt_text,
+    relocate_session,
+)
 
 
 class ClaudeInk:
@@ -62,6 +70,44 @@ class ClaudeInk:
         async with ClaudeSDKClient(options=options) as client:
             info = await client.get_server_info()
         return ClaudeServerInfo.model_validate(info)
+
+    async def compaction_messages(
+        self, boundary: CompactBoundary, *, cwd: Path
+    ) -> list[ModelRequest | ModelResponse]:
+        """Read the exact summary UUID from this driven session's SDK history."""
+        summary_id = next(
+            (
+                anchor.anchor_uuid
+                for anchor in (
+                    boundary.metadata.preserved_messages,
+                    boundary.metadata.preserved_segment,
+                )
+                if anchor is not None and anchor.anchor_uuid is not None
+            ),
+            None,
+        )
+        if summary_id is None:
+            return []
+        messages = await asyncio.to_thread(
+            get_session_messages, boundary.session_id, directory=str(cwd)
+        )
+        summary = next(
+            (
+                message
+                for message in messages
+                if message.uuid == summary_id
+                and message.session_id == boundary.session_id
+                and message.type == "user"
+            ),
+            None,
+        )
+        if summary is None:
+            return []
+        content = prompt_text(TranscriptUserMessage.model_validate(summary.message))
+        part = UserPromptPart(content)
+        if boundary.timestamp is not None:
+            part.timestamp = boundary.timestamp
+        return [ModelRequest(parts=[part], timestamp=boundary.timestamp)]
 
     async def stream(
         self,

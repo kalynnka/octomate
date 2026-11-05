@@ -48,6 +48,7 @@ from octomate.schemas.commands import (
 )
 from octomate.schemas.compactions import Compaction
 from octomate.schemas.events import MessageEvent
+from octomate.schemas.messages import ModelRequest as StoredModelRequest
 from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadCommand
 from octomate.schemas.triage import Claim
 from octomate.schemas.user import UserProfile
@@ -921,16 +922,30 @@ async def test_native_controls_resume_saved_threads_without_an_agent_run(
 
 
 @pytest.mark.parametrize("completed_at", [None, 1784196000])
+@pytest.mark.parametrize("content_available", [False, True])
 async def test_compact_command_persists_completed_items_without_creating_a_run(
     execution: tuple[CodexTentacle, CommandContext, AsyncMock],
     monkeypatch: pytest.MonkeyPatch,
     completed_at: int | None,
+    content_available: bool,
 ) -> None:
     agent, context, _ = execution
     conversation = context.conversation
     assert conversation is not None
     await agent.conversations.set_external_id(conversation, "existing")
     runtime_config = FakeCodex.last_config
+    if content_available:
+        monkeypatch.setattr(
+            agent.ink,
+            "compaction_messages",
+            AsyncMock(
+                return_value=[
+                    StoredModelRequest(
+                        parts=[UserPromptPart("Recovered Codex summary")]
+                    )
+                ]
+            ),
+        )
     reset_fake_codex(text_script("", thread_id="existing"))
     terminal = FakeCodex.script[-1].payload
     assert isinstance(terminal, TurnCompletedNotification)
@@ -974,7 +989,9 @@ async def test_compact_command_persists_completed_items_without_creating_a_run(
     assert compaction.happened_at == (
         datetime.fromtimestamp(completed_at, UTC) if completed_at is not None else None
     )
-    assert not compaction.messages
+    assert [message.message_text for message in compaction.messages] == (
+        ["Recovered Codex summary"] if content_available else []
+    )
     assert not (await agent.conversations.get(conversation.id)).runs
     assert runtime_config is not None
     assert "features.hooks=false" in runtime_config.config_overrides
@@ -1035,6 +1052,53 @@ async def test_automatic_compactions_persist_independently_of_the_run_outcome(
     assert [message.message_text for message in stored.messages] == (
         ["ask", "model failed"] if failed else ["ask", "answer"]
     )
+
+
+@pytest.mark.parametrize("failed", [False, True])
+async def test_compaction_content_flushed_at_turn_end_enriches_the_same_record(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+    monkeypatch: pytest.MonkeyPatch,
+    failed: bool,
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    summary = StoredModelRequest(parts=[UserPromptPart("Late compaction summary")])
+    read = AsyncMock(side_effect=[[], [summary]])
+    monkeypatch.setattr(agent.ink, "compaction_messages", read)
+    completed = Notification(
+        method="item/completed",
+        payload=ItemCompletedNotification.model_validate(
+            {
+                "threadId": "thread-new",
+                "turnId": "turn-1",
+                "completedAtMs": 1784196000000,
+                "item": {"type": "contextCompaction", "id": "completed-compaction"},
+            }
+        ),
+    )
+    terminal = (
+        failed_script("model failed", thread_id="thread-new")
+        if failed
+        else text_script("answer", thread_id="thread-new")
+    )
+    reset_fake_codex([completed, *terminal])
+    if failed:
+        with pytest.raises(AgentRunError, match="model failed"):
+            await agent.run(
+                "ask", conversation_address=KEY, thread_id=conversation.thread_id
+            )
+    else:
+        await agent.run(
+            "ask", conversation_address=KEY, thread_id=conversation.thread_id
+        )
+    async with async_session() as session:
+        [stored] = await session.list(
+            Compaction, options=[selectinload(Compaction["messages"])]
+        )
+    assert [message.id for message in stored.messages] == [summary.id]
+    assert stored.happened_at == datetime.fromtimestamp(1784196000, UTC)
+    assert read.await_count == 2
 
 
 async def test_mcp_inspection_is_thread_scoped_and_reads_all_pages(

@@ -31,6 +31,44 @@ from octomate.types.compactions import CompactionTrigger
 from tests.support.managers import a_thread
 
 
+async def test_driven_compaction_accepts_later_content_without_replacing_identity(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    manager = ConversationManager()
+    conversation = await manager.ensure(await a_thread(), agent_tentacle_id="agent")
+    original = await manager.record_driven_compaction(
+        conversation,
+        native_id="runtime",
+        native_session_id="session",
+        native_compaction_id="compact",
+        trigger="manual",
+        happened_at=None,
+    )
+    assert original is not None
+    message = ModelRequest(parts=[UserPromptPart("Recovered summary")])
+    for _ in range(2):
+        assert (
+            await manager.record_driven_compaction(
+                conversation,
+                native_id="runtime",
+                native_session_id="session",
+                native_compaction_id="compact",
+                trigger="manual",
+                happened_at=None,
+                messages=[message],
+            )
+            is None
+        )
+    async with async_session() as session:
+        [stored] = await session.list(
+            Compaction, options=[selectinload(Compaction["messages"])]
+        )
+    assert stored.id == original.id
+    assert [item.id for item in stored.messages] == [message.id]
+    assert stored.messages[0].run_id is None
+    assert not (await manager.get(conversation.id)).runs
+
+
 async def test_driven_compactions_are_deduplicated_by_native_session_and_item(
     in_memory_engine: AsyncEngine,
 ) -> None:

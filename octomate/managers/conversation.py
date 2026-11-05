@@ -73,17 +73,26 @@ class ConversationManager(Manager, Locks[ConversationKey]):
     ) -> Compaction | None:
         """Persist a completed native item once, without inventing unavailable content."""
         async with self.lock(conversation.key), async_session() as session:
-            if await session.scalar(
-                select(
-                    select(Compaction["id"])
-                    .where(
-                        Compaction["native_id"] == native_id,
-                        Compaction["native_session_id"] == native_session_id,
-                        Compaction["native_compaction_id"] == native_compaction_id,
-                    )
-                    .exists()
+            expressions = [
+                Compaction["native_id"] == native_id,
+                Compaction["native_session_id"] == native_session_id,
+                Compaction["native_compaction_id"] == native_compaction_id,
+            ]
+            existing = None
+            if messages:
+                existing = await session.one_or_none(
+                    Compaction,
+                    expressions=expressions,
+                    options=[selectinload(Compaction["messages"])],
                 )
+            elif await session.scalar(
+                select(select(Compaction["id"]).where(*expressions).exists())
             ):
+                return None
+            if existing is not None:
+                if not existing.messages:
+                    existing.messages.extend(messages or [])
+                    await session.commit()
                 return None
             compaction = Compaction(
                 conversation_id=conversation.id,

@@ -21,7 +21,6 @@ from octomate_protocol.visualizations import HtmlSnapshot
 from pydantic import ValidationError
 from pydantic_ai.messages import (
     AgentStreamEvent,
-    CompactionPart,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     ModelMessage,
@@ -48,8 +47,6 @@ from octomate.managers.thread import ThreadManager
 from octomate.nerve import Impulse
 from octomate.schemas.artifacts import HtmlArtifact
 from octomate.schemas.conversation import ChannelAddress, Conversation
-from octomate.schemas.messages import ModelRequest as StoredModelRequest
-from octomate.schemas.messages import ModelResponse as StoredModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import (
     CODEX_NATIVE_ID,
@@ -65,7 +62,6 @@ from octomate.tentacles.codex.transcript import (
     SessionMetadata,
     TurnPermissions,
     UserMessageItem,
-    compaction_item_adapter,
     payload_type,
     rollout_line_adapter,
     session_metadata_adapter,
@@ -626,46 +622,13 @@ class CodexTranscriptTailer:
         """Capture summary/checkpoint content without changing the archived turn."""
         try:
             item = CompactedItem.model_validate(line.payload)
-            checkpoints = [
-                compaction_item_adapter.validate_python(raw)
-                for raw in item.replacement_history or []
-                if raw.get("type")
-                in {"compaction", "compaction_summary", "context_compaction"}
-            ]
+            messages = item.to_messages(line.timestamp)
         except ValidationError:
             logger.debug("skipping malformed Codex compaction")
             return
-        messages: list[StoredModelRequest | StoredModelResponse] = []
-        if item.message:
-            messages.append(
-                StoredModelRequest(
-                    parts=[UserPromptPart(item.message, timestamp=line.timestamp)],
-                    timestamp=line.timestamp,
-                    metadata=codex_metadata(),
-                )
-            )
-        messages.extend(
-            StoredModelResponse(
-                parts=[
-                    CompactionPart(
-                        id=checkpoint.id,
-                        provider_name=CODEX_PROVIDER_NAME,
-                        provider_details={
-                            "encrypted_content": checkpoint.encrypted_content
-                        }
-                        if checkpoint.encrypted_content is not None
-                        else None,
-                    )
-                ],
-                timestamp=line.timestamp,
-                provider_name=CODEX_PROVIDER_NAME,
-                provider_response_id=item.compaction_response_id,
-                metadata=codex_metadata(),
-            )
-            for checkpoint in checkpoints
-        )
         conversation = tail.conversation if tail is not None else state.conversation
         assert conversation is not None
+        # TODO: Preserve the native compaction trigger when Codex exposes a reliable manual/auto signal.
         await self.conversation_manager.record_external_compaction(
             conversation,
             native_id=CODEX_NATIVE_ID,

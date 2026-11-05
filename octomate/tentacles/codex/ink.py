@@ -31,6 +31,7 @@ from openai_codex.generated.v2_all import (
     CommandGuardianApprovalReviewAction,
     ConfigReadResponse,
     ExecveGuardianApprovalReviewAction,
+    FsReadFileResponse,
     GetAccountRateLimitsResponse,
     GetAccountResponse,
     GuardianApprovalReviewStatus,
@@ -61,12 +62,13 @@ from openai_codex.generated.v2_all import (
     ThreadForkParams,
     ThreadUnsubscribeResponse,
 )
-from pydantic import AnyUrl, SecretStr, TypeAdapter
+from pydantic import AnyUrl, SecretStr, TypeAdapter, ValidationError
 from pydantic.alias_generators import to_snake
 
 from octomate.config.agents import CodexConfig
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.schemas.mcp import McpAppResource
+from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.telemetry import octomate_trace_environment
 from octomate.tentacles.codex.adapter import json_object_adapter
 from octomate.tentacles.codex.client import RequestHandler, SharedCodex
@@ -77,6 +79,11 @@ from octomate.tentacles.codex.schemas import (
     ThreadSettingsUpdateResponse,
     ThreadStartParams,
     TurnStartParams,
+)
+from octomate.tentacles.codex.transcript import (
+    CompactedItem,
+    CompactionCompletedEvent,
+    rollout_line_adapter,
 )
 from octomate.types.json import JsonObject
 from octomate.utils import acquire_in_thread
@@ -183,6 +190,67 @@ class CodexInk:
         await self.client.close()
         if notification_task is not None:
             await notification_task
+
+    async def compaction_messages(
+        self, thread_id: str, turn_id: str, item_id: str
+    ) -> list[ModelRequest | ModelResponse]:
+        """Read this driven runtime's rollout over RPC, including remote runtimes."""
+        try:
+            thread = (await AsyncThread(self.client, thread_id).read()).thread
+            if thread.id != thread_id:
+                raise ValueError("Compaction history belongs to a different thread")
+            if thread.path is None:
+                return []
+            response = await self.client._client.request(
+                "fs/readFile", {"path": thread.path}, response_model=FsReadFileResponse
+            )
+        except CodexError as exc:
+            logger.warning(
+                "session %s: compaction content unavailable: %s", thread_id, exc
+            )
+            return []
+        verified = False
+        current_turn: str | None = None
+        pending: tuple[CompactedItem, datetime] | None = None
+        for raw in b64decode(response.data_base64, validate=True).splitlines():
+            try:
+                line = rollout_line_adapter.validate_json(raw)
+            except ValidationError:
+                continue
+            if line.type == "session_meta":
+                verified = line.payload.get("id") == thread_id
+            if not verified:
+                continue
+            if line.type == "event_msg" and line.payload.get("type") == "task_started":
+                value = line.payload.get("turn_id")
+                current_turn = value if isinstance(value, str) else None
+                pending = None
+            if current_turn != turn_id:
+                continue
+            if line.type == "compacted":
+                try:
+                    pending = CompactedItem.model_validate(line.payload), line.timestamp
+                except ValidationError:
+                    pending = None
+                continue
+            if line.type != "event_msg" or line.payload.get("type") != "item_completed":
+                continue
+            try:
+                completed = CompactionCompletedEvent.model_validate(line.payload)
+            except ValidationError:
+                continue
+            if completed.thread_id != thread_id or completed.turn_id != turn_id:
+                continue
+            if completed.item.id == item_id and pending is not None:
+                try:
+                    return pending[0].to_messages(pending[1])
+                except ValidationError:
+                    logger.debug(
+                        "session %s: skipping malformed compaction content", thread_id
+                    )
+                    return []
+            pending = None
+        return []
 
     async def watch_runtime(self, invalidate_commands: Callable[[str], None]) -> None:
         """Invalidate catalogs and forget bindings for closed native threads."""
