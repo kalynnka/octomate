@@ -192,6 +192,8 @@ def _build(
     tentacle = ClaudeCodeTentacle(
         "claude",
         octomate,
+        auth=octomate.auth,
+        sandboxes=octomate.sandboxes,
         config=config or ClaudeCodeConfig(),
         commands=octomate.commands,
         projects=octomate.projects,

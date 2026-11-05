@@ -5,10 +5,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated, Literal, Self
 
-from pydantic import UUID7, AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import UUID7, AnyHttpUrl, AwareDatetime, BaseModel, ConfigDict, Field
 from pydantic_ai.messages import ModelMessage, UserContent
+from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
-from pydantic_ai.usage import RunUsage
+from pydantic_ai.usage import RunUsage, UsageLimits
 
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
@@ -52,7 +53,9 @@ class InvocationScope(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     user_id: UUID7
-    mode: Literal["native", "sbx"]
+    sandbox: str = Field(
+        min_length=1, description="Core-selected sandbox deployment ID."
+    )
     conversation_id: UUID7
     thread_id: UUID7 | None = None
 
@@ -61,7 +64,7 @@ class InvocationScope(BaseModel):
         cls,
         profile: UserProfile,
         *,
-        mode: Literal["native", "sbx"],
+        sandbox: str,
         conversation_id: UUID7,
         thread_id: UUID7 | None = None,
     ) -> Self:
@@ -70,16 +73,16 @@ class InvocationScope(BaseModel):
             raise ValueError("Sandbox access requires a registered user")
         return cls(
             user_id=profile.user_id,
-            mode=mode,
+            sandbox=sandbox,
             conversation_id=conversation_id,
             thread_id=thread_id,
         )
 
     def require_binding(self, bound: InvocationScope) -> None:
-        """Refuse another owner's or sandbox mode's private conversation state."""
+        """Refuse another owner's or sandbox deployment's private conversation state."""
         if self != bound:
             raise ValueError(
-                "Invocation owner, sandbox mode or conversation does not match"
+                "Invocation owner, sandbox deployment or conversation does not match"
             )
 
 
@@ -104,11 +107,30 @@ class InvocationMessage(SandboxAgentSignal):
     invocation_id: UUID7
 
 
+class SandboxMcp(BaseModel):
+    """The core-prepared MCP connection for this invocation."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    url: AnyHttpUrl
+    token: str = Field(min_length=1, repr=False)
+
+
 class ExecuteAgent(InvocationMessage):
+    """One prepared invocation, sent once on the guest process's stdin."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, hide_input_in_errors=True)
+
     kind: Literal["execute"] = "execute"
     scope: InvocationScope
     agent_id: str
-    model: str | None = None
+    harness: Literal["inkling"] = "inkling"
+    model: str = Field(min_length=1)
+    model_settings: ModelSettings | None = None
+    system_prompt: str = ""
+    instructions: str | None = None
+    usage_limits: UsageLimits = Field(default_factory=UsageLimits)
+    mcp: SandboxMcp | None = None
     effort: str | None = None
     prompt: str | list[UserContent] | None = None
     history: list[ModelMessage] = Field(default_factory=list)

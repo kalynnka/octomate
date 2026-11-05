@@ -143,9 +143,12 @@ def _tentacle(
     agent: Agent[None, ScriptedOutput],
     conversations: FakeConversationManager,
 ) -> InklingTentacle:
+    host = Octomate(conversations=conversations)
     return InklingTentacle(
         "inkling",
-        Octomate(conversations=conversations),
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
         agent=cast(Agent[None, InklingOutput], agent),
         conversation_manager=conversations,
     )
@@ -466,7 +469,11 @@ async def test_a_teleport_follows_the_approval_posture(
         config=OctomateConfig(auth=auth_config()), conversations=conversations
     )
     tentacle = InklingTentacle(
-        "inkling", host, agent=cast(Agent[None, InklingOutput], agent)
+        "inkling",
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
+        agent=cast(Agent[None, InklingOutput], agent),
     )
     suspender = StubSuspender()
     session = OctomateSession(
@@ -896,9 +903,12 @@ async def test_subagent_run_mounts_the_tentacle_capabilities_too() -> None:
         system_prompt=SYSTEM_PROMPT,
     )
     conversations = FakeConversationManager()
+    host = Octomate(conversations=conversations)
     tentacle = InklingTentacle(
         "inkling",
-        Octomate(conversations=conversations),
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
         agent=cast(Agent[None, InklingOutput], agent),
         conversation_manager=conversations,
         capabilities=[AskCapability()],
@@ -979,9 +989,12 @@ async def test_inkling_default_output_is_segments() -> None:
 
     agent = _inkling_agent()
     conversations = FakeConversationManager()
+    host = Octomate(conversations=conversations)
     tentacle = InklingTentacle(
         "inkling",
-        Octomate(conversations=conversations),
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
         agent=agent,
         conversation_manager=conversations,
     )
@@ -1007,9 +1020,12 @@ async def test_inkling_applies_its_configured_request_limit() -> None:
     agent = _inkling_agent()
     conversations = FakeConversationManager()
     probe = UsageLimitProbe()
+    host = Octomate(conversations=conversations)
     tentacle = InklingTentacle(
         "inkling",
-        Octomate(conversations=conversations),
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
         agent=agent,
         conversation_manager=conversations,
         capabilities=[probe],

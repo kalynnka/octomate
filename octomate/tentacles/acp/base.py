@@ -65,6 +65,8 @@ from octomate.utils import drain_task
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
+    from octomate.managers.auth import AuthManager
+    from octomate.managers.sandbox import SandboxManager
 
 
 class AcpAgentTentacle(AgentTentacle[str, None]):
@@ -92,6 +94,9 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         octomate: Octomate,
         *,
         provider: AcpProvider,
+        auth: AuthManager | None,
+        sandboxes: SandboxManager,
+        sandbox: str | None = None,
         gateway: bool = True,
         permission_mode: str | None = None,
         approval_timeout: float | None = 3600.0,
@@ -103,6 +108,9 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             projects=octomate.projects,
             threads=octomate.threads,
             files=octomate.files,
+            auth=auth,
+            sandboxes=sandboxes,
+            sandbox=sandbox,
         )
         self.provider = provider
         self.gateway = gateway

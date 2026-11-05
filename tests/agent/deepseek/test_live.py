@@ -100,6 +100,8 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
     tentacle = DeepseekTentacle(
         "deepseek",
         octomate,
+        auth=octomate.auth,
+        sandboxes=octomate.sandboxes,
         config=DeepseekConfig(
             executable=executable,
             port=port,
@@ -270,7 +272,13 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
     assert (home / "cordis.patch.yml").read_text() == native_patch
     assert (native_profile / "cordis.patch.yml").read_text() == native_patch
     assert "OCTOMATE_DSH_TEST_TOKEN: synthetic\n" in credentials.read_text()
-    restarted = DeepseekTentacle("deepseek", tentacle.octomate, config=tentacle.config)
+    restarted = DeepseekTentacle(
+        "deepseek",
+        tentacle.octomate,
+        auth=tentacle.octomate.auth,
+        sandboxes=tentacle.octomate.sandboxes,
+        config=tentacle.config,
+    )
     monkeypatch.setattr(restarted, "answer_approval", approve)
     monkeypatch.setattr(restarted, "answer_questions", answer)
     async with asyncio.timeout(90), restarted:

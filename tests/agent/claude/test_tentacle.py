@@ -146,6 +146,8 @@ def _tentacle(
     return ClaudeCodeTentacle(
         "claude",
         host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
         config=config or ClaudeCodeConfig(),
         commands=host.commands,
         projects=host.projects,

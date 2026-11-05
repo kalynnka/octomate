@@ -46,7 +46,12 @@ async def app(in_memory_engine: AsyncEngine) -> Octomate:
     assert agent.model is not None
     application.connect(
         InklingTentacle(
-            "inkling", application, agent=agent, models={"test": agent.model}
+            "inkling",
+            application,
+            auth=application.auth,
+            sandboxes=application.sandboxes,
+            agent=agent,
+            models={"test": agent.model},
         )
     )
     channel = application.connect(

@@ -143,12 +143,14 @@ from octomate.utils import drain_task
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
+    from octomate.managers.auth import AuthManager
     from octomate.managers.commands import CommandManager
     from octomate.managers.conversation import ConversationManager
     from octomate.managers.deferred import DeferredActionManager
     from octomate.managers.files import FileManager
     from octomate.managers.mcp import McpManager
     from octomate.managers.project import ProjectManager
+    from octomate.managers.sandbox import SandboxManager
     from octomate.managers.thread import ThreadManager
     from octomate.managers.user import UserManager
     from octomate.managers.workspaces import WorkspaceManager
@@ -222,6 +224,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         octomate: Octomate,
         *,
         config: ClaudeCodeConfig,
+        auth: AuthManager | None,
+        sandboxes: SandboxManager,
         commands: CommandManager,
         projects: ProjectManager,
         threads: ThreadManager,
@@ -241,6 +245,9 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             projects=projects,
             threads=threads,
             files=files,
+            auth=auth,
+            sandboxes=sandboxes,
+            sandbox=config.sandbox,
         )
         self.conversations = conversations
         self.deferred_actions = deferred_actions

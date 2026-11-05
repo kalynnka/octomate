@@ -18,7 +18,8 @@ from octomate.managers.sandbox import SandboxManager
 from octomate.nerve import Nerve
 from octomate.sandbox.agent import run_agent
 from octomate.sandbox.sbx import SbxSandbox
-from octomate.schemas.sandbox import InvocationScope
+from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.sandbox import ExecuteAgent, InvocationScope
 
 
 class GuestMemory(BaseModel):
@@ -82,10 +83,10 @@ async def test_single_user_resource_cost(tmp_path: Path) -> None:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable, built sandbox agent image")
-    config = SbxSandboxConfig(image=image)
-    manager = SandboxManager(config, Nerve())
-    scope = InvocationScope(user_id=uuid7(), mode="sbx", conversation_id=uuid7())
-    sandbox = manager.state(scope.user_id).sandbox
+    config = SbxSandboxConfig(id="local", image=image)
+    manager = SandboxManager([config], Nerve())
+    scope = InvocationScope(user_id=uuid7(), sandbox="local", conversation_id=uuid7())
+    sandbox = manager.state(scope).sandbox
     assert isinstance(sandbox, SbxSandbox)
     assert (
         sandbox.name
@@ -94,8 +95,24 @@ async def test_single_user_resource_cost(tmp_path: Path) -> None:
     before = await host_usage()
     started = monotonic()
     try:
-        async with run_agent(manager, scope, uuid7()):
+        async with manager.acquire(scope, uuid7()):
             startup_seconds = monotonic() - started
+            invoked = monotonic()
+            result = await run_agent(
+                manager,
+                ExecuteAgent(
+                    invocation_id=uuid7(),
+                    scope=scope,
+                    agent_id="inkling",
+                    model="test",
+                    prompt="Answer the question",
+                    address=ChannelAddress("im", "dm", "room", "user"),
+                    run_name="react",
+                    workspace="/home/agent/workspace",
+                ),
+            )
+            invocation_seconds = monotonic() - invoked
+            assert result.messages
             await asyncio.sleep(2)
             idle_start = await host_usage()
             pids = idle_start.keys() - before.keys()
@@ -132,13 +149,13 @@ async def test_single_user_resource_cost(tmp_path: Path) -> None:
                     "available_mib=m['MemAvailable']/1024, agent_rss_mib=rss/1024)))",
                 )
             )
-            assert guest.agent_rss_mib > 0
+            assert guest.agent_rss_mib == 0, "Completed agent process is still resident"
             peak_rss_mib = await sample_load(sandbox, pids)
         stopped = monotonic()
-        await manager.stop(scope.user_id)
+        await manager.stop(manager.state(scope))
         stop_seconds = monotonic() - stopped
         resumed = monotonic()
-        async with run_agent(manager, scope, uuid7()):
+        async with manager.acquire(scope, uuid7()):
             resume_seconds = monotonic() - resumed
         report = {
             "host": f"{platform.system()} {platform.machine()}",
@@ -147,6 +164,7 @@ async def test_single_user_resource_cost(tmp_path: Path) -> None:
             "configured_cpus": config.cpus,
             "configured_memory_mib": config.memory_mib,
             "startup_seconds": startup_seconds,
+            "test_model_invocation_seconds": invocation_seconds,
             "stop_seconds": stop_seconds,
             "resume_seconds": resume_seconds,
             "idle_processes": {pid: asdict(idle_end[pid]) for pid in pids},

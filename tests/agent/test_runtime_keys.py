@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 from pydantic_ai.models.test import TestModel
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config.base import OctomateConfig
@@ -18,7 +19,13 @@ async def test_inkling_reuses_one_scoped_key_per_user_and_revokes_on_exit(
     alice = await a_user("alice")
     bob = await a_user("bob")
     host = Octomate(config=OctomateConfig(auth=auth_config()))
-    agent = InklingTentacle("inkling", host, models={"test": TestModel()})
+    agent = InklingTentacle(
+        "inkling",
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
+        models={"test": TestModel()},
+    )
     assert host.auth is not None
 
     async with agent:
@@ -54,7 +61,13 @@ async def test_inkling_refreshes_expired_credentials_once(
 ) -> None:
     user = await a_user()
     host = Octomate(config=OctomateConfig(auth=auth_config()))
-    agent = InklingTentacle("inkling", host, models={"test": TestModel()})
+    agent = InklingTentacle(
+        "inkling",
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
+        models={"test": TestModel()},
+    )
     assert host.auth is not None
 
     async with agent:
@@ -76,7 +89,16 @@ async def test_inkling_refreshes_expired_credentials_once(
 
 
 async def test_runtime_keys_require_a_registered_identity_and_configured_auth() -> None:
-    host = Octomate()
-    agent = InklingTentacle("inkling", host, models={"test": TestModel()})
+    host = Octomate(config=OctomateConfig(auth=auth_config()))
+    assert host.auth is not None
+    agent = InklingTentacle(
+        "inkling",
+        host,
+        auth=None,
+        sandboxes=host.sandboxes,
+        models={"test": TestModel()},
+    )
+    assert agent.auth is None
     assert await agent.runtime_api_key(None) is None
+    assert await agent.runtime_api_key(uuid7()) is None
     assert not agent.api_keys

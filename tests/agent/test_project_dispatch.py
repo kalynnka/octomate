@@ -79,6 +79,8 @@ def a_claude(octomate: Octomate) -> ClaudeCodeTentacle:
     return ClaudeCodeTentacle(
         "claude",
         octomate,
+        auth=octomate.auth,
+        sandboxes=octomate.sandboxes,
         config=ClaudeCodeConfig(),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -111,6 +113,7 @@ async def codex_run(octomate: Octomate, thread: Thread) -> str | None:
     tentacle = CodexTentacle(
         "codex",
         octomate,
+        sandboxes=octomate.sandboxes,
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,

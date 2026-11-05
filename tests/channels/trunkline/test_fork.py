@@ -345,6 +345,7 @@ async def test_native_teleport_imports_completed_history_before_resuming(
         CodexTentacle(
             "other-codex",
             app,
+            sandboxes=app.sandboxes,
             config=case.tentacle.config,
             commands=app.commands,
             projects=app.projects,

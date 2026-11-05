@@ -49,6 +49,8 @@ async def a_native_session() -> tuple[Octomate, ClaudeCodeTentacle, UserProfile]
         ClaudeCodeTentacle(
             "claude",
             octomate,
+            auth=octomate.auth,
+            sandboxes=octomate.sandboxes,
             config=ClaudeCodeConfig(),
             commands=octomate.commands,
             projects=octomate.projects,

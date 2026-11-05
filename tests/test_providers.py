@@ -66,7 +66,15 @@ def test_inkling_claims_the_thinking_level_built_into_a_model() -> None:
         }
     )
 
-    tentacle = build_inkling("inkling", config, Octomate(), registry=make_registry())
+    host = Octomate()
+    tentacle = build_inkling(
+        "inkling",
+        config,
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
+        registry=make_registry(),
+    )
 
     assert tentacle.claims["openai:gpt-5.2"].default_effort == "medium"
     # A level the claim does not offer is no default anyone can be shown.
@@ -104,7 +112,15 @@ def test_inkling_naming_model_uses_registry_settings_without_adding_a_route(
             ),
         }
     )
-    tentacle = build_inkling("inkling", config, Octomate(), registry=registry)
+    host = Octomate()
+    tentacle = build_inkling(
+        "inkling",
+        config,
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
+        registry=registry,
+    )
     assert list(tentacle.models) == ["test"]
     if not configured:
         assert tentacle.naming_model is None

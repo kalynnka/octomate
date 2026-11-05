@@ -296,6 +296,8 @@ def stream_client() -> tuple[TestClient, ClaudeCodeTentacle]:
         ClaudeCodeTentacle(
             "claude",
             octomate,
+            auth=octomate.auth,
+            sandboxes=octomate.sandboxes,
             config=ClaudeCodeConfig(),
             commands=octomate.commands,
             projects=octomate.projects,
@@ -512,6 +514,8 @@ async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
             ClaudeCodeTentacle(
                 "other-claude",
                 tentacle.octomate,
+                auth=tentacle.octomate.auth,
+                sandboxes=tentacle.octomate.sandboxes,
                 config=ClaudeCodeConfig(),
                 commands=tentacle.octomate.commands,
                 projects=tentacle.octomate.projects,

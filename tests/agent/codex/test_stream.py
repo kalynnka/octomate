@@ -407,6 +407,7 @@ def stream_client(*, storage: Path | None = None) -> tuple[TestClient, CodexTent
         CodexTentacle(
             "codex",
             octomate,
+            sandboxes=octomate.sandboxes,
             config=CodexConfig(permission_mode="auto_review"),
             commands=octomate.commands,
             projects=octomate.projects,
@@ -860,6 +861,7 @@ async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
             CodexTentacle(
                 "other-codex",
                 tentacle.octomate,
+                sandboxes=tentacle.octomate.sandboxes,
                 config=CodexConfig(),
                 commands=tentacle.octomate.commands,
                 projects=tentacle.octomate.projects,

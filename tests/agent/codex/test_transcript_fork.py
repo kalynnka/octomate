@@ -58,6 +58,7 @@ async def case(
     tentacle = CodexTentacle(
         "codex",
         octomate,
+        sandboxes=octomate.sandboxes,
         config=CodexConfig(runtime=RuntimeConfig(env={"CODEX_HOME": str(home)})),
         commands=octomate.commands,
         projects=octomate.projects,

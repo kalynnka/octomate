@@ -335,9 +335,12 @@ def _tentacle(
     config: DeepseekConfig | None = None,
     octomate: Octomate | None = None,
 ) -> DeepseekTentacle:
+    host = octomate or Octomate(conversations=conversations)
     return DeepseekTentacle(
         "deepseek",
-        octomate or Octomate(conversations=conversations),
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
         config=config or DeepseekConfig(),
     )
 
@@ -419,7 +422,13 @@ async def test_driven_names_are_persisted_and_revised(
             assert stored is not None
             stored.external_id = session_id
             await session.commit()
-    tentacle = DeepseekTentacle("deepseek", octomate, config=DeepseekConfig())
+    tentacle = DeepseekTentacle(
+        "deepseek",
+        octomate,
+        auth=octomate.auth,
+        sandboxes=octomate.sandboxes,
+        config=DeepseekConfig(),
+    )
     names = [None, "", "  ", " First name ", "修复会话名称", "修复会话名称", None, " "]
     expected = None
     async with tentacle:
@@ -467,7 +476,13 @@ async def test_driven_child_name_does_not_rename_parent_thread(
         subagent_id="child",
         parent_conversation_id=parent.id,
     )
-    tentacle = DeepseekTentacle("deepseek", octomate, config=DeepseekConfig())
+    tentacle = DeepseekTentacle(
+        "deepseek",
+        octomate,
+        auth=octomate.auth,
+        sandboxes=octomate.sandboxes,
+        config=DeepseekConfig(),
+    )
     async with tentacle:
         await tentacle.run(
             "work",

@@ -62,7 +62,13 @@ async def db(in_memory_engine: AsyncEngine) -> None:
 def stream_client() -> tuple[TestClient, DeepseekTentacle]:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
     tentacle = octomate.connect(
-        DeepseekTentacle("deepseek", octomate, config=DeepseekConfig())
+        DeepseekTentacle(
+            "deepseek",
+            octomate,
+            auth=octomate.auth,
+            sandboxes=octomate.sandboxes,
+            config=DeepseekConfig(),
+        )
     )
 
     @asynccontextmanager
@@ -250,7 +256,11 @@ async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
     driver = (
         tentacle.octomate.connect(
             DeepseekTentacle(
-                "other-deepseek", tentacle.octomate, config=DeepseekConfig()
+                "other-deepseek",
+                tentacle.octomate,
+                auth=tentacle.octomate.auth,
+                sandboxes=tentacle.octomate.sandboxes,
+                config=DeepseekConfig(),
             )
         )
         if other_tentacle

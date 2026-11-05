@@ -410,11 +410,12 @@ class Octomate(FastAPI):
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI) -> AsyncGenerator[dict[str, Octomate]]:
-        if self.config.sandbox.mode == "sbx":
-            raise RuntimeError(
-                "sbx agent dispatch is not enabled in this build; "
-                "the sandbox agent transport supports bootstrap verification only"
-            )
+        for agent in self.agents.values():
+            if agent.sandbox is not None:
+                raise RuntimeError(
+                    f"Sandbox dispatch for agent {agent.id!r} is not enabled in this build; "
+                    "prepared sandbox invocations are not yet wired into React"
+                )
         with sqlalchemy_materia():
             # The project registry: reconciling here is what builds
             # the resolution index, so a declared project resolves before

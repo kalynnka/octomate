@@ -62,6 +62,8 @@ async def test_claude_uses_native_metadata_before_config(
     tentacle = ClaudeCodeTentacle(
         "claude",
         host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
         config=ClaudeCodeConfig(
             claims={
                 f"{prefix}:future-model": configured,
@@ -107,6 +109,8 @@ async def test_claude_discovery_claims_its_session_through_client_cleanup(
     tentacle = ClaudeCodeTentacle(
         "claude",
         host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
         config=ClaudeCodeConfig(),
         commands=host.commands,
         projects=host.projects,
@@ -212,6 +216,7 @@ async def test_codex_reads_provider_configured_default_and_every_catalog_page(
     tentacle = CodexTentacle(
         "codex",
         host,
+        sandboxes=host.sandboxes,
         config=CodexConfig(
             claims={f"{prefix}:future-model": Claim("Old metadata", efforts=("low",))}
         ),
@@ -288,9 +293,11 @@ async def test_codex_claims_the_effort_a_turn_runs_at_by_default(
         ),
         ModelListResponse(data=[model]),
     ]
+    host = Octomate()
     tentacle = CodexTentacle(
         "codex",
-        Octomate(),
+        host,
+        sandboxes=host.sandboxes,
         config=CodexConfig(effort=ours),
         commands=Octomate().commands,
         projects=Octomate().projects,
@@ -321,6 +328,7 @@ async def test_codex_empty_catalog_fails_without_fabricating_models(
     tentacle = CodexTentacle(
         "codex",
         host,
+        sandboxes=host.sandboxes,
         config=CodexConfig(),
         commands=host.commands,
         projects=host.projects,
@@ -374,9 +382,12 @@ async def test_deepseek_preserves_provider_pairs_and_native_effort_ids(
             "failures": [],
         }
     )
+    host = Octomate(conversations=FakeConversationManager())
     tentacle = DeepseekTentacle(
         "deepseek",
-        Octomate(conversations=FakeConversationManager()),
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
         config=DeepseekConfig(),
     )
     async with tentacle:
@@ -427,7 +438,14 @@ async def test_deepseek_reports_catalog_failure_without_inventing_models(
             ],
         }
     )
-    tentacle = DeepseekTentacle("deepseek", Octomate(), config=DeepseekConfig())
+    host = Octomate()
+    tentacle = DeepseekTentacle(
+        "deepseek",
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
+        config=DeepseekConfig(),
+    )
     with pytest.raises(ValueError, match="no available models"):
         async with tentacle:
             pytest.fail("An empty catalog must not start successfully")
@@ -458,6 +476,8 @@ def harness(
         return ClaudeCodeTentacle(
             "claude",
             octomate,
+            auth=octomate.auth,
+            sandboxes=octomate.sandboxes,
             config=ClaudeCodeConfig(),
             commands=octomate.commands,
             projects=octomate.projects,
@@ -485,6 +505,7 @@ def harness(
         return CodexTentacle(
             "codex",
             octomate,
+            sandboxes=octomate.sandboxes,
             config=CodexConfig(),
             commands=octomate.commands,
             projects=octomate.projects,
@@ -515,7 +536,13 @@ def harness(
             "failures": [],
         }
     )
-    return DeepseekTentacle("deepseek", octomate, config=DeepseekConfig())
+    return DeepseekTentacle(
+        "deepseek",
+        octomate,
+        auth=octomate.auth,
+        sandboxes=octomate.sandboxes,
+        config=DeepseekConfig(),
+    )
 
 
 async def test_harness_catalogs_expose_all_models_and_native_defaults(
@@ -546,8 +573,14 @@ async def test_harness_catalogs_expose_all_models_and_native_defaults(
 
 async def test_inkling_uses_the_shared_agent_lifecycle() -> None:
     claim = Claim("Test agent", efforts=("medium",))
+    host = Octomate()
     tentacle = InklingTentacle(
-        "inkling", Octomate(), models={"test": TestModel()}, claims={"test": claim}
+        "inkling",
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
+        models={"test": TestModel()},
+        claims={"test": claim},
     )
     async with tentacle as entered:
         assert entered is tentacle

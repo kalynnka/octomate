@@ -221,7 +221,12 @@ def an_inkling(
         toolsets=list(toolsets),
     )
     return InklingTentacle(
-        "inkling", octomate, agent=agent, conversation_manager=FakeConversationManager()
+        "inkling",
+        octomate,
+        auth=octomate.auth,
+        sandboxes=octomate.sandboxes,
+        agent=agent,
+        conversation_manager=FakeConversationManager(),
     )
 
 

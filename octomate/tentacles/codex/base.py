@@ -168,6 +168,7 @@ if TYPE_CHECKING:
     from octomate.managers.files import FileManager
     from octomate.managers.gateway import GatewayManager, OctomateSession
     from octomate.managers.project import ProjectManager
+    from octomate.managers.sandbox import SandboxManager
     from octomate.managers.thread import ThreadManager
     from octomate.managers.user import UserManager
     from octomate.managers.workspaces import WorkspaceManager
@@ -316,6 +317,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         octomate: Octomate,
         *,
         config: CodexConfig,
+        sandboxes: SandboxManager,
         commands: CommandManager,
         projects: ProjectManager,
         threads: ThreadManager,
@@ -336,13 +338,15 @@ class CodexTentacle(AgentTentacle[str, None]):
             projects=projects,
             threads=threads,
             files=files,
+            auth=auth,
+            sandboxes=sandboxes,
+            sandbox=config.sandbox,
         )
         self.conversations = conversations
         self.deferred_actions = deferred_actions
         self.workspaces = workspaces
         self.users = users
         self.bearers = bearers
-        self.auth = auth
         self.gateway_manager = gateway_manager
         self.config = config
         self.description = description or self.description

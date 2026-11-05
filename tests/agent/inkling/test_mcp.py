@@ -106,7 +106,9 @@ async def test_inkling_calls_todos_through_authenticated_mcp_and_publishes_once(
     agent: Agent[None, InklingOutput] = Agent(
         model, output_type=[str, list[MessageSegment], DeferredToolRequests]
     )
-    inkling = InklingTentacle("inkling", host, agent=agent)
+    inkling = InklingTentacle(
+        "inkling", host, auth=host.auth, sandboxes=host.sandboxes, agent=agent
+    )
     assert scope.conversation_address is not None
     topic = ThreadTopic(ThreadKey.from_address(scope.conversation_address))
     async with (
@@ -214,7 +216,9 @@ async def test_anonymous_inkling_run_does_not_mount_core_mcp_tools() -> None:
     agent: Agent[None, InklingOutput] = Agent(
         model, output_type=[str, list[MessageSegment], DeferredToolRequests]
     )
-    inkling = InklingTentacle("inkling", host, agent=agent)
+    inkling = InklingTentacle(
+        "inkling", host, auth=host.auth, sandboxes=host.sandboxes, agent=agent
+    )
     scope = OctomateSession(channel_routes={}, current_agent_id="inkling")
     result = await inkling.run(
         "Hello",
@@ -236,7 +240,13 @@ async def test_registered_inkling_run_requires_configured_authentication(
     in_memory_engine: AsyncEngine,
 ) -> None:
     host, scope = await a_turn(authenticated=False)
-    inkling = InklingTentacle("inkling", host, models={"test": TestModel()})
+    inkling = InklingTentacle(
+        "inkling",
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
+        models={"test": TestModel()},
+    )
     assert scope.conversation_address is not None
 
     async with host.gateway.driving(scope):
@@ -335,6 +345,8 @@ async def test_mcp_accomplices_link_to_the_run_that_returns_their_tool_result(
     child = InklingTentacle(
         "helper",
         host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
         models={"test": FunctionModel(stream_function=report)},
         gateway=False,
     )
@@ -394,7 +406,12 @@ async def test_mcp_accomplices_link_to_the_run_that_returns_their_tool_result(
         capabilities=[Toolset(FunctionToolset([approve_step], requires_approval=True))],
     )
     inkling = InklingTentacle(
-        "inkling", host, agent=agent, permission_mode="bypassPermissions"
+        "inkling",
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
+        agent=agent,
+        permission_mode="bypassPermissions",
     )
     assert scope.conversation_address is not None
     assert scope.conversation_id is not None

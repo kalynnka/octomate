@@ -89,6 +89,7 @@ async def agent(
     tentacle = CodexTentacle(
         "codex",
         host,
+        sandboxes=host.sandboxes,
         config=CodexConfig(),
         commands=host.commands,
         projects=host.projects,
@@ -133,6 +134,7 @@ async def test_models_and_skills_share_client(
     agent = CodexTentacle(
         "codex",
         host,
+        sandboxes=host.sandboxes,
         config=CodexConfig(),
         commands=host.commands,
         projects=host.projects,
@@ -508,6 +510,7 @@ async def test_cancelled_startup_is_drained_before_close(
     agent = CodexTentacle(
         "codex",
         host,
+        sandboxes=host.sandboxes,
         config=CodexConfig(),
         commands=host.commands,
         projects=host.projects,

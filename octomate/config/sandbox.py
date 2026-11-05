@@ -1,19 +1,17 @@
 """Agent sandbox selection and the local sbx resource budget."""
 
-from typing import Annotated, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-
-
-class NativeSandboxConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    mode: Literal["native"] = "native"
 
 
 class SbxSandboxConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    id: str = Field(
+        pattern=r"^[a-z0-9][a-z0-9_-]*$",
+        description="Deployment ID referenced by agent tentacles; scopes each user's sandbox.",
+    )
     mode: Literal["sbx"] = "sbx"
     executable: str = Field(default="sbx", min_length=1)
     version: Literal["0.48.0"] = "0.48.0"
@@ -38,6 +36,4 @@ class SbxSandboxConfig(BaseModel):
     )
 
 
-type SandboxConfig = Annotated[
-    NativeSandboxConfig | SbxSandboxConfig, Field(discriminator="mode")
-]
+type SandboxConfig = SbxSandboxConfig

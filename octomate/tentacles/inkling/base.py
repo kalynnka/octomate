@@ -87,7 +87,9 @@ from octomate.types.permissions import InklingPermissionMode, PermissionMode
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
+    from octomate.managers.auth import AuthManager
     from octomate.managers.mcp import McpManager
+    from octomate.managers.sandbox import SandboxManager
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +216,10 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         id: str,
         octomate: Octomate,
         *,
+        auth: AuthManager | None,
+        sandboxes: SandboxManager,
         agent: Agent[None, InklingOutput] | None = None,
+        sandbox: str | None = None,
         models: Mapping[AgentRouteModelName, Model | str] | None = None,
         naming_model: Model | str | None = None,
         name: str = "octomate-inkling",
@@ -236,6 +241,9 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             projects=octomate.projects,
             threads=octomate.threads,
             files=octomate.files,
+            auth=auth,
+            sandboxes=sandboxes,
+            sandbox=sandbox,
         )
         self.mcp = octomate.mcp
         self.workspaces = octomate.workspaces

@@ -43,7 +43,7 @@ class SbxSandbox:
 
     @property
     def name(self) -> str:
-        return f"octomate-{self.user_id.hex}"
+        return f"octomate-{self.config.id}-{self.user_id.hex}"
 
     def cli(self) -> sh.Command[sh.RunningCommand]:
         """Keep host credentials out of child processes and use ordinary stdio."""
@@ -142,6 +142,7 @@ class SbxSandbox:
                 skills="off",
                 no_progress=True,
                 env=[
+                    f"OCTOMATE_SANDBOX_ID={self.config.id}",
                     f"OCTOMATE_SANDBOX_USER_ID={self.user_id}",
                     f"OCTOMATE_SANDBOX_IMAGE={self.config.image}",
                     f"OCTOMATE_SANDBOX_CPUS={self.config.cpus}",
@@ -152,19 +153,21 @@ class SbxSandbox:
             "exec",
             self.name,
             "printenv",
+            "OCTOMATE_SANDBOX_ID",
             "OCTOMATE_SANDBOX_USER_ID",
             "OCTOMATE_SANDBOX_IMAGE",
             "OCTOMATE_SANDBOX_CPUS",
             "OCTOMATE_SANDBOX_MEMORY_MIB",
         )
         if metadata.splitlines() != [
+            self.config.id.encode(),
             str(self.user_id).encode(),
             self.config.image.encode(),
             str(self.config.cpus).encode(),
             str(self.config.memory_mib).encode(),
         ]:
             raise SandboxError(
-                "Existing sandbox owner, image or resource settings differ; no automatic replacement is allowed"
+                "Existing sandbox deployment, owner, image or resource settings differ; no automatic replacement is allowed"
             )
 
     @asynccontextmanager

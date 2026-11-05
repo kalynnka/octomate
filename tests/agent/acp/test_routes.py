@@ -53,6 +53,8 @@ async def client(
         )
         app.connect(
             InklingTentacle(
+                auth=app.auth,
+                sandboxes=app.sandboxes,
                 id=name,
                 octomate=app,
                 models={
@@ -418,6 +420,8 @@ async def test_questions_resume_or_cancel_through_reflex(
     )
     app.connect(
         InklingTentacle(
+            auth=app.auth,
+            sandboxes=app.sandboxes,
             id="questions",
             octomate=app,
             models={"test": model},
@@ -504,6 +508,8 @@ async def test_agent_permissions_and_cancellation(
     model = FunctionModel(stream_function=reply)
     app.connect(
         InklingTentacle(
+            auth=app.auth,
+            sandboxes=app.sandboxes,
             id="tools",
             octomate=app,
             models={"test": model},
@@ -680,6 +686,8 @@ async def test_native_live_approval_returns_to_existing_run(
         ClaudeCodeTentacle(
             "native",
             app,
+            auth=app.auth,
+            sandboxes=app.sandboxes,
             config=ClaudeCodeConfig(gateway=False),
             commands=app.commands,
             projects=app.projects,

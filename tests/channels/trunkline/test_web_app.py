@@ -90,6 +90,8 @@ async def _register(
         InklingTentacle(
             "inkling",
             octomate,
+            auth=octomate.auth,
+            sandboxes=octomate.sandboxes,
             agent=agent,
             models={RECEPTION_MODEL: agent.model},
             permission_mode=permission_mode,
@@ -469,7 +471,12 @@ async def _register_routes(
         assert agent.model is not None
         octomate.connect(
             InklingTentacle(
-                agent_id, octomate, agent=agent, models={RECEPTION_MODEL: agent.model}
+                agent_id,
+                octomate,
+                auth=octomate.auth,
+                sandboxes=octomate.sandboxes,
+                agent=agent,
+                models={RECEPTION_MODEL: agent.model},
             )
         )
         receptions.append(agent_id)
@@ -750,7 +757,15 @@ async def test_an_agent_that_did_not_start_leaves_the_others_listed(
     octomate = Octomate()
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)
-    octomate.connect(DeepseekTentacle("deepseek", octomate, config=DeepseekConfig()))
+    octomate.connect(
+        DeepseekTentacle(
+            "deepseek",
+            octomate,
+            auth=octomate.auth,
+            sandboxes=octomate.sandboxes,
+            config=DeepseekConfig(),
+        )
+    )
 
     transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(

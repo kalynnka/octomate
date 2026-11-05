@@ -1,16 +1,16 @@
-"""One persistent local sbx environment per core-resolved registered user."""
+"""One persistent environment per sandbox deployment and registered user."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from typing import Literal
 
 from pydantic import UUID7
 
-from octomate.config.sandbox import SandboxConfig, SbxSandboxConfig
+from octomate.config.sandbox import SandboxConfig
 from octomate.nerve import (
     Impulse,
     Nerve,
@@ -31,7 +31,7 @@ from octomate.schemas.sandbox import (
 @dataclass
 class UserSandbox:
     user_id: UUID7
-    config: SbxSandboxConfig
+    config: SandboxConfig
     sandbox: Sandbox
     snapshot: SandboxSnapshot
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -43,32 +43,40 @@ class UserSandbox:
 
 @dataclass
 class SandboxManager:
-    config: SandboxConfig
+    config: InitVar[list[SandboxConfig]]
     nerve: Nerve
-    sandboxes: dict[UUID7, UserSandbox] = field(default_factory=dict, init=False)
+    configs: dict[str, SandboxConfig] = field(init=False)
+    sandboxes: dict[tuple[str, UUID7], UserSandbox] = field(
+        default_factory=dict, init=False
+    )
     closed: bool = field(default=False, init=False)
 
-    def state(self, user_id: UUID7) -> UserSandbox:
+    def __post_init__(self, config: list[SandboxConfig]) -> None:
+        self.configs = {sandbox.id: sandbox for sandbox in config}
+
+    def state(self, scope: InvocationScope) -> UserSandbox:
         """Internal lookup; callers must supply a core-authorized owner."""
-        if not isinstance(self.config, SbxSandboxConfig):
-            raise SandboxError("User sandboxes require sbx configuration")
-        if user_id not in self.sandboxes:
-            sandbox = SbxSandbox(config=self.config, user_id=user_id)
-            self.sandboxes[user_id] = UserSandbox(
-                user_id=user_id,
-                config=self.config,
+        if scope.sandbox not in self.configs:
+            raise SandboxError(f"Unknown sandbox deployment {scope.sandbox!r}")
+        key = (scope.sandbox, scope.user_id)
+        if key not in self.sandboxes:
+            config = self.configs[scope.sandbox]
+            sandbox = SbxSandbox(config=config, user_id=scope.user_id)
+            self.sandboxes[key] = UserSandbox(
+                user_id=scope.user_id,
+                config=config,
                 sandbox=sandbox,
                 snapshot=SandboxProgress(
-                    user_id=user_id,
+                    user_id=scope.user_id,
                     sandbox=sandbox.name,
                     sequence=0,
                     phase="unknown",
                 ),
             )
-        return self.sandboxes[user_id]
+        return self.sandboxes[key]
 
     def snapshot(self, scope: InvocationScope) -> SandboxSnapshot:
-        return self.state(scope.user_id).snapshot
+        return self.state(scope).snapshot
 
     def observe(
         self,
@@ -110,9 +118,7 @@ class SandboxManager:
     async def acquire(
         self, scope: InvocationScope, invocation_id: UUID7
     ) -> AsyncGenerator[UserSandbox]:
-        if scope.mode != "sbx":
-            raise SandboxError("Sandbox acquisition requires sbx mode")
-        state = self.state(scope.user_id)
+        state = self.state(scope)
         async with state.lock:
             if self.closed:
                 raise SandboxError("Sandbox manager is shutting down")
@@ -168,7 +174,7 @@ class SandboxManager:
 
     def schedule_stop(self, state: UserSandbox) -> None:
         state.idle = None
-        state.stopping = asyncio.create_task(self.stop(state.user_id))
+        state.stopping = asyncio.create_task(self.stop(state))
         state.stopping.add_done_callback(self.stop_finished)
 
     @staticmethod
@@ -187,8 +193,7 @@ class SandboxManager:
         await state.sandbox.stop()
         state.needs_cleanup = False
 
-    async def stop(self, user_id: UUID7, *, shutdown: bool = False) -> None:
-        state = self.state(user_id)
+    async def stop(self, state: UserSandbox, *, shutdown: bool = False) -> None:
         async with state.lock:
             if state.invocations and not shutdown:
                 return
@@ -211,7 +216,7 @@ class SandboxManager:
             if state.idle is not None:
                 state.idle.cancel()
         results = await asyncio.gather(
-            *(self.stop(user_id, shutdown=True) for user_id in tuple(self.sandboxes)),
+            *(self.stop(state, shutdown=True) for state in self.sandboxes.values()),
             return_exceptions=True,
         )
         for result in results:

@@ -247,6 +247,8 @@ async def capture(
         accomplice = InklingTentacle(
             "capture-accomplice",
             host,
+            auth=host.auth,
+            sandboxes=host.sandboxes,
             models={model_config.name: registry.build_model(model_config)},
             conversation_manager=conversations,
         )
