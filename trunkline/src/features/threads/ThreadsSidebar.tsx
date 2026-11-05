@@ -13,19 +13,12 @@ import { display, ellipsis, label, mono } from '@/components/text'
 import { useChannels, useThreads } from '@/lib/api/hooks'
 import type { ThreadSummary } from '@/lib/api/types'
 import { channelMeta } from '@/lib/api/live'
-import type { ThreadTone } from '@/lib/api/types'
 import { useRailDrag } from '@/lib/useRailDrag'
 import { useConsole } from '@/state/console'
 import { useActivity } from '@/state/activity'
 
 // How many of a channel's threads are rendered before the rail asks for more.
 const THREAD_PAGE = 12
-
-const toneColor: Record<ThreadTone, string> = {
-  active: 'var(--color-accent)',
-  idle: 'var(--fg-3)',
-  native: 'var(--color-teal)',
-}
 
 interface ThreadRow {
   /** the row's own id — unique, and what React keys on */
@@ -34,7 +27,6 @@ interface ThreadRow {
   /** the short chip shown under the title */
   tag: string
   title: string
-  stColor: string
   agent: string
   on: boolean
   running: boolean
@@ -323,7 +315,6 @@ export function ThreadsSidebar() {
                       threadKey: selThreadId,
                       tag: ntStarted ? selThreadId : 'THR-NEW',
                       title: ntTitle || 'untitled — new thread',
-                      stColor: 'var(--color-gold)',
                       agent: `${ntAgent} · ${ntModel}`,
                       on: true,
                       running: currentRunning || activeKeys.has(`key:${selThreadId}`),
@@ -335,7 +326,6 @@ export function ThreadsSidebar() {
                 threadKey: c.id === 'trunkline' ? t.key : undefined,
                 tag: t.tag ?? t.id,
                 title: t.title,
-                stColor: toneColor[t.tone],
                 agent: t.agentLabel,
                 on: selected(t),
                 running: isRunning(t),
@@ -533,7 +523,8 @@ export function ThreadsSidebar() {
                               width: 5,
                               height: 5,
                               borderRadius: 9999,
-                              background: t.running ? 'var(--color-teal)' : t.stColor,
+                              background: 'var(--trk-thread-running)',
+                              visibility: t.running ? 'visible' : 'hidden',
                               flexShrink: 0,
                             }}
                           />

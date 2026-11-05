@@ -1237,6 +1237,7 @@ async def test_the_agents_endpoint_keeps_the_models_routes_drops(
     assert all(agent["default_model"] == RECEPTION_MODEL for agent in listed)
     assert all(agent["driven_sessions"] == 0 for agent in listed)
     assert all(agent["native_sessions"] == 0 for agent in listed)
+    assert all(agent["native_id"] is None for agent in listed)
 
 
 async def test_the_agents_endpoint_reports_each_routes_effort_vocabulary(

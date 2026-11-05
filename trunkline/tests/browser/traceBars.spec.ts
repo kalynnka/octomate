@@ -60,8 +60,9 @@ for (const width of [1280, 390]) {
       if (path === '/api/artifacts/config') return route.fulfill({ json: { path: '/artifacts' } })
       if (path === '/api/trunkline/threads') return route.fulfill({ json: [thread] })
       if (path === '/api/trunkline/threads/thread-a') return route.fulfill({ json: thread })
-      if (path === '/api/trunkline/agents') return route.fulfill({ json: ['codex', 'claude', 'deepseek', 'custom', 'broken'].map(id => ({
-        id, icon_url: id === 'custom' ? null : id === 'broken' ? '/broken-agent.svg' : `/agent-icons/${id === 'codex' ? 'openai' : id}.svg`,
+      if (path === '/api/trunkline/agents') return route.fulfill({ json: ['codex', 'reviewer', 'deepseek', 'custom', 'broken'].map(id => ({
+        id, native_id: `${id === 'reviewer' ? 'claude' : id}-native`,
+        icon_url: id === 'custom' ? null : id === 'broken' ? '/broken-agent.svg' : `/agent-icons/${id === 'codex' ? 'openai' : id === 'reviewer' ? 'claude' : id}.svg`,
         description: '', gateway: true, default_model: null, permission_modes: [], default_permission_mode: null, routes: [], driven_sessions: 0, native_sessions: 1,
       })) })
       if (path.endsWith('/thread-a/conversations')) return route.fulfill({ json: [conversation] })
@@ -367,7 +368,7 @@ for (const width of [1280, 390]) {
     await expect(log.locator('[data-agent-label]')).toHaveCount(1)
     expect(await log.locator('#pm-after').evaluate(el => el.previousElementSibling?.hasAttribute('data-agent-label'))).toBe(true)
     await page.route('**/broken-agent.svg', route => route.fulfill({ contentType: 'image/svg+xml', body: 'not an image' }))
-    for (const agentId of ['codex', 'claude', 'deepseek', 'custom', 'broken']) {
+    for (const agentId of ['codex', 'reviewer', 'deepseek', 'custom', 'broken', 'codex-native', 'claude-native', 'deepseek-native', 'custom-native', 'broken-native']) {
       await page.evaluate(async agentId => {
         const path = '/src/state/console.ts'
         const { useConsole } = await import(path)
@@ -379,8 +380,8 @@ for (const width of [1280, 390]) {
       const identity = log.locator('[data-agent-label]')
       await expect(identity).toHaveCount(1)
       expect(await log.locator('.trk-thinking-toggle').evaluate(el => el.closest('.trk-trace-row')!.previousElementSibling?.hasAttribute('data-agent-label'))).toBe(true)
-      if (agentId === 'custom' || agentId === 'broken') {
-        await expect(identity).toHaveText(`Octomate(${agentId[0].toUpperCase() + agentId.slice(1)})`)
+      if (agentId.startsWith('custom') || agentId.startsWith('broken')) {
+        await expect(identity).toHaveText(agentId.startsWith('custom') ? 'Octomate(Custom)' : 'Octomate(Broken)')
         await expect(identity.locator('img')).toHaveCount(0)
       } else {
         await expect(identity).toHaveText('Octomate')
@@ -394,6 +395,21 @@ for (const width of [1280, 390]) {
         }
       }
     }
+    await page.evaluate(async () => {
+      const path = '/src/state/console.ts'
+      const { useConsole } = await import(path)
+      const detail = useConsole.getState().detail!
+      useConsole.setState({ live: [], detail: { ...detail, ledger: [], sessions: [{ ...detail.sessions[0], agent: 'codex-native' }] } })
+    })
+    send(
+      { event_kind: 'run_started', address: { channel_tentacle_id: 'codex-native', chat_type: 'thread', chat_id: 'native-session', user_id: 'owner', channel_thread_id: null, shared: false } },
+      { event_kind: 'part_start', index: 0, part: { part_kind: 'thinking', content: 'Inspecting the native session.' } },
+      { event_kind: 'part_start', index: 1, part: { part_kind: 'text', content: 'The native agent is working.' } },
+    )
+    await expect(log.locator('[data-agent-label]')).toHaveCount(1)
+    await expect(log.locator('[data-agent-label]')).toHaveText('Octomate')
+    await expect(log.getByRole('img', { name: 'Octomate(Codex)' })).toBeVisible()
+    await expect(log).toContainText('The native agent is working.')
     await expect(page.locator('vite-error-overlay')).toHaveCount(0)
     expect(errors).toEqual([])
   })

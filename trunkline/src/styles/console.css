@@ -33,6 +33,7 @@ a:hover {
   zoom: var(--trk-zoom);
   color-scheme: light;
   --trk-thread-title-fg: var(--fg-2);
+  --trk-thread-running: color-mix(in srgb, var(--color-accent) 55%, var(--color-ink));
   --trk-control-item-fg: var(--fg-1);
   --trk-bracket: color-mix(in srgb, var(--color-ink) 42%, transparent);
   --trk-vline: color-mix(in srgb, var(--color-ink) 14%, transparent);
@@ -47,6 +48,7 @@ a:hover {
 html[data-theme='dark'] {
   color-scheme: dark;
   --trk-thread-title-fg: var(--fg-1);
+  --trk-thread-running: color-mix(in srgb, var(--color-accent) 40%, var(--color-ink));
   --trk-control-item-fg: var(--fg-2);
   --trk-bracket: rgb(236 228 212 / 0.38);
   --trk-vline: rgb(236 228 212 / 0.13);
@@ -750,16 +752,16 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
 #trk-chatlog [tabindex="-1"]:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
 .trk-thread-pick { display: block; width: 100%; }
 .trk-thread-title { color: var(--trk-thread-title-fg); }
-.trk-thread-pick[data-running] { background: color-mix(in srgb, var(--color-teal) 6%, var(--card-bg)); }
-.trk-thread-pick[data-running][aria-current='page'] { background: color-mix(in srgb, var(--color-teal) 11%, var(--card-bg)); }
-.trk-thread-pick[data-running] .trk-thread-title { color: color-mix(in srgb, var(--color-teal) 55%, var(--color-ink)); font-weight: 600; }
+.trk-thread-pick[data-running] { background: color-mix(in srgb, var(--trk-thread-running) 6%, var(--card-bg)); }
+.trk-thread-pick[data-running][aria-current='page'] { background: color-mix(in srgb, var(--trk-thread-running) 11%, var(--card-bg)); }
+.trk-thread-pick[data-running] .trk-thread-title { color: var(--trk-thread-running); font-weight: 600; }
 .trk-thread-pick[data-running] .trk-thread-dot {
-  box-shadow: 0 0 8px color-mix(in srgb, var(--color-teal) 65%, transparent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--trk-thread-running) 65%, transparent);
   animation: trk-thread-shine 2s var(--ease-in-out) infinite;
 }
 @keyframes trk-thread-shine {
-  0%, 100% { opacity: 1; box-shadow: 0 0 8px color-mix(in srgb, var(--color-teal) 65%, transparent); }
-  50% { opacity: .55; box-shadow: 0 0 3px color-mix(in srgb, var(--color-teal) 25%, transparent); }
+  0%, 100% { opacity: 1; box-shadow: 0 0 8px color-mix(in srgb, var(--trk-thread-running) 65%, transparent); }
+  50% { opacity: .55; box-shadow: 0 0 3px color-mix(in srgb, var(--trk-thread-running) 25%, transparent); }
 }
 @media (prefers-reduced-motion: reduce) {
   .trk-thread-pick[data-running] .trk-thread-dot { animation: none; }

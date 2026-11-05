@@ -533,6 +533,7 @@ export interface ApiAgentRoute {
  *  keeps every model, and adds what no route id carries. */
 export interface ApiAgentInfo {
   id: string
+  native_id?: string | null
   icon_url?: string | null
   description: string
   gateway: boolean

@@ -133,6 +133,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     def info(self) -> AgentInfo:
         return AgentInfo(
             id=self.id,
+            native_id=self.native_id,
             icon_url=self.icon_url,
             description=self.description,
             gateway=self.gateway,

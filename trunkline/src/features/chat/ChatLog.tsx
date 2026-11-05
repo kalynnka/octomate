@@ -169,7 +169,11 @@ export function ChatLog() {
           if (first.kind === 'agent' || first.kind === 'stream' || first.kind === 'think' || first.kind === 'tool') {
             const label = first.kind === 'agent' || first.kind === 'stream' ? first.label ?? botLabel(first.agentId) : botLabel(first.agentId)
             const author = first.agentId ?? label
-            if (author !== assistantLabel) heading = <AgentLabel label={label} iconUrl={agents?.find(agent => agent.id === first.agentId)?.icon_url} />
+            if (author !== assistantLabel) {
+              const agent = agents?.find(agent => agent.id === first.agentId)
+                ?? (first.agentId ? agents?.find(agent => agent.native_id === first.agentId) : undefined)
+              heading = <AgentLabel label={label} iconUrl={agent?.icon_url} />
+            }
             assistantLabel = author
           } else if (item.kind === 'user' || item.kind === 'end' || item.kind === 'session-open') {
             assistantLabel = undefined

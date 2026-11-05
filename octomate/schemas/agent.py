@@ -12,6 +12,11 @@ class AgentInfo(BaseModel):
     live sessions."""
 
     id: str = Field(description="The registered agent tentacle's id.")
+    native_id: str | None = Field(
+        default=None,
+        description="Native hook and transcript identity shared by this runtime's "
+        "configured agents; null when the agent has no native session identity.",
+    )
     icon_url: str | None = Field(
         default=None,
         description="Brand icon URL or absolute URL path; absent or unavailable icons "

@@ -1284,6 +1284,9 @@ def test_agent_icons_keep_runtime_defaults_and_configured_overrides(
         "deepseek": "/agent-icons/deepseek.svg",
         "acp_agent": None,
     }
+    assert host.agents["coding"].info.native_id == (
+        None if agent_type == "acp_agent" else f"{agent_type}-native"
+    )
     assert host.agents["coding"].info.icon_url == (
         defaults[agent_type] if icon_url is None else icon_url
     )

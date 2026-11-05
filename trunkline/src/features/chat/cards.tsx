@@ -54,9 +54,9 @@ export function AgentLabel({ label, iconUrl }: { label: string; iconUrl?: string
   const [failed, setFailed] = useState<string>()
   const icon = iconUrl && failed !== iconUrl
   return <span className="trk-agent-label" data-agent-label="" style={{ ...metaLine, color: 'var(--fg-3)', textTransform: 'none' }}>
-    {icon ? <>{label.replace(/\([^()]*\)$/, '')}<span className="trk-agent-icon" role="img" aria-label={label} title={label} style={{ maskImage: `url(${JSON.stringify(iconUrl)})` }}>
+    {icon ? <><span className="trk-agent-icon" role="img" aria-label={label} title={label} style={{ maskImage: `url(${JSON.stringify(iconUrl)})` }}>
       <img src={iconUrl} alt="" aria-hidden="true" crossOrigin="anonymous" referrerPolicy="no-referrer" onError={() => setFailed(iconUrl)} />
-    </span></> : label}
+    </span>{label.replace(/\([^()]*\)$/, '')}</> : label}
   </span>
 }
 
