@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { create } from 'zustand'
+import { ApiError } from '@/lib/api/auth'
 import { watchThread } from '@/lib/api/client'
 import type { WireEvent } from '@/lib/api/events'
 
@@ -84,7 +85,11 @@ export function observeActivity(id: string, byKey = false): () => void {
           expiry = timer
         }, controller.signal)
         await socket.closed
-      } catch {
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 401) {
+          clear()
+          return
+        }
         // A failed handshake reconnects like a closed socket; labels still expire.
       }
       if (!stopped && current === generation) {

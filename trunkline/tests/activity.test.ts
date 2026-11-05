@@ -11,6 +11,8 @@ let activity: typeof import('../src/state/activity.ts')
 let TurnFold: typeof import('../src/lib/api/fold.ts').TurnFold
 let useConsole: typeof import('../src/state/console.ts').useConsole
 let queryClient: typeof import('../src/lib/queryClient.ts').queryClient
+let useAuth: typeof import('../src/state/auth.ts').useAuth
+let apiFetch: typeof import('../src/lib/api/auth.ts').apiFetch
 const globals = ['WebSocket', 'location'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const)
 const releases: (() => void)[] = []
 const tick = () => new Promise(resolve => setImmediate(resolve))
@@ -34,6 +36,8 @@ before(async () => {
   ;({ TurnFold } = await server.ssrLoadModule('/src/lib/api/fold.ts'))
   ;({ useConsole } = await server.ssrLoadModule('/src/state/console.ts'))
   ;({ queryClient } = await server.ssrLoadModule('/src/lib/queryClient.ts'))
+  ;({ useAuth } = await server.ssrLoadModule('/src/state/auth.ts'))
+  ;({ apiFetch } = await server.ssrLoadModule('/src/lib/api/auth.ts'))
 })
 beforeEach(() => {
   installLiveSocket()
@@ -42,6 +46,7 @@ beforeEach(() => {
 afterEach(() => {
   releases.splice(0).forEach(release => release())
   queryClient.clear()
+  useAuth.setState({ status: 'booting', user: null, notice: null })
   mock.timers.reset()
   mock.restoreAll()
 })
@@ -229,6 +234,91 @@ test('a handshake failure reconnects, but cleanup prevents further attempts', as
   assert.equal(LiveSocket.opened.length, 2)
   assert.equal(text(), undefined)
 })
+
+test('twenty failed thread handshakes share a session check and refresh before reconnecting', async () => {
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  let refreshed = false
+  const fetch = mock.method(globalThis, 'fetch', async (input: RequestInfo | URL) => {
+    if (String(input) === '/api/auth/refresh') {
+      await pending
+      refreshed = true
+      return new Response(null, { status: 204 })
+    }
+    if (String(input) === '/api/trunkline/routes') {
+      return refreshed ? Response.json([]) : new Response(null, { status: 401 })
+    }
+    assert.equal(String(input), '/api/auth/me')
+    return refreshed ? Response.json({ id: 'owner' }) : new Response(null, { status: 401 })
+  })
+  for (let index = 0; index < 20; index++) observe(`thread-${index}`)
+  for (const socket of LiveSocket.opened) socket.onerror?.()
+  await tick()
+  assert.deepEqual(fetch.mock.calls.map(call => call.arguments[0]), ['/api/auth/me', '/api/auth/refresh'])
+  assert.equal(LiveSocket.opened.length, 20)
+  const foreground = apiFetch('/api/trunkline/routes')
+  await tick()
+  release()
+  assert.equal((await foreground).status, 200)
+  await tick()
+  const paths = fetch.mock.calls.map(call => call.arguments[0])
+  assert.equal(paths.filter(path => path === '/api/auth/refresh').length, 1)
+  assert.equal(paths.filter(path => path === '/api/auth/me').length, 2)
+  assert.equal(paths.filter(path => path === '/api/trunkline/routes').length, 2)
+  assert.equal(LiveSocket.opened.length, 40)
+  LiveSocket.last().deliver(thinking)
+  assert.equal(text('thread-19'), 'Thinking')
+})
+
+test('an expired login stops activity reconnects and returns the account to sign-in', async () => {
+  useAuth.setState({ status: 'signed-in', user: { id: 'owner', username: 'owner', name: 'Owner', nickname: null } })
+  const fetch = mock.method(globalThis, 'fetch', async () => new Response(null, { status: 401 }))
+  observe()
+  LiveSocket.last().onerror?.()
+  await tick()
+  assert.equal(useAuth.getState().status, 'signed-out')
+  assert.equal(fetch.mock.callCount(), 2)
+  mock.timers.tick(240_000)
+  await tick()
+  assert.equal(LiveSocket.opened.length, 1)
+  assert.equal(fetch.mock.callCount(), 2)
+})
+
+test('unmount during a shared session check prevents reopening that socket', async () => {
+  let release!: (response: Response) => void
+  mock.method(globalThis, 'fetch', () => new Promise<Response>(resolve => { release = resolve }))
+  const stop = observe()
+  observe('second')
+  for (const socket of LiveSocket.opened) socket.onerror?.()
+  await tick()
+  stop()
+  release(Response.json({ id: 'owner' }))
+  await tick()
+  assert.equal(LiveSocket.opened.length, 3)
+  assert.ok(LiveSocket.last().url.endsWith('thread_id=second'))
+})
+
+for (const failure of ['offline', 503] as const) {
+  test(`session recovery ${failure} keeps the account signed in and retries at the normal interval`, async () => {
+    useAuth.setState({ status: 'signed-in', user: { id: 'owner', username: 'owner', name: 'Owner', nickname: null } })
+    const fetch = mock.method(globalThis, 'fetch', async (input: RequestInfo | URL) => {
+      if (failure === 'offline') throw new TypeError('Network unavailable')
+      return new Response(null, { status: String(input) === '/api/auth/refresh' ? failure : 401 })
+    })
+    observe()
+    LiveSocket.last().onerror?.()
+    await tick()
+    assert.ok(fetch.mock.callCount() > 0)
+    assert.equal(useAuth.getState().status, 'signed-in')
+    assert.equal(LiveSocket.opened.length, 1)
+    mock.timers.tick(1_999)
+    await tick()
+    assert.equal(LiveSocket.opened.length, 1)
+    mock.timers.tick(1)
+    await tick()
+    assert.equal(LiveSocket.opened.length, 2)
+  })
+}
 
 for (const outcome of ['completed', 'failed', 'cancelled', 'deferred'] as const) {
   test(`the timeline uses the ${outcome} outcome without losing usage or question cards`, () => {

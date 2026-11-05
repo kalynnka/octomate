@@ -144,7 +144,10 @@ function refreshSession(): Promise<boolean> {
     method: 'POST',
     headers: { 'X-Octomate-Request': '1' },
   })
-    .then((res) => res.ok)
+    .then((res) => {
+      if (!res.ok && res.status !== 401) return refuse(res)
+      return res.ok
+    })
     .finally(() => {
       refreshing = null
     })
@@ -196,10 +199,18 @@ export async function refuse(res: Response): Promise<never> {
   throw new ApiError(res.status, detail)
 }
 
-export async function fetchMe(): Promise<ApiUser> {
-  const res = await apiFetch('/api/auth/me')
-  if (!res.ok) return refuse(res)
-  return (await res.json()) as ApiUser
+let checkingSession: Promise<ApiUser> | null = null
+
+export function fetchMe(): Promise<ApiUser> {
+  checkingSession ??= apiFetch('/api/auth/me', { cache: 'no-store' })
+    .then(async res => {
+      if (!res.ok) return refuse(res)
+      return (await res.json()) as ApiUser
+    })
+    .finally(() => {
+      checkingSession = null
+    })
+  return checkingSession
 }
 
 export async function login(body: LoginBody): Promise<void> {

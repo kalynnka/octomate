@@ -227,7 +227,7 @@ async def test_context_snapshot_and_last_response_usage_persist_together(
     assert last.usage.cache_read_tokens == 7
 
 
-async def test_hooks_reserve_identity_and_only_rollout_writes_messages(
+async def test_hooks_bind_session_and_only_rollout_writes_runs_and_messages(
     tmp_path: Path,
     impulses: ObjectSendStream[Impulse],
 ) -> None:
@@ -270,10 +270,10 @@ async def test_hooks_reserve_identity_and_only_rollout_writes_messages(
         ).id,
         agent_tentacle_id=CODEX_NATIVE_ID,
     )
-    [reserved] = conversation.runs
-    assert isinstance(reserved, ExternalAgentRun)
-    assert reserved.end_offset is None
-    assert not reserved.messages
+    assert conversation.external_id == SESSION_ID
+    assert not conversation.runs
+    async with async_session() as session:
+        assert await session.count(ExternalAgentRun) == 0
     unbound = await octomate.threads.messages_page(thread.id, unbound=True, limit=100)
     assert not unbound.items
     page = await octomate.conversations.messages_page(thread.id, limit=100)

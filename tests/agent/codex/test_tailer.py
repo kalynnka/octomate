@@ -30,9 +30,13 @@ from octomate.capabilities.harness.events import (
     RunStartedEvent,
     StreamEvents,
 )
+from octomate.database import async_session
 from octomate.nerve import ThreadTopic
+from octomate.schemas.compactions import ExternalCompaction
+from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.codex.adapter import CodexRunAccumulator
+from octomate.tentacles.codex.hooks import CodexHookInput
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer, OpenTurn
 from octomate.tentacles.codex.transcript import RolloutLine
 from octomate.types.json import JsonObject, JsonValue
@@ -44,8 +48,10 @@ from tests.agent.codex.test_native_ingest import (
     SESSION_ID,
     TURN_ID,
     feed_records,
+    wired,
     write_rollout,
 )
+from tests.agent.codex.test_native_ingest import event as rollout_event
 from tests.support.managers import a_loaded_thread
 from tests.support.nerve import held
 
@@ -465,7 +471,7 @@ async def test_live_turn_restarts_then_settles_and_committed_replay_is_silent(
 
 
 @pytest.mark.usefixtures("db")
-@pytest.mark.parametrize("fail_at", ["run", "ledger"])
+@pytest.mark.parametrize("fail_at", ["run", "ledger", "compaction"])
 async def test_failed_commit_never_publishes_run_ended(
     monkeypatch: pytest.MonkeyPatch, fail_at: str
 ) -> None:
@@ -473,11 +479,12 @@ async def test_failed_commit_never_publishes_run_ended(
     tailer = CodexTranscriptTailer(
         octomate.conversations, octomate.threads, octomate.files
     )
-    owner, method = (
-        (octomate.conversations, "record_external_run")
-        if fail_at == "run"
-        else (octomate.threads, "bind_native_run")
-    )
+    owner = octomate.threads if fail_at == "ledger" else octomate.conversations
+    method = {
+        "run": "record_external_run",
+        "ledger": "bind_native_run",
+        "compaction": "record_external_compaction",
+    }[fail_at]
     monkeypatch.setattr(
         owner, method, AsyncMock(side_effect=RuntimeError("commit failed"))
     )
@@ -500,8 +507,12 @@ async def test_failed_commit_never_publishes_run_ended(
                         },
                         {
                             "timestamp": NOW.isoformat(),
-                            "type": "event_msg",
-                            "payload": {"type": "user_message", "message": "hello"},
+                            "type": "compacted"
+                            if fail_at == "compaction"
+                            else "event_msg",
+                            "payload": {"message": "summary"}
+                            if fail_at == "compaction"
+                            else {"type": "user_message", "message": "hello"},
                         },
                         {
                             "timestamp": NOW.isoformat(),
@@ -515,7 +526,132 @@ async def test_failed_commit_never_publishes_run_ended(
 
 
 @pytest.mark.usefixtures("db")
-async def test_empty_reserved_turn_commits_its_checkpoint_and_settles() -> None:
+@pytest.mark.parametrize("prompt_hook", [False, True])
+@pytest.mark.parametrize("stop_before_completion", [False, True])
+async def test_compaction_only_tasks_never_write_a_run(
+    monkeypatch: pytest.MonkeyPatch, prompt_hook: bool, stop_before_completion: bool
+) -> None:
+    octomate = Octomate()
+    record_run = AsyncMock(
+        side_effect=AssertionError("Compaction must not write a run")
+    )
+    monkeypatch.setattr(octomate.conversations, "record_external_run", record_run)
+    ingest, tailer = wired(octomate)
+    key = ThreadKey.from_address(SESSION_ADDRESS)
+    records = [
+        {
+            "timestamp": NOW.isoformat(),
+            "type": "event_msg",
+            "payload": {"type": "task_started", "turn_id": TURN_ID},
+        },
+        {
+            "timestamp": NOW.isoformat(),
+            "type": "compacted",
+            "payload": {"message": "summary"},
+        },
+        {
+            "timestamp": NOW.isoformat(),
+            "type": "event_msg",
+            "payload": {"type": "task_complete", "turn_id": TURN_ID},
+        },
+    ]
+    with octomate.nerve.subscribe(ThreadTopic(key)) as live:
+        async with octomate.nerve.publish(SESSION_ADDRESS) as publisher:
+            state, _ = await tailer.attach_remote(
+                SESSION_ID, ROLLOUT_LABEL, SENDER, SESSION_ADDRESS, publisher
+            )
+            if prompt_hook:
+                await ingest.handle(
+                    CodexHookInput(
+                        hook_event_name="UserPromptSubmit",
+                        session_id=SESSION_ID,
+                        turn_id=TURN_ID,
+                    )
+                )
+            assert state.conversation is not None
+            assert not (await octomate.conversations.get(state.conversation.id)).runs
+            offset = await feed_records(tailer, state, records[:2])
+            assert not (await octomate.conversations.get(state.conversation.id)).runs
+            stop = CodexHookInput(
+                hook_event_name="Stop", session_id=SESSION_ID, turn_id=TURN_ID
+            )
+            if stop_before_completion:
+                await ingest.handle(stop)
+            await feed_records(tailer, state, records[2:], start=offset)
+            if stop_before_completion:
+                assert state.stop_event.is_set()
+            tailer.detach_remote(state)
+            if not stop_before_completion:
+                await ingest.handle(stop)
+            assert state.conversation is not None
+            stored = await octomate.conversations.get(state.conversation.id)
+            assert not stored.runs
+            assert not stored.messages
+            state, _ = await tailer.attach_remote(
+                SESSION_ID, ROLLOUT_LABEL, SENDER, SESSION_ADDRESS, publisher
+            )
+            await feed_records(tailer, state, records)
+            tailer.detach_remote(state)
+        async with async_session() as session:
+            assert await session.count(ExternalAgentRun) == 0
+            assert await session.count(ExternalCompaction) == 1
+        thread = await a_loaded_thread(octomate.threads, key)
+        assert not thread.messages
+        record_run.assert_not_awaited()
+        assert [impulse.event.event_kind for impulse in held(live)] == [
+            "run_started",
+            "run_ended",
+            "run_started",
+            "run_ended",
+        ]
+
+
+@pytest.mark.usefixtures("db")
+@pytest.mark.parametrize("item_type", ["custom_tool_call", "reasoning", "unsupported"])
+async def test_compaction_does_not_discard_interrupted_model_activity(
+    item_type: str,
+) -> None:
+    octomate = Octomate()
+    _, tailer = wired(octomate)
+    async with octomate.nerve.publish(SESSION_ADDRESS) as publisher:
+        state, _ = await tailer.attach_remote(
+            SESSION_ID, ROLLOUT_LABEL, SENDER, SESSION_ADDRESS, publisher
+        )
+        await feed_records(
+            tailer,
+            state,
+            [
+                rollout_event(0, "task_started", turn_id=TURN_ID),
+                {
+                    "timestamp": NOW.isoformat(),
+                    "type": "response_item",
+                    "payload": {
+                        "type": item_type,
+                        "call_id": "pending-call",
+                        "name": "exec",
+                        "input": "pwd",
+                    },
+                },
+                {
+                    "timestamp": NOW.isoformat(),
+                    "type": "compacted",
+                    "payload": {"message": "summary"},
+                },
+                rollout_event(3, "turn_aborted", turn_id=TURN_ID),
+            ],
+        )
+        tailer.detach_remote(state)
+    assert state.conversation is not None
+    stored = await octomate.conversations.get(state.conversation.id)
+    assert [run.id for run in stored.runs] == [TURN_ID]
+    assert not stored.messages
+
+
+@pytest.mark.usefixtures("db")
+@pytest.mark.parametrize("terminal", ["task_complete", "turn_aborted"])
+async def test_empty_reserved_turn_commits_its_checkpoint_and_settles(
+    terminal: str,
+) -> None:
     octomate = Octomate()
     tailer = CodexTranscriptTailer(
         octomate.conversations, octomate.threads, octomate.files
@@ -543,7 +679,7 @@ async def test_empty_reserved_turn_commits_its_checkpoint_and_settles() -> None:
                     {
                         "timestamp": NOW.isoformat(),
                         "type": "event_msg",
-                        "payload": {"type": "task_complete", "turn_id": TURN_ID},
+                        "payload": {"type": terminal, "turn_id": TURN_ID},
                     },
                 ],
             )

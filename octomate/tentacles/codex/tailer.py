@@ -100,6 +100,8 @@ class OpenTurn:
     usage: RequestUsage | None = None
     part_index: int = 0
     native: NativeTurn | None = None
+    compacted: bool = False  # A validated compaction completed within this task.
+    has_response_items: bool = False  # Includes pending or unsupported model items.
     visualizations: dict[int, list[HtmlSnapshot]] = field(
         default_factory=dict
     )  # Snapshots keyed by their model message position.
@@ -208,8 +210,8 @@ class CodexTranscriptTailer:
     """Assembles Codex turns from rollout lines streamed in by `octomate codex tail`.
 
     The stream is the only assembler — the server never opens a rollout file, even
-    for a session on this machine. Hooks reserve empty run identities; only the
-    rollout writes prompts, response items, tool activity, reasoning and usage.
+    for a session on this machine. Hooks establish sessions; only the rollout
+    writes runs, prompts, response items, tool activity, reasoning and usage.
     Each connection publishes run brackets and whole-item events at its native
     address. Committed and driven turns stay silent; replay of an open turn starts
     a fresh fold. The end is published only after the run and ledger are durable. Codex
@@ -454,6 +456,7 @@ class CodexTranscriptTailer:
             )
             return
         if line.type == "response_item" and turn.native is not None:
+            turn.has_response_items = True
             if visualizations:
                 if state.sender.user_id is None:
                     raise ValueError(
@@ -595,6 +598,7 @@ class CodexTranscriptTailer:
             )
             return
         if line.type == "response_item":
+            turn.has_response_items = True
             for _ in self.consume_response_item(turn, line):
                 pass
             return
@@ -672,6 +676,9 @@ class CodexTranscriptTailer:
             happened_at=line.timestamp,
             messages=messages,
         )
+        turn = tail.open_turn if tail is not None else state.open_turn
+        if turn is not None:
+            turn.compacted = True
 
     async def close_subagent_turn(self, state: TailState, tail: SubagentTail) -> None:
         turn = tail.open_turn
@@ -760,6 +767,14 @@ class CodexTranscriptTailer:
                 break
         conversation = state.conversation
         assert conversation is not None
+        if (
+            turn.compacted
+            and not turn.messages
+            and not turn.answer
+            and not turn.has_response_items
+        ):
+            await turn.native.settle(turn.turn_id)
+            return
         with codex_logfire.span(
             "codex.tailer.commit_turn {turn_id} [{session_id}]",
             turn_id=turn.turn_id,
