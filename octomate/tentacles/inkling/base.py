@@ -187,6 +187,14 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         for mode in get_args(InklingPermissionMode)
     )
 
+    def resolve_model(
+        self, model: AgentRouteModelName | None = None
+    ) -> AgentRouteModelName | None:
+        """Use the configured default when no model is selected."""
+        if not self.models:
+            raise ValueError(f"agent {self.id!r} has no available model catalog")
+        return self.default_model if model is None else super().resolve_model(model)
+
     @property
     def default_permission_mode(self) -> str | None:
         return self.permission_mode

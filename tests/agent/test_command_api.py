@@ -545,7 +545,7 @@ async def test_inspection_only_requires_available_channel_agent_and_context(
         )
         conversation_id = child.id
     elif change == "native":
-        address = replace(address, channel_tentacle_id="codex-native")
+        address = replace(address, channel_tentacle_id="codex")
     elif change == "unbound":
         app.channels["im"].config.agents = ["other"]
     elif change == "agent":

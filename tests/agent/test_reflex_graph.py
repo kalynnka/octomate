@@ -83,7 +83,6 @@ from octomate.schemas.triage import (
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.channel import ChannelOutput, ChannelSurfaces
-from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.agents import FakeAgent, RecordedRun
 from tests.support.channels import FakeChannelTentacle, FakeOctomate, RecordingInk
 from tests.support.managers import (
@@ -172,7 +171,7 @@ def _thread(address: ChannelAddress) -> Thread:
         chat_type=key.chat_type,
         chat_id=key.chat_id,
         channel_thread_id=key.channel_thread_id,
-        kind=key.kind,
+        kind=key.chat_type,
     )
 
 
@@ -1381,9 +1380,9 @@ async def test_a_native_scheme_signal_lands_in_their_dms_and_hands_off(
 ) -> None:
     """Awake meets a native session's scheme where React meets a driven one's: the
     direct messages open on the far channel, the handoff row says
-    from=claude-native, and the brief is the far agent's prompt. The source is the
-    native pseudo-channel nobody serves, which the move never needs to look up."""
-    await a_user("luhui", profiles={CLAUDE_NATIVE_ID: "native", "far": "ou_alice"})
+    from=claude, and the brief is the far agent's prompt. The source uses the
+    configured agent's address, which the move never needs to look up."""
+    await a_user("luhui", profiles={"claude": "native", "far": "ou_alice"})
     users = UserManager()
     second = FakeAgent(id="second", reception_output="done")
     far = FakeChannelTentacle(
@@ -1415,10 +1414,10 @@ async def test_a_native_scheme_signal_lands_in_their_dms_and_hands_off(
                 user_id="ou_alice",
             ),
         ),
-        agent_id=CLAUDE_NATIVE_ID,
-        user_profile=await users.profile(CLAUDE_NATIVE_ID, "native"),
+        agent_id="claude",
+        user_profile=await users.profile("claude", "native"),
         source=ChannelAddress(
-            channel_tentacle_id=CLAUDE_NATIVE_ID,
+            channel_tentacle_id="claude",
             chat_type="dm",
             chat_id="",
             user_id="native",
@@ -1436,7 +1435,7 @@ async def test_a_native_scheme_signal_lands_in_their_dms_and_hands_off(
     threads = deps.thread_manager
     assert isinstance(threads, FakeThreadManager)
     [handoff] = threads.handoffs
-    assert handoff.source_agent_tentacle_id == CLAUDE_NATIVE_ID
+    assert handoff.source_agent_tentacle_id == "claude"
     assert handoff.to_agent_tentacle_id == "second"
     assert handoff.brief == "Please take this up over here."
 

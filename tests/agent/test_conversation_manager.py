@@ -33,7 +33,7 @@ from uuid_utils.compat import uuid7
 from octomate.database import async_session
 from octomate.managers import ConversationManager, ThreadManager, UserManager
 from octomate.nerve import Nerve
-from octomate.schemas.conversation import Conversation
+from octomate.schemas.conversation import Conversation, ConversationKey
 from octomate.schemas.messages import ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
 from octomate.schemas.segments import TextSegment
@@ -49,6 +49,92 @@ async def _db(in_memory_engine: AsyncEngine) -> None:
 
 async def _thread() -> UUID7:
     return await a_thread()
+
+
+@pytest.mark.parametrize("agent_tentacle_id", ["codex", "claude", "deepseek"])
+async def test_native_ownership_preserves_uploaded_thread_and_history(
+    agent_tentacle_id: str,
+) -> None:
+    threads = ThreadManager(users=UserManager(), nerve=Nerve())
+    thread = await threads.ensure(
+        ThreadKey(agent_tentacle_id, "thread", "session"), native=True
+    )
+    manager = ConversationManager()
+    owner = "coding"
+    parent = await manager.ensure(thread.id, agent_tentacle_id=owner)
+    child = await manager.ensure(
+        thread.id,
+        agent_tentacle_id=owner,
+        subagent_id="child",
+        parent_conversation_id=parent.id,
+    )
+    run_id = str(uuid7())
+    await manager.record_external_run(
+        parent,
+        run_id=run_id,
+        native_session_id="session",
+        messages=[RawModelResponse(parts=[TextPart("Saved native answer")])],
+        end_offset=120,
+    )
+    adopted = await manager.ensure(thread.id, agent_tentacle_id="coding", native=True)
+    adopted_child = await manager.ensure(
+        thread.id,
+        agent_tentacle_id="coding",
+        native=True,
+        subagent_id="child",
+        parent_conversation_id=parent.id,
+    )
+    reloaded = await ConversationManager().ensure(
+        thread.id, agent_tentacle_id="coding", native=True
+    )
+    assert adopted.id == reloaded.id == parent.id
+    assert adopted_child.id == child.id
+    assert adopted_child.parent_conversation_id == parent.id
+    assert adopted_child.agent_tentacle_id == reloaded.agent_tentacle_id == "coding"
+    assert [run.id for run in reloaded.runs] == [run_id]
+    assert reloaded.runs[0].kind == "external"
+    assert reloaded.runs[0].native_session_id == "session"
+    stored_thread = await threads.get(thread.id, with_messages=False)
+    assert stored_thread is not None
+    assert stored_thread.id == thread.id
+    assert stored_thread.kind == "native_thread"
+    assert stored_thread.active_agent_tentacle_id == "coding"
+    async with async_session() as session:
+        assert await session.count(Conversation) == 2
+        assert await session.count(AgentRun) == 1
+        assert await session.count(ModelResponse) == 1
+
+
+@pytest.mark.parametrize(
+    ("owner", "claimant"), [("coding", "reviewer"), ("codex", "coding")]
+)
+async def test_native_ownership_refuses_driven_threads_and_another_owner(
+    owner: str, claimant: str
+) -> None:
+    manager = ConversationManager()
+    with pytest.raises(ValueError, match="tailed thread"):
+        await manager.ensure(await a_thread(), agent_tentacle_id="coding", native=True)
+    threads = ThreadManager(users=UserManager(), nerve=Nerve())
+    thread = await threads.ensure(ThreadKey("codex", "thread", "session"), native=True)
+    original = await manager.ensure(thread.id, agent_tentacle_id=owner)
+    with pytest.raises(ValueError, match="another agent"):
+        await manager.ensure(thread.id, agent_tentacle_id=claimant, native=True)
+    assert (await manager.get(original.id)).agent_tentacle_id == owner
+
+
+async def test_native_claims_serialize_across_configured_agents() -> None:
+    manager = ConversationManager()
+    threads = ThreadManager(users=UserManager(), nerve=Nerve())
+    thread = await threads.ensure(ThreadKey("codex", "thread", "session"), native=True)
+    outcomes = await asyncio.gather(
+        manager.ensure(thread.id, agent_tentacle_id="coding", native=True),
+        manager.ensure(thread.id, agent_tentacle_id="reviewer", native=True),
+        return_exceptions=True,
+    )
+    assert sum(isinstance(result, Conversation) for result in outcomes) == 1
+    assert sum(isinstance(result, ValueError) for result in outcomes) == 1
+    async with async_session() as session:
+        assert await session.count(Conversation) == 1
 
 
 @pytest.mark.parametrize("external", [False, True])
@@ -219,7 +305,7 @@ async def test_latest_run_uses_each_conversations_ordered_history(
     manager = ConversationManager()
     thread_id = await _thread()
     driven = await manager.ensure(thread_id, agent_tentacle_id="codex")
-    external = await manager.ensure(thread_id, agent_tentacle_id="claude-native")
+    external = await manager.ensure(thread_id, agent_tentacle_id="claude")
     empty = await manager.ensure(thread_id, agent_tentacle_id="inkling")
     same_time = datetime(2026, 1, 2, tzinfo=UTC)
     first_id, latest_id, backfill_id = (str(uuid7()) for _ in range(3))
@@ -233,10 +319,10 @@ async def test_latest_run_uses_each_conversations_ordered_history(
             run_id=run_id,
             messages=[RawModelResponse(parts=[TextPart(run_id)], timestamp=timestamp)],
         )
-    native_id = str(uuid7())
+    external_run_id = str(uuid7())
     await manager.record_external_run(
         external,
-        run_id=native_id,
+        run_id=external_run_id,
         messages=[RawModelResponse(parts=[TextPart("native")])],
         native_session_id="session",
         end_offset=42,
@@ -272,7 +358,7 @@ async def test_latest_run_uses_each_conversations_ordered_history(
         first_id,
         latest_id,
         backfill_id,
-        native_id,
+        external_run_id,
     }
 
 
@@ -326,7 +412,7 @@ async def test_ensure_locks_only_the_matching_conversation(
     parent = await manager.ensure(thread_id, agent_tentacle_id="parent")
 
     async with asyncio.timeout(2), asyncio.TaskGroup() as tasks:
-        async with manager.lock((thread_id, "inkling", "")):
+        async with manager.lock(ConversationKey(thread_id, "inkling")):
             duplicate = tasks.create_task(
                 manager.ensure(thread_id, agent_tentacle_id="inkling")
             )
@@ -501,7 +587,7 @@ async def test_history_loading_leaves_the_conversation_creation_lock(
     locked: list[bool] = []
     queries = Mock(
         side_effect=lambda *_args: locked.append(
-            service.lock((thread_id, "inkling", "")).locked()
+            service.lock(conversation.key).locked()
         )
     )
     event.listen(in_memory_engine.sync_engine, "before_cursor_execute", queries)
@@ -521,9 +607,7 @@ async def test_external_run_reads_back_as_its_variant() -> None:
     coordinates; record_agent_run stays `octomate`. A fresh manager reads each back as
     its type from the one polymorphic table."""
     service = ConversationManager()
-    conversation = await service.ensure(
-        await _thread(), agent_tentacle_id="claude-native"
-    )
+    conversation = await service.ensure(await _thread(), agent_tentacle_id="claude")
 
     def _msgs(run_id: str) -> list[RawModelRequest | RawModelResponse]:
         return [
@@ -547,7 +631,7 @@ async def test_external_run_reads_back_as_its_variant() -> None:
         conversation,
         run_id="ext",
         messages=_msgs("ext"),
-        name="claude-native",
+        name="claude",
         native_session_id="sess-9",
         source="claude-vscode",
         start_offset=0,
@@ -556,7 +640,7 @@ async def test_external_run_reads_back_as_its_variant() -> None:
     )
 
     fresh = ConversationManager()
-    reloaded = await fresh.ensure(await _thread(), agent_tentacle_id="claude-native")
+    reloaded = await fresh.ensure(await _thread(), agent_tentacle_id="claude")
     by_id = {run.id: run for run in reloaded.runs}
 
     octomate_run = by_id["oct"]
@@ -1280,9 +1364,7 @@ async def test_fork_carries_the_handle_even_with_nothing_to_copy() -> None:
 
 async def test_native_message_pages_preserve_transcript_order() -> None:
     manager = ConversationManager()
-    conversation = await manager.ensure(
-        await _thread(), agent_tentacle_id="claude-native"
-    )
+    conversation = await manager.ensure(await _thread(), agent_tentacle_id="claude")
     # Turns commit serially even when the transcript's clocks go backwards.
     for run_id, offset, day in (("earlier", 0, 2), ("later", 100, 1)):
         await manager.record_external_run(
@@ -1320,11 +1402,11 @@ async def test_native_message_pages_preserve_transcript_order() -> None:
 
 async def test_empty_run_reservation_never_replaces_transcript_messages() -> None:
     manager = ConversationManager()
-    conversation = await manager.ensure(
-        await _thread(), agent_tentacle_id="claude-native"
-    )
+    conversation = await manager.ensure(await _thread(), agent_tentacle_id="claude")
     placeholder = await manager.record_external_run(
-        conversation, run_id="turn", native_session_id="session"
+        conversation,
+        run_id="turn",
+        native_session_id="session",
     )
     assert placeholder is not None
     assert list(placeholder.messages) == []
@@ -1339,7 +1421,9 @@ async def test_empty_run_reservation_never_replaces_transcript_messages() -> Non
     assert run is not None
     message_ids = [m.id for m in run.messages]
     await manager.record_external_run(
-        conversation, run_id="turn", native_session_id="session"
+        conversation,
+        run_id="turn",
+        native_session_id="session",
     )
     stored = await manager.get(conversation.id)
     assert len(stored.runs) == 1

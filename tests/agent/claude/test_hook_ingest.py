@@ -13,14 +13,14 @@ from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude.hooks import ClaudeHookInput
-from octomate.tentacles.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
+from octomate.tentacles.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
 from tests.support.managers import a_loaded_thread, a_thread
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
 
 SESSION_ID = "sess-1"
-SESSION_KEY = ThreadKey(CLAUDE_NATIVE_ID, "thread", SESSION_ID)
+SESSION_KEY = ThreadKey("claude", "thread", SESSION_ID)
 
 
 @pytest.fixture(autouse=True)
@@ -48,7 +48,9 @@ async def test_a_hooks_transcript_path_is_never_followed() -> None:
     is the only assembler, so the hook pipe must not put the server in the business
     of opening whatever path a hook claims."""
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
+    tailer = ClaudeTranscriptTailer(
+        octomate.conversations, octomate.threads, agent_tentacle_id="claude"
+    )
     ingest = ClaudeHookIngest(
         tailer,
         conversations=octomate.conversations,
@@ -84,7 +86,9 @@ async def ledger(octomate: Octomate) -> list[tuple[str, str | None, str | None]]
 async def test_hooks_reserve_a_run_without_writing_messages() -> None:
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        ClaudeTranscriptTailer(
+            octomate.conversations, octomate.threads, agent_tentacle_id="claude"
+        ),
         conversations=octomate.conversations,
         projects=octomate.projects,
         threads=octomate.threads,
@@ -100,7 +104,9 @@ async def test_hooks_reserve_a_run_without_writing_messages() -> None:
 async def test_multiple_turns_reserve_independent_runs() -> None:
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        ClaudeTranscriptTailer(
+            octomate.conversations, octomate.threads, agent_tentacle_id="claude"
+        ),
         conversations=octomate.conversations,
         projects=octomate.projects,
         threads=octomate.threads,
@@ -118,7 +124,9 @@ async def test_multiple_turns_reserve_independent_runs() -> None:
 async def test_refiring_events_is_idempotent() -> None:
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        ClaudeTranscriptTailer(
+            octomate.conversations, octomate.threads, agent_tentacle_id="claude"
+        ),
         conversations=octomate.conversations,
         projects=octomate.projects,
         threads=octomate.threads,
@@ -136,7 +144,9 @@ async def test_refiring_events_is_idempotent() -> None:
 async def test_missing_stop_leaves_an_empty_run() -> None:
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        ClaudeTranscriptTailer(
+            octomate.conversations, octomate.threads, agent_tentacle_id="claude"
+        ),
         conversations=octomate.conversations,
         projects=octomate.projects,
         threads=octomate.threads,
@@ -152,7 +162,9 @@ async def test_missing_stop_leaves_an_empty_run() -> None:
 async def test_repeated_hooks_leave_the_same_empty_run() -> None:
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        ClaudeTranscriptTailer(
+            octomate.conversations, octomate.threads, agent_tentacle_id="claude"
+        ),
         conversations=octomate.conversations,
         projects=octomate.projects,
         threads=octomate.threads,
@@ -173,7 +185,9 @@ async def test_repeated_hooks_leave_the_same_empty_run() -> None:
 async def test_hooks_for_an_sdk_session_are_recorded_as_external() -> None:
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        ClaudeTranscriptTailer(
+            octomate.conversations, octomate.threads, agent_tentacle_id="claude"
+        ),
         conversations=octomate.conversations,
         projects=octomate.projects,
         threads=octomate.threads,
@@ -203,9 +217,9 @@ async def test_hooks_for_an_sdk_session_are_recorded_as_external() -> None:
 
 async def reserved(octomate: Octomate) -> list[tuple[str, list[str | None]]]:
     """Each run of the session's conversation as (run_id, its messages' text)."""
-    thread = await octomate.threads.ensure(SESSION_KEY)
+    thread = await octomate.threads.ensure(SESSION_KEY, native=True)
     conversation = await octomate.conversations.ensure(
-        thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+        thread.id, agent_tentacle_id="claude"
     )
     return [
         (run.id, [message.message_text for message in run.messages])
@@ -216,7 +230,9 @@ async def reserved(octomate: Octomate) -> list[tuple[str, list[str | None]]]:
 async def test_empty_prompt_and_empty_answer_are_skipped() -> None:
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        ClaudeTranscriptTailer(
+            octomate.conversations, octomate.threads, agent_tentacle_id="claude"
+        ),
         conversations=octomate.conversations,
         projects=octomate.projects,
         threads=octomate.threads,
@@ -231,7 +247,9 @@ async def test_empty_prompt_and_empty_answer_are_skipped() -> None:
 async def test_session_locks_self_clean_and_session_end_finalizes() -> None:
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        ClaudeTranscriptTailer(
+            octomate.conversations, octomate.threads, agent_tentacle_id="claude"
+        ),
         conversations=octomate.conversations,
         projects=octomate.projects,
         threads=octomate.threads,
@@ -253,7 +271,9 @@ async def test_session_locks_self_clean_and_session_end_finalizes() -> None:
 async def test_unhandled_events_are_ignored() -> None:
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        ClaudeTranscriptTailer(
+            octomate.conversations, octomate.threads, agent_tentacle_id="claude"
+        ),
         conversations=octomate.conversations,
         projects=octomate.projects,
         threads=octomate.threads,

@@ -50,7 +50,6 @@ from octomate.schemas.artifacts import HtmlArtifact
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import (
-    CODEX_NATIVE_ID,
     ThreadKey,
 )
 from octomate.schemas.user import UserProfile
@@ -230,13 +229,18 @@ class CodexTranscriptTailer:
     Never clear offsets automatically or change a live database without approval.
     """
 
+    agent_tentacle_id: str
+
     def __init__(
         self,
         conversations: ConversationManager,
         threads: ThreadManager,
         files: FileManager,
         locks: SessionLocks | None = None,
+        *,
+        agent_tentacle_id: str,
     ) -> None:
+        self.agent_tentacle_id = agent_tentacle_id
         self.conversation_manager = conversations
         self.thread_manager = threads
         self.files: FileManager = files
@@ -378,10 +382,11 @@ class CodexTranscriptTailer:
 
     async def ensure_session(self, session_id: str) -> Conversation:
         thread = await self.thread_manager.ensure(
-            ThreadKey(CODEX_NATIVE_ID, "thread", session_id)
+            ThreadKey(self.agent_tentacle_id, "thread", session_id),
+            native=True,
         )
         return await self.conversation_manager.ensure(
-            thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+            thread.id, agent_tentacle_id=self.agent_tentacle_id, native=True
         )
 
     async def process_line(
@@ -537,7 +542,8 @@ class CodexTranscriptTailer:
         assert parent is not None
         tail.conversation = await self.conversation_manager.ensure(
             parent.thread_id,
-            agent_tentacle_id=CODEX_NATIVE_ID,
+            agent_tentacle_id=self.agent_tentacle_id,
+            native=True,
             subagent_id=tail.thread_id,
             parent_conversation_id=parent.id,
         )
@@ -649,7 +655,7 @@ class CodexTranscriptTailer:
                     conversation,
                     run_id=turn.turn_id,
                     messages=turn.messages,
-                    name=CODEX_NATIVE_ID,
+                    name=self.agent_tentacle_id,
                     model_name=turn.model_name,
                     context_used=turn.usage.input_tokens
                     if turn.usage is not None
@@ -711,7 +717,7 @@ class CodexTranscriptTailer:
                     conversation,
                     run_id=turn.turn_id,
                     messages=turn.messages,
-                    name=CODEX_NATIVE_ID,
+                    name=self.agent_tentacle_id,
                     model_name=turn.model_name,
                     context_used=turn.usage.input_tokens
                     if turn.usage is not None
@@ -777,7 +783,7 @@ class CodexTranscriptTailer:
                         file_id=stored.id,
                     ),
                     sender=state.sender,
-                    agent_tentacle_id=CODEX_NATIVE_ID,
+                    agent_tentacle_id=self.agent_tentacle_id,
                 )
                 await self.thread_manager.bind_messages(
                     [message.id],

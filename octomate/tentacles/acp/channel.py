@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from fastapi import APIRouter
 from pydantic import UUID7
@@ -22,6 +22,8 @@ class AcpChannelTentacle(Tentacle[None, None]):
     kicks and reads the nerve for its WebSocket connection, so this API channel
     uses the base tentacle lifecycle rather than the IM channel's ink and siphon.
     """
+
+    type: ClassVar[str] = "acp"
 
     clients: dict[UUID7, AcpBroker] = field(
         default_factory=dict, init=False

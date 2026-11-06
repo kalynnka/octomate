@@ -50,7 +50,7 @@ from octomate.capabilities.harness.events import (
 )
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.acp import AcpAgentConfig
-from octomate.config.agents import AgentRouteModelName, Claim
+from octomate.config.agents import Claim
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -82,6 +82,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
     validate the chosen model and effort again before submitting their prompt.
     """
 
+    type: ClassVar[str] = "acp"
     in_process: ClassVar[bool] = True
     config: AcpAgentConfig
     provider_permission_mode: str | None = None
@@ -172,12 +173,6 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
     @property
     def default_permission_mode(self) -> str | None:
         return self.config.permission_mode or self.provider_permission_mode
-
-    def resolve_model(
-        self, model: AgentRouteModelName | None = None
-    ) -> AgentRouteModelName | None:
-        """Omitting a model preserves the provider session's current selection."""
-        return None if model is None else super().resolve_model(model)
 
     async def run(
         self,
@@ -877,7 +872,6 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             context_used=history.context_used,
             cwd=cwd,
             external_id=history.prompt.session_id,
-            native_id=self.id,
         )
         assert run is not None
         if source_message_ids:

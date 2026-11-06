@@ -35,7 +35,7 @@ from octomate.tentacles.acp.base import AcpAgentTentacle
 from octomate.tentacles.acp.channel import AcpChannelTentacle
 from octomate.tentacles.base import TentacleLogFormatter, TentacleLogHandler
 from octomate.tentacles.channel import build_channel
-from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.inkling import build_inkling
@@ -171,8 +171,7 @@ def create_app() -> Octomate:
                     id, tentacle_config, octomate, registry=registry
                 )
             case ClaudeCodeConfig():
-                tentacle = ClaudeCodeTentacle(
-                    id,
+                tentacle = ClaudeTentacle(
                     octomate,
                     config=tentacle_config,
                     commands=octomate.commands,
@@ -188,7 +187,6 @@ def create_app() -> Octomate:
                 )
             case CodexConfig():
                 tentacle = CodexTentacle(
-                    id,
                     octomate,
                     config=tentacle_config,
                     commands=octomate.commands,
@@ -204,7 +202,7 @@ def create_app() -> Octomate:
                     gateway_manager=octomate.gateway,
                 )
             case DeepseekConfig():
-                tentacle = DeepseekTentacle(id, octomate, config=tentacle_config)
+                tentacle = DeepseekTentacle(octomate, config=tentacle_config)
             case (
                 SlackChannelConfig()
                 | LarkChannelConfig()

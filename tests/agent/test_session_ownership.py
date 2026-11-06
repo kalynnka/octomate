@@ -4,7 +4,7 @@ import pytest
 
 from octomate import Octomate
 from octomate.config import ClaudeCodeConfig
-from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import ClaudeTentacle
 from tests.support.agents import FakeAgent
 
 
@@ -12,8 +12,7 @@ async def test_unregistered_agents_keep_overlapping_claims_until_the_last_releas
     None
 ):
     host = Octomate()
-    driver = ClaudeCodeTentacle(
-        "claude",
+    driver = ClaudeTentacle(
         host,
         config=ClaudeCodeConfig(),
         commands=host.commands,
@@ -47,7 +46,6 @@ async def test_every_agent_has_independent_driven_and_native_counters() -> None:
     agent = octomate.connect(FakeAgent())
     other = octomate.connect(FakeAgent(id="other"))
 
-    assert agent.native_id is None
     assert agent.driven_sessions == {}
     assert agent.native_sessions == {}
     async with agent.driving("session", native=True):

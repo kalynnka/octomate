@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from octomate.schemas.thread import (
-    CODEX_NATIVE_ID,
     Thread,
     ThreadKey,
 )
@@ -66,7 +65,7 @@ class CodexHookIngest:
             event.agent_id is None
             and event.turn_id
             and await self.conversations.driven_run(
-                CODEX_NATIVE_ID, event.session_id, event.turn_id
+                self.tailer.agent_tentacle_id, event.session_id, event.turn_id
             )
             is not None
         ):
@@ -90,7 +89,9 @@ class CodexHookIngest:
             async with self.locks.hold(event.session_id):
                 thread = await self.session_thread(event)
                 conversation = await self.conversations.ensure(
-                    thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+                    thread.id,
+                    agent_tentacle_id=self.tailer.agent_tentacle_id,
+                    native=True,
                 )
                 await self.conversations.set_name(conversation, event.session_name)
                 await self.threads.rename(thread, event.session_name)
@@ -138,7 +139,9 @@ class CodexHookIngest:
 
     async def start_session(self, event: CodexHookInput) -> None:
         thread = await self.session_thread(event)
-        await self.conversations.ensure(thread.id, agent_tentacle_id=CODEX_NATIVE_ID)
+        await self.conversations.ensure(
+            thread.id, agent_tentacle_id=self.tailer.agent_tentacle_id, native=True
+        )
 
     async def session_thread(self, event: CodexHookInput) -> Thread:
         """This session's thread, filed under the project already holding the
@@ -154,8 +157,9 @@ class CodexHookIngest:
         holder = self.projects.resolve(Path(event.cwd)) if event.cwd else None
         project = self.projects.get(holder) if holder is not None else None
         return await self.threads.ensure(
-            ThreadKey(CODEX_NATIVE_ID, "thread", event.session_id),
+            ThreadKey(self.tailer.agent_tentacle_id, "thread", event.session_id),
             project=project,
+            native=True,
         )
 
     async def reserve_run(self, event: CodexHookInput) -> None:
@@ -164,12 +168,12 @@ class CodexHookIngest:
             return
         thread = await self.session_thread(event)
         conversation = await self.conversations.ensure(
-            thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+            thread.id, agent_tentacle_id=self.tailer.agent_tentacle_id, native=True
         )
         await self.conversations.record_external_run(
             conversation,
             run_id=event.turn_id,
-            name=CODEX_NATIVE_ID,
+            name=self.tailer.agent_tentacle_id,
             cwd=Path(event.cwd) if event.cwd else None,
             native_session_id=event.session_id,
         )

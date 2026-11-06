@@ -24,7 +24,6 @@ from octomate.nerve import Impulse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import (
-    CLAUDE_NATIVE_ID,
     ThreadKey,
 )
 from octomate.schemas.user import UserProfile
@@ -176,12 +175,17 @@ class ClaudeTranscriptTailer:
     mid-stream leaves its open turn for the next connect to re-stream.
     """
 
+    agent_tentacle_id: str
+
     def __init__(
         self,
         conversation_manager: ConversationManager,
         thread_manager: ThreadManager,
         locks: SessionLocks | None = None,
+        *,
+        agent_tentacle_id: str,
     ) -> None:
+        self.agent_tentacle_id = agent_tentacle_id
         self.conversation_manager = conversation_manager
         self.thread_manager = thread_manager
         # Per-session locks, shared with the hook ingest when wired together, so a turn's
@@ -353,10 +357,11 @@ class ClaudeTranscriptTailer:
         """Map a native Claude session id to its Octomate home — the session's thread and
         the conversation hanging off it — creating either if this is its first sighting."""
         thread = await self.thread_manager.ensure(
-            ThreadKey(CLAUDE_NATIVE_ID, "thread", session_id)
+            ThreadKey(self.agent_tentacle_id, "thread", session_id),
+            native=True,
         )
         return await self.conversation_manager.ensure(
-            thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+            thread.id, agent_tentacle_id=self.agent_tentacle_id, native=True
         )
 
     @staticmethod
@@ -420,7 +425,7 @@ class ClaudeTranscriptTailer:
             return
         await self.conversation_manager.set_name(conversation, title)
         thread = await self.thread_manager.ensure(
-            ThreadKey(CLAUDE_NATIVE_ID, "thread", state.session_id)
+            ThreadKey(self.agent_tentacle_id, "thread", state.session_id)
         )
         await self.thread_manager.rename(thread, title)
 
@@ -582,7 +587,7 @@ class ClaudeTranscriptTailer:
                     conversation,
                     run_id=turn.prompt_id,
                     messages=turn.accumulator.messages,
-                    name=CLAUDE_NATIVE_ID,
+                    name=self.agent_tentacle_id,
                     model_name=turn.accumulator.model_name,
                     context_window=turn.accumulator.context_window,
                     context_used=turn.accumulator.context_used,
@@ -682,7 +687,8 @@ class ClaudeTranscriptTailer:
             raise RuntimeError(f"session {state.session_id} has no conversation")
         tail.conversation = await self.conversation_manager.ensure(
             parent.thread_id,
-            agent_tentacle_id=CLAUDE_NATIVE_ID,
+            agent_tentacle_id=self.agent_tentacle_id,
+            native=True,
             subagent_id=tail.agent_id,
             parent_conversation_id=parent.id,
         )
@@ -785,7 +791,7 @@ class ClaudeTranscriptTailer:
                     conversation,
                     run_id=run_id,
                     messages=turn.accumulator.messages,
-                    name=CLAUDE_NATIVE_ID,
+                    name=self.agent_tentacle_id,
                     model_name=turn.accumulator.model_name,
                     context_window=turn.accumulator.context_window,
                     context_used=turn.accumulator.context_used,

@@ -59,7 +59,6 @@ from octomate.schemas.files import Html
 from octomate.schemas.messages import ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import (
-    CODEX_NATIVE_ID,
     MessageBinding,
     Thread,
     ThreadArtifact,
@@ -146,16 +145,19 @@ async def feed(
 def remote_tailer() -> tuple[Octomate, CodexTranscriptTailer]:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
     return octomate, CodexTranscriptTailer(
-        octomate.conversations, octomate.threads, octomate.files
+        octomate.conversations,
+        octomate.threads,
+        octomate.files,
+        agent_tentacle_id="codex",
     )
 
 
 async def runs_of(octomate: Octomate) -> list[ExternalAgentRun]:
     thread = await octomate.threads.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+        ThreadKey("codex", "thread", SESSION_ID), native=True
     )
     conversation = await octomate.conversations.ensure(
-        thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+        thread.id, agent_tentacle_id="codex"
     )
     return [run for run in conversation.runs if isinstance(run, ExternalAgentRun)]
 
@@ -276,14 +278,12 @@ async def test_sibling_child_rollouts_stream_into_child_runs(
     tailer.detach_remote(state)
 
     thread = await octomate.threads.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+        ThreadKey("codex", "thread", SESSION_ID), native=True
     )
-    parent = await octomate.conversations.ensure(
-        thread.id, agent_tentacle_id=CODEX_NATIVE_ID
-    )
+    parent = await octomate.conversations.ensure(thread.id, agent_tentacle_id="codex")
     child = await octomate.conversations.ensure(
         thread.id,
-        agent_tentacle_id=CODEX_NATIVE_ID,
+        agent_tentacle_id="codex",
         subagent_id=CHILD_THREAD_ID,
         parent_conversation_id=parent.id,
     )
@@ -405,7 +405,6 @@ def stream_client(*, storage: Path | None = None) -> tuple[TestClient, CodexTent
         )
     tentacle = octomate.connect(
         CodexTentacle(
-            "codex",
             octomate,
             config=CodexConfig(permission_mode="auto_review"),
             commands=octomate.commands,
@@ -607,7 +606,7 @@ async def test_stale_upload_cannot_replace_a_newer_transcript(tmp_path: Path) ->
     files = FileManager(storage=opendal.AsyncOperator("fs", root=str(tmp_path)))
     owner = await a_user()
     conversation = await octomate.conversations.ensure(
-        await a_thread(), agent_tentacle_id=CODEX_NATIVE_ID
+        await a_thread(), agent_tentacle_id="codex"
     )
     first = await octomate.conversations.store_transcript(
         UploadFile(BytesIO(b"first\n"), filename="rollout.jsonl"),
@@ -841,39 +840,20 @@ def test_a_session_already_used_by_the_sdk_streams_as_external() -> None:
             [state] = tentacle.session_tailer.sessions.values()
             assert state.conversation is not None
             assert state.conversation.id != sdk.id
-            assert state.conversation.agent_tentacle_id == "codex-native"
+            assert state.conversation.agent_tentacle_id == tentacle.id
+            uploaded_thread = client.portal.call(
+                tentacle.threads.get, state.conversation.thread_id
+            )
+            assert uploaded_thread is not None
+            assert uploaded_thread.kind == "native_thread"
+            assert uploaded_thread.active_agent_tentacle_id == tentacle.id
             websocket.send_text(StreamEof().model_dump_json())
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
 
 
-@pytest.mark.parametrize("other_tentacle", [False, True])
-async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
-    other_tentacle: bool,
-) -> None:
+async def test_driven_sessions_are_accepted_by_both_ingest_endpoints() -> None:
     client, tentacle = stream_client()
-    driver = (
-        tentacle.octomate.connect(
-            CodexTentacle(
-                "other-codex",
-                tentacle.octomate,
-                config=CodexConfig(),
-                commands=tentacle.octomate.commands,
-                projects=tentacle.octomate.projects,
-                threads=tentacle.octomate.threads,
-                conversations=tentacle.octomate.conversations,
-                deferred_actions=tentacle.octomate.deferred_actions,
-                workspaces=tentacle.octomate.workspaces,
-                users=tentacle.octomate.users,
-                bearers=tentacle.octomate.bearers,
-                auth=tentacle.octomate.auth,
-                gateway_manager=tentacle.octomate.gateway,
-                files=tentacle.octomate.files,
-            )
-        )
-        if other_tentacle
-        else tentacle
-    )
 
     async def native_threads() -> list[Thread]:
         async with async_session() as session:
@@ -881,8 +861,8 @@ async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
 
     with client:
         assert client.portal is not None
-        async with driver.driving(SESSION_ID):
-            assert driver.driven_sessions == {SESSION_ID: 1}
+        async with tentacle.driving(SESSION_ID):
+            assert tentacle.driven_sessions == {SESSION_ID: 1}
             posted = client.post(
                 CODEX_HOOK_PATH,
                 json={
@@ -905,7 +885,7 @@ async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
             assert tentacle.native_sessions == {}
             assert len(client.portal.call(native_threads)) == 1
 
-        assert driver.driven_sessions == {}
+        assert tentacle.driven_sessions == {}
         with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())

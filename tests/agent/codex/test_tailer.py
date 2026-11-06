@@ -414,7 +414,10 @@ async def test_tool_start_reaches_subscribers_before_a_result_or_turn_end(
 ) -> None:
     octomate = Octomate()
     tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.threads, octomate.files
+        octomate.conversations,
+        octomate.threads,
+        octomate.files,
+        agent_tentacle_id="codex",
     )
     with octomate.nerve.subscribe(
         ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
@@ -456,7 +459,10 @@ async def test_tool_start_reaches_subscribers_before_a_result_or_turn_end(
 async def test_completed_command_activity_is_published_and_saved() -> None:
     octomate = Octomate()
     tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.threads, octomate.files
+        octomate.conversations,
+        octomate.threads,
+        octomate.files,
+        agent_tentacle_id="codex",
     )
     with octomate.nerve.subscribe(
         ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
@@ -516,7 +522,10 @@ async def test_completed_command_activity_is_published_and_saved() -> None:
 async def test_encrypted_reasoning_placeholder_is_published_and_saved() -> None:
     octomate = Octomate()
     tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.threads, octomate.files
+        octomate.conversations,
+        octomate.threads,
+        octomate.files,
+        agent_tentacle_id="codex",
     )
     with octomate.nerve.subscribe(
         ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
@@ -583,7 +592,10 @@ async def test_live_turn_restarts_then_settles_and_committed_replay_is_silent(
     records = path.read_text().splitlines()
     octomate = Octomate()
     tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.threads, octomate.files
+        octomate.conversations,
+        octomate.threads,
+        octomate.files,
+        agent_tentacle_id="codex",
     )
     key = ThreadKey.from_address(SESSION_ADDRESS)
     with octomate.nerve.subscribe(ThreadTopic(key)) as live:
@@ -630,7 +642,10 @@ async def test_failed_commit_never_publishes_run_ended(
 ) -> None:
     octomate = Octomate()
     tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.threads, octomate.files
+        octomate.conversations,
+        octomate.threads,
+        octomate.files,
+        agent_tentacle_id="codex",
     )
     owner, method = (
         (octomate.conversations, "record_external_run")
@@ -677,7 +692,10 @@ async def test_failed_commit_never_publishes_run_ended(
 async def test_empty_reserved_turn_commits_its_checkpoint_and_settles() -> None:
     octomate = Octomate()
     tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.threads, octomate.files
+        octomate.conversations,
+        octomate.threads,
+        octomate.files,
+        agent_tentacle_id="codex",
     )
     with octomate.nerve.subscribe(
         ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
@@ -688,7 +706,9 @@ async def test_empty_reserved_turn_commits_its_checkpoint_and_settles() -> None:
             )
             assert state.conversation is not None
             await octomate.conversations.record_external_run(
-                state.conversation, run_id=TURN_ID, native_session_id=SESSION_ID
+                state.conversation,
+                run_id=TURN_ID,
+                native_session_id=SESSION_ID,
             )
             await feed_records(
                 tailer,

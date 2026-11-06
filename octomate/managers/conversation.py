@@ -17,7 +17,7 @@ from sqlalchemy import Select, and_, func, insert, literal, or_, select
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.files import FileManager
-from octomate.schemas.conversation import Conversation, ConversationRun
+from octomate.schemas.conversation import Conversation, ConversationKey, ConversationRun
 from octomate.schemas.files import FileVariant, Jsonl
 from octomate.schemas.messages import ModelMessage, ModelRequest, ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
@@ -47,7 +47,7 @@ def own_runs(thread_id: UUID7) -> Select[tuple[str]]:
     )
 
 
-class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
+class ConversationManager(Manager, Locks[ConversationKey]):
     """Resolves and persists agent `Conversation` entities, and owns their model
     message history.
 
@@ -99,6 +99,7 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         subagent_id: str = "",
         parent_conversation_id: UUID7 | None = None,
         with_history: bool = True,
+        native: bool = False,
     ) -> Conversation:
         """Resolve the conversation owned by `agent_tentacle_id` in `thread_id`,
         creating it if it does not yet exist. Its `conversation.messages` is the
@@ -108,7 +109,12 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         the agent's long-lived conversation in the thread. A subagent context
         names the conversation that spawned it, and only a subagent context may.
         `with_history=False` leaves runs and messages unloaded for callers that
-        only need identity, permissions, or the native session's resume id."""
+        only need identity, permissions, or the native session's resume id.
+
+        Native ingest sets `native=True` to resolve its uploaded thread's context.
+        A native context belongs to one configured agent; another owner is refused.
+        The thread's persisted native kind remains unchanged.
+        """
         if bool(subagent_id) != (parent_conversation_id is not None):
             raise ValueError(
                 "a subagent conversation requires both subagent_id and "
@@ -116,19 +122,40 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
             )
         # Serialize first sightings so the loser reads the committed row.
         async with async_session() as session:
-            async with self.lock((thread_id, agent_tentacle_id, subagent_id)):
+            expressions = [
+                Conversation["thread_id"] == thread_id,
+                Conversation["subagent_id"] == subagent_id,
+            ]
+            if not native:
+                expressions.append(
+                    Conversation["agent_tentacle_id"] == agent_tentacle_id
+                )
+            else:
+                thread = await session.get(Thread, thread_id)
+                if thread is None or thread.kind != "native_thread":
+                    raise ValueError("Native ingest requires a tailed thread")
+            # Native claims share a lock across agents because the context has one owner.
+            async with self.lock(
+                ConversationKey(
+                    thread_id=thread_id,
+                    agent_id="" if native else agent_tentacle_id,
+                    subagent_id=subagent_id,
+                )
+            ):
                 conversation = await session.one_or_none(
                     Conversation,
                     options=[
                         lazyload(Conversation["runs"]),
                         lazyload(Conversation["messages"]),
                     ],
-                    expressions=[
-                        Conversation["thread_id"] == thread_id,
-                        Conversation["agent_tentacle_id"] == agent_tentacle_id,
-                        Conversation["subagent_id"] == subagent_id,
-                    ],
+                    expressions=expressions,
                 )
+                if (
+                    native
+                    and conversation is not None
+                    and conversation.agent_tentacle_id != agent_tentacle_id
+                ):
+                    raise ValueError("The tailed thread belongs to another agent")
                 if conversation is None:
                     conversation = Conversation(
                         thread_id=thread_id,
@@ -317,7 +344,6 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         permission_mode: AgentPermissionMode | None = None,
         cwd: Path | None = None,
         external_id: str | None = None,
-        native_id: str | None = None,
         native_turn_id: str | None = None,
         parent_run_id: str | None = None,
         parent_tool_call_id: str | None = None,
@@ -333,7 +359,6 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         run = AgentRun(
             id=run_id,
             conversation_id=conversation.id,
-            native_id=native_id,
             native_session_id=external_id,
             native_turn_id=native_turn_id,
             name=name,
@@ -355,7 +380,7 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         )
 
     async def driven_run(
-        self, native_id: str, session_id: str, turn_id: str
+        self, agent_tentacle_id: str, session_id: str, turn_id: str
     ) -> AgentRun | None:
         """Find the driven owner of a native turn without loading its messages."""
         async with async_session() as session:
@@ -363,7 +388,11 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
                 AgentRun,
                 expressions=[
                     AgentRun["kind"] == "octomate",
-                    AgentRun["native_id"] == native_id,
+                    AgentRun["conversation_id"].in_(
+                        select(Conversation["id"]).where(
+                            Conversation["agent_tentacle_id"] == agent_tentacle_id
+                        )
+                    ),
                     AgentRun["native_session_id"] == session_id,
                     AgentRun["native_turn_id"] == turn_id,
                 ],
@@ -396,8 +425,8 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         conversation's resumable handle (`external_id`).
 
         A turn already recorded by the driven runtime keeps its original run and
-        messages. Its runtime identity lets native ingest skip the replay without
-        copying it into the native ledger or saving transcript coordinates on it.
+        messages. Its owning agent, session and turn IDs let ingest skip the replay
+        without copying it into the native ledger or saving transcript coordinates on it.
 
         The byte range is what marks a turn finished. A run carrying `end_offset` was
         assembled from the transcript and is final, so recording it again — a recovery
@@ -421,7 +450,6 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         run = ExternalAgentRun(
             id=run_id,
             conversation_id=conversation.id,
-            native_id=conversation.agent_tentacle_id,
             native_turn_id=run_id,
             name=name,
             model_name=model_name,

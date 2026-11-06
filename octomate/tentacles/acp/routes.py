@@ -22,7 +22,7 @@ from octomate.tentacles.acp.transport import websocket_connection
 
 def build_acp_router(tentacle: AcpChannelTentacle) -> APIRouter:
     """Bind authentication and connections to the registered ACP instance."""
-    router = APIRouter(prefix="/api/acp", tags=["acp"])
+    router = APIRouter(prefix="/api/acp", tags=[tentacle.type])
 
     @router.websocket("")
     async def acp_connection(

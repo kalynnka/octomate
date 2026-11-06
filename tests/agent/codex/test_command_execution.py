@@ -82,7 +82,6 @@ async def execution(
     )
     agent = app.connect(
         CodexTentacle(
-            "codex",
             app,
             config=CodexConfig(permission_mode="auto_review"),
             commands=app.commands,

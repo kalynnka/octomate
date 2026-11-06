@@ -50,7 +50,7 @@ from octomate.schemas.mcp import NoAuthMcp, OAuthMcp
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.oauth import OAuthConnection
 from octomate.schemas.segments import MessageSegment, TextSegment
-from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import ChannelTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
@@ -955,7 +955,7 @@ async def test_an_agent_that_did_not_start_leaves_the_others_listed(
     octomate = Octomate()
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)
-    octomate.connect(DeepseekTentacle("deepseek", octomate, config=DeepseekConfig()))
+    octomate.connect(DeepseekTentacle(octomate, config=DeepseekConfig()))
 
     transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
@@ -1237,7 +1237,6 @@ async def test_the_agents_endpoint_keeps_the_models_routes_drops(
     assert all(agent["default_model"] == RECEPTION_MODEL for agent in listed)
     assert all(agent["driven_sessions"] == 0 for agent in listed)
     assert all(agent["native_sessions"] == 0 for agent in listed)
-    assert all(agent["native_id"] is None for agent in listed)
 
 
 async def test_the_agents_endpoint_reports_each_routes_effort_vocabulary(
@@ -1711,11 +1710,11 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
     project = a_project(Path("/srv/inky"))
     octomate.workspaces.projects = await a_registry(project)
     thread = await octomate.threads.ensure(
-        ThreadKey(CLAUDE_NATIVE_ID, "thread", "session-1"), project=project
+        ThreadKey("claude", "thread", "session-1"), project=project, native=True
     )
     await octomate.threads.record_inbound(
         MessageEvent(
-            tentacle_id=CLAUDE_NATIVE_ID,
+            tentacle_id="claude",
             message_id="turn-1",
             chat_id="session-1",
             chat_type="thread",
@@ -1727,7 +1726,7 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
         )
     )
     conversation = await octomate.conversations.ensure(
-        thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+        thread.id, agent_tentacle_id="claude"
     )
     await octomate.conversations.record_external_run(
         conversation,
@@ -1738,7 +1737,7 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
                 timestamp=datetime(2026, 8, 9, 12, tzinfo=UTC),
             )
         ],
-        name=CLAUDE_NATIVE_ID,
+        name="claude",
         # A run drifts into a subdirectory of the project it belongs to.
         cwd=Path("/srv/inky/migrations"),
         native_session_id="session-1",
@@ -1751,7 +1750,7 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
         headers={"X-Octomate-Request": "1"},
     ) as client:
         [listed] = (await client.get("/api/trunkline/threads")).json()
-        assert listed["channel_tentacle_id"] == CLAUDE_NATIVE_ID
+        assert listed["channel_tentacle_id"] == "claude"
         assert listed["kind"] == "native_thread"
         # The runtime's own session id: what its editor extension reopens by.
         assert listed["chat_id"] == "session-1"
@@ -1959,16 +1958,16 @@ async def test_native_history_endpoints_page_by_message_id() -> None:
     octomate = Octomate()
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)
-    key = ThreadKey(CLAUDE_NATIVE_ID, "thread", "native-session")
+    key = ThreadKey("claude", "thread", "native-session")
     thread = await octomate.threads.ensure(key)
     conversation = await octomate.conversations.ensure(
-        thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+        thread.id, agent_tentacle_id="claude"
     )
     for index, (run_id, minute) in enumerate((("first", 2), ("second", 1))):
         at = datetime(2026, 10, 14, 9, minute, tzinfo=UTC)
         await octomate.threads.record_inbound(
             MessageEvent(
-                tentacle_id=CLAUDE_NATIVE_ID,
+                tentacle_id="claude",
                 chat_type="thread",
                 chat_id=key.chat_id,
                 message_id=run_id,

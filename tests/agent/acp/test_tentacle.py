@@ -149,7 +149,7 @@ async def test_custom_harness_discovers_selects_and_reopens(
         assert [run.model_name for run in runs] == (
             [None, None] if catalog == "none" else ["careful", "fast"]
         )
-        assert all(run.native_id == agent.id for run in runs)
+        assert conversation.agent_tentacle_id == agent.id
         for run in runs:
             assert run.context_used == 32000
             assert run.context_window == 128000

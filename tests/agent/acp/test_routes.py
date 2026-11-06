@@ -32,7 +32,7 @@ from octomate.schemas.conversation import Conversation
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadMessage
 from octomate.tentacles.acp.channel import AcpChannelTentacle
-from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.inkling.base import InklingTentacle
 from tests.agent.claude.test_tentacle import FakeClaudeClient
@@ -673,8 +673,7 @@ async def test_native_live_approval_returns_to_existing_run(
     assert isinstance(app, Octomate)
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ApprovingClaudeClient)
     agent = app.connect(
-        ClaudeCodeTentacle(
-            "native",
+        ClaudeTentacle(
             app,
             config=ClaudeCodeConfig(gateway=False),
             commands=app.commands,
@@ -699,7 +698,7 @@ async def test_native_live_approval_returns_to_existing_run(
             {
                 "sessionId": session_id,
                 "configId": "model",
-                "value": "native:anthropic:sonnet",
+                "value": "claude:anthropic:sonnet",
             },
         )
         socket.send_json(
