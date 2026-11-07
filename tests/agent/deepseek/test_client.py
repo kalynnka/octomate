@@ -28,6 +28,67 @@ from octomate.types.json import JsonObject
 BASE_URL = "http://127.0.0.1:3080/"
 
 
+@pytest.mark.parametrize("method", ["commands/execute", "settings/describe"])
+async def test_only_command_execution_can_outlast_the_read_timeout(method: str) -> None:
+    finished = asyncio.Event()
+    body = json.dumps(
+        {
+            "type": "server-response",
+            "rpcId": "slow-response",
+            "result": {"ok": True, "value": {"completed": True}},
+        }
+    ).encode()
+
+    async def respond(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        try:
+            headers = await reader.readuntil(b"\r\n\r\n")
+            length = next(
+                int(line.split(b":", 1)[1])
+                for line in headers.splitlines()
+                if line.lower().startswith(b"content-length:")
+            )
+            await reader.readexactly(length)
+            await asyncio.sleep(0.15)
+            # The metadata request closes its connection when its deadline expires.
+            with contextlib.suppress(ConnectionError):
+                writer.write(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                    + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+                    + body
+                )
+                await writer.drain()
+        finally:
+            writer.close()
+            with contextlib.suppress(ConnectionError):
+                await writer.wait_closed()
+            finished.set()
+
+    server = await asyncio.start_server(respond, "127.0.0.1", 0)
+    url = f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+    async with (
+        server,
+        DeepseekApiClient(
+            HttpUrl(url),
+            httpx.AsyncClient(
+                base_url=url, timeout=httpx.Timeout(1, read=0.025), trust_env=False
+            ),
+        ) as client,
+    ):
+        try:
+            result = await client.remote(method, {})
+        finally:
+            await asyncio.wait_for(finished.wait(), 1)
+        assert client.http_client.timeout.read == 0.025
+
+    if method == "commands/execute":
+        assert result == OkResult(value={"completed": True})
+    else:
+        assert isinstance(result, ErrResult)
+        assert result.error.code == "internal"
+
+
 async def test_mux_preserves_registry_change_notifications() -> None:
     socket = AsyncMock()
     socket.__aiter__.return_value = [

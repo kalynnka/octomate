@@ -115,11 +115,16 @@ class DeepseekApiClient:
     async def call(self, method: str, payload: JsonValue) -> RpcResult:
         """One unary method: POST /api/<method>."""
         message = ClientRequest(rpc_id=str(uuid4()), method=method, payload=payload)
+        timeout = httpx.Timeout(self.http_client.timeout)
+        if method == "commands/execute":
+            # Commands return after model work such as compaction finishes.
+            timeout.read = None
         try:
             response = await self.http_client.post(
                 f"/api/{method}",
                 content=message.model_dump_json(by_alias=True),
                 headers=JSON_HEADERS,
+                timeout=timeout,
             )
         except httpx.ConnectError as error:
             return ErrResult(
