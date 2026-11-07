@@ -44,7 +44,17 @@ export function ChatLog() {
     })
     observer.observe(log)
     observer.observe(ledgerRef.current!)
-    return () => observer.disconnect()
+    const selectHistory = (event: MouseEvent) => {
+      if (!(event.target instanceof Element) || !event.target.closest('#trk-timeline [data-uid]')) return
+      following.current = false
+      revealing.current = null
+    }
+    // Release the tail before a timeline selection opens a card and resizes it.
+    document.addEventListener('click', selectHistory, true)
+    return () => {
+      observer.disconnect()
+      document.removeEventListener('click', selectHistory, true)
+    }
   }, [threadId])
 
   const cardMax = ['64%', '78%', '88%', '92%'][

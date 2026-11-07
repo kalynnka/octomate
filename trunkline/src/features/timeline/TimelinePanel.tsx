@@ -278,6 +278,7 @@ export function TimelinePanel() {
         ]
       : []
     : (detail?.sessions ?? [])
+  const route = ntOn ? `${ntAgent} · ${ntModel}` : sessions.at(-1)?.route ?? thread?.agentLabel ?? '—'
 
   const buckets: TlEvent[][] = sessions.map(() => [])
   let indexed = 0
@@ -389,7 +390,6 @@ export function TimelinePanel() {
         <span style={{ ...label(10, '.22em'), color: 'var(--fg-1)', whiteSpace: 'nowrap', flexShrink: 0 }}>Timeline</span>
         <span style={{ ...label(8, '.14em'), color: 'var(--fg-3)', ...ellipsis, minWidth: 0 }}>of this thread</span>
         <span style={{ flex: 1 }} />
-        {/* The full key sits in the row below; this one truncates when squashed. */}
         <TextSwap data-testid="timeline-thread-key" style={{ ...mono(8.5, 700), color: 'var(--color-accent)', ...ellipsis, minWidth: 0 }}>{threadKey}</TextSwap>
         <button type="button" aria-label="Close timeline" onClick={() => {
           toggleTrace()
@@ -400,6 +400,7 @@ export function TimelinePanel() {
         style={{
           display: 'flex',
           alignItems: 'baseline',
+          flexWrap: 'wrap',
           gap: 7,
           padding: '7px 14px',
           borderBottom: '1px solid var(--line-divider)',
@@ -408,11 +409,8 @@ export function TimelinePanel() {
           color: 'var(--fg-3)',
         }}
       >
-        <span style={{ ...ellipsis, minWidth: 0 }}>
-          key: <TextSwap>{ntOn ? 'trunkline / direct / console / —' : threadKey}</TextSwap>
-        </span>
-        <span style={{ flex: 1 }} />
-        <span style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>
+        <TextSwap title={route} style={{ flex: '1 1 auto', minWidth: 0, color: 'var(--fg-2)', overflowWrap: 'anywhere' }}>{route}</TextSwap>
+        <span style={{ whiteSpace: 'nowrap', flexShrink: 0, marginLeft: 'auto' }}>
           <TextSwap>{`${sessions.length} cnv · ${runCount} runs · ${eventTally} msg`}</TextSwap>
         </span>
       </div>
@@ -456,11 +454,8 @@ export function TimelinePanel() {
                         open={!folded}
                         style={{ ...mono(10), color: 'var(--fg-3)', width: 11, textAlign: 'center', flexShrink: 0 }}
                       />
-                      <span title={ses.name ?? ses.id} style={{ ...mono(10, 700), color: 'var(--color-accent)', minWidth: 0, ...ellipsis }}>
+                      <span title={ses.name ?? ses.id} style={{ ...mono(10, 700), color: 'var(--color-accent)', flex: 1, minWidth: 0, ...ellipsis }}>
                         <TextSwap>{ses.name ?? ses.id}</TextSwap>
-                      </span>
-                      <span style={{ ...mono(8.5), color: 'var(--fg-2)', flex: 1, minWidth: 0, ...ellipsis }}>
-                        <TextSwap>{ses.route}</TextSwap>
                       </span>
                       <span
                         style={{

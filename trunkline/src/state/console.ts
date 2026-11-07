@@ -6,6 +6,7 @@
  * keep the comp's review-dossier demo turn (`sendReview`).
  */
 import { create } from 'zustand'
+import { flushSync } from 'react-dom'
 import type {
   AskAnswer,
   DocLine,
@@ -93,6 +94,7 @@ const scrollChatBottom = (smooth?: boolean) => {
 /** Whether the reader is pinned near the ledger's tail (measured pre-commit,
  * so streaming growth follows only while they haven't scrolled away). */
 export const nearChatBottom = () => {
+  if (jumpMotion && !jumpMotion.signal.aborted) return false
   const el = document.getElementById('trk-chatlog')
   return el === null || el.scrollHeight - el.scrollTop - el.clientHeight < 120
 }
@@ -101,63 +103,110 @@ export const nearChatBottom = () => {
  *  already use, so scrolling to a row and syncing to it agree. */
 const RAIL_LEAD = 46
 
-const atTail = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight < 8
-
-// The pane whose scrolling is currently driving the other. Its own scroll
-// events are what moving the other pane provokes, and following those back
-// would be the two rails chasing each other.
-let railDriver: 'chat' | 'timeline' | null = null
-let railDriverTimer: ReturnType<typeof setTimeout> | undefined
+let railFrame: number | undefined
+let railMotion: number | undefined
+let railFollower: { pane: HTMLElement; top: number; target: number; position: number; velocity: number } | undefined
 
 /**
  * Hold the ledger and the timeline on the same moment. Both index the same
  * cards — a timeline row carries the uid of the chat card it points at — so
- * whichever one the reader scrolls, the other lands on the row it is showing,
- * and a pane at the tail puts the other at the tail: the latest turn is what
- * both open on.
+ * whichever one the reader scrolls, the other follows its progress between
+ * matching rows. The ends map too, so neither pane jumps on reaching its tail.
  */
 export const syncRails = (source: 'chat' | 'timeline') => {
-  if (railDriver !== null && railDriver !== source) return
   const log = document.getElementById('trk-chatlog')
   const rail = document.getElementById('trk-timeline')
   if (log === null || rail === null) return
   const [from, to] = source === 'chat' ? [log, rail] : [rail, log]
 
-  const drive = (top: number) => {
-    if (Math.abs(to.scrollTop - top) < 2) return
-    railDriver = source
-    clearTimeout(railDriverTimer)
-    railDriverTimer = setTimeout(() => (railDriver = null), 160)
-    to.scrollTop = top
+  // Ignore only the position we wrote. Real input in either pane takes over
+  // immediately, without a timer that also blocks the reader's next scroll.
+  if (railFollower?.pane === from && Math.abs(from.scrollTop - railFollower.top) < 1) return
+  if (railFollower?.pane !== to) {
+    cancelAnimationFrame(railMotion ?? 0)
+    railMotion = undefined
   }
-
-  if (atTail(from)) {
-    drive(to.scrollHeight - to.clientHeight)
-    return
-  }
-  // The last row that has scrolled past the lead line is the one being read;
-  // rows and cards share the ledger's order, so the first row still below it
-  // ends the search. A row whose card has paged out of the ledger is skipped.
-  const fold = from.getBoundingClientRect().top + RAIL_LEAD
-  let lead: [HTMLElement, HTMLElement] | null = null
-  for (const row of rail.querySelectorAll<HTMLElement>('[data-uid]')) {
-    const target = document.getElementById(`pm-${row.dataset.uid}`)
-    if (target === null) continue
-    const group = target.closest<HTMLDetailsElement>('details.trk-trace-group')
-    const card = group && !group.open ? group : target
-    const pair: [HTMLElement, HTMLElement] = source === 'chat' ? [card, row] : [row, card]
-    if (pair[0].getBoundingClientRect().top > fold) break
-    lead = pair
-  }
-  if (lead === null) return
-  drive(
-    to.scrollTop + lead[1].getBoundingClientRect().top - to.getBoundingClientRect().top - RAIL_LEAD,
-  )
+  cancelAnimationFrame(railFrame ?? 0)
+  railFrame = requestAnimationFrame(() => {
+    railFrame = undefined
+    if (!from.isConnected || !to.isConnected || !from.clientHeight || !to.clientHeight) return
+    const fromBounds = from.getBoundingClientRect()
+    const toBounds = to.getBoundingClientRect()
+    const fromScale = fromBounds.height / from.clientHeight
+    const toScale = toBounds.height / to.clientHeight
+    if (!fromScale || !toScale) return
+    const fromMax = from.scrollHeight - from.clientHeight
+    const toMax = to.scrollHeight - to.clientHeight
+    if (fromMax <= 0 || toMax <= 0) return
+    const position = from.scrollTop
+    let before = { from: 0, to: 0 }
+    let after = { from: fromMax, to: toMax }
+    let previousCard: HTMLElement | undefined
+    for (const row of rail.querySelectorAll<HTMLElement>('[data-uid]')) {
+      if (row.closest('[data-folded]')) continue
+      const target = document.getElementById(`pm-${row.dataset.uid}`)
+      if (target === null) continue
+      const group = target.closest<HTMLDetailsElement>('details.trk-trace-group')
+      const card = group && !group.open ? group : target
+      if (source === 'chat' && card === previousCard) continue
+      previousCard = card
+      const [fromRow, toRow] = source === 'chat' ? [card, row] : [row, card]
+      const start = position + (fromRow.getBoundingClientRect().top - fromBounds.top) / fromScale - RAIL_LEAD
+      if (start <= before.from) continue
+      if (start >= fromMax) break
+      const end = to.scrollTop + (toRow.getBoundingClientRect().top - toBounds.top) / toScale - RAIL_LEAD
+      const point = { from: start, to: Math.max(0, Math.min(toMax, end)) }
+      if (start > position) {
+        after = point
+        break
+      }
+      before = point
+    }
+    const progress = Math.max(0, Math.min(1, (position - before.from) / (after.from - before.from)))
+    const top = before.to + (after.to - before.to) * progress
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (railMotion !== undefined && railFollower?.pane === to && !reduced) {
+      railFollower.target = top
+      return
+    }
+    cancelAnimationFrame(railMotion ?? 0)
+    railMotion = undefined
+    const follower = { pane: to, top: to.scrollTop, target: top, position: to.scrollTop, velocity: 0 }
+    railFollower = follower
+    if (reduced || Math.abs(top - follower.top) < 1) {
+      to.scrollTo({ top, behavior: 'instant' })
+      follower.top = to.scrollTop
+      return
+    }
+    const frequency = 8 / parseFloat(getComputedStyle(to).getPropertyValue('--motion-entry'))
+    let at = performance.now()
+    const follow = (now: number) => {
+      railMotion = undefined
+      if (!from.isConnected || !to.isConnected || Math.abs(to.scrollTop - follower.top) >= 1) return
+      const target = Math.min(follower.target, to.scrollHeight - to.clientHeight)
+      const elapsed = Math.min(now - at, 64)
+      const offset = follower.position - target
+      const decay = Math.exp(-frequency * elapsed)
+      const impulse = (follower.velocity + frequency * offset) * elapsed
+      // Critical damping keeps velocity continuous as the destination moves.
+      // Retain subpixel progress separately from the browser's rounded offset.
+      follower.position = target + (offset + impulse) * decay
+      follower.velocity = (follower.velocity - frequency * impulse) * decay
+      const settled = Math.abs(target - follower.position) < 0.5 && Math.abs(follower.velocity) < 0.01
+      to.scrollTo({ top: settled ? target : follower.position, behavior: 'instant' })
+      follower.top = to.scrollTop
+      at = now
+      if (!settled) railMotion = requestAnimationFrame(follow)
+    }
+    railMotion = requestAnimationFrame(follow)
+  })
 }
 
 let flashTimer: ReturnType<typeof setTimeout> | undefined
 let jumpTarget: HTMLElement | null = null
+let jumpMotion: AbortController | undefined
 export const goLedgerTarget = async (tgt?: string) => {
+  jumpMotion?.abort()
   const log = document.getElementById('trk-chatlog')
   if (!log) return
   const el = tgt ? (document.getElementById(tgt) ?? document.getElementById(`pm-${tgt}`)) : null
@@ -165,6 +214,8 @@ export const goLedgerTarget = async (tgt?: string) => {
     scrollChatBottom(true)
     return
   }
+  const motion = new AbortController()
+  jumpMotion = motion
   if (window.matchMedia('(max-width: 599px), (max-height: 519px) and (max-width: 999px)').matches) {
     useConsole.getState().actions.closeOverlays()
   }
@@ -179,20 +230,48 @@ export const goLedgerTarget = async (tgt?: string) => {
   const openingCard = el.querySelector(':scope > :is(.trk-tool-toggle, .trk-thinking-toggle)[aria-expanded="false"]') !== null
   if (openingGroup) group.open = true
   if (openingCard) useConsole.getState().actions.toggleCardOpen(el.id.slice(3))
-  if (closingCard || openingGroup || openingCard) {
-    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
-    const motions = [previous?.querySelector(':scope > .lt-fold'), group?.querySelector(':scope > summary > .lt-disclose'), el.querySelector(':scope > .lt-fold')]
-    await Promise.allSettled(motions.flatMap(motion => motion?.getAnimations() ?? []).map(animation => animation.finished))
+  const started = await new Promise<number>(resolve => requestAnimationFrame(resolve))
+  if (!el.isConnected || motion.signal.aborted) {
+    motion.abort()
+    return
   }
-  if (!el.isConnected || jumpTarget !== el) return
-  log.scrollTo({ top: Math.max(0, log.scrollTop + el.getBoundingClientRect().top - log.getBoundingClientRect().top - 46), behavior: 'smooth' })
+  const folds = [previous?.querySelector(':scope > .lt-fold'), group?.querySelector(':scope > summary > .lt-disclose'), el.querySelector(':scope > .lt-fold')]
+  const duration = matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : Math.max(
+    parseFloat(getComputedStyle(log).getPropertyValue('--motion-entry')),
+    ...folds.flatMap(fold => fold?.getAnimations() ?? []).map(animation => {
+      const end = animation.effect?.getComputedTiming().endTime ?? 0
+      return typeof end === 'number' ? end : end.to('ms').value
+    }),
+  )
   el.tabIndex = -1
-  el.focus({ preventScroll: true })
   el.classList.remove('trk-flash')
   void el.offsetWidth
   el.classList.add('trk-flash')
   clearTimeout(flashTimer)
   flashTimer = setTimeout(() => el.classList.remove('trk-flash'), 1500)
+  for (const event of ['wheel', 'touchmove', 'pointerdown', 'keydown']) {
+    log.addEventListener(event, () => motion.abort(), { once: true, passive: true, signal: motion.signal })
+  }
+  let easedBefore = 0
+  await new Promise<void>(resolve => {
+    const locate = (now: number) => {
+      if (motion.signal.aborted || !el.isConnected || !log.isConnected) return resolve()
+      const viewport = log.getBoundingClientRect()
+      const target = log.scrollTop + (el.getBoundingClientRect().top - viewport.top) / (viewport.height / log.clientHeight) - RAIL_LEAD
+      const progress = duration ? Math.min((now - started) / duration, 1) : 1
+      const eased = progress * progress * (3 - 2 * progress)
+      // Follow the header while folds move it. Relative steps also preserve
+      // the scroll offset when an older history page is inserted mid-motion.
+      const step = progress === 1 ? 1 : (eased - easedBefore) / (1 - easedBefore)
+      log.scrollTo({ top: log.scrollTop + (target - log.scrollTop) * step, behavior: 'instant' })
+      easedBefore = eased
+      if (progress < 1) requestAnimationFrame(locate)
+      else resolve()
+    }
+    requestAnimationFrame(locate)
+  })
+  if (!motion.signal.aborted && el.isConnected) el.focus({ preventScroll: true })
+  motion.abort()
 }
 
 /** Replay entry animations on the chat surfaces after a view switch. */
@@ -468,6 +547,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
 
   // Threads with a ledger page in flight; one page at a time for each.
   const paging = new Set<string>()
+  let olderFrame: number | undefined
 
   /** Fold one more page onto the open thread — of the read holding the other back. */
   const pageBack = async (thId: string) => {
@@ -482,11 +562,12 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       // A reader who moved on, or a refresh that replaced the pages, has no use for it.
       if (get().selThreadId !== thId || !current?.reads || current.reads.cursors[read] !== cursor) return
       const detail = withOlderPage(current, current.reads, older)
+      set(s => ({ ledgerN: Math.min(s.ledgerN, current.ledger.length) }))
       showDetail(detail)
       queryClient.setQueryData(['thread-detail', thId], detail)
-      // A reader already at the top is waiting on this page.
+      // Reveal the page before the reader reaches the scroll boundary.
       const log = document.getElementById('trk-chatlog')
-      if (log !== null && log.scrollTop < 40) actions.loadOlder()
+      if (log !== null && log.scrollTop < log.clientHeight * 2) actions.loadOlder()
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
       actions.reportThreadError(thId, `earlier messages did not load — ${reason}`)
@@ -1050,19 +1131,30 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       // The next relay page is read while a page of cards is still in hand, so a
       // reader scrolling back seldom waits on one.
       if (s.ledgerN + LEDGER_PAGE >= s.detail.ledger.length) void pageBack(s.selThreadId)
-      if (s.ledgerN >= s.detail.ledger.length) return
-      // Reveal the next page above, keeping both rails anchored on the rows the
-      // reader was looking at — the timeline indexes the same window, so a page
-      // grows it from the top too and it drifts by the same amount.
-      const held = ['trk-chatlog', 'trk-timeline'].map((id) => {
-        const el = document.getElementById(id)
-        return { id, height: el?.scrollHeight ?? 0, top: el?.scrollTop ?? 0 }
-      })
-      set((x) => ({ ledgerN: x.ledgerN + LEDGER_PAGE }))
-      requestAnimationFrame(() => {
-        for (const { id, height, top } of held) {
-          const el = document.getElementById(id)
-          if (el) el.scrollTop = el.scrollHeight - height + top
+      if (s.ledgerN >= s.detail.ledger.length || olderFrame !== undefined) return
+      olderFrame = requestAnimationFrame(() => {
+        olderFrame = undefined
+        const current = get()
+        if (current.selThreadId !== s.selThreadId || !current.detail) return
+        const count = Math.min(current.ledgerN + LEDGER_PAGE, current.detail.ledger.length)
+        const held = ['trk-chatlog', 'trk-timeline'].flatMap(id => {
+          const pane = document.getElementById(id)
+          if (!pane) return []
+          const anchor = pane.style.overflowAnchor
+          pane.style.overflowAnchor = 'none'
+          return [{ pane, height: pane.scrollHeight, top: pane.scrollTop, anchor }]
+        })
+        // Commit and compensate before paint, using the position at insertion
+        // time so input received while the page was loading is never rewound.
+        flushSync(() => set({ ledgerN: count }))
+        for (const { pane, height, top, anchor } of held) {
+          const added = pane.scrollHeight - height
+          pane.scrollTo({ top: top + added, behavior: 'instant' })
+          pane.style.overflowAnchor = anchor
+          if (railFollower?.pane !== pane) continue
+          railFollower.top = pane.scrollTop
+          railFollower.position += added
+          railFollower.target += added
         }
       })
     },
@@ -1073,7 +1165,8 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       syncRails('chat')
       const s = get()
       if (s.ntOn) return
-      if (scrollTop < 40) actions.loadOlder()
+      const log = document.getElementById('trk-chatlog')
+      if (log !== null && scrollTop < log.clientHeight * 2) actions.loadOlder()
     },
 
     /* ---------------------------------------------------- theme ---------- */

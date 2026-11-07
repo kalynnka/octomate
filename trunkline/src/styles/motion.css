@@ -31,6 +31,18 @@
 .lt-fade-in { animation: lt-fade-in var(--motion-entry) var(--ease-out) both; animation-delay: calc(var(--i, 0) * 70ms); }
 .lt-fade-out{ animation: lt-fade-out var(--motion-base) var(--ease-out) both; pointer-events: none; }
 
+@keyframes trk-locate-text {
+  35% { color: var(--trk-locate-color); }
+}
+.trk-agent-message.trk-flash { --trk-locate-color: color-mix(in srgb, var(--color-accent) 70%, var(--fg-1)); }
+[data-theme="dark"] .trk-agent-message.trk-flash { --trk-locate-color: color-mix(in srgb, var(--color-accent) 40%, var(--fg-1)); }
+.trk-agent-message.trk-flash .trk-md {
+  animation: trk-locate-text calc(var(--motion-entry) * 3) var(--ease-in-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  .trk-agent-message.trk-flash .trk-md { animation: none; color: var(--trk-locate-color); }
+}
+
 .trk-activity { --trk-shimmer-base: var(--fg-3); }
 .trk-activity[data-attention] { --trk-shimmer-base: var(--color-gold); }
 .trk-activity .lt-dots i { background: var(--fg-3); }

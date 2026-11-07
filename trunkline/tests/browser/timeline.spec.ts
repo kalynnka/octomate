@@ -175,7 +175,39 @@ for (const width of [1280, 390]) {
       await expect(toggle).toBeFocused()
       await page.keyboard.press('Enter')
     }
-    await summary.press('Enter')
+    await page.locator('#trk-chatlog').evaluate(async log => {
+      const ledger = log.querySelector('.trk-ledger-col')!
+      for (const position of ['before', 'after']) {
+        const space = document.createElement('div')
+        space.style.cssText = 'height:1400px;flex-shrink:0'
+        if (position === 'before') ledger.prepend(space)
+        else ledger.append(space)
+      }
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+      // Preserve the fresh thread's bottom-following state for its first jump.
+      log.scrollTop = log.scrollHeight
+    })
+    const locating = summary.evaluate(row => new Promise<{ top: number; height: number; gap: number }[]>(resolve => {
+      row.addEventListener('click', () => {
+        const log = document.getElementById('trk-chatlog')!
+        const card = document.getElementById('pm-reply.2')!
+        const fold = card.querySelector(':scope > .lt-fold')!
+        const samples: { top: number; height: number; gap: number }[] = []
+        const start = performance.now()
+        const sample = () => {
+          const viewport = log.getBoundingClientRect()
+          samples.push({ top: log.scrollTop, height: fold.getBoundingClientRect().height,
+            gap: (card.getBoundingClientRect().top - viewport.top) / (viewport.height / log.clientHeight) })
+          if (performance.now() - start < 1000) requestAnimationFrame(sample)
+          else resolve(samples)
+        }
+        sample()
+      }, { once: true })
+    }))
+    await summary.click()
+    const located = await locating
+    expect(located.some((sample, i) => i > 0 && Math.abs(sample.top - located[i - 1]!.top) > 1 && sample.height > located[i - 1]!.height + 0.1)).toBe(true)
+    expect(Math.abs(located.at(-1)!.gap - 46)).toBeLessThan(2)
     if (width === 390) {
       await expect(panel).toHaveAttribute('data-folded')
       await expect(toggle).toHaveAttribute('aria-expanded', 'false')
@@ -190,6 +222,11 @@ for (const width of [1280, 390]) {
     const manual = page.locator('[id="pm-reply.1"]')
     await manual.getByRole('button').click()
     await expect(manual.getByRole('button')).toHaveAttribute('aria-expanded', 'true')
+    await card.locator(':scope > .lt-fold > div').evaluate(el => {
+      const content = document.createElement('div')
+      content.style.height = '600px'
+      el.append(content)
+    })
     if (width === 390) await toggle.press('Enter')
     await timeline.locator('[data-uid="reply.5"]').press('Enter')
     const tool = page.locator('[id="pm-reply.5"]')
@@ -200,6 +237,11 @@ for (const width of [1280, 390]) {
     await expect.poll(() => card.locator(':scope > .lt-fold').evaluate(el => el.getBoundingClientRect().height)).toBeLessThan(1)
     await expect(card).not.toHaveClass(/trk-flash/)
     await expect(manual.getByRole('button')).toHaveAttribute('aria-expanded', 'true')
+    await expect.poll(() => tool.evaluate(el => {
+      const log = document.getElementById('trk-chatlog')!
+      const viewport = log.getBoundingClientRect()
+      return Math.abs((el.getBoundingClientRect().top - viewport.top) / (viewport.height / log.clientHeight) - 46)
+    })).toBeLessThan(2)
     if (width === 390) await toggle.press('Enter')
     await timeline.locator('[data-uid="reply.5"]').press('Enter')
     await expect(tool).toBeFocused()
@@ -218,5 +260,23 @@ for (const width of [1280, 390]) {
     await expect(page.locator('vite-error-overlay')).toHaveCount(0)
     expect(errors).toEqual([])
     await page.screenshot({ path: `/private/tmp/inky-timeline-${width}.png` })
+    response.parts = [
+      { part_kind: 'text', content: 'Earlier discussion. '.repeat(300) },
+      ...response.parts.slice(1),
+      { part_kind: 'text', content: 'Later discussion. '.repeat(300) },
+    ]
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await toggle.click()
+    // The first timeline selection after a real refresh must leave the tail,
+    // without a preparatory chat scroll or waiting for entry animations.
+    await summary.click()
+    await expect(card).toBeFocused()
+    await expect(card.getByRole('button')).toHaveAttribute('aria-expanded', 'true')
+    await expect.poll(() => card.evaluate(el => {
+      const log = document.getElementById('trk-chatlog')!
+      const viewport = log.getBoundingClientRect()
+      return Math.abs((el.getBoundingClientRect().top - viewport.top) / (viewport.height / log.clientHeight) - 46)
+    })).toBeLessThan(2)
+    expect(errors).toEqual([])
   })
 }
