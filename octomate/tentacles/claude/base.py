@@ -750,7 +750,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         boundary = CompactBoundary.model_validate(message.data)
         await self.conversations.record_driven_compaction(
             conversation,
-            native_id=CLAUDE_NATIVE_ID,
             native_session_id=boundary.session_id,
             native_compaction_id=boundary.uuid,
             trigger=boundary.metadata.trigger,
@@ -760,7 +759,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         if messages:
             await self.conversations.record_driven_compaction(
                 conversation,
-                native_id=CLAUDE_NATIVE_ID,
                 native_session_id=boundary.session_id,
                 native_compaction_id=boundary.uuid,
                 trigger=boundary.metadata.trigger,

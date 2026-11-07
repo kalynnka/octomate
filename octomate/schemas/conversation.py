@@ -14,6 +14,9 @@ from typing_extensions import TypedDict
 from uuid_utils.compat import uuid7
 
 from octomate.models.conversation import Conversation as ConversationModel
+from octomate.models.conversation import (
+    ConversationCompaction as ConversationCompactionModel,
+)
 from octomate.models.conversation import ConversationRun as ConversationRunModel
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.messages import ModelRequest, ModelResponse
@@ -105,6 +108,23 @@ class ConversationRun(BaseTransmuter):
 
     conversation_id: Annotated[UUID7, Identity]
     run_id: Annotated[str, Identity]
+
+
+@sqlalchemy_materia.bless(ConversationCompactionModel)
+class ConversationCompaction(BaseTransmuter):
+    """A shared compaction in a conversation's own or frozen inherited history."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    conversation_id: Annotated[UUID7, Identity]
+    compaction_id: Annotated[UUID7, Identity] = Field(
+        description="Shared compaction identity; deletion is blocked while a conversation still includes it.",
+    )
+    position: int | None = Field(
+        default=None,
+        ge=0,
+        description="Zero-based compaction order in this conversation; None when the order has not been established.",
+    )
 
 
 @sqlalchemy_materia.bless(ConversationModel)

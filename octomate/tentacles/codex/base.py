@@ -1154,7 +1154,6 @@ class CodexTentacle(AgentTentacle[str, None]):
                 raise ValueError("Compaction belongs to a different native session")
             await self.conversations.record_driven_compaction(
                 conversation,
-                native_id=CODEX_NATIVE_ID,
                 native_session_id=thread_id,
                 native_compaction_id=item.id,
                 trigger=trigger,
@@ -1164,7 +1163,6 @@ class CodexTentacle(AgentTentacle[str, None]):
             if messages:
                 await self.conversations.record_driven_compaction(
                     conversation,
-                    native_id=CODEX_NATIVE_ID,
                     native_session_id=thread_id,
                     native_compaction_id=item.id,
                     trigger=trigger,

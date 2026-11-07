@@ -28,7 +28,7 @@ from octomate.schemas.thread import (
     ThreadLedger,
     ThreadMessage,
 )
-from octomate.types.compactions import CompactionTrigger
+from octomate.types.compactions import CompactionSessionKey, CompactionTrigger
 from octomate.types.permissions import AgentPermissionMode
 
 RunT = TypeVar("RunT", bound=AgentRun)
@@ -49,7 +49,7 @@ def own_runs(thread_id: UUID7) -> Select[tuple[str]]:
     )
 
 
-class ConversationManager(Manager, Locks[ConversationKey]):
+class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]):
     """Resolves and persists agent `Conversation` entities, and owns their model
     message history.
 
@@ -64,7 +64,6 @@ class ConversationManager(Manager, Locks[ConversationKey]):
         self,
         conversation: Conversation,
         *,
-        native_id: str,
         native_session_id: str,
         native_compaction_id: str,
         trigger: CompactionTrigger,
@@ -72,31 +71,42 @@ class ConversationManager(Manager, Locks[ConversationKey]):
         messages: list[ModelRequest | ModelResponse] | None = None,
     ) -> Compaction | None:
         """Persist a completed native item once, without inventing unavailable content."""
-        async with self.lock(conversation.key), async_session() as session:
+        async with (
+            self.lock(
+                CompactionSessionKey(
+                    conversation.agent_tentacle_id,
+                    native_session_id,
+                )
+            ),
+            self.lock(conversation.key),
+            async_session() as session,
+        ):
             expressions = [
-                Compaction["native_id"] == native_id,
+                Compaction["conversation_id"].in_(
+                    select(Conversation["id"]).where(
+                        Conversation["agent_tentacle_id"]
+                        == conversation.agent_tentacle_id
+                    )
+                ),
                 Compaction["native_session_id"] == native_session_id,
                 Compaction["native_compaction_id"] == native_compaction_id,
             ]
-            existing = None
-            if messages:
-                existing = await session.one_or_none(
-                    Compaction,
-                    expressions=expressions,
-                    options=[selectinload(Compaction["messages"])],
-                )
-            elif await session.scalar(
-                select(select(Compaction["id"]).where(*expressions).exists())
-            ):
-                return None
+            existing = await session.one_or_none(
+                Compaction,
+                expressions=expressions,
+                options=[selectinload(Compaction["messages"])] if messages else [],
+            )
             if existing is not None:
-                if not existing.messages:
-                    existing.messages.extend(messages or [])
-                    await session.commit()
+                if messages and not existing.messages:
+                    existing.messages.extend(messages)
+                if existing.trigger == "unknown":
+                    existing.trigger = trigger
+                if existing.happened_at is None:
+                    existing.happened_at = happened_at
+                await session.commit()
                 return None
             compaction = Compaction(
                 conversation_id=conversation.id,
-                native_id=native_id,
                 native_session_id=native_session_id,
                 native_compaction_id=native_compaction_id,
                 trigger=trigger,
@@ -111,7 +121,6 @@ class ConversationManager(Manager, Locks[ConversationKey]):
         self,
         conversation: Conversation,
         *,
-        native_id: str,
         native_session_id: str,
         source: str,
         start_offset: int | None,
@@ -127,36 +136,64 @@ class ConversationManager(Manager, Locks[ConversationKey]):
         the observation when present; otherwise the native conversation does.
         """
         async with (
+            self.lock(
+                CompactionSessionKey(conversation.agent_tentacle_id, native_session_id)
+            ),
             self.lock(conversation.key),
             async_session() as session,
         ):
-            identity = (
-                Compaction["native_compaction_id"] == native_compaction_id
-                if native_compaction_id is not None
-                else and_(
-                    ExternalCompaction["source"] == source,
-                    ExternalCompaction["start_offset"] == start_offset,
-                    ExternalCompaction["end_offset"] == end_offset,
-                )
+            coordinates = and_(
+                ExternalCompaction["source"] == source,
+                ExternalCompaction["start_offset"] == start_offset,
+                ExternalCompaction["end_offset"] == end_offset,
             )
+            identity = coordinates
+            if native_compaction_id is not None:
+                identity = Compaction["native_compaction_id"] == native_compaction_id
+                if start_offset is not None and end_offset is not None:
+                    identity = or_(identity, coordinates)
             expressions = [
-                Compaction["native_id"] == native_id,
+                Compaction["conversation_id"].in_(
+                    select(Conversation["id"]).where(
+                        Conversation["agent_tentacle_id"]
+                        == conversation.agent_tentacle_id
+                    )
+                ),
                 Compaction["native_session_id"] == native_session_id,
                 identity,
             ]
-            existing = None
-            if native_compaction_id is None:
-                if await session.scalar(
-                    select(select(Compaction["id"]).where(*expressions).exists())
-                ):
-                    return None
-            else:
-                existing = await session.one_or_none(
+            if native_compaction_id is None and await session.scalar(
+                select(select(Compaction["id"]).where(*expressions).exists())
+            ):
+                return None
+            matches = (
+                await session.list(
                     Compaction,
                     expressions=expressions,
-                    options=[selectinload(Compaction["messages"])] if messages else [],
+                    order_bys=[Compaction["recorded_at"], Compaction["id"]],
+                    options=[selectinload(Compaction["messages"])],
                 )
+                if native_compaction_id is not None
+                else []
+            )
+            existing = matches[0] if matches else None
+            for duplicate in matches[1:]:
+                assert existing is not None
+                if not existing.messages:
+                    content = list(duplicate.messages)
+                    duplicate.messages.clear()
+                    existing.messages.extend(content)
+                if existing.trigger == "unknown":
+                    existing.trigger = duplicate.trigger
+                if existing.happened_at is None:
+                    existing.happened_at = duplicate.happened_at
+                await session.delete(duplicate)
             if existing is not None:
+                if existing.native_compaction_id not in {None, native_compaction_id}:
+                    raise ValueError(
+                        "Compaction coordinates identify a different native item"
+                    )
+                existing.native_compaction_id = native_compaction_id
                 add_messages = bool(messages) and not existing.messages
                 if add_messages:
                     existing.messages.extend(messages)
@@ -178,6 +215,8 @@ class ConversationManager(Manager, Locks[ConversationKey]):
                     Conversation,
                     expressions=[
                         Conversation["external_id"] == native_session_id,
+                        Conversation["agent_tentacle_id"]
+                        == conversation.agent_tentacle_id,
                         Conversation["id"] != conversation.id,
                         Conversation["subagent_id"] == "",
                     ],
@@ -188,7 +227,6 @@ class ConversationManager(Manager, Locks[ConversationKey]):
                 )
             compaction = ExternalCompaction(
                 conversation_id=owner.id if owner is not None else conversation.id,
-                native_id=native_id,
                 native_session_id=native_session_id,
                 native_compaction_id=native_compaction_id,
                 trigger=trigger,

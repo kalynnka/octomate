@@ -22,14 +22,15 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.database import async_session
 from octomate.nerve import Impulse, Nerve
-from octomate.schemas.compactions import ExternalCompaction
+from octomate.schemas.compactions import Compaction, ExternalCompaction
+from octomate.schemas.messages import ModelMessage
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.codex.hooks import CodexHookInput
 from octomate.tentacles.codex.ingest import CodexHookIngest
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer, TailState
-from octomate.tentacles.codex.transcript import rollout_line_adapter
+from octomate.tentacles.codex.transcript import CompactedItem, rollout_line_adapter
 from octomate.tentacles.locks import SessionLocks
 from octomate.types.json import JsonObject
 from tests.support.managers import a_loaded_thread, a_thread
@@ -40,6 +41,103 @@ SESSION_ID = "codex-session"
 SESSION_ADDRESS = ThreadKey("codex", "thread", SESSION_ID).address(
     SENDER.channel_user_id
 )
+
+
+@pytest.mark.parametrize("order", ["driven_first", "native_first", "interleaved"])
+@pytest.mark.parametrize("driven_content", [False, True])
+@pytest.mark.parametrize("native_content", [False, True])
+async def test_native_completion_correlates_with_driven_compaction_without_new_identities(
+    in_memory_engine: AsyncEngine,
+    order: str,
+    driven_content: bool,
+    native_content: bool,
+) -> None:
+    app = Octomate()
+    _, tailer = wired(app)
+    owner = await app.conversations.ensure(await a_thread(), agent_tentacle_id="codex")
+    await app.conversations.set_external_id(owner, SESSION_ID)
+    payload: JsonObject = {"message": "Compacted earlier work"}
+    records = [
+        event(0, "task_started", turn_id=TURN_ID),
+        {
+            "timestamp": "2026-07-16T10:00:01Z",
+            "type": "compacted",
+            "payload": payload if native_content else {"message": ""},
+        },
+        {
+            "timestamp": "2026-07-16T10:00:02Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "thread_id": SESSION_ID,
+                "turn_id": TURN_ID,
+                "item": {"type": "ContextCompaction", "id": "compaction-item"},
+            },
+        },
+        event(3, "task_complete", turn_id=TURN_ID),
+    ]
+
+    async def driven() -> None:
+        messages = CompactedItem.model_validate(payload).to_messages(
+            datetime(2026, 7, 16, 10, 0, 1, tzinfo=UTC)
+        )
+        await app.conversations.record_driven_compaction(
+            owner,
+            native_session_id=SESSION_ID,
+            native_compaction_id="compaction-item",
+            trigger="manual",
+            happened_at=None,
+            messages=messages if driven_content else None,
+        )
+
+    async def identities() -> tuple[str, list[str]]:
+        async with async_session() as session:
+            rows = await session.list(
+                Compaction,
+                order_bys=[Compaction["recorded_at"]],
+                options=[selectinload(Compaction["messages"])],
+            )
+        first = rows[0]
+        return str(first.id), [str(message.id) for message in first.messages]
+
+    async with app.nerve.publish(SESSION_ADDRESS) as impulses:
+        state, _ = await tailer.attach_remote(
+            SESSION_ID, ROLLOUT_LABEL, SENDER, SESSION_ADDRESS, impulses
+        )
+        if order == "driven_first":
+            await driven()
+            original_id, original_messages = await identities()
+            await feed_records(tailer, state, records)
+        else:
+            offset = await feed_records(tailer, state, records[:2])
+            original_id, original_messages = await identities()
+            if order == "interleaved":
+                await driven()
+            await feed_records(tailer, state, records[2:], start=offset)
+            if order == "native_first":
+                await driven()
+        tailer.detach_remote(state)
+        state, _ = await tailer.attach_remote(
+            SESSION_ID, ROLLOUT_LABEL, SENDER, SESSION_ADDRESS, impulses
+        )
+        await feed_records(tailer, state, records)
+        tailer.detach_remote(state)
+    async with async_session() as session:
+        [stored] = await session.list(
+            Compaction, options=[selectinload(Compaction["messages"])]
+        )
+        assert await session.count(ExternalAgentRun) == 0
+        assert await session.count(ModelMessage) == int(
+            native_content or driven_content
+        )
+    assert str(stored.id) == original_id
+    assert stored.native_compaction_id == "compaction-item"
+    assert stored.conversation_id == owner.id
+    assert stored.trigger == "manual"
+    if native_content or driven_content:
+        assert stored.messages[0].message_text == "Compacted earlier work"
+    if original_messages:
+        assert [str(message.id) for message in stored.messages] == original_messages
 
 
 @pytest.fixture
@@ -882,7 +980,6 @@ async def test_compactions_without_turns_are_replay_safe(
     assert rows[0].happened_at == datetime(2026, 7, 16, 10, 0, 1, tzinfo=UTC)
     for row in rows:
         assert row.happened_at is not None
-        assert row.native_id == CODEX_NATIVE_ID
         assert row.native_session_id == SESSION_ID
         assert row.native_compaction_id is None
         assert row.trigger == "unknown"
@@ -902,7 +999,7 @@ async def test_compactions_without_turns_are_replay_safe(
     assert [(row.id, row.messages[0].id) for row in replayed] == identities
     octomate = Octomate()
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+        octomate.threads, ThreadKey("codex", "thread", SESSION_ID)
     )
     assert not thread.messages
 
@@ -989,7 +1086,6 @@ async def test_compactions_survive_turn_replay_and_use_the_runtime_owner(
                 ModelRequest(parts=[UserPromptPart("original prompt")]),
                 ModelResponse(parts=[TextPart("original answer")]),
             ],
-            native_id=CODEX_NATIVE_ID,
             native_turn_id=TURN_ID,
             external_id=SESSION_ID,
         )

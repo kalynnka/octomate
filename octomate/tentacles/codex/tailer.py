@@ -62,6 +62,7 @@ from octomate.tentacles.codex.adapter import (
 from octomate.tentacles.codex.html import visualization_text
 from octomate.tentacles.codex.transcript import (
     CompactedItem,
+    CompactionCompletedEvent,
     CompletedCommandItem,
     RolloutLine,
     SessionMetadata,
@@ -78,6 +79,15 @@ from octomate.types.json import JsonObject
 logger = logging.getLogger(__name__)
 
 COMMIT_LOCK_TIMEOUT = 30.0
+
+
+@dataclass
+class PendingCompaction:
+    """The committed replacement waiting for its native completion item ID."""
+
+    line: RolloutLine
+    start: int  # Inclusive byte offset of the replacement record.
+    end: int  # Exclusive byte offset of the replacement record.
 
 
 @dataclass
@@ -103,6 +113,7 @@ class OpenTurn:
     native: NativeTurn | None = None
     compacted: bool = False  # A validated compaction completed within this task.
     has_response_items: bool = False  # Includes pending or unsupported model items.
+    compaction: PendingCompaction | None = None
     visualizations: dict[int, list[HtmlSnapshot]] = field(
         default_factory=dict
     )  # Snapshots keyed by their model message position.
@@ -446,6 +457,8 @@ class CodexTranscriptTailer:
         if turn is None:
             return
         turn.end_offset = end
+        if line.type == "event_msg" and kind == "item_completed":
+            await self.identify_compaction(state, turn, line)
         if line.type == "turn_context":
             self.consume_turn_context(turn, line)
             return
@@ -592,6 +605,8 @@ class CodexTranscriptTailer:
             )
             return
         turn = tail.open_turn
+        if turn is not None and line.type == "event_msg" and kind == "item_completed":
+            await self.identify_compaction(state, turn, line, tail=tail)
         if turn is None or turn.turn_id in tail.recorded:
             return
         turn.end_offset = end
@@ -635,6 +650,7 @@ class CodexTranscriptTailer:
         end: int,
         *,
         tail: SubagentTail | None = None,
+        native_compaction_id: str | None = None,
     ) -> None:
         """Capture summary/checkpoint content without changing the archived turn."""
         try:
@@ -648,8 +664,8 @@ class CodexTranscriptTailer:
         # TODO: Preserve the native compaction trigger when Codex exposes a reliable manual/auto signal.
         await self.conversation_manager.record_external_compaction(
             conversation,
-            native_id=CODEX_NATIVE_ID,
             native_session_id=tail.thread_id if tail is not None else state.session_id,
+            native_compaction_id=native_compaction_id,
             source=str(tail.path if tail is not None else state.transcript_path),
             start_offset=start,
             end_offset=end,
@@ -659,6 +675,37 @@ class CodexTranscriptTailer:
         turn = tail.open_turn if tail is not None else state.open_turn
         if turn is not None:
             turn.compacted = True
+            if native_compaction_id is None:
+                turn.compaction = PendingCompaction(line, start, end)
+
+    async def identify_compaction(
+        self,
+        state: TailState,
+        turn: OpenTurn,
+        line: RolloutLine,
+        *,
+        tail: SubagentTail | None = None,
+    ) -> None:
+        """Bind the following completion ID to the already durable replacement."""
+        pending = turn.compaction
+        if pending is None:
+            return
+        try:
+            event = CompactionCompletedEvent.model_validate(line.payload)
+        except ValidationError:
+            return
+        session_id = tail.thread_id if tail is not None else state.session_id
+        if event.thread_id != session_id or event.turn_id != turn.turn_id:
+            return
+        await self.record_compaction(
+            state,
+            pending.line,
+            pending.start,
+            pending.end,
+            tail=tail,
+            native_compaction_id=event.item.id,
+        )
+        turn.compaction = None
 
     async def close_subagent_turn(self, state: TailState, tail: SubagentTail) -> None:
         turn = tail.open_turn

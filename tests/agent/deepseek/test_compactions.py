@@ -14,7 +14,6 @@ from octomate.config.agents import DeepseekConfig
 from octomate.database import async_session
 from octomate.schemas.commands import CommandContext, CommandResult
 from octomate.schemas.compactions import Compaction
-from octomate.schemas.thread import DEEPSEEK_NATIVE_ID
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.deepseek.compactions import DeepseekCompactions
 from octomate.tentacles.deepseek.ink import TurnFrame
@@ -109,7 +108,6 @@ async def test_native_compactions_between_turns_and_replay_preserve_archive(
         [row] = await session.list(
             Compaction, options=[selectinload(Compaction["messages"])]
         )
-    assert row.native_id == DEEPSEEK_NATIVE_ID
     assert row.native_session_id == SESSION_ID
     assert row.conversation_id == conversation.id
     assert row.trigger == ("manual" if manual else "auto")
@@ -150,7 +148,7 @@ async def test_driven_command_compaction_has_summary_without_a_model_run(
         thread.id, agent_tentacle_id="deepseek"
     )
     await app.conversations.set_external_id(conversation, "sess-1")
-    agent = DeepseekTentacle("deepseek", app, config=DeepseekConfig())
+    agent = DeepseekTentacle(app, config=DeepseekConfig())
     queue: asyncio.Queue[TurnFrame] = asyncio.Queue()
     records = compaction_events()
     for raw in [
@@ -205,7 +203,7 @@ async def test_automatic_driven_compaction_survives_the_enclosing_run(
     )
     app = Octomate()
     thread = await app.threads.enter(KEY)
-    agent = DeepseekTentacle("deepseek", app, config=DeepseekConfig())
+    agent = DeepseekTentacle(app, config=DeepseekConfig())
     async with agent:
         if failed_run:
             with pytest.raises(AgentRunError):

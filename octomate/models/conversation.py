@@ -6,7 +6,16 @@ from typing import TYPE_CHECKING
 
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import UUID7
-from sqlalchemy import ARRAY, JSON, ForeignKey, String, UniqueConstraint, Uuid
+from sqlalchemy import (
+    ARRAY,
+    JSON,
+    CheckConstraint,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    Uuid,
+)
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
@@ -48,6 +57,38 @@ class ConversationRun(Base, TransmuterProxiedMixin):
             "RESTRICT either, which SQLite checks mid-statement, before the deleted "
             "conversation's own references are sure to be gone."
         ),
+    )
+
+
+class ConversationCompaction(Base, TransmuterProxiedMixin):
+    """A compaction in a conversation's own or frozen inherited history."""
+
+    __tablename__ = "conversation_compactions"
+    __table_args__ = (
+        CheckConstraint("position >= 0", name="ck_conversation_compactions_position"),
+        UniqueConstraint(
+            "conversation_id", "position", name="uq_conversation_compactions_position"
+        ),
+    )
+
+    conversation_id: Mapped[UUID7] = mapped_column(
+        Uuid, ForeignKey("conversations.id", ondelete="CASCADE"), primary_key=True
+    )
+    compaction_id: Mapped[UUID7] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "compactions.id",
+            name="fk_conversation_compactions_compaction",
+            ondelete="NO ACTION",
+        ),
+        primary_key=True,
+        index=True,
+        comment="Shared compaction identity; deletion is blocked while a conversation still includes it.",
+    )
+    position: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="Zero-based compaction order in this conversation; NULL when the order has not been established.",
     )
 
 

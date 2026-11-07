@@ -456,7 +456,6 @@ class ClaudeTranscriptTailer:
             )
         await self.conversation_manager.record_external_compaction(
             conversation,
-            native_id=CLAUDE_NATIVE_ID,
             native_session_id=state.session_id,
             native_compaction_id=native_compaction_id,
             trigger=trigger,

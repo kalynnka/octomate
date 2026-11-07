@@ -7,12 +7,21 @@ from typing import TYPE_CHECKING, ClassVar
 
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import UUID7
-from sqlalchemy import ForeignKey, Integer, String, Uuid
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    Uuid,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base, MapperArgs, UTCDateTime
-from octomate.types.compactions import CompactionTrigger
+from octomate.types.compactions import CompactionStage, CompactionTrigger
 
 if TYPE_CHECKING:
     from octomate.models.messages import ModelMessage
@@ -60,11 +69,6 @@ class Compaction(Base, TransmuterProxiedMixin):
         default=lambda: datetime.now(UTC),
         comment="When Octomate recorded the completed transformation, distinct from its source time.",
     )
-    native_id: Mapped[str | None] = mapped_column(
-        String,
-        nullable=True,
-        comment="Native runtime owning the source identifiers; NULL for transformations without one.",
-    )
     native_session_id: Mapped[str | None] = mapped_column(
         String,
         nullable=True,
@@ -74,6 +78,13 @@ class Compaction(Base, TransmuterProxiedMixin):
         String,
         nullable=True,
         comment="Native transformation identifier, when the source supplies one.",
+    )
+    membership_complete: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+        comment="Whether before and after membership describe the complete effective context; false means unknown or partial.",
     )
     messages: Mapped[list[ModelMessage]] = relationship(
         "ModelMessage",
@@ -103,4 +114,51 @@ class ExternalCompaction(Compaction):
         Integer,
         nullable=True,
         comment="Exclusive byte offset of the transcript observation; NULL when unknown.",
+    )
+
+
+class CompactionMembership(Base, TransmuterProxiedMixin):
+    """One ordered message reference before or after a context transformation.
+
+    A retained message appears in both stages without changing its owner. A new
+    summary appears only after; a replaced message appears only before.
+    """
+
+    __tablename__ = "compaction_memberships"
+    __table_args__ = (
+        CheckConstraint(
+            "stage IN ('before', 'after')", name="ck_compaction_memberships_stage"
+        ),
+        CheckConstraint("position >= 0", name="ck_compaction_memberships_position"),
+        UniqueConstraint(
+            "compaction_id",
+            "stage",
+            "model_message_id",
+            name="uq_compaction_memberships_message",
+        ),
+    )
+
+    compaction_id: Mapped[UUID7] = mapped_column(
+        Uuid, ForeignKey("compactions.id", ondelete="CASCADE"), primary_key=True
+    )
+    stage: Mapped[CompactionStage] = mapped_column(
+        String,
+        primary_key=True,
+        comment="Before is the input context; after is the replacement context, including retained messages.",
+    )
+    position: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        comment="Zero-based message position within this stage; independent of message timestamps and IDs.",
+    )
+    model_message_id: Mapped[UUID7] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "model_messages.id",
+            name="fk_compaction_memberships_message",
+            ondelete="NO ACTION",
+        ),
+        nullable=False,
+        index=True,
+        comment="Referenced archive message; its run or compaction ownership is unchanged and deletion is blocked while referenced.",
     )

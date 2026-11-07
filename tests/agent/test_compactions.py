@@ -31,6 +31,105 @@ from octomate.types.compactions import CompactionTrigger
 from tests.support.managers import a_thread
 
 
+async def test_native_and_driven_observations_share_a_lock_across_conversations(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    manager = ConversationManager()
+    native = await manager.ensure(await a_thread("native"), agent_tentacle_id="codex")
+    driven = await manager.ensure(await a_thread("driven"), agent_tentacle_id="codex")
+    await manager.set_external_id(driven, "session")
+    await asyncio.gather(
+        *(
+            manager.record_driven_compaction(
+                driven,
+                native_session_id="session",
+                native_compaction_id="compaction",
+                trigger="manual",
+                happened_at=None,
+            )
+            if index % 2
+            else manager.record_external_compaction(
+                native,
+                native_session_id="session",
+                native_compaction_id="compaction",
+                source="rollout.jsonl",
+                start_offset=10,
+                end_offset=20,
+                happened_at=datetime(2026, 11, 6, tzinfo=UTC),
+                messages=[ModelRequest(parts=[UserPromptPart("Summary")])],
+            )
+            for index in range(10)
+        )
+    )
+    async with async_session() as session:
+        [stored] = await session.list(
+            Compaction, options=[selectinload(Compaction["messages"])]
+        )
+    assert stored.conversation_id == driven.id
+    assert stored.trigger == "manual"
+    assert [message.message_text for message in stored.messages] == ["Summary"]
+
+
+async def test_same_session_and_item_stay_distinct_for_different_agents(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    manager = ConversationManager()
+    owners = set()
+    for agent_id in ("codex", "another-codex"):
+        driven = await manager.ensure(
+            await a_thread(f"driven-{agent_id}"), agent_tentacle_id=agent_id
+        )
+        native = await manager.ensure(
+            await a_thread(f"native-{agent_id}"), agent_tentacle_id=agent_id
+        )
+        owners.add(driven.id)
+        await manager.set_external_id(driven, "shared-session")
+        await manager.record_external_compaction(
+            native,
+            native_session_id="shared-session",
+            native_compaction_id="shared-item",
+            source="rollout.jsonl",
+            start_offset=10,
+            end_offset=20,
+            happened_at=datetime(2026, 11, 6, tzinfo=UTC),
+            messages=[],
+        )
+        await manager.record_driven_compaction(
+            driven,
+            native_session_id="shared-session",
+            native_compaction_id="shared-item",
+            trigger="manual",
+            happened_at=None,
+        )
+    async with async_session() as session:
+        rows = await session.list(Compaction)
+    assert len(rows) == 2
+    assert {row.conversation_id for row in rows} == owners
+    assert all(row.trigger == "manual" for row in rows)
+
+
+async def test_distinct_compaction_ids_without_byte_offsets_keep_separate_records(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    manager = ConversationManager()
+    conversation = await manager.ensure(await a_thread(), agent_tentacle_id="deepseek")
+    for native_compaction_id in ("first", "second", "first", "second"):
+        await manager.record_external_compaction(
+            conversation,
+            native_session_id="session",
+            native_compaction_id=native_compaction_id,
+            source="history.jsonl",
+            start_offset=None,
+            end_offset=None,
+            happened_at=datetime(2026, 11, 6, tzinfo=UTC),
+            messages=[],
+        )
+    async with async_session() as session:
+        rows = await session.list(Compaction)
+    assert {row.native_compaction_id for row in rows} == {"first", "second"}
+    assert len(rows) == 2
+
+
 async def test_driven_compaction_accepts_later_content_without_replacing_identity(
     in_memory_engine: AsyncEngine,
 ) -> None:
@@ -38,7 +137,6 @@ async def test_driven_compaction_accepts_later_content_without_replacing_identit
     conversation = await manager.ensure(await a_thread(), agent_tentacle_id="agent")
     original = await manager.record_driven_compaction(
         conversation,
-        native_id="runtime",
         native_session_id="session",
         native_compaction_id="compact",
         trigger="manual",
@@ -50,7 +148,6 @@ async def test_driven_compaction_accepts_later_content_without_replacing_identit
         assert (
             await manager.record_driven_compaction(
                 conversation,
-                native_id="runtime",
                 native_session_id="session",
                 native_compaction_id="compact",
                 trigger="manual",
@@ -78,7 +175,6 @@ async def test_driven_compactions_are_deduplicated_by_native_session_and_item(
         *(
             manager.record_driven_compaction(
                 conversation,
-                native_id="codex",
                 native_session_id=session_id,
                 native_compaction_id="same-item",
                 trigger="manual",
@@ -113,7 +209,6 @@ async def test_compaction_variants_persist_without_model_runs(
     driven = Compaction(
         conversation_id=conversation.id,
         trigger=trigger,
-        native_id="codex",
         native_session_id="native-session",
         native_compaction_id="native-compaction",
         happened_at=instant,
@@ -144,7 +239,6 @@ async def test_compaction_variants_persist_without_model_runs(
         assert restored.model_dump() == stored.model_dump()
         assert stored.id.version == 7
         assert stored.recorded_at.tzinfo is UTC
-    assert by_id[owned.id].native_id is None
     assert by_id[owned.id].happened_at is None
     assert by_id[driven.id].happened_at == instant.astimezone(UTC)
     assert (await manager.get(conversation.id)).runs == []
@@ -167,7 +261,6 @@ async def test_unreported_external_provenance_stays_unknown(
     assert isinstance(stored, ExternalCompaction)
     assert stored.trigger == "unknown"
     assert stored.happened_at is None
-    assert stored.native_id is None
     assert stored.native_session_id is None
     assert stored.native_compaction_id is None
     assert stored.source is None
@@ -256,7 +349,6 @@ async def test_compaction_messages_preserve_content_and_the_run_archive(
     )
     compaction = compaction_type(
         conversation_id=conversation.id,
-        native_id="codex",
         messages=RelationCollection([summary, checkpoint]),
     )
     async with async_session() as session:

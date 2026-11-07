@@ -10,7 +10,7 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.database import async_session
 from octomate.schemas.compactions import Compaction, ExternalCompaction
-from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
+from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
 from octomate.types.compactions import CompactionTrigger
 from octomate.types.json import JsonObject
@@ -37,7 +37,9 @@ async def test_compaction_summary_never_becomes_a_prompt_or_run(
     child: bool,
 ) -> None:
     app = Octomate()
-    tailer = ClaudeTranscriptTailer(app.conversations, app.threads)
+    tailer = ClaudeTranscriptTailer(
+        app.conversations, app.threads, agent_tentacle_id="claude"
+    )
     boundary_id = str(uuid7())
     boundary = prompt_record("compact", "", 5)
     boundary.pop("message")
@@ -70,7 +72,6 @@ async def test_compaction_summary_never_becomes_a_prompt_or_run(
         await app.conversations.set_external_id(conversation, SESSION_ID)
         await app.conversations.record_driven_compaction(
             conversation,
-            native_id=CLAUDE_NATIVE_ID,
             native_session_id=SESSION_ID,
             native_compaction_id=boundary_id,
             trigger=trigger,
@@ -103,7 +104,6 @@ async def test_compaction_summary_never_becomes_a_prompt_or_run(
     original_ids = row.id, message.id
     await app.conversations.record_driven_compaction(
         await app.conversations.get(row.conversation_id),
-        native_id=CLAUDE_NATIVE_ID,
         native_session_id=SESSION_ID,
         native_compaction_id=boundary_id,
         trigger=trigger,
@@ -116,7 +116,7 @@ async def test_compaction_summary_never_becomes_a_prompt_or_run(
     assert (replayed.id, replayed.messages[0].id) == original_ids
     assert len(await runs_of(app)) == (0 if child else 2)
     thread = await a_loaded_thread(
-        app.threads, ThreadKey(CLAUDE_NATIVE_ID, "thread", SESSION_ID)
+        app.threads, ThreadKey("claude", "thread", SESSION_ID)
     )
     assert all(item.message_text != message.message_text for item in thread.messages)
     if child:
@@ -134,7 +134,9 @@ async def test_boundary_without_summary_still_persists_without_a_run(
     in_memory_engine: AsyncEngine,
 ) -> None:
     app = Octomate()
-    tailer = ClaudeTranscriptTailer(app.conversations, app.threads)
+    tailer = ClaudeTranscriptTailer(
+        app.conversations, app.threads, agent_tentacle_id="claude"
+    )
     boundary = prompt_record("compact", "", 1)
     boundary.update(
         type="system",

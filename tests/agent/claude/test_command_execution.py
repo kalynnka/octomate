@@ -79,7 +79,7 @@ async def native_messages(messages: list[JsonObject]) -> AsyncGenerator[Message]
 @pytest.mark.parametrize("anchor", ["messages", "segment", "missing", "partial"])
 async def test_driven_compaction_reads_its_summary_from_sdk_history(
     execution: tuple[
-        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
     ],
     streams: dict[str, list[JsonObject]],
     monkeypatch: pytest.MonkeyPatch,
@@ -331,7 +331,7 @@ async def test_direct_commands_persist_receipts_and_native_session_without_model
 @pytest.mark.parametrize("interrupted", [False, True])
 async def test_completed_compaction_survives_later_stream_failure(
     execution: tuple[
-        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
     ],
     streams: dict[str, list[JsonObject]],
     command: bool,

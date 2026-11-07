@@ -18,10 +18,13 @@ from pydantic_ai._utils import now_utc
 from uuid_utils.compat import uuid7
 
 from octomate.models.compactions import Compaction as CompactionModel
+from octomate.models.compactions import (
+    CompactionMembership as CompactionMembershipModel,
+)
 from octomate.models.compactions import ExternalCompaction as ExternalCompactionModel
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.messages import ModelRequest, ModelResponse
-from octomate.types.compactions import CompactionTrigger
+from octomate.types.compactions import CompactionStage, CompactionTrigger
 
 
 @sqlalchemy_materia.bless(CompactionModel)
@@ -51,10 +54,6 @@ class Compaction(BaseTransmuter):
         default_factory=now_utc,
         description="When Octomate recorded the completed transformation, distinct from its source time.",
     )
-    native_id: str | None = Field(
-        default=None,
-        description="Native runtime owning the source identifiers; None for transformations without one.",
-    )
     native_session_id: str | None = Field(
         default=None,
         description="Native session containing the transformation, when reported.",
@@ -62,6 +61,10 @@ class Compaction(BaseTransmuter):
     native_compaction_id: str | None = Field(
         default=None,
         description="Native transformation identifier, when the source supplies one.",
+    )
+    membership_complete: bool = Field(
+        default=False,
+        description="Whether before and after membership describe the complete effective context; False means unknown or partial.",
     )
     messages: RelationCollection[ModelRequest | ModelResponse] = Relationships(
         description="Messages created or rewritten by this compaction; retained messages keep their original owner.",
@@ -104,3 +107,22 @@ type CompactionVariant = Annotated[
     Compaction | ExternalCompaction, Field(discriminator="kind")
 ]
 CompactionAdapter = TypeAdapter(CompactionVariant)
+
+
+@sqlalchemy_materia.bless(CompactionMembershipModel)
+class CompactionMembership(BaseTransmuter):
+    """An ordered reference to a message, with no copy or ownership transfer."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    compaction_id: Annotated[UUID7, Identity]
+    stage: Annotated[CompactionStage, Identity] = Field(
+        description="Before is the input context; after is the replacement context, including retained messages.",
+    )
+    position: Annotated[int, Identity] = Field(
+        ge=0,
+        description="Zero-based message position within this stage; independent of message timestamps and IDs.",
+    )
+    model_message_id: UUID7 = Field(
+        description="Referenced archive message; its run or compaction ownership is unchanged and deletion is blocked while referenced.",
+    )

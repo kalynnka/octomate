@@ -49,7 +49,7 @@ from octomate.schemas.commands import (
 from octomate.schemas.compactions import Compaction
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest as StoredModelRequest
-from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadCommand
+from octomate.schemas.thread import ThreadCommand
 from octomate.schemas.triage import Claim
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.codex import CodexTentacle
@@ -981,7 +981,6 @@ async def test_compact_command_persists_completed_items_without_creating_a_run(
     compaction = rows[0]
     assert type(compaction) is Compaction
     assert compaction.conversation_id == conversation.id
-    assert compaction.native_id == CODEX_NATIVE_ID
     assert compaction.native_session_id == "existing"
     assert compaction.native_compaction_id == "manual-compaction"
     assert compaction.trigger == "manual"
