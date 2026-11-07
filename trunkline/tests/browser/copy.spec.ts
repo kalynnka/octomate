@@ -142,8 +142,9 @@ for (const width of [1280, 390]) {
       await expect(copyUser.getByRole('status')).toHaveText('Copied')
       const progress = page.locator('#pm-progress')
       await progress.hover()
-      await progress.getByRole('button', { name: 'Copy message', exact: true }).click()
-      await expect(page.locator('html')).toHaveAttribute('data-copied', '**Checking macOS setup**\nI am checking the admin permissions before continuing.')
+      await expect(progress.getByRole('button', { name: 'Copy message', exact: true })).toHaveCount(0)
+      await expect(progress.locator('.trk-message-actions')).toHaveCount(0)
+      await expect(page.locator('#pm-claude-reply .trk-message-actions')).toHaveCount(0)
       const agent = page.locator('#pm-copy-agent')
       await agent.hover()
       await agent.getByRole('button', { name: 'Copy message', exact: true }).click()
@@ -152,7 +153,7 @@ for (const width of [1280, 390]) {
       await stream.hover()
       await stream.getByRole('button', { name: 'Copy message', exact: true }).click()
       await expect(page.locator('html')).toHaveAttribute('data-copied', 'A **native** reply with `code`.')
-      for (const row of [user, progress, agent, stream]) {
+      for (const row of [user, agent, stream]) {
         const button = row.getByRole('button', { name: 'Copy message', exact: true })
         const position = await button.evaluate(el => {
           const actions = el.parentElement!
@@ -162,26 +163,28 @@ for (const width of [1280, 390]) {
           return {
             bottom: actions === actions.parentElement!.lastElementChild,
             below: box.top >= body.bottom,
-            bottomGap: Math.abs(box.bottom - body.bottom),
-            rightGap: (box.left - body.right) / (box.width / Number.parseFloat(getComputedStyle(el).width)),
+            topGap: (box.top - body.bottom) / (box.height / Number.parseFloat(getComputedStyle(el).height)),
+            leftGap: Math.abs(box.left - body.left),
+            rowHeight: getComputedStyle(actions).height,
             square: Math.abs(box.width - box.height),
             centerX: Math.abs(icon.x + icon.width / 2 - box.x - box.width / 2),
             centerY: Math.abs(icon.y + icon.height / 2 - box.y - box.height / 2),
           }
         })
         expect(position.bottom).toBe(true)
-        if (row === user) expect(position.below).toBe(true)
-        else {
-          expect(position.bottomGap).toBeLessThan(1)
-          expect(position.rightGap).toBeCloseTo(8, 0)
+        expect(position.below).toBe(true)
+        if (row !== user) {
+          expect(position.topGap).toBeCloseTo(6, 0)
+          expect(position.leftGap).toBeLessThan(1)
+          expect(position.rowHeight).toBe('26px')
         }
         expect(position.square).toBeLessThan(1)
         expect(position.centerX).toBeLessThan(1)
         expect(position.centerY).toBeLessThan(1)
       }
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
-      await user.hover()
-      await page.screenshot({ path: `/private/tmp/inky-copy-message-${width}.png` })
+      await agent.hover()
+      await agent.screenshot({ path: `/private/tmp/inky-copy-message-${width}.png` })
       expect(errors).toEqual([])
     })
   })

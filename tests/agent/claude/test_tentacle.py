@@ -47,7 +47,7 @@ from octomate.managers.workspaces.base import ChatWorkspace, Workspace
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision, TeleportDecision
 from octomate.telemetry import TraceEnvironment
-from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import base as claude_base
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
@@ -142,10 +142,9 @@ def _tentacle(
     conversations: FakeConversationManager,
     *,
     config: ClaudeCodeConfig | None = None,
-) -> ClaudeCodeTentacle:
+) -> ClaudeTentacle:
     host = Octomate(conversations=conversations)
-    return ClaudeCodeTentacle(
-        "claude",
+    return ClaudeTentacle(
         host,
         config=config or ClaudeCodeConfig(),
         commands=host.commands,
@@ -279,7 +278,7 @@ async def test_prompt_hook_identity_is_retained_on_the_driven_run(
     )
     fake, _label, _messages = conversations.runs[0]
     [run] = fake.runs
-    assert run.native_id == "claude-native"
+    assert fake.agent_tentacle_id == "claude"
     assert run.native_session_id == "sess-xyz"
     assert run.native_turn_id == "native-prompt-id"
 
@@ -797,7 +796,7 @@ class GatedClaudeClient(FakeClaudeClient):
         )
 
 
-async def _drive(tentacle: ClaudeCodeTentacle, prompt: str) -> None:
+async def _drive(tentacle: ClaudeTentacle, prompt: str) -> None:
     async with tentacle.run_stream_events(
         prompt, conversation_address=KEY, thread_id=_THREAD
     ) as stream:

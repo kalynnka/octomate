@@ -15,6 +15,7 @@ from uuid_utils.compat import uuid7
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.config import ChannelConfig
 from octomate.config.agents import AgentRouteModelName
+from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import (
     GatewayManager,
     GatewayRefusal,
@@ -36,7 +37,6 @@ from octomate.schemas.triage import (
 )
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import ChannelSurfaces
-from octomate.types.threads import CLAUDE_NATIVE_ID, CODEX_NATIVE_ID
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.users import a_user
@@ -246,7 +246,7 @@ async def test_a_native_session_cannot_be_summoned() -> None:
     route = AgentRoute(agent_id="claude", model="test", claim=CLAUDE_CLAIM)
     session = OctomateSession(
         channel_routes={"far": [route]},
-        current_agent_id=CODEX_NATIVE_ID,
+        current_agent_id="codex",
         native=True,
         channels={"far": FakeChannelTentacle("far")},
         user_profile=UserProfile(channel_tentacle_id="far", channel_user_id="alice"),
@@ -1217,13 +1217,14 @@ async def test_a_native_call_binds_only_a_session_its_caller_wrote(
     owner = await a_user("luhui")
     users = UserManager()
     threads = ThreadManager(nerve=Nerve(), users=users)
-    profile = await users.native_profile(CLAUDE_NATIVE_ID, "luhui")
+    profile = await users.native_profile("claude", "luhui")
     assert profile is not None
-    written = await threads.ensure(ThreadKey(CLAUDE_NATIVE_ID, "thread", "sess-1"))
-    await threads.ensure(ThreadKey(CLAUDE_NATIVE_ID, "thread", "sess-2"))
+    written = await threads.ensure(ThreadKey("claude", "thread", "sess-1"), native=True)
+    await ConversationManager().ensure(written.id, agent_tentacle_id="coding")
+    await threads.ensure(ThreadKey("claude", "thread", "sess-2"), native=True)
     await threads.record_outbound(
         written,
-        agent_tentacle_id=CLAUDE_NATIVE_ID,
+        agent_tentacle_id="claude",
         segments=[TextSegment(data={"text": "native history"})],
         sender=UserProfile(
             channel_user_id=owner.username, user_id=owner.id, name=owner.name
@@ -1231,7 +1232,7 @@ async def test_a_native_call_binds_only_a_session_its_caller_wrote(
     )
     session = OctomateSession(
         channel_routes={},
-        current_agent_id=CLAUDE_NATIVE_ID,
+        current_agent_id="claude",
         users=users,
         user_profile=profile,
         native=True,
@@ -1245,7 +1246,8 @@ async def test_a_native_call_binds_only_a_session_its_caller_wrote(
     await session.attach_native_thread("sess-1")
 
     assert session.thread_id == written.id
+    assert session.current_agent_id == "coding"
     assert session.conversation_address == ChannelAddress(
-        CLAUDE_NATIVE_ID, "thread", "sess-1", profile.channel_user_id
+        "claude", "thread", "sess-1", profile.channel_user_id
     )
     assert session.teleport_unavailable is None

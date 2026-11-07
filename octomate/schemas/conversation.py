@@ -131,7 +131,8 @@ class Conversation(BaseTransmuter):
     agent_tentacle_id: str = Field(
         frozen=True,
         description=(
-            "The owning agent; with thread_id it is the conversation's identity."
+            "The owning configured agent; with thread_id it is the conversation's "
+            "identity."
         ),
     )
     subagent_id: str = Field(

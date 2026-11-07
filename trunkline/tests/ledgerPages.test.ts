@@ -116,9 +116,9 @@ test('binding an inbound row preserves its position in the saved conversation', 
   assert.equal(after.ledger.filter(item => item.uid === inbound.id).length, 1)
 })
 
-for (const [agent, bound] of [['codex-native', true], ['codex-native', false], ['deepseek-native', true], ['deepseek-native', false]] as const) {
+for (const [agent, bound] of [['coding', true], ['coding', false], ['deepseek', true], ['deepseek', false]] as const) {
   test(`${agent} question replies remain readable ${bound ? 'after binding' : 'before their run commits'}`, () => {
-    const deepseek = agent === 'deepseek-native'
+    const deepseek = agent === 'deepseek'
     const text = deepseek ? JSON.stringify({ kind: 'answer_to_pending_question', tool: 'ask_user_question', callId: 'native-q', answers: [{ id: 'inspect', selected: ['Yes'] }] }) : `<send_user_message_question_reply>\n${JSON.stringify([{
       questionItemId: JSON.stringify(['request_user_input_async', 'native-q', 0]), question: 'Inspect?', answer: 'Yes',
     }])}\n</send_user_message_question_reply>`
@@ -132,7 +132,7 @@ for (const [agent, bound] of [['codex-native', true], ['codex-native', false], [
       parts: [{ part_kind: 'user-prompt', content: text }], thread_messages: [replied],
     }
     const native = reads(bound ? [asked, reply] : [asked], bound ? [] : [replied], { model: null, unbound: null })
-    native.conversations = [{ ...conversation, agent_tentacle_id: agent }]
+    native.conversations = [{ ...conversation, agent_tentacle_id: agent, runs: conversation.runs.map(run => ({ ...run, kind: 'external' })) }]
     const ledger = liveThreadDetail(native).ledger
     const card = ledger.find(item => item.kind === 'ask')
     assert.equal(card?.kind === 'ask' && card.state, 'answered')
@@ -215,12 +215,12 @@ test('replayed model answers carry the reply reference from their bound channel 
   assert.deepEqual(item?.kind === 'agent' && item.reply, { who: 'Ada', text: 'fix the build' })
 })
 
-for (const [nativeId, label] of [['codex-native', 'Octomate(Codex)'], ['claude-native', 'Octomate(Claude)'], ['deepseek-native', 'Octomate(Dsh)']]) {
+for (const [agent, nativeId, label] of [['coding', 'codex', 'Octomate(Coding)'], ['claude', 'claude', 'Octomate(Claude)'], ['deepseek', 'deepseek', 'Octomate(Dsh)']]) {
   test(`${nativeId} labels native and imported replies by runtime, while keeping the uploading user's identity on prompts`, () => {
     const owner = { ...said('owner', '', 'human').sender!, name: 'test', channel_tentacle_id: nativeId }
     const outbound: ApiThreadMessage = {
       ...said('045', 'Native answer', 'human'), direction: 'outbound', actor_kind: 'agent',
-      agent_tentacle_id: nativeId, sender: owner, platform_message_id: 'native-answer',
+      agent_tentacle_id: agent, sender: owner, platform_message_id: 'native-answer',
     }
     const quoted = { ...said('060', 'Follow-up', 'human'), sender: owner, reply_id: 'native-answer' }
     const bound = { ...answer, thread_messages: [{ ...outbound, id: '046', platform_message_id: 'bound-answer' }] }
@@ -228,7 +228,7 @@ for (const [nativeId, label] of [['codex-native', 'Octomate(Codex)'], ['claude-n
     const native: ThreadReads = {
       ...reads([bound, bare], [outbound, quoted], { model: null, unbound: null }),
       thread: { ...thread, kind: 'native_thread', channel_tentacle_id: nativeId },
-      conversations: [{ ...conversation, agent_tentacle_id: nativeId }],
+      conversations: [{ ...conversation, agent_tentacle_id: agent }],
     }
     const imported = { ...native, thread }
     for (const source of [native, imported]) {
@@ -336,7 +336,7 @@ for (const text of ['Here is the chart.', '']) {
   })
 }
 
-for (const runtime of ['claude-native', 'codex-native', 'deepseek-native']) {
+for (const runtime of ['claude', 'codex', 'deepseek']) {
   test(`${runtime} preserves append order despite source clocks, including the pagination horizon`, () => {
     const native = { ...thread, kind: 'native_thread' as const, channel_tentacle_id: runtime, handoffs: [] }
     const earlier = { ...answer, id: '010', timestamp: '2026-10-09T11:00:00Z', parts: [{ part_kind: 'text' as const, content: 'Earlier' }] }

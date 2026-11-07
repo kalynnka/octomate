@@ -35,7 +35,7 @@ from octomate.managers.workspaces.base import thread_ref
 from octomate.managers.workspaces.mirrors import run_git
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread, ThreadKey
-from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import ink as codex_ink
@@ -75,9 +75,8 @@ async def a_thread(octomate: Octomate, chat_id: str, project: str = "") -> Threa
     )
 
 
-def a_claude(octomate: Octomate) -> ClaudeCodeTentacle:
-    return ClaudeCodeTentacle(
-        "claude",
+def a_claude(octomate: Octomate) -> ClaudeTentacle:
+    return ClaudeTentacle(
         octomate,
         config=ClaudeCodeConfig(),
         commands=octomate.commands,
@@ -109,7 +108,6 @@ async def claude_run(octomate: Octomate, thread: Thread) -> ClaudeAgentOptions:
 async def codex_run(octomate: Octomate, thread: Thread) -> str | None:
     """Drive one Codex run and answer with the cwd its thread was started in."""
     tentacle = CodexTentacle(
-        "codex",
         octomate,
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,

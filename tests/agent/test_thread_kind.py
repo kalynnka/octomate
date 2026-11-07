@@ -18,8 +18,6 @@ from octomate.managers import ThreadManager, UserManager
 from octomate.nerve import Nerve
 from octomate.schemas.project import Project
 from octomate.schemas.thread import (
-    CLAUDE_NATIVE_ID,
-    CODEX_NATIVE_ID,
     Thread,
     ThreadKey,
 )
@@ -29,8 +27,8 @@ SLACK_DM = ThreadKey("slack", "dm", "D1")
 SLACK_CHANNEL = ThreadKey("slack", "group", "C1")
 SLACK_THREAD = ThreadKey("slack", "thread", "C1", "1710000000.000001")
 LARK_SUB_THREAD = ThreadKey("lark", "thread", "oc_1", "omt_sub_1")
-CLAUDE_SESSION = ThreadKey(CLAUDE_NATIVE_ID, "thread", "sess-1")
-CODEX_SESSION = ThreadKey(CODEX_NATIVE_ID, "thread", "sess-2")
+CLAUDE_SESSION = ThreadKey("claude", "thread", "sess-1")
+CODEX_SESSION = ThreadKey("codex", "thread", "sess-2")
 
 
 @pytest.fixture(autouse=True)
@@ -50,11 +48,10 @@ async def inky(tmp_path: Path) -> Project:
 
 
 async def test_each_surface_is_recorded_as_what_it_is() -> None:
-    # A native thread's key has a DM's shape; only its tentacle separates them.
     manager = ThreadManager(nerve=Nerve(), users=UserManager())
 
     kinds = [
-        (await manager.ensure(key)).kind
+        (await manager.ensure(key, native=key in {CLAUDE_SESSION, CODEX_SESSION})).kind
         for key in (
             SLACK_DM,
             SLACK_CHANNEL,
@@ -84,6 +81,22 @@ async def test_the_kind_is_on_the_row_a_later_reader_loads() -> None:
     assert reloaded.kind == "dm"
 
 
+async def test_native_kind_is_explicit_and_survives_address_only_lookup() -> None:
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
+    key = ThreadKey("coding", "thread", "uploaded-session")
+    tailed = await manager.ensure(key, native=True)
+    reloaded = await manager.ensure(key)
+    assert reloaded.id == tailed.id
+    assert reloaded.kind == "native_thread"
+    assert reloaded.channel_tentacle_id == "coding"
+    ordinary = await manager.ensure(ThreadKey("codex", "thread", "ordinary-session"))
+    assert ordinary.kind == "thread"
+    with pytest.raises(ValueError, match="cannot claim an ordinary thread"):
+        await manager.ensure(ordinary.key, native=True)
+    with pytest.raises(ValueError, match="requires a thread address"):
+        await manager.ensure(ThreadKey("coding", "dm", "owner"), native=True)
+
+
 def test_a_row_that_contradicts_its_key_is_refused() -> None:
     """The key is the channel's fact and the row is our copy, so a copy that
     disagrees is corrupt rather than a second opinion."""
@@ -96,15 +109,13 @@ def test_a_row_that_contradicts_its_key_is_refused() -> None:
         )
 
 
-def test_a_native_row_cannot_call_itself_a_plain_thread() -> None:
-    """The slip the fourth kind exists to catch: a native thread and a Slack thread
-    share a `chat_type`, and only the tentacle tells them apart."""
-    with pytest.raises(ValidationError, match="is a native_thread"):
+def test_a_native_row_requires_a_thread_address() -> None:
+    with pytest.raises(ValidationError, match="calls itself a native_thread"):
         Thread(
-            channel_tentacle_id=CLAUDE_NATIVE_ID,
-            chat_type="thread",
+            channel_tentacle_id="claude",
+            chat_type="dm",
             chat_id="sess-1",
-            kind="thread",
+            kind="native_thread",
         )
 
 
@@ -156,8 +167,8 @@ async def test_a_native_thread_keeps_the_attribution_octo_31_gives_it(
     manager = ThreadManager(nerve=Nerve(), users=UserManager())
     project = await inky(tmp_path)
 
-    claude = await manager.ensure(CLAUDE_SESSION, project=project)
-    codex = await manager.ensure(CODEX_SESSION, project=project)
+    claude = await manager.ensure(CLAUDE_SESSION, project=project, native=True)
+    codex = await manager.ensure(CODEX_SESSION, project=project, native=True)
 
     assert [claude.project_id, codex.project_id] == [project.id, project.id]
 

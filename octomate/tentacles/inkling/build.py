@@ -1,9 +1,8 @@
 """Composing the configured inkling agent into its tentacle.
 
-The counterpart to `build_channel`, and it does more than dispatch because inkling is
-the one agent assembled rather than handed a config: its models come from the provider
-registry and its capability stack from its own config. That assembly is the thing
-worth having in one place — a launcher should ask for the tentacle, not know how one
+The counterpart to `build_channel`, and it does more than dispatch: inkling's models
+come from the provider registry and its capability stack from its own config. That
+assembly is worth having in one place — a launcher should ask for the tentacle, not know how one
 is made. The providers — Slack, Linear, a vendor's server — reach it per run, from
 the host's tentacles, not from here.
 
@@ -129,6 +128,7 @@ def build_inkling(
         permission_mode=config.permission_mode,
         request_limit=config.request_limit,
         gateway=config.gateway,
+        config=config,
         capabilities=capabilities,
         system_prompt=SYSTEM_PROMPT,
     )

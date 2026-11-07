@@ -490,7 +490,6 @@ class MyAgentTentacle(AgentTentacle[str, None]):
     """Drives My Runtime, one process per conversation."""
 
     brand_color: ClassVar[Style | None] = Style(color="#abcdef", bold=True)
-    native_id: ClassVar[str | None] = None  # set when it serves a hook router
     in_process: ClassVar[bool] = False  # true if a live run parks on a human answer
     description: str = "What this agent is for, shown to summoning agents."
 
@@ -554,15 +553,19 @@ onto a new channel thread; it shares the lifecycle used for native-history forks
 ## Native ingest
 
 A runtime people also run by hand gets a hook router and a transcript stream.
-Declare `native_id`, return the router from `routers()`, guard it with
-`hook_guard` for the `hooks` scope and `hook_sender` to attribute rows, and write a
-tailer that assembles turns from the streamed lines, committing each as an
+Return the router from `routers()`, guard it with `hook_guard` for the `hooks`
+scope and pass `self.id` to `hook_sender` to attribute rows. Write a tailer that
+assembles turns from the streamed lines, committing each as an
 `ExternalAgentRun` with its source range (byte offsets or event sequence numbers)
 so a reconnect resumes after the last committed turn. Keep the runtime's
 transcript read-only.
 Add the matching installer under `cli/octomate_cli/tentacles/<runtime>/`, which
 must stay importable without the server package. The three existing tailers show
 three different transcript shapes.
+
+Use the same configured agent ID for driven and ingested sessions. Create ingested
+threads with [`ThreadManager.ensure(..., native=True)`](../api/managers/conversations.md#octomate.managers.thread.ThreadManager.ensure)
+to preserve the tailed marker independently of that ID.
 
 Claude and Codex hooks reserve empty runs; the transcript owns messages and their ledger
 bindings. Preserve order within each transcript independently of receipt time or
@@ -579,7 +582,7 @@ native address in the tentacle and keep its publisher open for the connection:
 
 ```python
 address = ChannelAddress(
-    channel_tentacle_id=self.native_id,
+    channel_tentacle_id=self.id,
     chat_type="thread",
     chat_id=hello.session_id,
     user_id=sender.channel_user_id,
@@ -611,8 +614,9 @@ the destination, and the import must still validate the history it consumes.
 
 Add the config model to `TentacleConfigVariant` in `octomate/config/tentacles.py`,
 inheriting `AgentConfig` so `enabled` and `gateway` behave, and a case to the
-`match` in `octomate/app.py`. The loader enforces one block per agent type with
-fixed routes. Outbound ACP harnesses mount no routes and may repeat.
+`match` in `octomate/app.py`. Claude, Codex, and DeepSeek use their type as their
+tentacle ID. The loader enforces one block per agent type with fixed routes.
+Outbound ACP harnesses mount no routes and may repeat.
 
 ## Tests
 

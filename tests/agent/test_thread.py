@@ -22,7 +22,6 @@ from octomate.models.thread import ThreadMessage as ThreadMessageModel
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import (
-    CODEX_NATIVE_ID,
     Handoff,
     MessageBinding,
     Thread,
@@ -38,7 +37,7 @@ from octomate.schemas.user import UserProfile
         ThreadKey("slack", "dm", "alice"),
         ThreadKey("slack", "group", "room"),
         ThreadKey("slack", "thread", "room", "topic"),
-        ThreadKey(CODEX_NATIVE_ID, "thread", "session"),
+        ThreadKey("codex", "thread", "session"),
     ],
 )
 async def test_active_agent_uses_latest_root_conversation_or_handoff(
@@ -49,7 +48,7 @@ async def test_active_agent_uses_latest_root_conversation_or_handoff(
         chat_type=key.chat_type,
         chat_id=key.chat_id,
         channel_thread_id=key.channel_thread_id,
-        kind=key.kind,
+        kind=key.chat_type,
     )
     assert thread.active_agent_tentacle_id is None
     older = Conversation(thread_id=thread.id, agent_tentacle_id="codex")

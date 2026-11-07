@@ -42,7 +42,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadCommand
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.types.json import JsonObject
@@ -86,7 +86,7 @@ async def execution(
     in_memory_engine: AsyncEngine,
     fixture: JsonObject,
 ) -> AsyncGenerator[
-    tuple[ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]]
+    tuple[ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]]
 ]:
     client = AsyncMock()
     client.__aenter__.return_value = client
@@ -106,8 +106,7 @@ async def execution(
         )
     )
     agent = app.connect(
-        ClaudeCodeTentacle(
-            "claude",
+        ClaudeTentacle(
             app,
             config=ClaudeCodeConfig(),
             commands=app.commands,
@@ -165,7 +164,7 @@ async def execution(
 )
 async def test_direct_commands_persist_receipts_and_native_session_without_model_runs(
     execution: tuple[
-        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
     ],
     streams: dict[str, list[JsonObject]],
     command: str,
@@ -224,7 +223,7 @@ async def test_direct_commands_persist_receipts_and_native_session_without_model
 @pytest.mark.parametrize("saved", [False, True])
 async def test_runs_apply_saved_effort(
     execution: tuple[
-        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
     ],
     streams: dict[str, list[JsonObject]],
     command: bool,
@@ -257,7 +256,7 @@ async def test_runs_apply_saved_effort(
 @pytest.mark.parametrize("arguments", ["", '  "raw $HOME"\n--detail=✓  '])
 async def test_model_command_preserves_arguments_context_stream_and_history(
     execution: tuple[
-        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
     ],
     streams: dict[str, list[JsonObject]],
     resumed: bool,
@@ -326,7 +325,7 @@ async def test_model_command_preserves_arguments_context_stream_and_history(
 )
 async def test_unknown_or_changed_commands_never_reach_query(
     execution: tuple[
-        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
     ],
     change: str,
 ) -> None:
@@ -373,7 +372,7 @@ async def test_unknown_or_changed_commands_never_reach_query(
 @pytest.mark.parametrize("consume", [False, True])
 async def test_abandoned_stream_closes_the_already_started_sdk_client(
     execution: tuple[
-        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
     ],
     streams: dict[str, list[JsonObject]],
     consume: bool,
@@ -407,7 +406,7 @@ async def test_abandoned_stream_closes_the_already_started_sdk_client(
 
 async def test_cancelling_before_first_model_event_closes_client(
     execution: tuple[
-        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
     ],
 ) -> None:
     agent, context, client, _ = execution
@@ -450,7 +449,7 @@ async def test_cancelling_before_first_model_event_closes_client(
 @pytest.mark.parametrize("model_run", [False, True])
 async def test_native_error_results_fail_receipts_and_keep_actual_model_history(
     execution: tuple[
-        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
     ],
     streams: dict[str, list[JsonObject]],
     model_run: bool,
@@ -496,7 +495,7 @@ async def test_native_error_results_fail_receipts_and_keep_actual_model_history(
 
 async def test_missing_terminal_result_never_reports_success(
     execution: tuple[
-        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
     ],
     streams: dict[str, list[JsonObject]],
 ) -> None:
@@ -525,7 +524,7 @@ async def test_missing_terminal_result_never_reports_success(
 @pytest.mark.parametrize("mode", ["plan", None])
 async def test_permission_updates_reach_live_client_and_next_run(
     execution: tuple[
-        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
     ],
     streams: dict[str, list[JsonObject]],
     mode: str | None,
@@ -568,7 +567,7 @@ async def test_permission_updates_reach_live_client_and_next_run(
 
 async def test_rejected_live_permission_update_does_not_save_the_selection(
     execution: tuple[
-        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
     ],
     streams: dict[str, list[JsonObject]],
 ) -> None:
@@ -598,7 +597,7 @@ async def test_rejected_live_permission_update_does_not_save_the_selection(
 
 async def test_permission_selection_validates_owner_and_mode_before_runtime_access(
     execution: tuple[
-        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
     ],
 ) -> None:
     agent, context, client, _ = execution

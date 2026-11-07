@@ -4,6 +4,7 @@
  * "SIDEBAR: THREADS × CHANNELS" aside.
  */
 import { useEffect, useRef, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { Disclose, Fold } from '@/components/Fold'
 import { Icon } from '@/components/Icon'
 import { ThreadActivity } from '@/components/ThreadActivity'
@@ -12,18 +13,12 @@ import { display, ellipsis, label, mono } from '@/components/text'
 import { useChannels, useThreads } from '@/lib/api/hooks'
 import type { ThreadSummary } from '@/lib/api/types'
 import { channelMeta } from '@/lib/api/live'
-import type { ThreadTone } from '@/lib/api/types'
 import { useRailDrag } from '@/lib/useRailDrag'
 import { useConsole } from '@/state/console'
+import { useActivity } from '@/state/activity'
 
 // How many of a channel's threads are rendered before the rail asks for more.
 const THREAD_PAGE = 12
-
-const toneColor: Record<ThreadTone, string> = {
-  active: 'var(--color-accent)',
-  idle: 'var(--fg-3)',
-  native: 'var(--color-teal)',
-}
 
 interface ThreadRow {
   /** the row's own id — unique, and what React keys on */
@@ -32,9 +27,10 @@ interface ThreadRow {
   /** the short chip shown under the title */
   tag: string
   title: string
-  stColor: string
   agent: string
+  native: boolean
   on: boolean
+  running: boolean
   pick?: () => void
 }
 
@@ -58,6 +54,8 @@ export function ThreadsSidebar() {
   const focusId = useConsole((s) => s.channelFocusHistory.at(-1))
   const chPins = useConsole((s) => s.chPins)
   const selThreadId = useConsole((s) => s.selThreadId)
+  const currentRunning = useConsole((s) => s.running)
+  const activeKeys = new Set(useActivity(useShallow(state => Object.keys(state).filter(key => state[key] !== undefined))))
   const ntOn = useConsole((s) => s.ntOn)
   const ntStarted = useConsole((s) => s.ntStarted)
   const ntTitle = useConsole((s) => s.ntTitle)
@@ -102,7 +100,10 @@ export function ThreadsSidebar() {
     if (pa >= 0 || pb >= 0) return pa >= 0 ? -1 : 1
     return channels.indexOf(a) - channels.indexOf(b)
   })
-  const threadOrder = orderedCh.flatMap((c) => threadsByCh[c.id] ?? [])
+  const isRunning = (thread: ThreadSummary) => activeKeys.has(`id:${thread.id}`)
+    || (thread.channelId === 'trunkline' && thread.key !== '' && activeKeys.has(`key:${thread.key}`))
+    || (currentRunning && (thread.id === selThreadId || (thread.key !== '' && thread.key === selThreadId)))
+  const threadOrder = orderedCh.flatMap(c => [...(threadsByCh[c.id] ?? [])].sort((a, b) => Number(isRunning(b)) - Number(isRunning(a))))
   const currentThreadIndex = threadOrder.findIndex((t) => t.id === selThreadId || (t.key !== '' && t.key === selThreadId))
   const threadTotal = Object.values(threadsByCh).flat().length
 
@@ -315,9 +316,10 @@ export function ThreadsSidebar() {
                       threadKey: selThreadId,
                       tag: ntStarted ? selThreadId : 'THR-NEW',
                       title: ntTitle || 'untitled — new thread',
-                      stColor: 'var(--color-gold)',
                       agent: `${ntAgent} · ${ntModel}`,
+                      native: false,
                       on: true,
+                      running: currentRunning || activeKeys.has(`key:${selThreadId}`),
                     },
                   ]
                 : []),
@@ -326,12 +328,14 @@ export function ThreadsSidebar() {
                 threadKey: c.id === 'trunkline' ? t.key : undefined,
                 tag: t.tag ?? t.id,
                 title: t.title,
-                stColor: toneColor[t.tone],
                 agent: t.agentLabel,
+                native: t.tone === 'native',
                 on: selected(t),
+                running: isRunning(t),
                 pick: () => selectThread(c.id, t.id, threadOrder.findIndex((row) => row.id === t.id) < currentThreadIndex ? 'up' : 'down'),
               })),
-            ]
+            ].sort((a, b) => Number(b.running) - Number(a.running))
+            const visibleCount = Math.max(shown[c.id] ?? THREAD_PAGE, rows.filter(row => row.running).length)
             return (
               <div
                 key={c.id}
@@ -482,10 +486,11 @@ export function ThreadsSidebar() {
                         reveal(c.id, rows.length)
                       }}
                     >
-                    {rows.slice(0, shown[c.id] ?? THREAD_PAGE).map((t) => (
+                    {rows.slice(0, visibleCount).map((t) => (
                       <div key={t.id} className={t.id === 'THR-NEW' ? 'trk-thread-enter' : undefined}>
                       <div style={{ overflow: 'hidden' }}>
                       <button type="button" aria-current={t.on ? 'page' : undefined} disabled={!t.pick}
+                        data-thread-id={t.id} data-running={t.running ? '' : undefined}
                         onClick={t.pick}
                         className="hov-wash trk-nav-button trk-thread-pick"
                         style={{ position: 'relative', padding: 'var(--trk-th-pad, 7px 14px)', cursor: 'pointer' }}
@@ -516,15 +521,17 @@ export function ThreadsSidebar() {
                           style={{ display: 'flex', alignItems: 'center', gap: 7, position: 'relative' }}
                         >
                           <i
+                            className="trk-thread-dot"
                             style={{
                               width: 5,
                               height: 5,
                               borderRadius: 9999,
-                              background: t.stColor,
+                              background: 'var(--trk-thread-running)',
+                              visibility: t.running ? 'visible' : 'hidden',
                               flexShrink: 0,
                             }}
                           />
-                          <span style={{ fontSize: 12, color: 'var(--trk-thread-title-fg)', ...ellipsis, flex: 1 }}>
+                          <span className="trk-thread-title" style={{ fontSize: 12, ...ellipsis, flex: 1 }}>
                             <TextSwap style={{ ...ellipsis }}>{t.title}</TextSwap>
                           </span>
                         </div>
@@ -541,19 +548,27 @@ export function ThreadsSidebar() {
                           <span style={{ ...mono(8.5, 700), color: c.brand, whiteSpace: 'nowrap', flexShrink: 0 }}>
                             <TextSwap>{t.tag}</TextSwap>
                           </span>
+                          <span
+                            data-thread-origin={t.native ? 'native' : 'driven'}
+                            aria-label={t.native ? 'Native thread' : 'Driven thread'}
+                            title={t.native ? 'Native thread · tailed from the agent' : 'Driven thread · run by Octomate'}
+                            style={{ ...mono(7.5, 700), color: t.native ? 'var(--info-strong)' : 'var(--fg-3)', border: '1px solid var(--line-color)', padding: '0 2px', lineHeight: '12px', flexShrink: 0 }}
+                          >
+                            {t.native ? 'N' : 'D'}
+                          </span>
                           <ThreadActivity id={t.id} threadKey={t.threadKey} enabled={!folded} fallback={t.agent} />
                         </div>
                       </button>
                       </div>
                       </div>
                     ))}
-                    {rows.length > (shown[c.id] ?? THREAD_PAGE) && (
+                    {rows.length > visibleCount && (
                       <button type="button"
                         onClick={() => reveal(c.id, rows.length)}
                         className="hov-wash trk-nav-button trk-thread-pick"
                         style={{ padding: '6px 14px 8px', ...label(7.5, '.14em'), color: 'var(--fg-3)', cursor: 'pointer' }}
                       >
-                        <TextSwap>{`↓ ${rows.length - (shown[c.id] ?? THREAD_PAGE)} more`}</TextSwap>
+                        <TextSwap>{`↓ ${rows.length - visibleCount} more`}</TextSwap>
                       </button>
                     )}
                     </div>

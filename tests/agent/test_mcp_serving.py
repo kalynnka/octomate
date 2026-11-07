@@ -55,7 +55,6 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.triage import SchemeDecision
 from octomate.tentacles.mcp import OAuthMcpTentacle
-from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle, FakeOctomate
 from tests.support.users import a_api_key, a_user, auth_config
@@ -398,6 +397,7 @@ async def a_native_deployment() -> FakeOctomate:
         ),
     )
     octomate.connect(FakeAgent(id="other"))
+    octomate.connect(FakeAgent(id="claude"))
     octomate.connect(
         FakeChannelTentacle(
             octomate=octomate,
@@ -410,16 +410,40 @@ async def a_native_deployment() -> FakeOctomate:
     return octomate
 
 
-NATIVE = {CLIENT_HEADER: CLAUDE_NATIVE_ID}
+NATIVE = {CLIENT_HEADER: "claude"}
 USER_BEARER = {"Authorization": "Bearer luhui-token"}
 
 
-async def test_a_client_header_naming_no_native_runtime_is_refused() -> None:
+@pytest.mark.parametrize("agent_tentacle_id", ["claude", "codex", "deepseek"])
+async def test_native_client_resolves_the_named_agent_and_profile(
+    agent_tentacle_id: str,
+) -> None:
+    await a_user("owner")
+    host = Octomate()
+    for agent_id in ("claude", "codex", "deepseek"):
+        host.connect(FakeAgent(id=agent_id))
+    session = await native_session(host, agent_tentacle_id, "owner")
+    assert session.current_agent_id == agent_tentacle_id
+    assert session.user_profile is not None
+    assert session.user_profile.channel_tentacle_id == agent_tentacle_id
+
+
+async def test_native_client_requires_a_configured_owner() -> None:
+    await a_user("owner")
+    host = Octomate()
+    with pytest.raises(ToolError, match="names no configured agent"):
+        await native_session(host, "claude", "owner")
+
+
+@pytest.mark.parametrize("client_id", ["missing", "claude-native"])
+async def test_a_client_header_naming_no_configured_agent_is_refused(
+    client_id: str,
+) -> None:
     async with served(await a_native_deployment()) as (octomate, app):
         async with over(
-            octomate, app, {**USER_BEARER, CLIENT_HEADER: "emacs-native"}
+            octomate, app, {**USER_BEARER, CLIENT_HEADER: client_id}
         ) as client:
-            with pytest.raises(ToolError, match="names no native runtime"):
+            with pytest.raises(ToolError, match="names no configured agent"):
                 await client.call_tool("gateway_inspect", {"reveal": "routes"})
 
 
@@ -456,7 +480,7 @@ async def test_a_native_scheme_kicks_exactly_one_handoff() -> None:
     assert isinstance(octomate, FakeOctomate)
     [signal] = octomate.kicks
     assert isinstance(signal, NativeGatewaySignal)
-    assert signal.agent_id == CLAUDE_NATIVE_ID
+    assert signal.agent_id == "claude"
     # The handoff carries who the bearer named, so the run it starts knows whose
     # behalf it was asked on.
     assert signal.user_profile is not None
@@ -493,7 +517,7 @@ async def test_native_summon_resolves_the_session_once_on_the_http_call(
                     },
                 },
             )
-    resolve.assert_awaited_once_with(octomate, CLAUDE_NATIVE_ID, "luhui")
+    resolve.assert_awaited_once_with(octomate, "claude", "luhui")
     assert result.structured_content is not None
     opened = TypeAdapter(ChannelAddress).validate_python(
         result.structured_content["result"]

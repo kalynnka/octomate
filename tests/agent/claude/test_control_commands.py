@@ -17,7 +17,7 @@ from octomate.schemas.commands import (
     CommandResult,
 )
 from octomate.schemas.thread import ThreadCommand
-from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude.transcript import transcripts_dir
 from octomate.types.json import JsonObject
 from tests.agent.claude.test_command_execution import (
@@ -35,7 +35,7 @@ from tests.agent.claude.test_command_execution import (
 
 
 async def deliver(
-    agent: ClaudeCodeTentacle,
+    agent: ClaudeTentacle,
     context: CommandContext,
     command: str,
     arguments: str = "",
@@ -58,7 +58,7 @@ async def deliver(
 )
 async def test_plan_updates_live_permissions_and_persists_for_next_run(
     execution: tuple[
-        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
     ],
     streams: dict[str, list[JsonObject]],
     argument: str,
@@ -106,7 +106,7 @@ async def test_plan_updates_live_permissions_and_persists_for_next_run(
 )
 async def test_controls_reject_invalid_input_without_starting_a_run(
     execution: tuple[
-        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
     ],
     command: str,
     argument: str,
@@ -126,7 +126,7 @@ async def test_controls_reject_invalid_input_without_starting_a_run(
 
 async def test_fork_copies_sdk_transcript_and_resumes_from_destination(
     execution: tuple[
-        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
     ],
     streams: dict[str, list[JsonObject]],
     monkeypatch: pytest.MonkeyPatch,

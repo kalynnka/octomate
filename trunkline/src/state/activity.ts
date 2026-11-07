@@ -1,6 +1,5 @@
 import { useEffect } from 'react'
 import { create } from 'zustand'
-import { watchThread } from '@/lib/api/client'
 import type { WireEvent } from '@/lib/api/events'
 
 interface Activity {
@@ -9,7 +8,64 @@ interface Activity {
 }
 
 export const useActivity = create<Record<string, Activity | undefined>>(() => ({}))
-const observers = new Map<string, { readers: number; stop: () => void }>()
+interface ActivityUpdate {
+  key: string
+  event: Extract<WireEvent, { event_kind: 'run_activity_changed' | 'reflex_phase_changed' | 'run_ended' }>
+  attention: boolean
+}
+
+const observers = new Map<string, { readers: number; receive: (update: ActivityUpdate) => void; stop: () => void }>()
+let socket: WebSocket | undefined
+let opened = false
+let retry: ReturnType<typeof setTimeout> | undefined
+let pending = false
+
+/** Batch effect handoffs and change the watched set without reconnecting. */
+function syncActivity() {
+  if (pending) return
+  pending = true
+  queueMicrotask(() => {
+    pending = false
+    if (!observers.size) {
+      clearTimeout(retry)
+      retry = undefined
+      const closing = socket
+      socket = undefined
+      opened = false
+      closing?.close()
+      return
+    }
+    if (!socket && !retry) {
+      const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
+      const current = new WebSocket(`${scheme}://${location.host}/api/trunkline/live/activity`)
+      socket = current
+      current.onopen = () => {
+        if (socket !== current) return
+        opened = true
+        syncActivity()
+      }
+      current.onmessage = message => {
+        if (socket !== current) return
+        const update = JSON.parse(String(message.data)) as ActivityUpdate
+        observers.get(update.key)?.receive(update)
+      }
+      current.onerror = () => current.close()
+      current.onclose = event => {
+        if (socket !== current) return
+        socket = undefined
+        opened = false
+        if (observers.size && event.code !== 1008) retry = setTimeout(() => {
+          retry = undefined
+          syncActivity()
+        }, 2_000)
+      }
+    }
+    if (opened) socket?.send(JSON.stringify({
+      thread_ids: [...observers.keys()].filter(key => key.startsWith('id:')).map(key => key.slice(3)),
+      thread_keys: [...observers.keys()].filter(key => key.startsWith('key:')).map(key => key.slice(4)),
+    }))
+  })
+}
 
 /** Use the channel status wording without trailing ellipses, tool arguments, or thoughts. */
 export function activityText(event: WireEvent): string | undefined {
@@ -43,16 +99,13 @@ export function activityText(event: WireEvent): string | undefined {
   }
 }
 
-/** One shared presentation subscription per displayed thread; never changes run ownership. */
+/** All displayed threads share one status-only socket; never changes run ownership. */
 export function observeActivity(id: string, byKey = false): () => void {
   const key = `${byKey ? 'key' : 'id'}:${id}`
   let observer = observers.get(key)
   if (!observer) {
     let stopped = false
-    let generation = 0
-    let controller: AbortController
     let expiry: ReturnType<typeof setTimeout> | undefined
-    let retry: ReturnType<typeof setTimeout> | undefined
     const clear = () => {
       clearTimeout(expiry)
       expiry = undefined
@@ -62,47 +115,28 @@ export function observeActivity(id: string, byKey = false): () => void {
         return next
       }, true)
     }
-    const connect = async () => {
-      const current = ++generation
-      controller = new AbortController()
-      try {
-        const socket = await watchThread(byKey ? { key: id } : { id }, event => {
-          if (stopped || current !== generation) return
-          const text = activityText(event)
-          if (text === '') return clear()
-          const heartbeat = event.event_kind === 'part_end' || event.event_kind === 'function_tool_result' || event.event_kind === 'output_tool_result'
-          if (text === undefined && (!heartbeat || !useActivity.getState()[key])) return
-          if (text !== undefined) {
-            const attention = event.event_kind === 'action_batch'
-            const previous = useActivity.getState()[key]
-            if (text !== previous?.text || attention !== previous?.attention) useActivity.setState({ [key]: { text, attention } })
-          }
-          clearTimeout(expiry)
-          const timer = setTimeout(() => {
-            if (!stopped && expiry === timer) clear()
-          }, 120_000)
-          expiry = timer
-        }, controller.signal)
-        await socket.closed
-      } catch {
-        // A failed handshake reconnects like a closed socket; labels still expire.
-      }
-      if (!stopped && current === generation) {
-        generation++
-        retry = setTimeout(() => void connect(), 2_000)
-      }
-    }
     observer = {
       readers: 0,
+      receive: ({ event, attention }) => {
+        if (stopped) return
+        const text = activityText(event)
+        if (text === '') return clear()
+        if (text === undefined) return
+        const previous = useActivity.getState()[key]
+        if (text !== previous?.text || attention !== previous?.attention) useActivity.setState({ [key]: { text, attention } })
+        clearTimeout(expiry)
+        const timer = setTimeout(() => {
+          if (!stopped && expiry === timer) clear()
+        }, 120_000)
+        expiry = timer
+      },
       stop: () => {
         stopped = true
-        clearTimeout(retry)
-        controller.abort()
         clear()
       },
     }
     observers.set(key, observer)
-    void connect()
+    syncActivity()
   }
   observer.readers++
   const active = observer
@@ -111,8 +145,13 @@ export function observeActivity(id: string, byKey = false): () => void {
     if (released) return
     released = true
     if (--active.readers) return
-    active.stop()
-    observers.delete(key)
+    // React can replay effects when a keyed row moves; keep its live status through that handoff.
+    queueMicrotask(() => {
+      if (active.readers) return
+      active.stop()
+      observers.delete(key)
+      syncActivity()
+    })
   }
 }
 
@@ -126,4 +165,5 @@ export function useThreadActivity(id: string, threadKey?: string, enabled = true
 import.meta.hot?.dispose(() => {
   for (const observer of observers.values()) observer.stop()
   observers.clear()
+  syncActivity()
 })

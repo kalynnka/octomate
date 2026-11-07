@@ -49,6 +49,7 @@ from pydantic_ai.messages import (
 from octomate.capabilities.harness.events import RunActivityChangedEvent, StreamEvents
 from octomate.tentacles.codex.adapter import CodexRunAccumulator, map_usage
 from octomate.tentacles.feelers.output import render_stream_event_delta
+from octomate.types.json import JsonObject
 
 
 def notification(method: str, payload: NotificationPayload) -> Notification:
@@ -60,12 +61,13 @@ def command_item(
     status: CommandExecutionStatus,
     aggregated_output: str | None = None,
     exit_code: int | None = None,
+    command_actions: list[JsonObject] | None = None,
 ) -> ThreadItem:
     return ThreadItem.model_validate(
         {
             "id": "cmd-1",
             "command": "pytest",
-            "commandActions": [],
+            "commandActions": command_actions or [],
             "cwd": "/repo",
             "status": status.value,
             "aggregatedOutput": aggregated_output,
@@ -442,7 +444,23 @@ def test_adapter_suppresses_empty_reasoning_item() -> None:
     assert acc.messages == []
 
 
-def test_adapter_maps_command_item_to_native_tool_parts() -> None:
+@pytest.mark.parametrize(
+    "actions",
+    [
+        [],
+        [
+            {
+                "type": "read",
+                "command": "cat app.py",
+                "name": "app.py",
+                "path": "/repo/app.py",
+            }
+        ],
+    ],
+)
+def test_adapter_maps_command_item_to_native_tool_parts(
+    actions: list[JsonObject],
+) -> None:
     acc = CodexRunAccumulator()
 
     events = list(
@@ -450,7 +468,10 @@ def test_adapter_maps_command_item_to_native_tool_parts() -> None:
             notification(
                 "item/started",
                 ItemStartedNotification(
-                    item=command_item(status=CommandExecutionStatus.in_progress),
+                    item=command_item(
+                        status=CommandExecutionStatus.in_progress,
+                        command_actions=actions,
+                    ),
                     started_at_ms=1,
                     thread_id="thread-1",
                     turn_id="turn-1",
@@ -493,6 +514,9 @@ def test_adapter_maps_command_item_to_native_tool_parts() -> None:
         FunctionToolCallEvent,
         FunctionToolResultEvent,
     ]
+    call = events[0]
+    assert isinstance(call, FunctionToolCallEvent)
+    assert call.part.args_as_dict()["commandActions"] == actions
     result = events[1]
     assert isinstance(result, FunctionToolResultEvent)
     assert isinstance(result.part, ToolReturnPart)
@@ -508,6 +532,7 @@ def test_adapter_maps_command_item_to_native_tool_parts() -> None:
         "command": "pytest",
         "cwd": "/repo",
         "status": "inProgress",
+        "commandActions": actions,
     }
     assert isinstance(native_return, NativeToolReturnPart)
     assert native_return.content == "ok"

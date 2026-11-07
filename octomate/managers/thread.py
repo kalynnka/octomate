@@ -166,6 +166,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         project: Project | None = None,
         title: str | None = None,
         new: bool = False,
+        native: bool = False,
     ) -> Thread:
         """The thread this key names, created if it is new.
 
@@ -186,14 +187,18 @@ class ThreadManager(Manager, Locks[ThreadKey]):
 
         `new=True` refuses an existing surface under the creation lock. A native
         provider claiming a fresh session cannot thereby attach an existing one.
+        `native=True` marks a tailed thread at creation, independently of its
+        configured agent's address, and refuses an existing ordinary thread.
         """
         if isinstance(address_or_key, ChannelAddress):
             key = ThreadKey.from_address(address_or_key)
         else:
             key = address_or_key
-        if project is not None and key.kind not in ATTRIBUTABLE_KINDS:
+        if native and key.chat_type != "thread":
+            raise ValueError("Native ingest requires a thread address")
+        if project is not None and key.chat_type not in ATTRIBUTABLE_KINDS:
             raise ValueError(
-                f"{key} is a {key.kind} and cannot be attributed to project "
+                f"{key} is a {key.chat_type} and cannot be attributed to project "
                 f"{project.name!r}: only a thread or a native_thread is work."
             )
         # The lock spans the read, the insert and the commit: a loser that woke
@@ -206,13 +211,15 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             )
             if new and thread is not None:
                 raise ValueError("The thread already exists")
+            if native and thread is not None and thread.kind != "native_thread":
+                raise ValueError("Native ingest cannot claim an ordinary thread")
             if thread is None:
                 thread = Thread(
                     channel_tentacle_id=key.channel_tentacle_id,
                     chat_type=key.chat_type,
                     chat_id=key.chat_id,
                     channel_thread_id=key.channel_thread_id,
-                    kind=key.kind,
+                    kind="native_thread" if native else key.chat_type,
                     project_id=project.id if project is not None else None,
                 )
                 session.add(thread)
@@ -264,7 +271,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             # sent back to the platform as a real one. Sharing the address is what
             # makes a sub-thread's key resolve to the chat room it was opened in.
             channel_thread_id=key.channel_thread_id,
-            kind=key.kind,
+            kind=key.chat_type,
             parent_thread_id=parent.id,
         )
         async with async_session() as session:
@@ -1003,7 +1010,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         session lock across this lookup and write; the row grants the stream's
         owner access to a new thread while its model history is still folding.
         """
-        thread = await self.ensure(ThreadKey.from_address(address))
+        thread = await self.ensure(ThreadKey.from_address(address), native=True)
         inbound = await self.find_message(thread.id, message_id, "inbound")
         if inbound is not None:
             if inbound.happened_at != timestamp:
@@ -1045,7 +1052,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             )
         if not answer:
             return None
-        thread = await self.ensure(ThreadKey.from_address(address))
+        thread = await self.ensure(ThreadKey.from_address(address), native=True)
         outbound = await self.find_message(thread.id, run.id, "outbound")
         answered = next(
             (

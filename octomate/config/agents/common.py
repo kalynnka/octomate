@@ -33,6 +33,11 @@ class AgentConfig(BaseModel):
     absent — and carries its own half of the gateway switch."""
 
     type: str
+    icon_url: str | None = Field(
+        default=None,
+        description="Browser-loadable icon URL or absolute URL path. Null uses the "
+        "tentacle's default icon; an empty string uses its text name instead.",
+    )
 
     enabled: bool = Field(
         default=True,

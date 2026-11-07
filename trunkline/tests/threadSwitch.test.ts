@@ -461,7 +461,7 @@ for (const nextTurn of [false, true]) {
       { event_kind: 'artifact_available', message_id: 'new-row', artifact_id: 'new-app' },
     )
     if (nextTurn) watching.deliver({ event_kind: 'run_started', address: {
-      channel_tentacle_id: 'codex-native', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false,
+      channel_tentacle_id: 'codex', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false,
     } }, { ...result, output: 'Next reply' })
     const artifact: LedgerItem = { kind: 'artifact', uid: 'saved-row', artifactId: 'saved-app' }
     resolve({ ...opening, ledger: [artifact] })
@@ -482,13 +482,13 @@ test('opening the same thread twice during connection renders each event once', 
   mock.method(api, 'getThreadDetail', async () => ({ ...detail, key: id }))
   const actions = useConsole.getState().actions
   await Promise.all([
-    actions.selectThread('codex-native', id),
-    actions.selectThread('codex-native', id),
+    actions.selectThread('codex', id),
+    actions.selectThread('codex', id),
   ])
   const sockets = LiveSocket.opened.filter(socket => !socket.closed)
   const events: WireEvent[] = [
     { event_kind: 'run_started', address: {
-      channel_tentacle_id: 'codex-native', chat_type: 'thread', chat_id: id, user_id: 'owner', channel_thread_id: null, shared: false,
+      channel_tentacle_id: 'codex', chat_type: 'thread', chat_id: id, user_id: 'owner', channel_thread_id: null, shared: false,
     } },
     { event_kind: 'part_start', index: 0, part: { part_kind: 'text', content: 'Checking the watcher.' } },
     { event_kind: 'function_tool_call', part: { part_kind: 'tool-call', tool_call_id: 'call-1', tool_name: 'exec', args: '{}' } },
@@ -507,10 +507,10 @@ test('a failed connection releases the watch so the thread can be opened again',
   const id = 'failed-watch'
   mock.method(api, 'getThreadDetail', async () => ({ ...detail, key: id }))
   const actions = useConsole.getState().actions
-  const opening = actions.selectThread('codex-native', id)
+  const opening = actions.selectThread('codex', id)
   LiveSocket.last().close()
   await opening
-  await actions.selectThread('codex-native', id)
+  await actions.selectThread('codex', id)
   assert.equal(LiveSocket.opened.length, 2)
   assert.deepEqual(LiveSocket.opened.map(socket => socket.closed), [true, false])
 })
@@ -519,15 +519,15 @@ test('a superseded connection cannot resume watching when the reader returns', a
   mock.method(api, 'getThreadDetail', async (id: string) => ({ ...detail, key: id }))
   const actions = useConsole.getState().actions
   await Promise.all([
-    actions.selectThread('codex-native', 'returning-watch'),
-    actions.selectThread('codex-native', 'between-watches'),
-    actions.selectThread('codex-native', 'returning-watch'),
+    actions.selectThread('codex', 'returning-watch'),
+    actions.selectThread('codex', 'between-watches'),
+    actions.selectThread('codex', 'returning-watch'),
   ])
   const sockets = LiveSocket.opened
   assert.equal(sockets.length, 3)
   assert.deepEqual(sockets.map(socket => socket.closed), [true, true, false])
   const started: WireEvent = { event_kind: 'run_started', address: {
-    channel_tentacle_id: 'codex-native', chat_type: 'thread', chat_id: 'returning-watch', user_id: 'owner', channel_thread_id: null, shared: false,
+    channel_tentacle_id: 'codex', chat_type: 'thread', chat_id: 'returning-watch', user_id: 'owner', channel_thread_id: null, shared: false,
   } }
   sockets[2].deliver(started, result)
   sockets[0].deliver(started, { ...result, output: 'Stale reply' })
@@ -542,7 +542,7 @@ for (const connected of [false, true]) {
     const { queryClient: cache } = await runner.import<typeof import('../src/lib/queryClient.ts')>('/src/lib/queryClient.ts')
     try {
       mock.method(source, 'getThreadDetail', async () => detail)
-      const selecting = store.getState().actions.selectThread('codex-native', 'hot-thread')
+      const selecting = store.getState().actions.selectThread('codex', 'hot-thread')
       const socket = LiveSocket.last()
       if (connected) await selecting
       assert.ok(runner.hmrClient)
@@ -551,7 +551,7 @@ for (const connected of [false, true]) {
       await tick()
       assert.equal(socket.closed, true)
       socket.deliver({ event_kind: 'run_started', address: {
-        channel_tentacle_id: 'codex-native', chat_type: 'thread', chat_id: 'hot-thread', user_id: 'owner', channel_thread_id: null, shared: false,
+        channel_tentacle_id: 'codex', chat_type: 'thread', chat_id: 'hot-thread', user_id: 'owner', channel_thread_id: null, shared: false,
       } }, result)
       assert.deepEqual(store.getState().live, [])
       assert.equal(store.getState().running, false)
@@ -601,7 +601,7 @@ for (const reflex of [false, true]) {
 
 for (const saved of [false, true]) {
   test(`a re-streamed tailed turn replaces its fold with the prompt ${saved ? 'already saved' : 'still live'}`, async () => {
-    const sender = { id: 'profile', channel_tentacle_id: 'claude-native', channel_user_id: 'test', name: 'test', user_id: 'native-owner', nickname: null, gender: null, age: null, title: null }
+    const sender = { id: 'profile', channel_tentacle_id: 'claude', channel_user_id: 'test', name: 'test', user_id: 'native-owner', nickname: null, gender: null, age: null, title: null }
     const ledger: LedgerItem[] = saved ? [{ kind: 'user', uid: 'native-prompt', text: 'The transcript prompt', who: sender.name, userId: sender.user_id, t: '10:00' }] : []
     const opening = { ...detail, key: `replayed-native-${saved}`, ledger }
     mock.method(api, 'getThreadDetail', async () => opening)
@@ -635,11 +635,11 @@ for (const reflex of [false, true]) {
     const opening = { ...detail, key: `native-steering-${reflex}`, ledger: [] }
     mock.method(api, 'getThreadDetail', async () => opening)
     queryClient.setQueryData(['thread-detail', opening.key], opening)
-    await useConsole.getState().actions.selectThread('deepseek-native', opening.key)
+    await useConsole.getState().actions.selectThread('deepseek', opening.key)
     const watching = await socketOn(`thread_id=${opening.key}`)
     if (reflex) watching.deliver({ event_kind: 'reflex_awake' })
     watching.deliver({ event_kind: 'run_started', address: {
-      channel_tentacle_id: 'deepseek-native', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false,
+      channel_tentacle_id: 'deepseek', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false,
     } }, { event_kind: 'part_start', index: 0, part: { part_kind: 'text', content: 'First reply' } }, {
       event_kind: 'enqueued_messages', enqueue_id: 'steer',
       messages: [{ kind: 'request', parts: [{ part_kind: 'user-prompt', content: 'Also check this' }], timestamp: '2026-10-14T10:00:00Z' }],
@@ -656,6 +656,39 @@ for (const reflex of [false, true]) {
     for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
   })
 }
+
+test('joining after a native turn starts renders tools immediately and reconciles the missed history on completion', async () => {
+  const opening = { ...detail, key: 'joined-native' }
+  const getDetail = mock.method(api, 'getThreadDetail', async () => opening)
+  await useConsole.getState().actions.selectThread('codex', opening.key)
+  const watching = await socketOn(`thread_id=${opening.key}`)
+  const reads = getDetail.mock.callCount()
+  watching.deliver({ event_kind: 'function_tool_call', part: {
+    part_kind: 'tool-call', tool_name: 'exec_command', tool_call_id: 'late-call', args: { cmd: 'sleep 12' },
+  } })
+  const tool = useConsole.getState().live.find(item => item.kind === 'tool')
+  assert.equal(tool?.status, 'run')
+  assert.equal(useConsole.getState().running, true)
+  assert.equal(getDetail.mock.callCount(), reads)
+  watching.deliver({ event_kind: 'function_tool_result', part: {
+    part_kind: 'tool-return', tool_name: 'exec_command', tool_call_id: 'late-call', content: 'complete',
+  } })
+  const complete = useConsole.getState().live.find(item => item.kind === 'tool')
+  assert.ok(complete)
+  assert.equal(complete?.status, 'done')
+  assert.equal(complete?.detail.type === 'plain' && complete.detail.res, 'complete')
+  const settled: ThreadDetail = { ...opening, msgCount: 2, ledger: [
+    { kind: 'think', uid: 'missed-thinking', text: 'Earlier work', thinking: false, dur: '' },
+    { ...complete, uid: 'saved-tool' },
+  ] }
+  getDetail.mock.mockImplementation(async () => settled)
+  watching.deliver({ event_kind: 'run_ended', thread_message_id: 'reply' })
+  for (let at = 0; at < 200 && useConsole.getState().detail?.msgCount !== 2; at++) await tick()
+  assert.equal(getDetail.mock.callCount(), reads + 1)
+  assert.deepEqual(useConsole.getState().detail?.ledger, settled.ledger)
+  assert.deepEqual(useConsole.getState().live, [])
+  assert.equal(useConsole.getState().running, false)
+})
 
 test('a missed turn reads its history without clearing the next tailed turn already folding', async () => {
   const opening = { ...detail, key: 'consecutive-native' }
@@ -690,11 +723,11 @@ test('a missed turn reads its history without clearing the next tailed turn alre
 test('consecutive watched turns stay mounted and replay replaces only the unfinished turn', async () => {
   const opening = { ...detail, key: 'stable-native' }
   const getDetail = mock.method(api, 'getThreadDetail', async () => opening)
-  await useConsole.getState().actions.selectThread('codex-native', opening.key)
+  await useConsole.getState().actions.selectThread('codex', opening.key)
   const watching = await socketOn(`thread_id=${opening.key}`)
   const calls = getDetail.mock.callCount()
   const started: WireEvent = { event_kind: 'run_started', address: {
-    channel_tentacle_id: 'codex-native', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false,
+    channel_tentacle_id: 'codex', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false,
   } }
   const text: WireEvent = { event_kind: 'part_start', index: 0, part: { part_kind: 'text', content: 'First turn' } }
   watching.deliver(started, text)
@@ -719,10 +752,10 @@ for (const saved of [false, true]) {
     }
     const opening = { ...detail, key: `question-next-turn-${saved}`, ledger: saved ? [question] : [] }
     mock.method(api, 'getThreadDetail', async () => opening)
-    await useConsole.getState().actions.selectThread('codex-native', opening.key)
+    await useConsole.getState().actions.selectThread('codex', opening.key)
     const watching = await socketOn(`thread_id=${opening.key}`)
     const started: WireEvent = { event_kind: 'run_started', address: {
-      channel_tentacle_id: 'codex-native', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false,
+      channel_tentacle_id: 'codex', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false,
     } }
     if (!saved) watching.deliver(started, {
       event_kind: 'function_tool_call', part: { part_kind: 'tool-call', tool_name: 'request_user_input_async', tool_call_id: 'native-q', args: { questions: [{ title: 'Inspect?' }] } },

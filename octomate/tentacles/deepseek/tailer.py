@@ -25,7 +25,6 @@ from octomate.nerve import Impulse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import (
-    DEEPSEEK_NATIVE_ID,
     Thread,
     ThreadKey,
 )
@@ -178,13 +177,18 @@ class DeepseekEventTailer:
     a connection boundary: the next connect re-streams it whole.
     """
 
+    agent_tentacle_id: str
+
     def __init__(
         self,
         conversation_manager: ConversationManager,
         thread_manager: ThreadManager,
         projects: ProjectManager | None = None,
         locks: SessionLocks | None = None,
+        *,
+        agent_tentacle_id: str,
     ) -> None:
+        self.agent_tentacle_id = agent_tentacle_id
         self.conversation_manager = conversation_manager
         self.thread_manager = thread_manager
         self.projects = projects if projects is not None else ProjectManager()
@@ -210,7 +214,7 @@ class DeepseekEventTailer:
         )
         thread = await self.session_thread(session_id, cwd)
         state.conversation = await self.conversation_manager.ensure(
-            thread.id, agent_tentacle_id=DEEPSEEK_NATIVE_ID
+            thread.id, agent_tentacle_id=self.agent_tentacle_id, native=True
         )
         state.recorded = state.conversation.native_run_ids
         state.context_window = await self.conversation_manager.latest_context_window(
@@ -264,8 +268,9 @@ class DeepseekEventTailer:
         holder = self.projects.resolve(Path(cwd)) if cwd else None
         project = self.projects.get(holder) if holder is not None else None
         return await self.thread_manager.ensure(
-            ThreadKey(DEEPSEEK_NATIVE_ID, "thread", session_id),
+            ThreadKey(self.agent_tentacle_id, "thread", session_id),
             project=project,
+            native=True,
         )
 
     async def process_entry(self, state: TailState, entry: HistoryEntry) -> None:
@@ -418,7 +423,7 @@ class DeepseekEventTailer:
                     conversation,
                     run_id=run_id,
                     messages=messages,
-                    name=DEEPSEEK_NATIVE_ID,
+                    name=self.agent_tentacle_id,
                     model_name=(
                         turn.accumulator.route.model
                         if turn.accumulator.route is not None

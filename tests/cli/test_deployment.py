@@ -653,6 +653,13 @@ def test_actual_upgrade_backfills_search_and_downgrade_keeps_source(
         ).fetchone() == (0,)
         connection.rollback()
 
+    # Exercise the search migration's downgrade without later irreversible changes.
+    with (
+        sqlite3.connect(snapshot.backup) as source,
+        sqlite3.connect(database) as restored,
+    ):
+        source.backup(restored)
+    command.upgrade(Config(str(deployment.ALEMBIC_INI)), revision.revision)
     command.downgrade(Config(str(deployment.ALEMBIC_INI)), previous)
 
     assert deployment.revisions(database) == (previous,)

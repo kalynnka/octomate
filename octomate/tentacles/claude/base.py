@@ -109,7 +109,7 @@ from octomate.schemas.deferred import (
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import (
@@ -159,7 +159,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class ClaudeCodeTentacle(AgentTentacle[str, None]):
+class ClaudeTentacle(AgentTentacle[str, None]):
     """Claude Agent SDK runner exposed as an Octomate agent tentacle.
 
     A run drives a `ClaudeSDKClient` over a local subprocess, translating its
@@ -176,6 +176,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     workspace — and a resumed run opens from what the graph resolved it with.
     """
 
+    type: ClassVar[str] = "claude"
+    id: ClassVar[str] = type
     config: ClaudeCodeConfig = field(init=False)
     ink: ClaudeInk = field(init=False, repr=False)
     conversations: ConversationManager = field(init=False, repr=False)
@@ -184,7 +186,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     users: UserManager = field(init=False, repr=False)
     bearers: KnownBearers = field(init=False, repr=False)
     mcp: McpManager = field(init=False, repr=False)
-    native_id: ClassVar[str] = CLAUDE_NATIVE_ID
+    default_model: str | None = field(default=None, init=False)
     # Claude Code's own names for models, such as `opus`, to the catalog entry each
     # runs now, so a pin saved under one still finds its model.
     model_aliases: dict[str, str] = field(init=False)
@@ -211,6 +213,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     # Claude's own orange, so its lines carry its identity in a console shared with
     # every other tentacle, instead of whatever hue the connection order landed on.
     brand_color: ClassVar[Style | None] = Style(color="#D97757", bold=True)
+    default_icon_url: ClassVar[str | None] = "/agent-icons/claude.svg"
 
     description: str = (
         "Coding agent for software engineering and multi-step technical work in a "
@@ -219,7 +222,6 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
 
     def __init__(
         self,
-        id: str,
         octomate: Octomate,
         *,
         config: ClaudeCodeConfig,
@@ -236,7 +238,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         description: str | None = None,
     ) -> None:
         super().__init__(
-            id=id,
+            id=self.id,
             octomate=octomate,
             commands=commands,
             projects=projects,
@@ -266,6 +268,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             self.conversations,
             self.threads,
             self.session_locks,
+            agent_tentacle_id=self.id,
         )
         # Live hook ingest: writes the human ledger and relays the stream's drains.
         self.session_ingest = ClaudeHookIngest(
@@ -275,6 +278,14 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             projects=self.projects,
             threads=self.threads,
         )
+
+    @property
+    def native_running_threads(self) -> set[ThreadKey]:
+        return {
+            ThreadKey.from_address(state.address)
+            for state in self.session_tailer.sessions.values()
+            if state.open_turn is not None and state.open_turn.native is not None
+        }
 
     def routers(self) -> tuple[APIRouter]:
         """The tentacle's HTTP surface, mounted by `Octomate.connect`: the hook router
@@ -294,8 +305,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         `hook_sender` resolves the verified bearer's profile on both routes;
         only the stream uses that profile to attribute transcript messages."""
         verifier = hook_guard(self.bearers)
-        resolve_sender = hook_sender(self.users, self.native_id, verifier)
-        router = APIRouter(tags=["claude"], dependencies=[Depends(verifier)])
+        resolve_sender = hook_sender(self.users, self.id, verifier)
+        router = APIRouter(tags=[self.type], dependencies=[Depends(verifier)])
 
         @router.post(
             "/hooks/claude",
@@ -361,7 +372,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             )
             return
         address = ChannelAddress(
-            channel_tentacle_id=self.native_id,
+            channel_tentacle_id=self.id,
             chat_type="thread",
             chat_id=hello.session_id,
             user_id=sender.channel_user_id,
@@ -407,6 +418,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         await self.threads.ensure(
             ThreadKey.from_address(address),
             project=project,
+            native=True,
         )
         state, offsets = await self.session_tailer.attach_remote(
             hello.session_id, Path(hello.transcript_path), sender, address, impulses
@@ -537,8 +549,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self, source: Conversation, *, owner_id: UUID7
     ) -> tuple[bytes, ExternalAgentRun]:
         """The stored history up to the latest turn kept whole, and that turn."""
-        if source.agent_tentacle_id != self.native_id or source.subagent_id:
+        if source.agent_tentacle_id != self.id or source.subagent_id:
             raise ValueError("Only root native Claude Code sessions can be forked here")
+        thread = await self.threads.get(source.thread_id, with_messages=False)
+        if thread is None or thread.kind != "native_thread":
+            raise ValueError("Transcript imports require a tailed thread")
         if source.transcript_file_id is None or source.external_id is None:
             raise ValueError("Native Claude Code history has not been uploaded")
         data = await self.files.read(source.transcript_file_id, owner_id=owner_id)
@@ -887,7 +902,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         ]
         return max(windows, key=lambda key: "[" in key, default=None)
 
-    async def __aenter__(self) -> ClaudeCodeTentacle:
+    async def __aenter__(self) -> ClaudeTentacle:
         self.commands.invalidate(agent_id=self.id)
         await self.discover_models()
         return await super().__aenter__()
@@ -956,8 +971,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             and DeferredToolRequests in output_type
         ):
             raise ValueError(
-                "ClaudeCodeTentacle does not support DeferredToolRequests "
-                "in output_type"
+                "ClaudeTentacle does not support DeferredToolRequests in output_type"
             )
 
         if output_type is not None:
@@ -1206,12 +1220,12 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         else:
             prompt_text = ""
         if not prompt_text:
-            raise ValueError("ClaudeCodeTentacle requires a non-empty text prompt")
+            raise ValueError("ClaudeTentacle requires a non-empty text prompt")
 
         with claude_logfire.span(
-            "ClaudeCodeTentacle {agent_id} {run_name} [{conversation_address}]",
+            "ClaudeTentacle {agent_id} {run_name} [{conversation_address}]",
             agent_id=self.id,
-            run_name=run_name or "claude",
+            run_name=run_name or self.id,
             conversation_address=str(conversation_address),
             **agent_input_message_attributes(user_prompt),
             transport="local",
@@ -1273,7 +1287,6 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     permission_mode=options.permission_mode,
                     cwd=Path(run_cwd),
                     external_id=accumulator.session_id,
-                    native_id=CLAUDE_NATIVE_ID,
                     native_turn_id=prompt_id,
                 )
             if command_result is not None and command_result.is_error:

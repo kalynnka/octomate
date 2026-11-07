@@ -31,9 +31,38 @@
 .lt-fade-in { animation: lt-fade-in var(--motion-entry) var(--ease-out) both; animation-delay: calc(var(--i, 0) * 70ms); }
 .lt-fade-out{ animation: lt-fade-out var(--motion-base) var(--ease-out) both; pointer-events: none; }
 
+@keyframes trk-locate-text {
+  35% { color: var(--trk-locate-color); }
+}
+.trk-agent-message.trk-flash { --trk-locate-color: color-mix(in srgb, var(--color-accent) 70%, var(--fg-1)); }
+[data-theme="dark"] .trk-agent-message.trk-flash { --trk-locate-color: color-mix(in srgb, var(--color-accent) 40%, var(--fg-1)); }
+.trk-agent-message.trk-flash .trk-md {
+  animation: trk-locate-text calc(var(--motion-entry) * 3) var(--ease-in-out);
+}
+@media (prefers-reduced-motion: reduce) {
+  .trk-agent-message.trk-flash .trk-md { animation: none; color: var(--trk-locate-color); }
+}
+
+.trk-activity { --trk-shimmer-base: var(--fg-3); }
+.trk-activity[data-attention] { --trk-shimmer-base: var(--color-gold); }
 .trk-activity .lt-dots i { background: var(--fg-3); }
 .trk-activity-motion { animation: lt-fade-up var(--motion-base) var(--ease-out) both; --entry-rise: 4px; }
 .trk-activity-motion[data-exiting] { animation: lt-fade-out var(--motion-fast) var(--ease-out) both; pointer-events: none; }
+@keyframes trk-text-shimmer {
+  from { background-position: 100% 0; }
+  85%, to { background-position: 0% 0; }
+}
+@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+  .trk-trace-label[data-running],
+  .trk-activity .lt-text-swap {
+    background-image: linear-gradient(100deg, var(--trk-shimmer-base, var(--fg-2)) 38%, var(--fg-1) 50%, var(--trk-shimmer-base, var(--fg-2)) 62%);
+    background-size: 300% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: trk-text-shimmer 2.6s linear infinite;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .trk-activity-motion { animation-name: lt-fade-in; animation-duration: 80ms; }
   .trk-activity-motion[data-exiting] { animation-duration: 80ms; }
@@ -101,6 +130,23 @@
 /* Rotating ▸ disclosure marker — put [data-open] on the marker or a parent. */
 .lt-disclose { display: inline-block; transition: transform var(--motion-base) var(--ease-out); }
 [data-open] .lt-disclose, .lt-disclose[data-open] { transform: rotate(90deg); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .trk-trace-row > .lt-fold,
+  .trk-thinking-toggle > .lt-disclose,
+  .trk-tool-toggle > .lt-disclose,
+  .trk-trace-summary > .lt-disclose {
+    transition-duration: calc(var(--motion-base) * 2);
+    transition-timing-function: var(--ease-in-out);
+  }
+  .trk-trace-group::details-content {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows calc(var(--motion-base) * 2) var(--ease-in-out), content-visibility calc(var(--motion-base) * 2) allow-discrete;
+  }
+  .trk-trace-group[open]::details-content { grid-template-rows: 1fr; }
+  .trk-trace-items { min-height: 0; overflow: hidden; }
+}
 
 /* --- Dropdown / popover: hidden by default, toggle [data-open]. ---------- */
 .lt-menu { opacity: 0; transform: translateY(-6px); visibility: hidden; transition: opacity var(--motion-base) var(--ease-out), transform var(--motion-base) var(--ease-out), visibility 0s linear var(--motion-base); }

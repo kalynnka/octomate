@@ -96,6 +96,7 @@ from octomate.schemas.thread import (
     ThreadMessage,
 )
 from octomate.schemas.user import ProfileInfo, User, UserProfile
+from octomate.tentacles.trunkline.activity import watch_activity
 from octomate.tentacles.trunkline.base import (
     ROUTE_SEP,
     RouteLockedError,
@@ -266,7 +267,7 @@ async def thread_gateway(
 def build_trunkline_router(
     octomate: Octomate,
     *,
-    channel_id: str = "trunkline",
+    channel_id: str,
 ) -> APIRouter:
     """Build the console HTTP router bound to a registered TrunklineTentacle."""
     registered = octomate.channels.get(channel_id)
@@ -279,7 +280,7 @@ def build_trunkline_router(
 
     router = APIRouter(
         prefix="/api/trunkline",
-        tags=["trunkline"],
+        tags=[channel.type],
         dependencies=[Depends(browser_request), Depends(current_user)],
     )
 
@@ -716,7 +717,15 @@ def build_trunkline_live_router(channel: TrunklineTentacle) -> APIRouter:
     """Build the console's live socket router. It is a router of its own because
     the console router runs the same-origin write guard on every request, and a
     handshake has no method for that guard to read."""
-    router = APIRouter(prefix="/api/trunkline", tags=["trunkline"])
+    router = APIRouter(prefix="/api/trunkline", tags=[channel.type])
+
+    @router.websocket("/live/activity")
+    async def live_activity(
+        websocket: WebSocket,
+        user: Annotated[User, Depends(current_user)],
+        threads: Annotated[ThreadManager, Depends(thread_manager)],
+    ) -> None:
+        await watch_activity(websocket, channel.octomate, threads, user.id, channel.id)
 
     @router.websocket("/live/user")
     async def watch_user(

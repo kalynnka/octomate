@@ -12,7 +12,6 @@ from octomate_cli.config import CLISettings
 from octomate_cli.tentacles.claude.config import load_settings, write_settings
 from octomate_cli.tentacles.claude.schema import McpContainer, McpServer
 from octomate_cli.tentacles.mcp import (
-    CLAUDE_NATIVE_CLIENT,
     CLIENT_HEADER,
     OCTOMATE_SERVER_KEY,
     octomate_secret,
@@ -78,7 +77,7 @@ def mcp_install(
 ) -> None:
     """Point native Claude Code sessions at the served MCP server.
 
-    Writes the entry — the server's URL, the bearer, and the runtime
+    Writes the entry — the server's URL, the bearer, and the configured agent's
     attribution header — resolved once, now: unlike the hooks, a static entry is
     read by Claude itself, so the file holds the literal credential and rotating
     it means re-running install. Everything else in the file is kept, and
@@ -98,7 +97,7 @@ def mcp_install(
         url=target,
         headers={
             "Authorization": f"Bearer {secret}",
-            CLIENT_HEADER: CLAUDE_NATIVE_CLIENT,
+            CLIENT_HEADER: "claude",
         },
     )
     container.model_fields_set.add("mcp_servers")
@@ -107,7 +106,7 @@ def mcp_install(
     typer.echo(f"  file:   {path}")
     if scope is McpScope.local:
         typer.echo(f"  scope:  local ({Path.cwd()})")
-    typer.echo(f"  client: {CLAUDE_NATIVE_CLIENT}")
+    typer.echo("  client: claude")
     typer.echo(
         "  auth:   embedded — the file holds the literal credential; rotation "
         "means re-running install"

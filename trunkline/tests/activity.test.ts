@@ -15,6 +15,7 @@ const globals = ['WebSocket', 'location'].map(key => [key, Object.getOwnProperty
 const releases: (() => void)[] = []
 const tick = () => new Promise(resolve => setImmediate(resolve))
 const thinking: WireEvent = { event_kind: 'run_activity_changed', activity: 'thinking' }
+const update = (event: WireEvent, key = 'id:first') => ({ key, event, attention: false })
 const batch: WireEvent = { event_kind: 'action_batch', batch_id: 'batch', questions: [], approvals: [] }
 const address = { channel_tentacle_id: 'trunkline', chat_type: 'thread', chat_id: 'owner', user_id: 'owner', channel_thread_id: 'key', shared: false } as const
 const text = (id = 'first') => activity.useActivity.getState()[`id:${id}`]?.text
@@ -39,8 +40,9 @@ beforeEach(() => {
   installLiveSocket()
   mock.timers.enable({ apis: ['setTimeout'] })
 })
-afterEach(() => {
+afterEach(async () => {
   releases.splice(0).forEach(release => release())
+  await tick()
   queryClient.clear()
   mock.timers.reset()
   mock.restoreAll()
@@ -100,16 +102,16 @@ test('display labels drop ellipsis suffixes but keep punctuation inside a phrase
 test('a repeated label refreshes expiry without rerendering; later activity reappears', async () => {
   observe()
   await tick()
-  LiveSocket.last().deliver(thinking)
+  LiveSocket.last().deliver(update(thinking))
   const first = activity.useActivity.getState()['id:first']
   mock.timers.tick(119_000)
-  LiveSocket.last().deliver(thinking)
+  LiveSocket.last().deliver(update(thinking))
   assert.equal(activity.useActivity.getState()['id:first'], first)
   mock.timers.tick(119_999)
   assert.equal(text(), 'Thinking')
   mock.timers.tick(1)
   assert.equal(text(), undefined)
-  LiveSocket.last().deliver({ event_kind: 'reflex_phase_changed', phase: 'routing' })
+  LiveSocket.last().deliver(update({ event_kind: 'reflex_phase_changed', phase: 'routing' }))
   assert.equal(text(), 'Routing')
 })
 
@@ -118,34 +120,13 @@ for (const terminal of ['run_ended', 'reflex_asleep', 'run_error'] as const) {
     observe()
     await tick()
     const socket = LiveSocket.last()
-    socket.deliver(thinking)
+    socket.deliver(update(thinking))
     mock.timers.tick(60_000)
-    socket.deliver({ event_kind: terminal })
+    socket.deliver(update(terminal === 'run_error' ? { event_kind: terminal, message: 'failed', trace_id: 'trace' } : { event_kind: terminal }))
     assert.equal(text(), undefined)
-    socket.deliver({ event_kind: 'run_activity_changed', activity: 'writing' })
+    socket.deliver(update({ event_kind: 'run_activity_changed', activity: 'writing' }))
     mock.timers.tick(60_000)
     assert.equal(text(), 'Writing the response')
-  })
-}
-
-for (const event of [
-  { event_kind: 'part_end', index: 0, part: { part_kind: 'text', content: 'Done' } },
-  { event_kind: 'function_tool_result', part: { part_kind: 'tool-return', tool_call_id: 't', tool_name: 'tool', content: 'Done' } },
-  { event_kind: 'output_tool_result', part: { part_kind: 'tool-return', tool_name: 'tool', tool_call_id: 't', content: 'Done' } },
-] satisfies WireEvent[]) {
-  test(`${event.event_kind} refreshes activity without completing sibling tools`, async () => {
-    observe()
-    await tick()
-    const socket = LiveSocket.last()
-    socket.deliver(event)
-    assert.equal(text(), undefined)
-    socket.deliver({ event_kind: 'run_activity_changed', activity: 'using_tools' })
-    mock.timers.tick(100_000)
-    socket.deliver(event)
-    mock.timers.tick(100_000)
-    assert.equal(text(), 'Using tools')
-    mock.timers.tick(20_000)
-    assert.equal(text(), undefined)
   })
 }
 
@@ -155,18 +136,60 @@ test('sidebar and chat share observation; selecting another thread preserves the
   await tick()
   assert.equal(LiveSocket.opened.length, 1)
   const first = LiveSocket.last()
-  first.deliver(thinking)
+  first.deliver(update(thinking))
   chat()
   observe('second')
   await tick()
-  LiveSocket.last().deliver({ event_kind: 'reflex_phase_changed', phase: 'moving' })
+  LiveSocket.last().deliver(update({ event_kind: 'reflex_phase_changed', phase: 'moving' }, 'id:second'))
   assert.equal(text(), 'Thinking')
   assert.equal(text('second'), 'Moving')
   assert.equal(first.closed, false)
   row()
-  assert.equal(first.closed, true)
+  await tick()
+  assert.equal(first.closed, false)
+  assert.deepEqual(JSON.parse(first.sent.at(-1)!), { thread_ids: ['second'], thread_keys: [] })
   assert.equal(text(), undefined)
   assert.equal(text('second'), 'Moving')
+})
+
+test('moving a running row keeps its shared socket and activity through the effect handoff', async () => {
+  const release = observe()
+  await tick()
+  const socket = LiveSocket.last()
+  socket.deliver(update(thinking))
+  const first = activity.useActivity.getState()['id:first']
+  release()
+  observe()
+  await tick()
+  assert.equal(socket.closed, false)
+  assert.equal(LiveSocket.opened.length, 1)
+  assert.equal(activity.useActivity.getState()['id:first'], first)
+})
+
+test('30 threads and a draft share one socket, including subscription changes and cleanup', async () => {
+  const rows = Array.from({ length: 30 }, (_, i) => observe(`thread-${i}`))
+  const draft = observe('draft', true)
+  await tick()
+  assert.equal(LiveSocket.opened.length, 1)
+  const socket = LiveSocket.last()
+  assert.equal(JSON.parse(socket.sent.at(-1)!).thread_ids.length, 30)
+  assert.deepEqual(JSON.parse(socket.sent.at(-1)!).thread_keys, ['draft'])
+  socket.deliver(update(thinking, 'id:thread-20'), update(thinking, 'key:draft'), update(thinking, 'id:unwatched'))
+  assert.equal(text('thread-20'), 'Thinking')
+  assert.equal(activity.useActivity.getState()['key:draft']?.text, 'Thinking')
+  assert.equal(text('unwatched'), undefined)
+  rows[0]()
+  await tick()
+  assert.equal(socket.closed, false)
+  assert.equal(JSON.parse(socket.sent.at(-1)!).thread_ids.length, 29)
+  rows.forEach(release => release())
+  draft()
+  await tick()
+  assert.equal(socket.closed, true)
+  assert.deepEqual(activity.useActivity.getState(), {})
+  mock.timers.tick(240_000)
+  await tick()
+  assert.equal(LiveSocket.opened.length, 1)
 })
 
 test('expiry leaves ordering, timestamps, run ownership and pending controls untouched', async () => {
@@ -177,7 +200,7 @@ test('expiry leaves ordering, timestamps, run ownership and pending controls unt
   const state = useConsole.getState()
   observe()
   await tick()
-  LiveSocket.last().deliver({ ...batch, blocks_run: true })
+  LiveSocket.last().deliver({ ...update({ event_kind: 'run_activity_changed', activity: 'working', display_text: 'Waiting for input' }), attention: true })
   assert.equal(activity.useActivity.getState()['id:first']?.attention, true)
   mock.timers.tick(120_000)
   assert.equal(text(), undefined)
@@ -190,22 +213,25 @@ test('reconnect resumes subsequent events and ignores stale connection callbacks
   await tick()
   const old = LiveSocket.last()
   const stale = old.onmessage!
-  old.deliver(thinking)
+  old.deliver(update(thinking))
   old.close()
   await tick()
   mock.timers.tick(2_000)
   await tick()
   const next = LiveSocket.last()
   assert.notEqual(next, old)
-  next.deliver({ event_kind: 'reflex_phase_changed', phase: 'moving' })
-  stale({ data: JSON.stringify({ event_kind: 'run_ended' }) })
+  next.deliver(update({ event_kind: 'reflex_phase_changed', phase: 'moving' }))
+  stale({ data: JSON.stringify(update({ event_kind: 'run_ended' })) })
   assert.equal(text(), 'Moving')
 })
 
 test('unmount aborts a pending handshake and cancels reconnect and expiry', async () => {
+  LiveSocket.autoOpen = false
   const release = observe('new thread', true)
+  await tick()
   const pending = LiveSocket.last()
-  assert.ok(pending.url.endsWith('thread_key=new%20thread'))
+  assert.ok(pending.url.endsWith('/live/activity'))
+  assert.deepEqual(pending.sent, [])
   release()
   await tick()
   assert.equal(pending.closed, true)
@@ -215,19 +241,32 @@ test('unmount aborts a pending handshake and cancels reconnect and expiry', asyn
 })
 
 test('a handshake failure reconnects, but cleanup prevents further attempts', async () => {
+  LiveSocket.autoOpen = false
   const release = observe()
+  await tick()
   LiveSocket.last().onerror?.()
   await tick()
+  LiveSocket.autoOpen = true
   mock.timers.tick(2_000)
   await tick()
   const socket = LiveSocket.last()
-  socket.deliver(thinking)
+  socket.deliver(update(thinking))
   socket.close()
   await tick()
   release()
+  await tick()
   mock.timers.tick(240_000)
   assert.equal(LiveSocket.opened.length, 2)
   assert.equal(text(), undefined)
+})
+
+test('a denied subscription does not retry the same forbidden request', async () => {
+  observe()
+  await tick()
+  LiveSocket.last().close(1008)
+  mock.timers.tick(240_000)
+  await tick()
+  assert.equal(LiveSocket.opened.length, 1)
 })
 
 for (const outcome of ['completed', 'failed', 'cancelled', 'deferred'] as const) {

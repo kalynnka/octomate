@@ -239,6 +239,7 @@ class ConsoleFiles(StaticFiles):
 class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
     """Channel that serves the Trunkline web console over `octomate.kick`."""
 
+    type: ClassVar[str] = "trunkline"
     brand_color: ClassVar[Style | None] = Style(color="#D4621A", bold=True)
 
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
