@@ -6,9 +6,11 @@ import { chipLabel, ellipsis, label, microSection, mono, serif } from '@/compone
 import { Disclose, Fold } from '@/components/Fold'
 import { Icon } from '@/components/Icon'
 import { TextSwap } from '@/components/TextSwap'
-import { useThreadSummary } from '@/lib/api/hooks'
+import { useAgents, useThreadSummary } from '@/lib/api/hooks'
 import { markdownText } from '@/lib/markdown'
 import { answerText, botLabel } from '@/lib/api/fold'
+import { toolHeader } from '@/features/chat/trace'
+import { AgentLabel } from '@/features/chat/cards'
 import type {
   LedgerItem,
   SessionInfo,
@@ -31,6 +33,7 @@ interface TlEvent {
   /** file name when the event opens the review panel */
   file?: string
   badge?: { label: string; tone: 'gold' | 'terra' }
+  agentId?: string
   /** a still-running tool — dot and tag light accent */
   live?: boolean
   /** resolved feeler — dot and tag turn sage */
@@ -58,26 +61,26 @@ interface DotSpec {
 
 /** Dot/tag styling per event kind — ported from the comp's KS map. */
 const KS: Record<TlKind, DotSpec> = {
-  turn: { tag: 'turn', tagColor: 'var(--color-teal)', rad: '9999px', fill: 'var(--color-teal)', bd: 'var(--color-teal)', bs: 'solid', titleColor: 'var(--fg-1)' },
+  turn: { tag: 'trn', tagColor: 'var(--color-teal)', rad: '9999px', fill: 'var(--color-teal)', bd: 'var(--color-teal)', bs: 'solid', titleColor: 'var(--fg-1)' },
   msg: { tag: 'msg', tagColor: 'var(--fg-2)', rad: '9999px', fill: 'var(--fg-1)', bd: 'var(--fg-1)', bs: 'solid', titleColor: 'var(--fg-1)' },
-  think: { tag: 'think', tagColor: 'var(--fg-3)', rad: '9999px', fill: 'var(--card-bg)', bd: 'var(--fg-3)', bs: 'solid', titleColor: 'var(--fg-2)' },
-  plan: { tag: 'plan', tagColor: 'var(--fg-3)', rad: '9999px', fill: 'var(--card-bg)', bd: 'var(--fg-3)', bs: 'solid', titleColor: 'var(--fg-2)' },
-  tool: { tag: 'tool', tagColor: 'var(--fg-3)', rad: '0', fill: 'var(--card-bg)', bd: 'var(--color-accent)', bs: 'solid', titleColor: 'var(--color-accent)' },
-  write: { tag: 'write', tagColor: 'var(--color-gold)', rad: '0', fill: 'var(--color-gold)', bd: 'var(--color-gold)', bs: 'solid', titleColor: 'var(--fg-1)' },
+  think: { tag: 'thk', tagColor: 'var(--info-strong)', rad: '9999px', fill: 'var(--card-bg)', bd: 'var(--info)', bs: 'solid', titleColor: 'var(--info-strong)' },
+  plan: { tag: 'pln', tagColor: 'var(--fg-3)', rad: '9999px', fill: 'var(--card-bg)', bd: 'var(--fg-3)', bs: 'solid', titleColor: 'var(--fg-2)' },
+  tool: { tag: 'tol', tagColor: 'var(--fg-3)', rad: '0', fill: 'var(--card-bg)', bd: 'var(--fg-3)', bs: 'solid', titleColor: 'var(--fg-2)' },
+  write: { tag: 'wrt', tagColor: 'var(--color-gold)', rad: '0', fill: 'var(--color-gold)', bd: 'var(--color-gold)', bs: 'solid', titleColor: 'var(--fg-1)' },
   ask: { tag: 'ask', tagColor: 'var(--color-gold)', rad: '0', fill: 'var(--color-gold)', bd: 'var(--color-gold)', bs: 'solid', titleColor: 'var(--fg-1)' },
   sub: { tag: 'sub', tagColor: 'var(--color-teal)', rad: '0', fill: 'var(--card-bg)', bd: 'var(--color-teal)', bs: 'dashed', titleColor: 'var(--fg-1)' },
-  card: { tag: 'card', tagColor: 'var(--color-accent)', rad: '0', fill: 'var(--color-accent)', bd: 'var(--color-accent)', bs: 'solid', titleColor: 'var(--color-accent)' },
+  card: { tag: 'crd', tagColor: 'var(--color-accent)', rad: '0', fill: 'var(--color-accent)', bd: 'var(--color-accent)', bs: 'solid', titleColor: 'var(--color-accent)' },
   end: { tag: 'end', tagColor: 'var(--fg-3)', rad: '9999px', fill: 'var(--line-color)', bd: 'var(--line-color)', bs: 'solid', titleColor: 'var(--fg-3)' },
-  wait: { tag: 'next', tagColor: 'var(--color-accent)', rad: '0', fill: 'var(--card-bg)', bd: 'var(--color-accent)', bs: 'dashed', titleColor: 'var(--fg-3)' },
+  wait: { tag: 'nxt', tagColor: 'var(--color-accent)', rad: '0', fill: 'var(--card-bg)', bd: 'var(--color-accent)', bs: 'dashed', titleColor: 'var(--fg-3)' },
 }
 
 /** Conversation-header tick colour per kind; a kind not listed ticks in --fg-1. */
 const TICK: Partial<Record<TlKind, string>> = {
   turn: 'var(--color-teal)',
   msg: 'var(--fg-1)',
-  think: 'var(--fg-3)',
+  think: 'var(--info)',
   plan: 'var(--fg-3)',
-  tool: 'var(--color-accent)',
+  tool: 'var(--fg-3)',
   write: 'var(--color-gold)',
   ask: 'var(--color-gold)',
   sub: 'var(--color-teal)',
@@ -140,6 +143,7 @@ function eventOf(item: LedgerItem, operator: string, agent?: string): Omit<TlEve
     case 'agent':
       return {
         k: 'msg',
+        agentId: item.agentId ?? agent,
         title: item.label.split(' · ')[0],
         sub: markdownText(item.blocks.find((b) => b.type === 'p')?.text ?? ''),
         t: item.label.match(/\d\d:\d\d/)?.[0] ?? '',
@@ -162,7 +166,7 @@ function eventOf(item: LedgerItem, operator: string, agent?: string): Omit<TlEve
     case 'tool':
       return {
         k: 'tool',
-        title: item.name,
+        title: toolHeader(item).title,
         sub: item.status === 'run' ? 'running…' : toolSub(item.detail),
         t: '',
         tgt,
@@ -204,6 +208,7 @@ function eventOf(item: LedgerItem, operator: string, agent?: string): Omit<TlEve
     case 'stream':
       return {
         k: 'msg',
+        agentId: item.agentId ?? agent,
         title: item.label ?? botLabel(agent),
         sub: item.streaming ? 'reply streaming…' : markdownText(item.text),
         t: '',
@@ -222,6 +227,7 @@ const skeletonBars = [
 
 /** The right-hand timeline rail — per-session event index of the thread. */
 export function TimelinePanel() {
+  const { data: agents } = useAgents(true, false)
   const selThreadId = useConsole((s) => s.selThreadId)
   const detail = useConsole((s) => s.detail)
   const thread = useThreadSummary(selThreadId)
@@ -469,9 +475,9 @@ export function TimelinePanel() {
                       >
                         <TextSwap>{ses.kind}</TextSwap>
                       </span>
-                      <span style={{ ...label(7.5, '.12em'), color: TONE_COLOR[ses.tone], minWidth: 0, maxWidth: '25%', ...ellipsis }}>
+                      {ses.status !== 'ingested' && <span style={{ ...label(7.5, '.12em'), color: TONE_COLOR[ses.tone], minWidth: 0, maxWidth: '25%', ...ellipsis }}>
                         <TextSwap>{`● ${ses.status}`}</TextSwap>
-                      </span>
+                      </span>}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, marginTop: 3, paddingLeft: 18 }}>
                       <span
@@ -653,7 +659,7 @@ export function TimelinePanel() {
                               const resolved = (ev.k === 'write' || ev.k === 'ask') && ev.resolved
                               const tone = ev.live ? 'var(--color-accent)' : resolved ? 'var(--color-sage)' : undefined
                               const badgeColor =
-                                ev.badge?.tone === 'terra' ? 'var(--color-terra)' : 'var(--color-gold)'
+                                ev.badge?.label === 'failed' ? 'var(--color-red)' : ev.badge?.tone === 'terra' ? 'var(--color-terra)' : 'var(--color-gold)'
                               return (
                                 <div key={`${ev.tgt}-${ei}`} style={{ position: 'relative' }}>
                                 <button type="button" disabled={wait}
@@ -712,7 +718,7 @@ export function TimelinePanel() {
                                       {ks.tag}
                                     </span>
                                     <span style={{ ...mono(9, 700), color: ks.titleColor, ...ellipsis, minWidth: 0 }}>
-                                      <TextSwap style={{ ...ellipsis }}>{ev.title}</TextSwap>
+                                      {ev.k === 'msg' ? <AgentLabel label={ev.title} iconUrl={agents?.find(agent => agent.id === ev.agentId)?.icon_url} /> : <TextSwap style={{ ...ellipsis }}>{ev.title}</TextSwap>}
                                     </span>
                                     {ev.badge && (
                                       <span

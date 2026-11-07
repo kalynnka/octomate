@@ -5,16 +5,17 @@
  */
 import { Fragment, lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { answerText, botLabel } from '@/lib/api/fold'
+import { markdownText } from '@/lib/markdown'
 import type { AgentBlock, AskAnswer, LedgerItem, MessageReply, QueueChip, ToolDetail } from '@/lib/api/types'
 import { useAuth } from '@/state/auth'
 import { useConsole } from '@/state/console'
 import { TextSwap } from '@/components/TextSwap'
 import { Brackets } from '@/components/Brackets'
-import { Icon, type IconName } from '@/components/Icon'
+import { Icon } from '@/components/Icon'
 import { Disclose, Fold } from '@/components/Fold'
 import { Markdown } from '@/components/Markdown'
 import { CopyButton } from '@/components/CopyButton'
-import { toolSummary, type TraceGroup } from './trace'
+import { toolHeader, toolSummary, type TraceGroup } from './trace'
 import { cardKind, display, ellipsis, fieldLabel, label, metaLine, microMeta, microSection, mono, sectionLabel, serif, statusNote } from '@/components/text'
 
 const ArtifactViewer = lazy(() => import('@/features/artifacts/ArtifactViewer').then(module => ({ default: module.ArtifactViewer })))
@@ -198,9 +199,9 @@ function DiffBlock({ uid, index, diff }: { uid: string; index: number; diff: Ext
   )
 }
 
-function AgentRow({ item, cardMax, showAgentLabel }: { item: Extract<LedgerItem, { kind: 'agent' }>; cardMax: string; showAgentLabel: boolean }) {
+function AgentRow({ item, cardMax, showAgentLabel, showCopy }: { item: Extract<LedgerItem, { kind: 'agent' }>; cardMax: string; showAgentLabel: boolean; showCopy: boolean }) {
   return (
-    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" style={{ maxWidth: `min(100%, calc(${cardMax} + 34px))` }}>
+    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" style={{ maxWidth: cardMax }}>
       {showAgentLabel && <AgentLabel label={item.label} />}
       <div style={{ minWidth: 0, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)', textWrap: 'pretty' }}>
         {item.reply && <ReplyPreview reply={item.reply} />}
@@ -224,12 +225,12 @@ function AgentRow({ item, cardMax, showAgentLabel }: { item: Extract<LedgerItem,
           return <DiffBlock key={i} uid={item.uid} index={i} diff={b.diff} />
         })}
       </div>
-      <div className="trk-message-actions">
+      {showCopy && <div className="trk-message-actions">
         <CopyButton text={item.blocks.map(block => block.type === 'p' ? block.text : block.type === 'ul'
           ? block.items.map(line => `- ${line}`).join('\n')
           : `\`\`\`diff\n${block.diff.lines.map(line => line.text).join('\n')}\n\`\`\``).join('\n\n')}
           label="Copy message" className="trk-message-copy" />
-      </div>
+      </div>}
     </div>
   )
 }
@@ -280,13 +281,22 @@ function CodeRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'code' }
 }
 
 export function TraceGroupRow({ group, cardMax }: { group: TraceGroup; cardMax: string }) {
+  const key = `trace-${group.uid}`
+  const open = useConsole(s => s.open[key] ?? group.active)
+  const { toggleCardOpen } = useConsole(s => s.actions)
   const content = group.items.map(item => <LedgerRow key={item.uid} item={item} cardMax="100%" />)
   const style = { '--trk-trace-max': cardMax } as CSSProperties
   const tools = group.items.filter(item => item.kind === 'tool')
   const thinking = group.items.some(item => item.kind === 'think' && item.thinking)
-  const summary = tools.length ? toolSummary(tools) : thinking ? 'Thinking' : 'Thought'
+  const provided = group.items.findLast(item => item.kind === 'think' && item.format === 'summary' && item.text.trim())
+  const paragraphs = provided?.kind === 'think' ? provided.text.trim().split(/\n\s*\n/) : []
+  const heading = paragraphs.findLast(text => /^(?:#{1,6} .+|\*\*.+\*\*|__.+__)$/.test(text))
+  const summary = markdownText(heading ?? paragraphs[0] ?? '')
+    || (tools.length ? toolSummary(tools) : thinking ? 'Thinking' : 'Thought')
   return (
-    <details className="trk-trace-group" style={style} open={group.active}>
+    <details className="trk-trace-group" style={style} open={open} onToggle={event => {
+      if (event.target === event.currentTarget && event.currentTarget.open !== open) toggleCardOpen(key, open)
+    }}>
       <summary className="trk-trace-summary hov-wash" title={summary}>
         <span className="trk-trace-hover-brackets" aria-hidden="true"><Brackets size={6} /></span>
         <Icon name={tools.length ? 'wrench' : 'sparkle'} />
@@ -307,6 +317,15 @@ function ThinkRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'think'
   // Native transcripts can record a reasoning block without readable text.
   const recorded = item.text.trim().length > 0
   const badge = !recorded && !item.thinking ? 'Unavailable' : item.format === 'summary' ? 'Summary' : null
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    if (!item.thinking || item.startedAt === undefined) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [item.thinking, item.startedAt])
+  const duration = item.thinking && item.startedAt !== undefined
+    ? `${Math.max(0, Math.round((now - item.startedAt) / 1000))}s`
+    : item.dur || '—'
   return (
     <div
       id={`pm-${item.uid}`}
@@ -321,11 +340,11 @@ function ThinkRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'think'
         <span className="trk-trace-label" data-running={item.thinking ? '' : undefined} style={{ font: 'var(--meta)' }}>Thinking{badge && <> <span className="trk-thinking-format" title={badge === 'Summary' ? 'A summary of reasoning provided by the harness' : 'No readable reasoning text or summary was supplied'}><TextSwap>{`(${badge.toLowerCase()})`}</TextSwap></span></>}</span>
         <Disclose open={open} />
         <span style={{ flex: 1 }} />
-        {item.dur && <span className="trk-tool-status" style={{ color: 'var(--fg-3)' }} title={item.thinking ? 'Thinking in progress' : 'Observed reasoning stream duration'}><span aria-hidden="true" style={{ width: 5, height: 5, borderRadius: 'var(--radius-dot)', background: 'currentColor' }} /><TextSwap style={metaLine}>{item.dur}</TextSwap></span>}
+        <span className="trk-tool-status" style={{ color: 'var(--fg-3)' }} title={duration === '—' ? 'Thinking duration was not recorded' : item.thinking ? 'Thinking in progress' : 'Observed reasoning stream duration'}><span aria-hidden="true" style={{ width: 5, height: 5, borderRadius: 'var(--radius-dot)', background: 'currentColor' }} /><TextSwap>{duration}</TextSwap></span>
       </button>
       <Fold open={open}>
-        <div inert={!open} style={{ borderTop: '1px solid var(--line-divider)', padding: '10px 12px' }}>
-          <div className="trk-thinking-content" data-summary={item.format === 'summary' ? '' : undefined} style={{ ...serif(13), lineHeight: 1.65, color: recorded ? 'var(--fg-2)' : 'var(--fg-1)' }}>
+        <div inert={!open} style={{ borderTop: '1px solid var(--line-divider)', padding: '6px 10px' }}>
+          <div className="trk-thinking-content" data-summary={item.format === 'summary' ? '' : undefined} style={{ ...serif(12), lineHeight: 1.5, color: recorded ? 'var(--fg-2)' : 'var(--fg-1)' }}>
             {recorded ? <Markdown text={item.text} cursor={item.thinking} /> : <p style={{ margin: 0, fontStyle: 'italic' }}>
               This transcript records a reasoning block but contains no readable reasoning text or summary.
             </p>}
@@ -402,17 +421,6 @@ function PlanRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'plan
       </Fold>
     </div>
   )
-}
-
-const toolIcon: Record<Extract<LedgerItem, { kind: 'tool' }>['icon'], IconName> = {
-  search: 'search',
-  'file-diff': 'fileDiff',
-  summon: 'userPlus',
-  send: 'send',
-  file: 'file',
-  code: 'code',
-  terminal: 'terminal',
-  wrench: 'wrench',
 }
 
 function ToolPayload({ text, active }: { text: string; active: boolean }) {
@@ -602,10 +610,7 @@ function ToolDetailView({ detail, open }: { detail: ToolDetail; open: boolean })
 function ToolRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'tool' }>; cardMax: string }) {
   const open = useConsole((s) => s.open[item.uid] ?? item.defaultOpen ?? false)
   const { toggleCardOpen } = useConsole((s) => s.actions)
-  const status = item.status === 'run' ? 'run' : item.badge?.label === 'failed' ? 'failed' : 'done'
-  const color = status === 'run' ? 'var(--color-teal)' : status === 'failed' ? 'var(--color-red)' : 'var(--color-sage)'
-  const verbs = { read: ['Reading', 'Read'], list: ['Listing', 'Listed'], search: ['Searching', 'Searched'], command: ['Running', 'Ran'], edit: ['Editing', 'Edited'], code: ['Running', 'Ran'], load: ['Loading', 'Loaded'] }
-  const brief = item.action ? `${verbs[item.action.kind][status === 'run' ? 0 : 1]} ${item.action.target}`.trim() : item.name
+  const { title: brief, icon, status, color } = toolHeader(item)
   return (
     <div
       id={`pm-${item.uid}`}
@@ -622,7 +627,7 @@ function ToolRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'tool' }
         onClick={() => toggleCardOpen(item.uid, item.defaultOpen ?? false)}
       >
         {!open && <span className="trk-trace-hover-brackets" aria-hidden="true"><Brackets size={6} /></span>}
-        <Icon name={toolIcon[item.icon]} />
+        <Icon name={icon} />
         {!item.action && <span style={{ font: 'var(--meta)' }}>Tool</span>}
         <span className="trk-tool-name" title={item.action ? `${item.name}\n${brief}` : item.name} style={mono(11)}><span className="trk-trace-label" data-running={status === 'run' ? '' : undefined}>{brief}</span></span>
         <Disclose open={open} />
@@ -1162,7 +1167,7 @@ function Rule({ children }: { children?: ReactNode }) {
   )
 }
 
-function StreamRow({ item, cardMax, showAgentLabel }: { item: Extract<LedgerItem, { kind: 'stream' }>; cardMax: string; showAgentLabel: boolean }) {
+function StreamRow({ item, cardMax, showAgentLabel, showCopy }: { item: Extract<LedgerItem, { kind: 'stream' }>; cardMax: string; showAgentLabel: boolean; showCopy: boolean }) {
   const running = useConsole((s) => s.running)
   const streaming = item.streaming && running
   const target = useRef(item.text)
@@ -1193,18 +1198,18 @@ function StreamRow({ item, cardMax, showAgentLabel }: { item: Extract<LedgerItem
     return () => { cancelAnimationFrame(frame); cancelAnimationFrame(scroll) }
   }, [streaming])
   return (
-    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" style={{ maxWidth: `min(100%, calc(${cardMax} + 34px))`, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
+    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" style={{ maxWidth: cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
       {showAgentLabel && <AgentLabel label={item.label ?? botLabel()} />}
       <Markdown text={streaming ? text : item.text} cursor={streaming} />
-      <div className="trk-message-actions">
+      {showCopy && <div className="trk-message-actions">
         <CopyButton text={streaming ? text : item.text} label="Copy message" className="trk-message-copy" />
-      </div>
+      </div>}
     </div>
   )
 }
 
 /** Dispatch a ledger item to its card. `i` staggers entry animations. */
-export function LedgerRow({ item, cardMax, i, showAgentLabel = true }: { item: LedgerItem; cardMax: string; i?: number; showAgentLabel?: boolean }) {
+export function LedgerRow({ item, cardMax, i, showAgentLabel = true, showCopy = false }: { item: LedgerItem; cardMax: string; i?: number; showAgentLabel?: boolean; showCopy?: boolean }) {
   const threadId = useConsole((s) => s.selThreadId)
   switch (item.kind) {
     case 'artifact':
@@ -1244,7 +1249,7 @@ export function LedgerRow({ item, cardMax, i, showAgentLabel = true }: { item: L
     case 'user':
       return <UserRow item={item} />
     case 'agent':
-      return <AgentRow item={item} cardMax={cardMax} showAgentLabel={showAgentLabel} />
+      return <AgentRow item={item} cardMax={cardMax} showAgentLabel={showAgentLabel} showCopy={showCopy} />
     case 'code':
       return <CodeRow item={item} cardMax={cardMax} />
     case 'think':
@@ -1275,7 +1280,7 @@ export function LedgerRow({ item, cardMax, i, showAgentLabel = true }: { item: L
         </div>
       )
     case 'stream':
-      return <StreamRow item={item} cardMax={cardMax} showAgentLabel={showAgentLabel} />
+      return <StreamRow item={item} cardMax={cardMax} showAgentLabel={showAgentLabel} showCopy={showCopy} />
     case 'end':
       return (
         <div id={`pm-${item.uid}`} style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 2 }}>

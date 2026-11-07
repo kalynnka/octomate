@@ -119,6 +119,23 @@
 .lt-disclose { display: inline-block; transition: transform var(--motion-base) var(--ease-out); }
 [data-open] .lt-disclose, .lt-disclose[data-open] { transform: rotate(90deg); }
 
+@media (prefers-reduced-motion: no-preference) {
+  .trk-trace-row > .lt-fold,
+  .trk-thinking-toggle > .lt-disclose,
+  .trk-tool-toggle > .lt-disclose,
+  .trk-trace-summary > .lt-disclose {
+    transition-duration: calc(var(--motion-base) * 2);
+    transition-timing-function: var(--ease-in-out);
+  }
+  .trk-trace-group::details-content {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows calc(var(--motion-base) * 2) var(--ease-in-out), content-visibility calc(var(--motion-base) * 2) allow-discrete;
+  }
+  .trk-trace-group[open]::details-content { grid-template-rows: 1fr; }
+  .trk-trace-items { min-height: 0; overflow: hidden; }
+}
+
 /* --- Dropdown / popover: hidden by default, toggle [data-open]. ---------- */
 .lt-menu { opacity: 0; transform: translateY(-6px); visibility: hidden; transition: opacity var(--motion-base) var(--ease-out), transform var(--motion-base) var(--ease-out), visibility 0s linear var(--motion-base); }
 .lt-menu[data-open] { opacity: 1; transform: none; visibility: visible; transition-delay: 0s; }

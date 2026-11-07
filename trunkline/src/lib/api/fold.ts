@@ -342,8 +342,7 @@ function thinkingFormat(part: ThinkingPart): 'reasoning' | 'summary' {
   return part.provider_details?.reasoning_format ?? (part.provider_name === 'anthropic' ? 'summary' : 'reasoning')
 }
 
-export function botLabel(agent?: string | null): string {
-  const id = agent?.replace(/-native$/, '')
+export function botLabel(id?: string | null): string {
   if (!id || id === 'agent' || id === 'relay') return 'Octomate'
   const name = /^(deepseek|dsh)$/i.test(id) ? 'Dsh' : id.charAt(0).toUpperCase() + id.slice(1)
   return `Octomate(${name})`
@@ -721,7 +720,7 @@ export class TurnFold {
             if (part && event.delta.content_delta) {
               part.started ??= Date.now()
               part.text += event.delta.content_delta
-              this.sink.patch(part.uid, { text: part.text })
+              this.sink.patch(part.uid, { text: part.text, startedAt: part.started })
             }
             break
           }

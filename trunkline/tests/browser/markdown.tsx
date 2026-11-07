@@ -81,7 +81,7 @@ export function Harness() {
       <LedgerRow cardMax="100%" item={{ kind: 'tool', uid: 'formatted-tool', name: 'codex_command_execution', icon: 'terminal', status: 'done', defaultOpen: true, detail: { type: 'plain', args: toolArgs, res: toolResult } }} />
       <LedgerRow cardMax="100%" item={{ kind: 'tool', uid: 'partial-tool', name: 'exec', icon: 'code', status: 'done', defaultOpen: true, detail: { type: 'plain', args: '{"command":"unfinished …', res: 'ordinary output' } }} />
     </section> : reasoning ? <section aria-label="Reasoning cards" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {reasoningItems.map(item => <LedgerRow key={item.uid} item={item} cardMax="100%" />)}
+      {reasoningItems.map(item => <LedgerRow key={item.uid} item={item} cardMax="100%" showCopy={item.uid === 'copy-agent' || item.uid === 'copy-stream'} />)}
     </section> : <Markdown text={message.text} cursor={message.cursor} />}
   </main>
 }

@@ -15,7 +15,7 @@ for (const width of [1280, 390]) {
     const conversation: ApiConversation = {
       id: 'conversation', external_id: null, thread_id: thread.id, agent_tentacle_id: 'codex', subagent_id: '',
       parent_conversation_id: null, name: null, status: 'active', permission_mode: null, effort: null, allowed_tools: [],
-      runs: [{ id: 'run', kind: 'octomate', conversation_id: 'conversation', name: null, model_name: null,
+      runs: [{ id: 'run', kind: width === 1280 ? 'external' : 'octomate', conversation_id: 'conversation', name: null, model_name: null,
         permission_mode: null, cwd: '/work/chat/thread-a', parent_run_id: null, parent_tool_call_id: null, started_at: timestamp }],
     }
     const prompt: ApiThreadMessage = {
@@ -31,6 +31,10 @@ for (const width of [1280, 390]) {
         { part_kind: 'thinking', content: '**Preparing binary-search example**', provider_details: { reasoning_format: 'summary' } },
         { part_kind: 'thinking', content: '', provider_details: { reasoning_format: 'summary' } },
         { part_kind: 'text', content: 'Use `a ** b` and \\*literal\\*.\n\n```text\nx ** y\n```\n\nRead the [guide](https://example.com) &amp; continue.' },
+        { part_kind: 'builtin-tool-call', tool_name: 'codex_command_execution', tool_call_id: 'read', args: { command: 'cat README.md', commandActions: [{ type: 'read', path: '/work/README.md' }] } },
+        { part_kind: 'builtin-tool-return', tool_name: 'codex_command_execution', tool_call_id: 'read', content: 'File contents.' },
+        { part_kind: 'builtin-tool-call', tool_name: 'exec', tool_call_id: 'code', args: { code: 'inspect()' } },
+        { part_kind: 'builtin-tool-return', tool_name: 'exec', tool_call_id: 'code', content: 'Inspection complete.' },
       ],
     }
     await page.routeWebSocket(/\/api\/trunkline\/live/, () => {})
@@ -39,6 +43,10 @@ for (const width of [1280, 390]) {
       const path = new URL(route.request().url()).pathname
       if (path === '/api/auth/me') return route.fulfill({ json: { id: 'owner', username: 'owner', name: 'Owner', nickname: null } })
       if (path === '/api/artifacts/config') return route.fulfill({ json: { path: '/artifacts' } })
+      if (path === '/api/trunkline/agents') return route.fulfill({ json: [{
+        id: 'codex', icon_url: '/agent-icons/openai.svg', description: '', gateway: true, default_model: null,
+        permission_modes: [], default_permission_mode: null, routes: [], driven_sessions: 0, native_sessions: 1,
+      }] })
       if (path === '/api/trunkline/threads') {
         await threadsReady
         return route.fulfill({ json: [thread] })
@@ -50,7 +58,7 @@ for (const width of [1280, 390]) {
       if (path.endsWith('/thread-a/project')) return route.fulfill({ json: null })
       if (path.endsWith('/thread-a/usage') || path.endsWith('/permissions')) return route.fulfill({ json: {} })
       if (path.endsWith('/health')) return route.fulfill({ json: { ok: true } })
-      if (['/api/trunkline/channels', '/api/trunkline/routes', '/api/trunkline/projects', '/api/trunkline/agents',
+      if (['/api/trunkline/channels', '/api/trunkline/routes', '/api/trunkline/projects',
         '/api/trunkline/threads/thread-a/batches'].includes(path)) return route.fulfill({ json: [] })
       return route.fulfill({ status: 404, json: { detail: `Unmocked test API: ${path}` } })
     })
@@ -112,6 +120,12 @@ for (const width of [1280, 390]) {
     await expect(panel).not.toHaveAttribute('data-folded')
     const timeline = page.locator('#trk-timeline')
     const conversationFold = timeline.getByTitle('Fold / unfold conversation', { exact: true })
+    if (width === 1280) {
+      await expect(conversationFold).toContainText('ingest')
+      await expect(conversationFold).not.toContainText('ingested')
+    } else {
+      await expect(conversationFold).toContainText('● active')
+    }
     await conversationFold.press('Space')
     await expect(conversationFold).toHaveAttribute('aria-expanded', 'false')
     await conversationFold.press('Enter')
@@ -123,7 +137,14 @@ for (const width of [1280, 390]) {
     await expect(runFold).toHaveAttribute('aria-expanded', 'true')
     await expect(timeline.locator('[data-uid="prompt"]')).toContainText('Check the workspace.')
     await expect(timeline.locator('[data-uid="reply.0"]')).toContainText('Checking the workspace.')
+    const identity = timeline.locator('[data-uid="reply.0"] [data-agent-label]')
+    await expect(identity).toHaveText('Octomate')
+    await expect(identity.getByRole('img', { name: 'Octomate(Codex)' })).toBeVisible()
+    await expect(identity.locator('.trk-agent-icon')).toHaveCSS('width', '10px')
+    await expect(identity.locator('.trk-agent-icon')).toHaveCSS('height', '10px')
+    await expect.poll(() => identity.locator('img').evaluate(el => (el as HTMLImageElement).naturalWidth)).toBeGreaterThan(0)
     const reasoning = timeline.locator('[data-uid="reply.1"]')
+    await expect(reasoning.locator(':scope > div > span').first()).toHaveText('thk')
     await expect(reasoning).toContainText('Trace the boundary. Inspect ownership. Check permissions.')
     await expect(reasoning).not.toContainText('Summary')
     await expect(reasoning).not.toContainText('Unavailable')
@@ -136,6 +157,14 @@ for (const width of [1280, 390]) {
     await expect(unavailable).toContainText('thinking · Unavailable')
     await expect(unavailable).not.toContainText('Summary')
     await expect(timeline.locator('[data-uid="reply.4"]')).toContainText('Use a ** b and *literal*. x ** y Read the guide & continue.')
+    await expect(timeline.locator('[data-uid="reply.5"]')).toContainText('Read README.md')
+    await expect(timeline.locator('[data-uid="reply.7"]')).toContainText('Ran code')
+    await expect(timeline.locator('[data-uid] > svg')).toHaveCount(0)
+    await expect(timeline.locator('.trk-trace-hover-brackets, .trk-timeline-status')).toHaveCount(0)
+    for (const scheme of ['dark', 'light']) {
+      await page.getByRole('button', { name: `Switch to ${scheme}`, exact: true }).press('Enter')
+      await timeline.screenshot({ animations: 'disabled', path: `/private/tmp/inky-timeline-brief-${width}-${scheme}.png` })
+    }
     if (width === 390) {
       await page.getByRole('button', { name: 'Close timeline', exact: true }).click()
       await expect(toggle).toBeFocused()
@@ -155,8 +184,36 @@ for (const width of [1280, 390]) {
     await expect(card).toHaveClass(/trk-flash/)
     await expect(card).toBeInViewport()
     await expect(card).toBeFocused()
-    await card.getByRole('button').click()
+    await expect(card.getByRole('button')).toHaveAttribute('aria-expanded', 'true')
     await expect(card.locator('strong')).toHaveText('Preparing binary-search example')
+    await expect(card.locator('strong')).toBeVisible()
+    const manual = page.locator('[id="pm-reply.1"]')
+    await manual.getByRole('button').click()
+    await expect(manual.getByRole('button')).toHaveAttribute('aria-expanded', 'true')
+    if (width === 390) await toggle.press('Enter')
+    await timeline.locator('[data-uid="reply.5"]').press('Enter')
+    const tool = page.locator('[id="pm-reply.5"]')
+    await expect(tool).toBeFocused()
+    await expect(tool.getByRole('button')).toHaveAttribute('aria-expanded', 'true')
+    await expect(tool.locator('pre').last()).toBeVisible()
+    await expect(card.getByRole('button')).toHaveAttribute('aria-expanded', 'false')
+    await expect.poll(() => card.locator(':scope > .lt-fold').evaluate(el => el.getBoundingClientRect().height)).toBeLessThan(1)
+    await expect(card).not.toHaveClass(/trk-flash/)
+    await expect(manual.getByRole('button')).toHaveAttribute('aria-expanded', 'true')
+    if (width === 390) await toggle.press('Enter')
+    await timeline.locator('[data-uid="reply.5"]').press('Enter')
+    await expect(tool).toBeFocused()
+    await expect(tool.getByRole('button')).toHaveAttribute('aria-expanded', 'true')
+    await expect(tool).toHaveClass(/trk-flash/)
+    await tool.evaluate(el => {
+      for (const animation of el.getAnimations()) {
+        if (animation instanceof CSSAnimation && animation.animationName === 'trkFlash') {
+          animation.pause()
+          animation.currentTime = 100
+        }
+      }
+    })
+    await tool.screenshot({ path: `/private/tmp/inky-timeline-highlight-${width}.png` })
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     await expect(page.locator('vite-error-overlay')).toHaveCount(0)
     expect(errors).toEqual([])

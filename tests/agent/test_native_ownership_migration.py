@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sqlite3
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import Mock
@@ -51,6 +52,22 @@ class MigrationCopy:
     target: Path
     native_id: str
     agent_id: str
+
+
+@pytest.fixture(autouse=True)
+def migration_foreign_keys() -> Iterator[None]:
+    def enforce_foreign_keys(
+        connection: DBAPIConnection, _: ConnectionPoolEntry
+    ) -> None:
+        cursor = connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    event.listen(Engine, "connect", enforce_foreign_keys)
+    try:
+        yield
+    finally:
+        event.remove(Engine, "connect", enforce_foreign_keys)
 
 
 @pytest.fixture(
@@ -155,19 +172,7 @@ def test_upgrade_preserves_history_and_removes_runtime_id(
     migration_copy: MigrationCopy,
 ) -> None:
     case = migration_copy
-
-    def enforce_foreign_keys(
-        connection: DBAPIConnection, _: ConnectionPoolEntry
-    ) -> None:
-        cursor = connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
-
-    event.listen(Engine, "connect", enforce_foreign_keys)
-    try:
-        command.upgrade(case.config, REVISION)
-    finally:
-        event.remove(Engine, "connect", enforce_foreign_keys)
+    command.upgrade(case.config, REVISION)
     with (
         sqlite3.connect(case.source.as_uri() + "?mode=ro", uri=True) as original,
         sqlite3.connect(case.target) as copied,
@@ -217,7 +222,7 @@ def test_upgrade_preserves_history_and_removes_runtime_id(
         )
 
 
-def test_collision_refuses_without_merging_history(
+def test_different_native_sessions_refuse_without_merging_history(
     migration_copy: MigrationCopy,
 ) -> None:
     case = migration_copy
@@ -233,11 +238,12 @@ def test_collision_refuses_without_merging_history(
         )
         row[columns.index("id")] = uuid7().hex
         row[columns.index("agent_tentacle_id")] = case.agent_id
+        row[columns.index("external_id")] = "different-session"
         copied.execute(
             f"INSERT INTO conversations VALUES ({','.join('?' for _ in columns)})", row
         )
         before = "\n".join(copied.iterdump())
-    with pytest.raises(RuntimeError, match="already owns that context"):
+    with pytest.raises(RuntimeError, match="different native sessions"):
         command.upgrade(case.config, REVISION)
     with sqlite3.connect(case.target) as copied:
         assert "\n".join(copied.iterdump()) == before
@@ -283,7 +289,7 @@ def test_failed_column_drop_rolls_back_ownership_and_index(
 
 
 @pytest.mark.parametrize("table", ["threads", "user_profiles"])
-def test_address_collision_rolls_back_without_merging_rows(
+def test_identical_native_addresses_merge(
     migration_copy: MigrationCopy, table: str
 ) -> None:
     case = migration_copy
@@ -295,13 +301,285 @@ def test_address_collision_rolls_back_without_merging_rows(
                 (case.native_id,),
             ).fetchone()
         )
-        row[columns.index("id")] = uuid7().hex
+        target_id = uuid7().hex
+        row[columns.index("id")] = target_id
         row[columns.index("channel_tentacle_id")] = case.agent_id
         copied.execute(
             f"INSERT INTO {table} VALUES ({','.join('?' for _ in columns)})", row
         )
-        before = "\n".join(copied.iterdump())
-    with pytest.raises(IntegrityError, match="UNIQUE constraint failed"):
-        command.upgrade(case.config, REVISION)
+        if table == "threads":
+            copied.execute(
+                "INSERT INTO thread_ledgers VALUES (?, ?, NULL)", (target_id, target_id)
+            )
+    command.upgrade(case.config, REVISION)
     with sqlite3.connect(case.target) as copied:
-        assert "\n".join(copied.iterdump()) == before
+        assert copied.execute(
+            f"SELECT id FROM {table} WHERE channel_tentacle_id=?", (case.agent_id,)
+        ).fetchall() == [(target_id,)]
+        assert copied.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def clone_row(
+    connection: sqlite3.Connection,
+    table: str,
+    source_id: str,
+    **changes: str | int | None,
+) -> str:
+    cursor = connection.execute(f"SELECT * FROM {table} WHERE id=?", (source_id,))
+    assert cursor.description is not None
+    values = dict(
+        zip(
+            (column[0] for column in cursor.description), cursor.fetchone(), strict=True
+        )
+    )
+    new_id = uuid7().hex
+    values.update(id=new_id, **changes)
+    connection.execute(
+        f"INSERT INTO {table} ({','.join(values)}) VALUES ({','.join('?' for _ in values)})",
+        list(values.values()),
+    )
+    return new_id
+
+
+@dataclass
+class DuplicateHistory:
+    case: MigrationCopy
+    source_thread: str
+    target_thread: str
+    source_conversation: str
+    target_conversation: str
+    source_message: str
+    target_message: str
+    source_profile: str
+    target_profile: str
+
+
+@pytest.fixture
+def duplicate_history(migration_copy: MigrationCopy) -> DuplicateHistory:
+    case = migration_copy
+    with sqlite3.connect(case.target) as db:
+        db.execute("PRAGMA foreign_keys=ON")
+        source_thread = db.execute(
+            "SELECT id FROM threads WHERE channel_tentacle_id=?", (case.native_id,)
+        ).fetchone()[0]
+        target_thread = clone_row(
+            db, "threads", source_thread, channel_tentacle_id=case.agent_id
+        )
+        db.execute(
+            "INSERT INTO thread_ledgers VALUES (?, ?, NULL)",
+            (target_thread, target_thread),
+        )
+        source_conversation, source_file = db.execute(
+            "SELECT id, transcript_file_id FROM conversations WHERE thread_id=? AND subagent_id=''",
+            (source_thread,),
+        ).fetchone()
+        target_file = clone_row(db, "files", source_file, key="latest-transcript")
+        target_conversation = clone_row(
+            db,
+            "conversations",
+            source_conversation,
+            thread_id=target_thread,
+            agent_tentacle_id=case.agent_id,
+            transcript_file_id=target_file,
+        )
+        source_run = db.execute(
+            "SELECT id FROM agent_runs WHERE conversation_id=?", (source_conversation,)
+        ).fetchone()[0]
+        target_run = clone_row(
+            db,
+            "agent_runs",
+            source_run,
+            conversation_id=target_conversation,
+            name=case.agent_id,
+            start_offset=100,
+            end_offset=200,
+        )
+        db.executemany(
+            "INSERT INTO conversation_runs VALUES (?, ?)",
+            [(target_conversation, source_run), (target_conversation, target_run)],
+        )
+        source_model = db.execute(
+            "SELECT id FROM model_messages WHERE run_id=?", (source_run,)
+        ).fetchone()[0]
+        target_model = clone_row(db, "model_messages", source_model, run_id=target_run)
+        source_message, source_profile, created = db.execute(
+            "SELECT id,sender_id,created_at FROM thread_messages WHERE thread_id=?",
+            (source_thread,),
+        ).fetchone()
+        target_profile = clone_row(
+            db, "user_profiles", source_profile, channel_tentacle_id=case.agent_id
+        )
+        db.execute(
+            "UPDATE thread_messages SET platform_message_id='shared' WHERE id=?",
+            (source_message,),
+        )
+        target_message = clone_row(
+            db,
+            "thread_messages",
+            source_message,
+            thread_id=target_thread,
+            sender_id=target_profile,
+            agent_tentacle_id=case.agent_id,
+        )
+        clone_row(db, "thread_messages", source_message, platform_message_id="old-only")
+        clone_row(db, "thread_messages", target_message, platform_message_id="new-only")
+        db.execute(
+            "UPDATE threads SET source_cursor_message_id=? WHERE id=?",
+            (source_message, source_thread),
+        )
+        db.executemany(
+            "INSERT INTO message_binding (thread_message_id,model_message_id,kind,run_id,tool_call_id,position,created_at) VALUES (?,?,'reply',?,NULL,0,?)",
+            [
+                (source_message, source_model, source_run, created),
+                (target_message, source_model, source_run, created),
+                (source_message, target_model, target_run, created),
+            ],
+        )
+        for conversation_id, ref in [
+            (source_conversation, "old-todo"),
+            (target_conversation, "new-todo"),
+            (source_conversation, "shared-todo"),
+            (target_conversation, "shared-todo"),
+        ]:
+            db.execute(
+                "INSERT INTO todos (id,conversation_id,ref,content,active_form,status,position,parent_ref,depends_on,created_at,updated_at) VALUES (?,?,?,'Keep the history','','pending',0,NULL,'[]',?,?)",
+                (uuid7().hex, conversation_id, ref, created, created),
+            )
+    return DuplicateHistory(
+        case,
+        source_thread,
+        target_thread,
+        source_conversation,
+        target_conversation,
+        source_message,
+        target_message,
+        source_profile,
+        target_profile,
+    )
+
+
+def test_duplicate_histories_keep_runs_messages_bindings_and_references(
+    duplicate_history: DuplicateHistory,
+) -> None:
+    history = duplicate_history
+    case = history.case
+    with sqlite3.connect(case.target) as db:
+        runs = set(db.execute("SELECT id FROM agent_runs"))
+        model_messages = db.execute(
+            "SELECT * FROM model_messages ORDER BY id"
+        ).fetchall()
+        files = db.execute("SELECT * FROM files ORDER BY id").fetchall()
+        transcript = db.execute(
+            "SELECT transcript_file_id FROM conversations WHERE id=?",
+            (history.target_conversation,),
+        ).fetchone()
+    command.upgrade(case.config, REVISION)
+    with sqlite3.connect(case.target) as db:
+        assert set(db.execute("SELECT id FROM agent_runs")) == runs
+        assert (
+            db.execute("SELECT * FROM model_messages ORDER BY id").fetchall()
+            == model_messages
+        )
+        assert db.execute("SELECT * FROM files ORDER BY id").fetchall() == files
+        assert db.execute(
+            "SELECT id FROM threads WHERE channel_tentacle_id=?", (case.agent_id,)
+        ).fetchall() == [(history.target_thread,)]
+        assert (
+            db.execute(
+                "SELECT transcript_file_id FROM conversations WHERE id=?",
+                (history.target_conversation,),
+            ).fetchone()
+            == transcript
+        )
+        assert db.execute(
+            "SELECT source_cursor_message_id FROM threads WHERE id=?",
+            (history.target_thread,),
+        ).fetchone() == (history.target_message,)
+        assert set(db.execute("SELECT conversation_id FROM agent_runs")) == {
+            (history.target_conversation,)
+        }
+        assert (
+            set(
+                db.execute(
+                    "SELECT run_id FROM conversation_runs WHERE conversation_id=?",
+                    (history.target_conversation,),
+                )
+            )
+            == runs
+        )
+        assert db.execute(
+            "SELECT parent_conversation_id FROM conversations WHERE subagent_id='child'"
+        ).fetchone() == (history.target_conversation,)
+        assert db.execute(
+            "SELECT source_conversation_id,target_conversation_id,thread_id FROM channel_handoffs"
+        ).fetchone() == (
+            history.target_conversation,
+            history.target_conversation,
+            history.target_thread,
+        )
+        assert db.execute(
+            "SELECT conversation_id FROM deferred_action_batches"
+        ).fetchone() == (history.target_conversation,)
+        assert set(
+            db.execute(
+                "SELECT thread_id,sender_id,platform_message_id FROM thread_messages"
+            )
+        ) == {
+            (history.target_thread, history.target_profile, key)
+            for key in ("shared", "old-only", "new-only")
+        }
+        assert db.execute(
+            "SELECT thread_message_id,count(*) FROM message_binding GROUP BY thread_message_id"
+        ).fetchall() == [(history.target_message, 2)]
+        assert set(db.execute("SELECT conversation_id,ref FROM todos")) == {
+            (history.target_conversation, key)
+            for key in ("old-todo", "new-todo", "shared-todo")
+        }
+        assert db.execute(
+            "SELECT * FROM thread_ledgers WHERE thread_id=?", (history.target_thread,)
+        ).fetchall() == [(history.target_thread, history.target_thread, None)]
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+@pytest.mark.parametrize("conflict", ["message", "binding", "session", "todo", "fork"])
+def test_duplicate_history_conflicts_roll_back_every_merge(
+    duplicate_history: DuplicateHistory,
+    conflict: str,
+) -> None:
+    history = duplicate_history
+    case = history.case
+    with sqlite3.connect(case.target) as db:
+        if conflict == "message":
+            db.execute(
+                "UPDATE thread_messages SET message_text='Different answer' WHERE id=?",
+                (history.target_message,),
+            )
+        elif conflict == "binding":
+            db.execute(
+                "UPDATE message_binding SET position=1 WHERE thread_message_id=?",
+                (history.target_message,),
+            )
+        elif conflict == "session":
+            db.execute(
+                "UPDATE conversations SET external_id='different-session' WHERE id=?",
+                (history.target_conversation,),
+            )
+        elif conflict == "todo":
+            db.execute(
+                "UPDATE todos SET content='Different task' WHERE conversation_id=? AND ref='shared-todo'",
+                (history.target_conversation,),
+            )
+        else:
+            fork = db.execute(
+                "SELECT thread_id FROM conversations WHERE agent_tentacle_id='coding'"
+            ).fetchone()[0]
+            db.execute(
+                "INSERT INTO thread_ledgers VALUES (?, ?, ?)",
+                (fork, history.source_thread, history.source_message),
+            )
+        db.commit()
+        before = "\n".join(db.iterdump())
+    with pytest.raises(RuntimeError, match="Cannot merge"):
+        command.upgrade(case.config, REVISION)
+    with sqlite3.connect(case.target) as db:
+        assert "\n".join(db.iterdump()) == before

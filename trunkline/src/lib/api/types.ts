@@ -19,8 +19,6 @@ export interface ChannelMeta {
   sub: string
   /** brand color (CSS color) used for the channel letter tile and labels */
   brand: string
-  /** hook-ingested native agent channel (claude / codex) */
-  native?: boolean
 }
 
 /** Visual tone of a thread's status dot. */
@@ -169,8 +167,9 @@ export type LedgerItem =
   | { kind: 'agent'; uid: string; agentId?: string; label: string; blocks: AgentBlock[]; reply?: MessageReply }
   | { kind: 'code'; uid: string; lang: string; lines: string[] }
   /** `thinking` is false once the part closed — the card folds itself then,
-   *  the way `stream.streaming` marks a reply as settled */
-  | { kind: 'think'; uid: string; agentId?: string; dur: string; text: string; thinking: boolean; format?: 'reasoning' | 'summary' }
+   *  the way `stream.streaming` marks a reply as settled.
+   *  `startedAt` is the browser timestamp (ms) of the first live thinking delta. */
+  | { kind: 'think'; uid: string; agentId?: string; dur: string; startedAt?: number; text: string; thinking: boolean; format?: 'reasoning' | 'summary' }
   | {
       kind: 'plan'
       uid: string

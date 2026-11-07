@@ -28,6 +28,7 @@ interface ThreadRow {
   tag: string
   title: string
   agent: string
+  native: boolean
   on: boolean
   running: boolean
   pick?: () => void
@@ -316,6 +317,7 @@ export function ThreadsSidebar() {
                       tag: ntStarted ? selThreadId : 'THR-NEW',
                       title: ntTitle || 'untitled — new thread',
                       agent: `${ntAgent} · ${ntModel}`,
+                      native: false,
                       on: true,
                       running: currentRunning || activeKeys.has(`key:${selThreadId}`),
                     },
@@ -327,6 +329,7 @@ export function ThreadsSidebar() {
                 tag: t.tag ?? t.id,
                 title: t.title,
                 agent: t.agentLabel,
+                native: t.tone === 'native',
                 on: selected(t),
                 running: isRunning(t),
                 pick: () => selectThread(c.id, t.id, threadOrder.findIndex((row) => row.id === t.id) < currentThreadIndex ? 'up' : 'down'),
@@ -544,6 +547,14 @@ export function ThreadsSidebar() {
                         >
                           <span style={{ ...mono(8.5, 700), color: c.brand, whiteSpace: 'nowrap', flexShrink: 0 }}>
                             <TextSwap>{t.tag}</TextSwap>
+                          </span>
+                          <span
+                            data-thread-origin={t.native ? 'native' : 'driven'}
+                            aria-label={t.native ? 'Native thread' : 'Driven thread'}
+                            title={t.native ? 'Native thread · tailed from the agent' : 'Driven thread · run by Octomate'}
+                            style={{ ...mono(7.5, 700), color: t.native ? 'var(--info-strong)' : 'var(--fg-3)', border: '1px solid var(--line-color)', padding: '0 2px', lineHeight: '12px', flexShrink: 0 }}
+                          >
+                            {t.native ? 'N' : 'D'}
                           </span>
                           <ThreadActivity id={t.id} threadKey={t.threadKey} enabled={!folded} fallback={t.agent} />
                         </div>

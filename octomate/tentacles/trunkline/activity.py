@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from time import monotonic
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import UUID7, BaseModel, Field, ValidationError
@@ -36,8 +36,11 @@ from octomate.capabilities.harness.events import (
     WireEvent,
 )
 from octomate.managers.thread import ThreadManager
-from octomate.nerve import Nerve, ThreadTopic
+from octomate.nerve import ThreadTopic
 from octomate.schemas.thread import ThreadKey
+
+if TYPE_CHECKING:
+    from octomate.base import Octomate
 
 
 class ActivityWatch(BaseModel):
@@ -104,7 +107,7 @@ class ActivityUpdate(BaseModel):
 
 async def watch_activity(
     websocket: WebSocket,
-    nerve: Nerve,
+    octomate: Octomate,
     threads: ThreadManager,
     user_id: UUID7,
     channel_id: str,
@@ -113,6 +116,7 @@ async def watch_activity(
 
     Repeated activity is sent at most every 30 seconds to refresh the client's
     inactivity deadline. Changed states and terminal events are sent immediately.
+    Each authorized watch starts with current runtime activity, then new events.
     Each reader is cancelled on removal or disconnect; no state outlives the socket.
     """
     watching: dict[str, asyncio.Task[None]] = {}
@@ -121,9 +125,21 @@ async def watch_activity(
     async def send_activity(
         identity: str, key: ThreadKey, ready: asyncio.Event
     ) -> None:
-        previous: ActivityUpdate | None = None
-        sent_at = 0.0
-        with nerve.subscribe(ThreadTopic(key), backlog=4096) as impulses:
+        with octomate.nerve.subscribe(ThreadTopic(key), backlog=4096) as impulses:
+            task = octomate.awakes.get(key)
+            agent = octomate.agents.get(key.channel_tentacle_id)
+            running = (task is not None and not task.done()) or (
+                agent is not None and key in agent.native_running_threads
+            )
+            previous = ActivityUpdate(
+                key=identity,
+                event=RunActivityChangedEvent(activity="working")
+                if running
+                else RunEndedEvent(),
+            )
+            async with sending:
+                await websocket.send_text(previous.model_dump_json(exclude_none=True))
+            sent_at = monotonic()
             ready.set()
             async for impulse in impulses:
                 update = ActivityUpdate.from_event(identity, impulse.event)

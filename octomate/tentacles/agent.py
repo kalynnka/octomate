@@ -152,6 +152,11 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         """Accepted native transcript streams currently attached to this agent."""
         return Counter()
 
+    @property
+    def native_running_threads(self) -> set[ThreadKey]:
+        """Threads with open native turns; attached idle streams are excluded."""
+        return set()
+
     @cached_property
     def run_tasks(self) -> set[asyncio.Task[None]]:
         """Collectors registered by agent harnesses that opt into `observe_run`.

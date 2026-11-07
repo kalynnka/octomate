@@ -58,6 +58,17 @@ export function ChatLog() {
   const rows = [...visible, ...live.filter((item) => !saved.has(item.uid))]
   const dispatch = rows.findLast((item) => item.kind === 'dots')
   const items = rows.filter((item) => item.kind !== 'dots')
+  const firstLive = live.find(item => item.kind !== 'dots' && !saved.has(item.uid))
+  const copyable = new Set<string>()
+  let lastOutput: string | undefined
+  for (const item of items) {
+    if (item === firstLive || item.kind === 'user' || item.kind === 'end' || item.kind === 'session-open') {
+      if (lastOutput) copyable.add(lastOutput)
+      lastOutput = undefined
+    }
+    if (item.kind === 'agent' || item.kind === 'stream') lastOutput = item.uid
+  }
+  if (!running && lastOutput) copyable.add(lastOutput)
   const status = activity ?? (dispatch && { text: dispatch.label, attention: false })
   const [shown, setShown] = useState({ threadId, status })
   if (shown.threadId !== threadId || (status && (status.text !== shown.status?.text || status.attention !== shown.status?.attention))) {
@@ -83,8 +94,9 @@ export function ChatLog() {
         const log = event.currentTarget
         revealing.current = card
         requestAnimationFrame(async () => {
-          const fold = card.querySelector(':scope > .lt-fold')
-          await Promise.allSettled((fold?.getAnimations() ?? []).map(animation => animation.finished))
+          // The disclosure shares the native group's timing; its pseudo-element isn't exposed by getAnimations in every browser.
+          const motion = card.querySelector(':scope > .lt-fold, :scope > summary > .lt-disclose')
+          await Promise.allSettled((motion?.getAnimations() ?? []).map(animation => animation.finished))
           if (revealing.current !== card || !card.isConnected) return
           revealing.current = null
           const viewport = log.getBoundingClientRect()
@@ -171,7 +183,6 @@ export function ChatLog() {
             const author = first.agentId ?? label
             if (author !== assistantLabel) {
               const agent = agents?.find(agent => agent.id === first.agentId)
-                ?? (first.agentId ? agents?.find(agent => agent.native_id === first.agentId) : undefined)
               heading = <AgentLabel label={label} iconUrl={agent?.icon_url} />
             }
             assistantLabel = author
@@ -181,7 +192,7 @@ export function ChatLog() {
           // The newest page enters first; earlier reveals stay calm.
           return <Fragment key={item.uid}>{heading}{item.kind === 'trace'
             ? <TraceGroupRow group={item} cardMax={CARD_MAX} />
-            : <LedgerRow item={item} cardMax={CARD_MAX} showAgentLabel={false} i={Math.min(items.length - 1 - i, 7)} />}</Fragment>
+            : <LedgerRow item={item} cardMax={CARD_MAX} showAgentLabel={false} showCopy={copyable.has(item.uid)} i={Math.min(items.length - 1 - i, 7)} />}</Fragment>
         })}
         {notices.map((item) => (
           <LedgerRow key={item.uid} item={item} cardMax={CARD_MAX} />

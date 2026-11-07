@@ -156,7 +156,8 @@ export const syncRails = (source: 'chat' | 'timeline') => {
 }
 
 let flashTimer: ReturnType<typeof setTimeout> | undefined
-export const goLedgerTarget = (tgt?: string) => {
+let jumpTarget: HTMLElement | null = null
+export const goLedgerTarget = async (tgt?: string) => {
   const log = document.getElementById('trk-chatlog')
   if (!log) return
   const el = tgt ? (document.getElementById(tgt) ?? document.getElementById(`pm-${tgt}`)) : null
@@ -167,8 +168,23 @@ export const goLedgerTarget = (tgt?: string) => {
   if (window.matchMedia('(max-width: 599px), (max-height: 519px) and (max-width: 999px)').matches) {
     useConsole.getState().actions.closeOverlays()
   }
+  const previous = jumpTarget
+  jumpTarget = el
+  const closingCard = previous !== null && previous !== el && previous.isConnected
+    && previous.querySelector(':scope > :is(.trk-tool-toggle, .trk-thinking-toggle)[aria-expanded="true"]') !== null
+  if (closingCard) useConsole.getState().actions.toggleCardOpen(previous.id.slice(3), true)
+  if (previous !== el) previous?.classList.remove('trk-flash')
   const group = el.closest<HTMLDetailsElement>('details.trk-trace-group')
-  if (group) group.open = true
+  const openingGroup = group !== null && !group.open
+  const openingCard = el.querySelector(':scope > :is(.trk-tool-toggle, .trk-thinking-toggle)[aria-expanded="false"]') !== null
+  if (openingGroup) group.open = true
+  if (openingCard) useConsole.getState().actions.toggleCardOpen(el.id.slice(3))
+  if (closingCard || openingGroup || openingCard) {
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+    const motions = [previous?.querySelector(':scope > .lt-fold'), group?.querySelector(':scope > summary > .lt-disclose'), el.querySelector(':scope > .lt-fold')]
+    await Promise.allSettled(motions.flatMap(motion => motion?.getAnimations() ?? []).map(animation => animation.finished))
+  }
+  if (!el.isConnected || jumpTarget !== el) return
   log.scrollTo({ top: Math.max(0, log.scrollTop + el.getBoundingClientRect().top - log.getBoundingClientRect().top - 46), behavior: 'smooth' })
   el.tabIndex = -1
   el.focus({ preventScroll: true })

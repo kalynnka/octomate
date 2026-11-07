@@ -393,6 +393,14 @@ class CodexTentacle(AgentTentacle[str, None]):
             handler=self.handle_sdk_request,
         )
 
+    @property
+    def native_running_threads(self) -> set[ThreadKey]:
+        return {
+            ThreadKey.from_address(state.address)
+            for state in self.session_tailer.sessions.values()
+            if state.open_turn is not None and state.open_turn.native is not None
+        }
+
     def routers(self) -> tuple[APIRouter]:
         return (self.hook_router,)
 

@@ -19,14 +19,17 @@ const response: ApiModelMessage = {
 }
 
 for (const width of [1280, 390]) {
-  for (const mode of ['latest', 'history', 'expand', 'expand-fit', 'expand-bottom'] as const) {
+  for (const mode of ['latest', 'history', 'expand', 'expand-fit', 'expand-bottom', 'expand-group'] as const) {
     const readingHistory = mode === 'history'
     const expanding = mode.startsWith('expand')
+    const grouped = mode === 'expand-group'
+    const nearBottom = mode === 'expand-bottom' || grouped
     test(`${expanding ? mode : readingHistory ? 'keeps the reader in history' : 'follows the latest answer'} after delayed layout at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: 900 })
       if (mode === 'expand-bottom') await page.emulateMedia({ reducedMotion: 'reduce' })
       await page.route('https://fonts.googleapis.com/**', route => route.fulfill({ contentType: 'text/css', body: '' }))
       const current: ApiModelMessage = expanding ? { ...response, parts: [
+        ...(grouped ? [{ part_kind: 'thinking' as const, content: 'Checking the output before continuing.' }] : []),
         { part_kind: 'builtin-tool-call', tool_name: 'anchor_read', tool_call_id: 'anchor-read', args: { path: 'output.log' } },
         { part_kind: 'builtin-tool-return', tool_name: 'anchor_read', tool_call_id: 'anchor-read', content: 'Output line.\n'.repeat(mode === 'expand' ? 80 : 4) },
         ...response.parts,
@@ -47,7 +50,7 @@ for (const width of [1280, 390]) {
         if (path === '/api/trunkline/threads/thread-a') return route.fulfill({ json: thread })
         if (path.endsWith('/thread-a/conversations/messages')) return route.fulfill({ json: { items: [current], total: 1, has_more: false, next_cursor: null } })
         if (path.endsWith('/thread-a/messages')) {
-          const history = expanding && mode !== 'expand-bottom' ? messages.slice(-1) : messages
+          const history = expanding && !nearBottom ? messages.slice(-1) : messages
           return route.fulfill({ json: { items: [...history].reverse(), total: history.length, has_more: false, next_cursor: null } })
         }
         if (path.endsWith('/thread-a/project')) return route.fulfill({ json: null })
@@ -74,12 +77,12 @@ for (const width of [1280, 390]) {
       await expect(log.locator('svg.pele')).toHaveCount(0)
       const height = await log.evaluate(el => el.scrollHeight)
       if (expanding) {
-        await expect(log.locator('details.trk-trace-group')).toHaveCount(0)
+        await expect(log.locator('details.trk-trace-group')).toHaveCount(grouped ? 1 : 0)
         await page.evaluate(async () => {
           await Promise.allSettled(document.getAnimations().filter(animation => animation.effect?.getComputedTiming().iterations !== Infinity).map(animation => animation.finished))
         })
-        const button = log.locator('.trk-tool-toggle')
-        if (mode === 'expand-bottom') await button.evaluate(el => {
+        const button = log.locator(grouped ? '.trk-trace-summary' : '.trk-tool-toggle')
+        if (nearBottom) await button.evaluate(el => {
           const log = document.getElementById('trk-chatlog')!
           const viewport = log.getBoundingClientRect()
           log.scrollTop += (el.getBoundingClientRect().top - viewport.bottom + 50) / (viewport.height / log.clientHeight)
@@ -87,7 +90,7 @@ for (const width of [1280, 390]) {
         await expect(button).toBeInViewport()
         const answer = log.getByText('End of latest answer.', { exact: true })
         const answerBefore = (await answer.boundingBox())!.y
-        if (mode !== 'expand-bottom') expect(await log.evaluate(el => el.scrollHeight <= el.clientHeight)).toBe(true)
+        if (!nearBottom) expect(await log.evaluate(el => el.scrollHeight <= el.clientHeight)).toBe(true)
         const column = log.locator('.trk-ledger-col')
         const panelBefore = (await log.boundingBox())!
         const columnBefore = (await column.boundingBox())!
@@ -106,13 +109,14 @@ for (const width of [1280, 390]) {
           }, { once: true })
         }))
         await button.click()
-        await expect(button).toHaveAttribute('aria-expanded', 'true')
+        if (grouped) await expect(log.locator('details.trk-trace-group')).toHaveAttribute('open')
+        else await expect(button).toHaveAttribute('aria-expanded', 'true')
         const { before, samples } = await positions
         if (mode === 'expand-fit') expect(Math.max(...samples.map(top => Math.abs(top - before)))).toBeLessThan(2)
         else await expect.poll(() => button.evaluate((el, mode) => {
           const log = document.getElementById('trk-chatlog')!
           const viewport = log.getBoundingClientRect()
-          const card = el.closest('.trk-trace-row')!.getBoundingClientRect()
+          const card = el.closest('.trk-trace-row, details.trk-trace-group')!.getBoundingClientRect()
           const margin = 8 * viewport.height / log.clientHeight
           return Math.abs(mode === 'expand' ? card.top - viewport.top - margin : card.bottom - viewport.bottom + margin)
         }, mode)).toBeLessThan(2)
@@ -121,7 +125,7 @@ for (const width of [1280, 390]) {
         expect(columnAfter.x - panelAfter.x).toBeCloseTo(columnBefore.x - panelBefore.x, 0)
         expect(panelAfter.x + panelAfter.width - columnAfter.x - columnAfter.width)
           .toBeCloseTo(panelBefore.x + panelBefore.width - columnBefore.x - columnBefore.width, 0)
-        if (mode !== 'expand-bottom') expect((await answer.boundingBox())!.y).toBeGreaterThan(answerBefore + 50)
+        if (!nearBottom) expect((await answer.boundingBox())!.y).toBeGreaterThan(answerBefore + 50)
         await log.screenshot({ animations: 'disabled', path: `/private/tmp/trunkline-tool-reading-${width}-${mode}-expanded.png` })
         const top = await log.evaluate(el => el.scrollTop)
         renderDiagrams()

@@ -11,6 +11,7 @@ let server: ViteDevServer
 let Markdown: typeof import('../src/components/Markdown.tsx').Markdown
 let DraftMarkdown: typeof import('../src/features/chat/DraftMarkdown.tsx').DraftMarkdown
 let LedgerRow: typeof import('../src/features/chat/cards.tsx').LedgerRow
+let TraceGroupRow: typeof import('../src/features/chat/cards.tsx').TraceGroupRow
 let useConsole: typeof import('../src/state/console.ts').useConsole
 let useAuth: typeof import('../src/state/auth.ts').useAuth
 let TurnFold: typeof import('../src/lib/api/fold.ts').TurnFold
@@ -23,7 +24,7 @@ before(async () => {
   })
   ;({ Markdown } = await server.ssrLoadModule('/src/components/Markdown.tsx'))
   ;({ DraftMarkdown } = await server.ssrLoadModule('/src/features/chat/DraftMarkdown.tsx'))
-  ;({ LedgerRow } = await server.ssrLoadModule('/src/features/chat/cards.tsx'))
+  ;({ LedgerRow, TraceGroupRow } = await server.ssrLoadModule('/src/features/chat/cards.tsx'))
   ;({ useConsole } = await server.ssrLoadModule('/src/state/console.ts'))
   ;({ useAuth } = await server.ssrLoadModule('/src/state/auth.ts'))
   ;({ TurnFold, replayRun } = await server.ssrLoadModule('/src/lib/api/fold.ts'))
@@ -195,6 +196,42 @@ test('thinking renders Markdown while distinguishing summaries from normal reaso
   }
 })
 
+for (const [text, format, expected] of [
+  ['**Testing persisted data cleanup**\n\nThe checks are running.', 'summary', 'Testing persisted data cleanup'],
+  ['**Checking the schema**\n\n**Testing persisted data cleanup**', 'summary', 'Testing persisted data cleanup'],
+  ['## Testing `__init__` cleanup\n\nThe checks are running.', 'summary', 'Testing __init__ cleanup'],
+  ['Checking [persisted data](https://example.com).\n\nThe checks are running.', 'summary', 'Checking persisted data.'],
+  ['', 'summary', 'Read files'],
+  ['**Detailed internal reasoning**', 'reasoning', 'Read files'],
+] as const) {
+  test(`activity header uses ${expected} for ${format} ${JSON.stringify(text)}`, () => {
+    const html = renderToStaticMarkup(createElement(TraceGroupRow, {
+      group: { kind: 'trace', uid: 'group', active: false, items: [
+        { kind: 'think', uid: 'summary', dur: '', text, format, thinking: false },
+        { kind: 'tool', uid: 'tool', name: 'Read', icon: 'file', status: 'done', detail: { type: 'plain', args: '{}', res: 'Read' } },
+      ] },
+      cardMax: '100%',
+    }))
+    const header = html.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/)![1]
+    assert.ok(header.includes(`>${expected}</span>`))
+    assert.ok(!header.includes('**'))
+  })
+}
+
+test('a group keeps the latest supplied summary when a newer reasoning block has no summary', () => {
+  const html = renderToStaticMarkup(createElement(TraceGroupRow, {
+    group: { kind: 'trace', uid: 'group', active: true, items: [
+      { kind: 'think', uid: 'first', dur: '', text: '**Checking the schema**', format: 'summary', thinking: false },
+      { kind: 'think', uid: 'next', dur: '', text: '**Testing persisted data cleanup**', format: 'summary', thinking: false },
+      { kind: 'think', uid: 'empty', dur: '', text: '', format: 'summary', thinking: true },
+    ] },
+    cardMax: '100%',
+  }))
+  const header = html.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/)![1]
+  assert.ok(header.includes('>Testing persisted data cleanup</span>'))
+  assert.ok(!header.includes('Checking the schema'))
+})
+
 for (const format of [undefined, 'reasoning', 'summary'] as const) {
   test(`saved ${format ?? 'unmarked'} thinking without readable text has only an unavailable badge`, () => {
     const cards = replayRun([{
@@ -227,6 +264,7 @@ for (const [streamed, elapsed, expected] of [[false, 5000, ''], [true, 250, '<1s
     const part: ThinkingPart = { part_kind: 'thinking', content: 'Checking', provider_name: 'openai_codex' }
     fold.feed({ event_kind: 'part_start', index: 0, part })
     if (streamed) fold.feed({ event_kind: 'part_delta', index: 0, delta: { part_delta_kind: 'thinking', content_delta: ' files' } })
+    assert.equal(items[0].kind === 'think' && items[0].startedAt, streamed ? now : undefined)
     now += elapsed
     if (streamed) {
       fold.feed({ event_kind: 'function_tool_call', part: { part_kind: 'tool-call', tool_name: 'Read', tool_call_id: 'read', args: {} } })
@@ -273,7 +311,9 @@ test('live and replayed reasoning retain their formats and authoritative complet
     assert.equal(item.text, parts[index].content)
     assert.equal(item.thinking, false)
     assert.equal(item.format, index === 0 ? 'reasoning' : 'summary')
-    assert.deepEqual({ ...replayed[index].item, uid: item.uid, dur: item.dur }, item)
+    const settled = { ...item }
+    delete settled.startedAt
+    assert.deepEqual({ ...replayed[index].item, uid: item.uid, dur: item.dur }, settled)
   }
 })
 

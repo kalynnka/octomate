@@ -90,6 +90,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.segments import TextSegment
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import agent_input_message_attributes, deepseek_logfire
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
@@ -271,6 +272,14 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             self.session_tailer,
             self.session_locks,
         )
+
+    @property
+    def native_running_threads(self) -> set[ThreadKey]:
+        return {
+            ThreadKey.from_address(state.address)
+            for state in self.session_tailer.sessions.values()
+            if state.open_turn is not None and state.open_turn.native is not None
+        }
 
     def routers(self) -> tuple[APIRouter]:
         return (self.hook_router,)

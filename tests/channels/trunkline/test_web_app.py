@@ -37,7 +37,7 @@ from octomate.capabilities.harness.events import (
     ThreadTitleChangedEvent,
 )
 from octomate.config import OctomateConfig
-from octomate.config.agents import DeepseekConfig, InklingConfig
+from octomate.config.agents import CodexConfig, DeepseekConfig, InklingConfig
 from octomate.config.agents.common import Claim
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import async_session
@@ -53,6 +53,7 @@ from octomate.schemas.segments import MessageSegment, TextSegment
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import ChannelTentacle
+from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.base import InklingOutput
@@ -350,6 +351,9 @@ async def test_activity_socket_multiplexes_without_streaming_content(
         async with asyncio.timeout(1):
             while len(octomate.nerve.subscribers) < 30:  # noqa: ASYNC110
                 await asyncio.sleep(0)
+        for _ in keys:
+            initial = await asyncio.wait_for(socket.outbound.get(), 1)
+            assert json.loads(initial["text"])["event"]["event_kind"] == "run_ended"
         for topic in topics:
             for _ in range(100):
                 octomate.nerve.deliver(
@@ -417,6 +421,8 @@ async def test_activity_socket_checks_thread_access_and_scopes_new_keys() -> Non
     async with asyncio.timeout(1):
         while topic not in octomate.nerve.subscribers:  # noqa: ASYNC110
             await asyncio.sleep(0)
+    initial = await asyncio.wait_for(socket.outbound.get(), 1)
+    assert json.loads(initial["text"])["event"]["event_kind"] == "run_ended"
     octomate.nerve.deliver(topic, Impulse(RunActivityChangedEvent(activity="thinking")))
     received = await asyncio.wait_for(socket.outbound.get(), 1)
     assert json.loads(received["text"])["key"] == f"id:{thread.id}"
@@ -452,6 +458,110 @@ async def test_activity_socket_checks_thread_access_and_scopes_new_keys() -> Non
         in octomate.nerve.subscribers
     )
     await scoped.leave()
+    assert octomate.nerve.subscribers == {}
+
+
+@pytest.mark.parametrize("by_key", [False, True])
+async def test_activity_refresh_restores_awake_work_and_clears_finished_work(
+    by_key: bool,
+) -> None:
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    channel = await _register(octomate, agent)
+    await _post(channel, "existing thread")
+    address = _console_address()
+    thread = await octomate.threads.ensure(address)
+    request = (
+        {"thread_keys": [address.channel_thread_id]}
+        if by_key
+        else {"thread_ids": [str(thread.id)]}
+    )
+    async with awake_on(octomate, address):
+        for _ in range(2):
+            socket = ConsoleSocket(octomate, path="/api/trunkline/live/activity")
+            assert (await socket.outbound.get())["type"] == "websocket.accept"
+            socket.inbound.put_nowait(
+                {"type": "websocket.receive", "text": json.dumps(request)}
+            )
+            initial = await asyncio.wait_for(socket.outbound.get(), 1)
+            assert json.loads(initial["text"])["event"]["activity"] == "working"
+            await socket.leave()
+    # No terminal event was sent while the browser was disconnected.
+    socket = ConsoleSocket(octomate, path="/api/trunkline/live/activity")
+    assert (await socket.outbound.get())["type"] == "websocket.accept"
+    socket.inbound.put_nowait(
+        {"type": "websocket.receive", "text": json.dumps(request)}
+    )
+    initial = await asyncio.wait_for(socket.outbound.get(), 1)
+    assert json.loads(initial["text"])["event"]["event_kind"] == "run_ended"
+    await socket.leave()
+    assert octomate.nerve.subscribers == {}
+
+
+async def test_activity_refresh_restores_a_native_turn_without_another_event() -> None:
+    octomate = Octomate()
+    scripted, _ = build_scripted_agent(["done"])
+    await _register(octomate, scripted)
+    agent = CodexTentacle(
+        octomate,
+        config=CodexConfig(),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
+    )
+    octomate.connect(agent)
+    session_id = str(uuid7())
+    key = ThreadKey(agent.id, "thread", session_id)
+    sender = UserProfile(channel_user_id="operator", user_id=CONSOLE_USER_ID)
+    address = key.address(sender.channel_user_id)
+    async with octomate.nerve.publish(address) as impulses:
+        state, _ = await agent.session_tailer.attach_remote(
+            session_id, Path("/client/session.jsonl"), sender, address, impulses
+        )
+        assert agent.native_running_threads == set()
+        offset = 0
+        for payload in (
+            {"type": "task_started", "turn_id": str(uuid7())},
+            {"type": "user_message", "message": "private prompt"},
+        ):
+            line = json.dumps(
+                {
+                    "timestamp": "2026-11-06T00:00:00Z",
+                    "type": "event_msg",
+                    "payload": payload,
+                }
+            )
+            end = offset + len(line.encode()) + 1
+            await agent.session_tailer.feed_remote(state, None, line, offset, end)
+            offset = end
+        thread = await octomate.threads.get(key)
+        assert thread is not None
+        assert agent.native_running_threads == {key}
+        for expected in ("working", "working", "run_ended"):
+            if expected == "run_ended":
+                agent.session_tailer.detach_remote(state)
+                assert agent.native_running_threads == set()
+            socket = ConsoleSocket(octomate, path="/api/trunkline/live/activity")
+            assert (await socket.outbound.get())["type"] == "websocket.accept"
+            socket.inbound.put_nowait(
+                {
+                    "type": "websocket.receive",
+                    "text": json.dumps({"thread_ids": [str(thread.id)]}),
+                }
+            )
+            initial = await asyncio.wait_for(socket.outbound.get(), 1)
+            event = json.loads(initial["text"])["event"]
+            assert (event.get("activity") or event["event_kind"]) == expected
+            assert "private prompt" not in initial["text"]
+            await socket.leave()
     assert octomate.nerve.subscribers == {}
 
 

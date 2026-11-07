@@ -279,6 +279,14 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             threads=self.threads,
         )
 
+    @property
+    def native_running_threads(self) -> set[ThreadKey]:
+        return {
+            ThreadKey.from_address(state.address)
+            for state in self.session_tailer.sessions.values()
+            if state.open_turn is not None and state.open_turn.native is not None
+        }
+
     def routers(self) -> tuple[APIRouter]:
         """The tentacle's HTTP surface, mounted by `Octomate.connect`: the hook router
         native Claude clients (app / CLI / VSCode) POST their session events into, and
