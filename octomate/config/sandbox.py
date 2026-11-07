@@ -19,6 +19,11 @@ class SbxSandboxConfig(BaseModel):
         pattern=r"^[^\s]+@sha256:[0-9a-f]{64}$",
         description="Immutable sandbox agent image reference, matching the host architecture.",
     )
+    internet_access: bool = Field(
+        default=True,
+        strict=True,
+        description="Allow outbound TCP through the sbx proxy, subject to host and organization policy; false explicitly denies outbound TCP. Set when creating the sandbox.",
+    )
     cpus: int = Field(
         default=2, ge=1, strict=True, description="Virtual CPU count per sandbox."
     )

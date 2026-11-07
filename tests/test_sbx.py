@@ -51,13 +51,14 @@ def sandbox(tmp_path: Path) -> SbxSandbox:
     )
     executable.chmod(0o755)
     return SbxSandbox(
-        config=SbxSandboxConfig(image=IMAGE, executable=str(executable)),
+        config=SbxSandboxConfig(id="local", image=IMAGE, executable=str(executable)),
         user_id=uuid7(),
     )
 
 
+@pytest.mark.parametrize("internet_access", [True, False])
 async def test_sh_preserves_named_arguments_and_filters_host_environment(
-    sandbox: SbxSandbox, monkeypatch: pytest.MonkeyPatch
+    sandbox: SbxSandbox, monkeypatch: pytest.MonkeyPatch, internet_access: bool
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "synthetic-secret")
     monkeypatch.setenv("OCTOMATE_DB_URL", "synthetic-secret")
@@ -65,26 +66,26 @@ async def test_sh_preserves_named_arguments_and_filters_host_environment(
     result = ProcessInfo.model_validate_json(
         await sandbox.command(
             "create",
-            "shell",
+            "/kit",
+            kit_arg=["image=literal spaces; $(false)", "id=$literal"],
+            kit=[] if internet_access else ["/kit/offline"],
             name=name,
-            template=IMAGE,
-            cpus=2,
-            memory="2048m",
+            pull="missing",
+            skills="off",
             no_progress=True,
-            env=["FIRST=spaces and = signs", "SECOND=$literal"],
         )
     )
     assert result.argv == [
         "--debug=false",
         "create",
-        "shell",
+        "/kit",
+        "--kit-arg=image=literal spaces; $(false)",
+        "--kit-arg=id=$literal",
+        *([] if internet_access else ["--kit=/kit/offline"]),
         f"--name={name}",
-        f"--template={IMAGE}",
-        "--cpus=2",
-        "--memory=2048m",
+        "--pull=missing",
+        "--skills=off",
         "--no-progress",
-        "--env=FIRST=spaces and = signs",
-        "--env=SECOND=$literal",
     ]
     assert "ANTHROPIC_API_KEY" not in result.environment
     assert "OCTOMATE_DB_URL" not in result.environment
@@ -223,7 +224,9 @@ async def test_missing_sbx_has_an_actionable_error(
     tmp_path: Path, attach: bool
 ) -> None:
     sandbox = SbxSandbox(
-        config=SbxSandboxConfig(image=IMAGE, executable=str(tmp_path / "missing")),
+        config=SbxSandboxConfig(
+            id="local", image=IMAGE, executable=str(tmp_path / "missing")
+        ),
         user_id=uuid7(),
     )
     if attach:

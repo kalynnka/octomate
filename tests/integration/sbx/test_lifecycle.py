@@ -3,24 +3,21 @@
 import os
 
 import pytest
+from anyio.streams.buffered import BufferedByteReceiveStream
 from uuid_utils.compat import uuid7
 
 from octomate.config.sandbox import SbxSandboxConfig
 from octomate.managers.sandbox import SandboxManager
 from octomate.nerve import Nerve
-from octomate.sandbox.agent import run_agent
 from octomate.sandbox.sbx import SbxSandbox
-from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.sandbox import ExecuteAgent, InvocationScope
+from octomate.schemas.sandbox import InvocationScope
 
 
 @pytest.mark.timeout(600)
-async def test_sandbox_agent_attachment_reuse_and_stop_start_persistence() -> None:
+async def test_command_attachment_reuse_and_stop_start_persistence() -> None:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
-        pytest.fail(
-            "Set SBX_TEST_IMAGE to the immutable, built sandbox agent image reference"
-        )
+        pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
     manager = SandboxManager([SbxSandboxConfig(id="local", image=image)], Nerve())
     owner = InvocationScope(user_id=uuid7(), sandbox="local", conversation_id=uuid7())
     other = InvocationScope(user_id=uuid7(), sandbox="local", conversation_id=uuid7())
@@ -31,20 +28,15 @@ async def test_sandbox_agent_attachment_reuse_and_stop_start_persistence() -> No
     assert manager.state(other).sandbox.name not in existing
     try:
         async with manager.acquire(owner, uuid7()) as first:
-            result = await run_agent(
-                manager,
-                ExecuteAgent(
-                    invocation_id=uuid7(),
-                    scope=owner,
-                    agent_id="inkling",
-                    model="test",
-                    prompt="Answer the question",
-                    address=ChannelAddress("im", "dm", "room", "user"),
-                    run_name="react",
-                    workspace="/home/agent/workspace",
-                ),
-            )
-            assert result.messages
+            async with sandbox.execute(
+                "cat", workdir="/home/agent/workspace"
+            ) as stream:
+                await stream.send(b"ready\n")
+                assert (
+                    await BufferedByteReceiveStream(stream).receive_until(b"\n", 64)
+                    == b"ready"
+                )
+                await stream.send_eof()
             assert len(first.invocations) == 1
             async with manager.acquire(owner, uuid7()) as peer:
                 assert first is peer
@@ -94,4 +86,4 @@ async def test_sandbox_agent_attachment_reuse_and_stop_start_persistence() -> No
             backend = state.sandbox
             assert isinstance(backend, SbxSandbox)
             if backend.managed:
-                await backend.command("rm", backend.name)
+                await backend.command("rm", "--force", backend.name)

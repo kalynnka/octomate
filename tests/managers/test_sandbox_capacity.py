@@ -19,7 +19,9 @@ from tests.test_sandbox_contracts import IMAGE
 
 @pytest.fixture
 async def manager(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[SandboxManager]:
-    manager = SandboxManager(SbxSandboxConfig(image=IMAGE, idle_timeout=60), Nerve())
+    manager = SandboxManager(
+        [SbxSandboxConfig(id="local", image=IMAGE, idle_timeout=60)], Nerve()
+    )
 
     monkeypatch.setattr(SbxSandbox, "prepare", AsyncMock())
     monkeypatch.setattr(SbxSandbox, "stop", AsyncMock())
@@ -32,7 +34,7 @@ async def manager(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[SandboxManag
 @pytest.fixture
 def owners() -> list[InvocationScope]:
     return [
-        InvocationScope(user_id=uuid7(), mode="sbx", conversation_id=uuid7())
+        InvocationScope(user_id=uuid7(), sandbox="local", conversation_id=uuid7())
         for _ in range(8)
     ]
 
@@ -81,22 +83,24 @@ async def test_failed_stop_does_not_block_another_user(
         pass
     with monkeypatch.context() as patch:
         patch.setattr(
-            manager.state(first.user_id).sandbox,
+            manager.state(first).sandbox,
             "stop",
             AsyncMock(side_effect=SandboxError("stop failed")),
         )
         with pytest.raises(SandboxError, match="stop failed"):
-            await manager.stop(first.user_id)
+            await manager.stop(manager.state(first))
         async with manager.acquire(incoming, uuid7()) as state:
             assert state.snapshot.phase == "ready"
-            assert manager.state(first.user_id).needs_cleanup
+            assert manager.state(first).needs_cleanup
             assert manager.snapshot(first).phase == "failed"
 
 
 async def test_idle_timer_resets_on_reuse_and_stopped_sandbox_can_restart(
     manager: SandboxManager, owners: list[InvocationScope]
 ) -> None:
-    manager.config = SbxSandboxConfig(image=IMAGE, idle_timeout=0.01)
+    manager.configs["local"] = SbxSandboxConfig(
+        id="local", image=IMAGE, idle_timeout=0.01
+    )
     scope = owners[0]
     async with manager.acquire(scope, uuid7()) as state:
         pass
@@ -136,7 +140,7 @@ async def test_starting_sandbox_does_not_block_another_user(
         preparing.set()
         await release.wait()
 
-    monkeypatch.setattr(manager.state(starting.user_id).sandbox, "prepare", prepare)
+    monkeypatch.setattr(manager.state(starting).sandbox, "prepare", prepare)
     async with AsyncExitStack() as stack, asyncio.TaskGroup() as tasks:
         busy = await stack.enter_async_context(manager.acquire(active, uuid7()))
         pending = tasks.create_task(

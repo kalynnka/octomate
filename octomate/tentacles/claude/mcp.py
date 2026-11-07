@@ -3,8 +3,8 @@
 A driven Claude run mounts the served server — the gateway's spells, the history
 tools, and lazy provider discovery and calls with the linking pair — in process,
 with the turn's `OctomateSession` closed over — identity by closure, so nothing on
-the wire names a session, and the stdio control protocol carries the calls over
-an SSH transport unchanged. The server is the same one `/octomate/mcp` serves;
+the wire names a session, and the stdio control protocol carries the calls.
+The server is the same one `/octomate/mcp` serves;
 this module only walks its tools into the SDK's own tool shape and translates
 their results back. The SDK's server carries no instructions of its own, so the
 tentacle appends the server's to the system prompt instead — under the served

@@ -2140,6 +2140,13 @@ docs = [
     { name = "mkdocstrings", extra = ["python"] },
     { name = "ruff" },
 ]
+sandbox = [
+    { name = "agent-client-protocol" },
+    { name = "claude-agent-sdk" },
+    { name = "openai-codex" },
+    { name = "pydantic-ai-harness", extra = ["code-mode"] },
+    { name = "pydantic-ai-slim", extra = ["anthropic", "bedrock", "google", "mcp", "openai"] },
+]
 
 [package.metadata]
 requires-dist = [
@@ -2201,6 +2208,13 @@ docs = [
     { name = "mkdocs-material", specifier = ">=9.6,<10" },
     { name = "mkdocstrings", extras = ["python"], specifier = ">=0.30,<1" },
     { name = "ruff", specifier = "==0.16.4" },
+]
+sandbox = [
+    { name = "agent-client-protocol" },
+    { name = "claude-agent-sdk" },
+    { name = "openai-codex" },
+    { name = "pydantic-ai-harness", extras = ["code-mode"] },
+    { name = "pydantic-ai-slim", extras = ["anthropic", "bedrock", "google", "mcp", "openai"] },
 ]
 
 [[package]]

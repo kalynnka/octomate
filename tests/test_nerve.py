@@ -3,8 +3,11 @@ thread the kick was asked on, each once, and waits for none."""
 
 from __future__ import annotations
 
+from typing import assert_type
+
 import anyio
 import pytest
+from anyio.abc import ObjectReceiveStream, ObjectSendStream
 from pydantic_ai.messages import PartDeltaEvent, TextPartDelta
 from uuid_utils.compat import uuid7
 
@@ -14,13 +17,12 @@ from octomate.nerve import (
     ChannelTopic,
     Impulse,
     Nerve,
-    NerveEvent,
     SandboxTopic,
     ThreadTopic,
     UserTopic,
 )
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.sandbox import CancelInvocation, InvocationAccepted
+from octomate.schemas.sandbox import SandboxFailed, SandboxProgress
 from octomate.schemas.thread import ThreadKey
 from tests.support.nerve import held
 
@@ -28,6 +30,26 @@ HERE = ChannelAddress("web", "thread", "lu", "lu", channel_thread_id="t1")
 THERE = ChannelAddress("web", "thread", "lu", "lu", channel_thread_id="t2")
 FAR = ChannelAddress("slack", "dm", "D1", "U1")
 EVENT = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="hi"))
+
+
+@pytest.mark.parametrize("supplied", [False, True])
+async def test_specialized_nerve_preserves_fiber_and_stream_event_types(
+    supplied: bool,
+) -> None:
+    nerve = Nerve[PartDeltaEvent]()
+    topic = UserTopic(uuid7())
+    async with (
+        MemoryFiber[Impulse[PartDeltaEvent]]() as publisher,
+        MemoryFiber[Impulse[PartDeltaEvent]]() as subscriber,
+        nerve.subscribe(topic, fiber=subscriber if supplied else None) as events,
+        nerve.publish(topic, fiber=publisher if supplied else None) as impulses,
+    ):
+        assert_type(events, ObjectReceiveStream[Impulse[PartDeltaEvent]])
+        assert_type(impulses, ObjectSendStream[Impulse[PartDeltaEvent]])
+        await impulses.send(Impulse(EVENT))
+        received = await events.receive()
+        assert_type(received.event, PartDeltaEvent)
+        assert received.event == EVENT
 
 
 async def test_an_impulse_reaches_its_channel_and_its_thread() -> None:
@@ -203,13 +225,11 @@ async def test_publisher_buffers_1024_and_drains_without_waiting_for_readers() -
 async def test_topic_publisher_preserves_impulses_and_drains_on_exit() -> None:
     nerve = Nerve()
     topic = SandboxTopic(uuid7())
-    invocation = uuid7()
     sent = Impulse(
-        CancelInvocation(invocation_id=invocation),
+        EVENT,
         HERE,
         private=True,
         origin=ThreadKey.from_address(THERE),
-        invocation_id=invocation,
     )
     async with (
         nerve.subscribe(topic) as events,
@@ -222,14 +242,20 @@ async def test_topic_publisher_preserves_impulses_and_drains_on_exit() -> None:
     assert not nerve.subscribers
 
 
-async def test_sandbox_signals_and_events_share_the_same_subscribers() -> None:
+async def test_sandbox_lifecycle_events_share_the_same_subscribers() -> None:
     nerve = Nerve()
     topic = SandboxTopic(uuid7())
-    invocation = uuid7()
-    sent: list[Impulse[NerveEvent]] = [
-        Impulse(CancelInvocation(invocation_id=invocation)),
-        Impulse(InvocationAccepted(invocation_id=invocation)),
-        Impulse(EVENT, invocation_id=invocation),
+    sent: list[Impulse] = [
+        Impulse(
+            SandboxProgress(
+                user_id=topic.user_id, sandbox="local", sequence=1, phase="preparing"
+            )
+        ),
+        Impulse(
+            SandboxFailed(
+                user_id=topic.user_id, sandbox="local", sequence=2, message="failed"
+            )
+        ),
     ]
     for impulse in sent:
         nerve.deliver(topic, impulse)
@@ -253,10 +279,7 @@ async def test_sandbox_signals_and_events_share_the_same_subscribers() -> None:
 async def test_sandbox_overflow_disconnects_only_the_slow_subscriber() -> None:
     nerve = Nerve()
     topic = SandboxTopic(uuid7())
-    sent: list[Impulse[NerveEvent]] = [
-        Impulse(CancelInvocation(invocation_id=uuid7())),
-        Impulse(EVENT),
-    ]
+    sent = [Impulse(EVENT), Impulse(EVENT)]
     async with (
         nerve.subscribe(topic, backlog=1) as behind,
         nerve.subscribe(topic) as current,
@@ -275,8 +298,8 @@ async def test_supplied_memory_fibers_use_the_same_api_and_remain_caller_owned(
 ) -> None:
     nerve = Nerve()
     topic = ChannelTopic("web")
-    publisher = MemoryFiber[Impulse[NerveEvent]]()
-    subscriber = MemoryFiber[Impulse[NerveEvent]]()
+    publisher = MemoryFiber[Impulse]()
+    subscriber = MemoryFiber[Impulse]()
     sent = Impulse(EVENT, HERE, private=True)
     expected = (
         Impulse(EVENT, HERE, private=True, origin=ThreadKey.from_address(HERE))

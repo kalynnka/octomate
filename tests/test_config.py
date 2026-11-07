@@ -19,7 +19,6 @@ from octomate.config import (
     BareMcpConfig,
     ChannelConfig,
     ClaudeCodeConfig,
-    ClaudeSSHConfig,
     CodexConfig,
     DeepseekConfig,
     DiscordChannelConfig,
@@ -296,20 +295,6 @@ def test_channel_config_binds_agents_without_models() -> None:
         "claude",
         "codex",
     ]
-
-
-def test_claude_code_config_warns_a_remote_host_is_not_honoured(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    # Remote runs are off while a run's directory is its thread's workspace, and
-    # nothing can make one on the host at the other end. The block is kept as
-    # written — the transport that would have read it is what is parked.
-    with caplog.at_level("WARNING"):
-        config = ClaudeCodeConfig(ssh=ClaudeSSHConfig(host="user@box"))
-
-    assert config.ssh is not None
-    assert "user@box" in caplog.text
-    assert "stays local" in caplog.text
 
 
 def test_codex_config_parses_sdk_runtime_config() -> None:

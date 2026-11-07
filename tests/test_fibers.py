@@ -4,10 +4,11 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, asynccontextmanager
+from typing import assert_type
 
 import anyio
 import pytest
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 from pydantic_ai.messages import PartDeltaEvent, TextPartDelta
 from uuid_utils.compat import uuid7
 
@@ -23,7 +24,6 @@ from octomate.nerve import (
     ChannelTopic,
     Impulse,
     Nerve,
-    NerveEvent,
     SandboxTopic,
     ThreadTopic,
     Topic,
@@ -31,7 +31,7 @@ from octomate.nerve import (
     impulse_adapter,
 )
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.sandbox import CancelInvocation, InvocationRejected
+from octomate.schemas.sandbox import SandboxFailed
 from octomate.schemas.thread import ThreadKey
 from tests.support.nerve import held
 
@@ -46,9 +46,7 @@ async def connected(
     topic: Topic,
     *,
     publishing: bool = True,
-) -> AsyncGenerator[
-    tuple[StdioFiber[Impulse[NerveEvent]], StdioFiber[Impulse[NerveEvent]]]
-]:
+) -> AsyncGenerator[tuple[StdioFiber[Impulse], StdioFiber[Impulse]]]:
     sending, receiving = anyio.create_memory_object_stream[bytes](10)
     sender = StdioFiber(impulse_adapter, output=sending)
     receiver = StdioFiber(impulse_adapter, input=receiving)
@@ -91,6 +89,25 @@ async def test_stdio_fiber_transports_items_without_a_nerve() -> None:
         await receiver.wait_closed()
 
 
+async def test_stdio_adapter_preserves_its_concrete_impulse_type() -> None:
+    adapter: TypeAdapter[Impulse[PartDeltaEvent]] = TypeAdapter(Impulse[PartDeltaEvent])
+    with pytest.raises(ValidationError):
+        adapter.validate_json(impulse_adapter.dump_json(Impulse(RunEndedEvent())))
+    sending, receiving = anyio.create_memory_object_stream[bytes](2)
+    async with (
+        StdioFiber(adapter, output=sending) as sender,
+        StdioFiber(adapter, input=receiving) as receiver,
+    ):
+        assert_type(sender, StdioFiber[Impulse[PartDeltaEvent]])
+        assert_type(receiver, StdioFiber[Impulse[PartDeltaEvent]])
+        sender.start()
+        receiver.start()
+        await sender.send(Impulse(EVENT))
+        received = await receiver.receive()
+        assert_type(received.event, PartDeltaEvent)
+        assert received.event == EVENT
+
+
 async def test_stdio_fiber_reassembles_fragmented_frames() -> None:
     sending, incoming = anyio.create_memory_object_stream[bytes](2)
     async with sending, StdioFiber(TypeAdapter(int), input=incoming) as fiber:
@@ -128,15 +145,13 @@ async def test_stdio_fiber_rejects_the_opposite_local_endpoint() -> None:
             receiver.send_nowait(1)
 
 
-async def test_signals_and_events_flow_from_guest_to_core() -> None:
+async def test_events_flow_from_stdio_to_core() -> None:
     core = Nerve()
     topic = SandboxTopic(uuid7())
-    invocation = uuid7()
-    sent: list[Impulse[NerveEvent]] = [
-        Impulse(CancelInvocation(invocation_id=invocation), invocation_id=invocation),
-        Impulse(RunStartedEvent(address=THERE), invocation_id=invocation),
-        Impulse(EVENT, THERE, private=True, invocation_id=invocation),
-        Impulse(RunEndedEvent(), invocation_id=invocation),
+    sent: list[Impulse] = [
+        Impulse(RunStartedEvent(address=THERE)),
+        Impulse(EVENT, THERE, private=True),
+        Impulse(RunEndedEvent()),
     ]
     async with connected(core, topic) as (core_fiber, guest):
         async with (
@@ -154,8 +169,8 @@ async def test_signals_and_events_flow_from_guest_to_core() -> None:
 async def test_one_core_mixes_local_subscribers_and_two_user_stdio_fibers() -> None:
     core = Nerve()
     alice, bob = SandboxTopic(uuid7()), SandboxTopic(uuid7())
-    sent = Impulse(CancelInvocation(invocation_id=uuid7()))
-    reply = Impulse(EVENT, invocation_id=uuid7())
+    sent = Impulse(RunStartedEvent(address=THERE))
+    reply = Impulse(EVENT)
     ui = UserTopic(alice.user_id)
     async with (
         connected(core, alice) as (alice_fiber, alice_client),
@@ -196,7 +211,6 @@ async def test_publish_keeps_channel_thread_origin_and_private_routing(
     channel = ChannelTopic("web")
     origin = ThreadTopic(ThreadKey.from_address(HERE))
     destination = ThreadTopic(ThreadKey.from_address(THERE))
-    invocation = uuid7()
     async with (
         connected(core, channel, publishing=False) as (_, channel_client),
         connected(core, origin, publishing=False) as (_, origin_client),
@@ -208,15 +222,12 @@ async def test_publish_keeps_channel_thread_origin_and_private_routing(
             core.subscribe(destination) as core_destination,
         ):
             async with core.publish(HERE) as impulses:
-                await impulses.send(
-                    Impulse(EVENT, THERE, private=private, invocation_id=invocation)
-                )
+                await impulses.send(Impulse(EVENT, THERE, private=private))
             expected = Impulse(
                 EVENT,
                 THERE,
                 private=private,
                 origin=origin.key,
-                invocation_id=invocation,
             )
             assert await core_channel.receive() == expected
             assert await core_destination.receive() == expected
@@ -256,7 +267,7 @@ async def test_remote_publications_keep_local_backlog_limit_and_no_replay() -> N
     [
         "json",
         "missing-event",
-        "kind",
+        "event-kind",
         "extra",
         "topic",
         "oversized",
@@ -268,12 +279,16 @@ async def test_bad_peer_disconnects_only_its_fiber(fault: str) -> None:
     topic = SandboxTopic(uuid7())
     sending, incoming = anyio.create_memory_object_stream[bytes](2)
     fiber = StdioFiber(impulse_adapter, input=incoming)
-    frame = Impulse(InvocationRejected(invocation_id=uuid7(), reason="unsupported"))
+    frame = Impulse(
+        SandboxFailed(
+            user_id=topic.user_id, sandbox="local", sequence=1, message="failed"
+        )
+    )
     payload = json.loads(impulse_adapter.dump_json(frame))
     if fault == "missing-event":
         del payload["event"]
-    if fault == "kind":
-        payload["event"]["kind"] = "unknown"
+    if fault == "event-kind":
+        payload["event"]["event_kind"] = "unknown"
     if fault == "extra":
         payload["event"]["secret"] = "must-not-be-echoed"
     if fault == "topic":
@@ -299,19 +314,19 @@ async def test_bad_peer_disconnects_only_its_fiber(fault: str) -> None:
         assert "must-not-be-echoed" not in str(raised.value)
         assert held(impulses) == []
         assert fiber.closed
-        event = Impulse(EVENT, invocation_id=uuid7())
+        event = Impulse(EVENT)
         nerve.deliver(topic, event)
         assert await impulses.receive() == event
     assert not nerve.subscribers
 
 
-async def test_internal_signals_are_not_forwarded_to_ui_topics() -> None:
+async def test_sandbox_topics_do_not_implicitly_forward_to_ui_topics() -> None:
     nerve = Nerve()
     topic = UserTopic(uuid7())
     async with nerve.subscribe(topic) as ui:
         nerve.deliver(
             SandboxTopic(topic.user_id),
-            Impulse(CancelInvocation(invocation_id=uuid7())),
+            Impulse(EVENT),
         )
         assert held(ui) == []
 
@@ -319,26 +334,25 @@ async def test_internal_signals_are_not_forwarded_to_ui_topics() -> None:
 async def test_sandbox_transport_routes_only_to_the_core_bound_topic() -> None:
     nerve = Nerve()
     owner = uuid7()
-    topic = SandboxTopic(owner, uuid7())
-    other = SandboxTopic(owner, uuid7())
+    topic = SandboxTopic(owner)
+    other = SandboxTopic(uuid7())
     impulse = Impulse(
         EVENT,
         HERE,
         origin=ThreadKey.from_address(HERE),
-        invocation_id=other.invocation_id,
     )
     async with connected(nerve, topic) as (_, guest):
         async with (
             nerve.subscribe(topic) as events,
             nerve.subscribe(UserTopic(owner)) as ui,
-            nerve.subscribe(other) as other_run,
+            nerve.subscribe(other) as other_user,
             nerve.subscribe(ChannelTopic(HERE.channel_tentacle_id)) as channel,
             nerve.subscribe(ThreadTopic(ThreadKey.from_address(HERE))) as thread,
         ):
             await guest.send(impulse)
             assert await events.receive() == impulse
             assert held(ui) == []
-            assert held(other_run) == []
+            assert held(other_user) == []
             assert held(channel) == []
             assert held(thread) == []
             nerve.deliver(UserTopic(owner), Impulse(EVENT))
@@ -362,8 +376,12 @@ async def test_clean_eof_drains_events_before_detaching_publisher() -> None:
     topic = SandboxTopic(uuid7())
     fiber = StdioFiber(impulse_adapter, input=incoming)
     impulses = [
-        Impulse(InvocationRejected(invocation_id=uuid7(), reason="unsupported"))
-        for _ in range(3)
+        Impulse(
+            SandboxFailed(
+                user_id=topic.user_id, sandbox="local", sequence=i, message="failed"
+            )
+        )
+        for i in range(3)
     ]
     async with sending, aclosing(fiber), nerve.subscribe(topic) as events:
         fiber.start()

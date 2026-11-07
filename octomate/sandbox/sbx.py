@@ -10,7 +10,8 @@ import socket
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
-from typing import TypedDict, Unpack
+from pathlib import Path
+from typing import Literal, TypedDict, Unpack
 
 import sh
 from anyio.abc import UNIXSocketStream
@@ -23,16 +24,27 @@ COMMAND_TIMEOUT = 30.0
 PREPARE_TIMEOUT = 300.0
 
 
-class SbxOptions(TypedDict, total=False):
-    name: str
-    template: str
-    pull: str
+class SbxKitArgs(TypedDict):
+    """Inputs declared by the bundled sandbox kit's args block."""
+
+    id: str
+    user_id: UUID7
+    image: str
     cpus: int
-    memory: str
-    skills: str
+    memory_mib: int
+    internet_access: Literal["true", "false"]
+
+
+class SbxOptions(TypedDict, total=False):
+    """CLI controls; the kit defines the sandbox itself."""
+
+    name: str
+    pull: Literal["always", "missing", "never"]
+    skills: Literal["off", "readonly", "readwrite"]
     no_progress: bool
-    env: list[str]
     quiet: bool
+    kit: list[str]
+    kit_arg: list[str]
 
 
 @dataclass
@@ -129,45 +141,38 @@ class SbxSandbox:
     async def prepare(self) -> None:
         await self.preflight()
         names = (await self.command("ls", quiet=True)).decode().splitlines()
+        kit_args: SbxKitArgs = {
+            "id": self.config.id,
+            "user_id": self.user_id,
+            "image": self.config.image,
+            "cpus": self.config.cpus,
+            "memory_mib": self.config.memory_mib,
+            "internet_access": "true" if self.config.internet_access else "false",
+        }
         self.managed = True
         if self.name not in names:
+            kit = Path(__file__).with_suffix("") / "kits"
             await self.command(
                 "create",
-                "shell",
+                str(kit),
+                kit_arg=[f"{key}={value}" for key, value in kit_args.items()],
+                kit=[] if self.config.internet_access else [str(kit / "offline")],
                 name=self.name,
-                template=self.config.image,
                 pull="missing",
-                cpus=self.config.cpus,
-                memory=f"{self.config.memory_mib}m",
                 skills="off",
                 no_progress=True,
-                env=[
-                    f"OCTOMATE_SANDBOX_ID={self.config.id}",
-                    f"OCTOMATE_SANDBOX_USER_ID={self.user_id}",
-                    f"OCTOMATE_SANDBOX_IMAGE={self.config.image}",
-                    f"OCTOMATE_SANDBOX_CPUS={self.config.cpus}",
-                    f"OCTOMATE_SANDBOX_MEMORY_MIB={self.config.memory_mib}",
-                ],
             )
         metadata = await self.command(
             "exec",
             self.name,
             "printenv",
-            "OCTOMATE_SANDBOX_ID",
-            "OCTOMATE_SANDBOX_USER_ID",
-            "OCTOMATE_SANDBOX_IMAGE",
-            "OCTOMATE_SANDBOX_CPUS",
-            "OCTOMATE_SANDBOX_MEMORY_MIB",
+            *(f"OCTOMATE_SANDBOX_{key.upper()}" for key in kit_args),
         )
         if metadata.splitlines() != [
-            self.config.id.encode(),
-            str(self.user_id).encode(),
-            self.config.image.encode(),
-            str(self.config.cpus).encode(),
-            str(self.config.memory_mib).encode(),
+            str(value).encode() for value in kit_args.values()
         ]:
             raise SandboxError(
-                "Existing sandbox deployment, owner, image or resource settings differ; no automatic replacement is allowed"
+                "Existing sandbox deployment, owner, image, resource or network settings differ; no automatic replacement is allowed"
             )
 
     @asynccontextmanager
