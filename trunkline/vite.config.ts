@@ -15,6 +15,16 @@ export default defineConfig({
   build: {
     // Public font imports must stay embedded for the isolated artifact sandbox.
     assetsInlineLimit: (path) => /\/(?:PlusJakartaSans|FiraCode-400-latin)\.woff2$/.test(path) ? true : undefined,
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            { name: 'react', test: /node_modules\/(?:react|react-dom|scheduler)\//, priority: 20 },
+            { name: 'chat-runtime', test: /node_modules\/@assistant-ui\//, priority: 10 },
+          ],
+        },
+      },
+    },
   },
   server: {
     // Bind the IPv4 loopback explicitly: `localhost` resolves to `::1` first on

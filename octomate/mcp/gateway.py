@@ -45,7 +45,6 @@ from octomate.schemas.triage import (
     SendTarget,
 )
 from octomate.types.json import JsonObject
-from octomate.types.threads import NATIVE_TENTACLE_IDS
 
 if TYPE_CHECKING:
     # Runtime dependency runs the other way (the host builds and mounts this
@@ -70,7 +69,7 @@ NATIVE_TELEPORT_STARTED = (
 # launch config Octomate itself wrote, never from the model.
 CONVERSATION_HEADER = "X-Octomate-Conversation"
 
-# The header a native session's static MCP config attributes its runtime with —
+# The header a native session's static MCP config names its configured agent with —
 # written once at install time, never per session. Attribution within the bearer's
 # trust domain, not authentication: the bearer is what authenticates.
 CLIENT_HEADER = "X-Octomate-Client"
@@ -282,7 +281,7 @@ def served_session(octomate: Octomate) -> Callable[[], Awaitable[OctomateSession
     launch config by Octomate itself along with the kicker's own secret, and
     resolves to the session registered while that run is in flight — a bearer
     other than the kicker's is refused, so no user can drive another's turn. A
-    native session names its runtime with `CLIENT_HEADER`, written once at
+    native session names its agent with `CLIENT_HEADER`, written once at
     install time, and gets `native_session` built for the bearer's user.
     Identity is asserted by config and credential either way, never chosen by
     the model, so a call carrying neither header is refused outright rather than
@@ -322,23 +321,16 @@ def served_session(octomate: Octomate) -> Callable[[], Awaitable[OctomateSession
         if client is None:
             raise ToolError(
                 "This call names no identity: a driven turn names its conversation "
-                f"with {CONVERSATION_HEADER}, a native session its runtime with "
+                f"with {CONVERSATION_HEADER}, a native session its agent with "
                 f"{CLIENT_HEADER}. Both are written by config, so a call carrying "
                 "neither has nothing the gateway may answer for."
             )
-        if client not in NATIVE_TENTACLE_IDS:
-            raise ToolError(
-                f"{CLIENT_HEADER} names no native runtime: {client!r}. An install "
-                f"writes one of: {', '.join(sorted(NATIVE_TENTACLE_IDS))}."
-            )
         if principal is None:
-            agent = client.removesuffix("-native")
             raise ToolError(
                 "A native session speaks for a registered user, and this call's "
                 "bearer names none. Run `octomate configure --token` with "
-                "their API token on their machine, then re-run "
-                f"`octomate {agent} mcp "
-                "install`."
+                "their API token on their machine, then re-run the harness's "
+                "`mcp install` command."
             )
         return await native_session(octomate, client, principal)
 
@@ -346,18 +338,23 @@ def served_session(octomate: Octomate) -> Callable[[], Awaitable[OctomateSession
 
 
 async def native_session(
-    octomate: Octomate, client: str, username: str
+    octomate: Octomate, agent_tentacle_id: str, username: str
 ) -> OctomateSession:
     """An ephemeral gateway for one native call, never registered.
 
     `username` is the verified bearer's owner, so the session speaks for that
     person: anchored on a transient profile of theirs, its destinations are
-    their own linked accounts. The call is still attributed to a runtime, never
+    their own linked accounts. The call is attributed to the configured agent, never
     to a terminal session, so the session has no thread and no address — every
     destination is a crossing. A static MCP config puts the tools in every
     session once installed, and the bearer is the only control.
     """
-    profile = await octomate.users.native_profile(client, username)
+    agent = octomate.agents.get(agent_tentacle_id)
+    if agent is None:
+        raise ToolError(
+            f"{CLIENT_HEADER} names no configured agent: {agent_tentacle_id!r}."
+        )
+    profile = await octomate.users.native_profile(agent.id, username)
     if profile is None:
         raise RuntimeError(
             f"the bearer verified as {username!r} but the registry holds no such user"
@@ -366,7 +363,7 @@ async def native_session(
         channel_routes=octomate.gateway.available_routes(
             octomate.channels, octomate.agents
         ),
-        current_agent_id=client,
+        current_agent_id=agent.id,
         channels=octomate.channels,
         users=octomate.users,
         user_profile=profile,

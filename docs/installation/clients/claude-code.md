@@ -36,5 +36,9 @@ embeds the token:
 | `project` | `./.mcp.json` | Committed alongside the code, so keep it out of git |
 
 `uninstall` and `show` take the same scope. The entry is an `http` server named
-`octomate` with an `Authorization` header and `X-Octomate-Client: claude-native`.
+`octomate` with an `Authorization` header and `X-Octomate-Client: claude`.
 Claude lists its tools as `mcp__octomate__<tool>`.
+
+The server's Claude tentacle must use the ID `claude`.
+Re-run the installer with the same scope and file options to replace an
+older MCP entry, then restart Claude Code to load it.

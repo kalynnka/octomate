@@ -12,6 +12,11 @@ class AgentInfo(BaseModel):
     live sessions."""
 
     id: str = Field(description="The registered agent tentacle's id.")
+    icon_url: str | None = Field(
+        default=None,
+        description="Brand icon URL or absolute URL path; absent or unavailable icons "
+        "are displayed as the agent's text name.",
+    )
     description: str = Field(description="The agent's own capability blurb.")
     gateway: bool = Field(
         description="Whether this agent's driven turns offer the routing and "

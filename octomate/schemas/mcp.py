@@ -51,6 +51,19 @@ class McpAppToolMeta(BaseModel):
     )
 
 
+class McpAppResultMeta(BaseModel):
+    """The proxy's saved artifact reference, carried back with its tool result."""
+
+    model_config = ConfigDict(validate_by_name=True)
+
+    artifact_message_id: UUID7 | None = Field(
+        default=None,
+        validation_alias="octomate/artifactMessageId",
+        serialization_alias="octomate/artifactMessageId",
+        description="Ledger reference created by the proxy for this tool call.",
+    )
+
+
 class McpAppInvocation(BaseModel):
     """A completed MCP app call, retained independently of its content source.
 

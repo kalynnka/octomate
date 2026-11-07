@@ -17,7 +17,6 @@ from octomate.types.json import JsonObject
 from tests.agent.codex.test_native_ingest import (
     CHILD_THREAD_ID,
     CHILD_TURN_ONE,
-    CODEX_NATIVE_ID,
     ROLLOUT_LABEL,
     SENDER,
     SESSION_ADDRESS,
@@ -93,7 +92,7 @@ async def test_prompts_keep_order_identity_and_sender_on_replay(
         await feed_records(tailer, state, replay)
         tailer.detach_remote(state)
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+        octomate.threads, ThreadKey("codex", "thread", SESSION_ID)
     )
     assert [row.message_text for row in thread.messages] == [
         "ask again",
@@ -113,7 +112,7 @@ async def test_prompts_keep_order_identity_and_sender_on_replay(
         for sender in senders
     )
     conversation = await octomate.conversations.ensure(
-        thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+        thread.id, agent_tentacle_id="codex"
     )
     [run] = conversation.runs
     assert run.id == TURN_ID
@@ -218,7 +217,7 @@ async def test_subagent_prompts_use_the_same_provenance_and_deduplication(
         "child answer",
     ]
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+        octomate.threads, ThreadKey("codex", "thread", SESSION_ID)
     )
     assert not thread.messages
 
@@ -275,7 +274,7 @@ async def test_explicit_reimport_repairs_a_committed_turn_without_duplicating_re
     await feed_records(tailer, state, [records[0], *records[2:]])
     tailer.detach_remote(state)
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+        octomate.threads, ThreadKey("codex", "thread", SESSION_ID)
     )
     [reply] = thread.messages
     for replay, repair in enumerate((False, True, False)):

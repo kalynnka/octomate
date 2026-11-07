@@ -154,7 +154,6 @@ async def test_driven_html_reaches_the_owned_viewer_and_channel_card(
         )
     )
     tentacle = CodexTentacle(
-        "codex",
         host,
         sandboxes=host.sandboxes,
         config=CodexConfig(permission_mode="auto_review"),

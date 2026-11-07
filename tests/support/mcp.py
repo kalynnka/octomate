@@ -5,9 +5,11 @@ import httpx2
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.client.transports import StreamableHttpTransport
+from fastmcp.utilities.asgi_transport import run_asgi_lifespan
 from pydantic import AnyUrl
 from pydantic_ai import AgentCapability
 from pydantic_ai.mcp import MCPToolset, ProcessToolCallback
+from starlette.types import Receive, Scope, Send
 
 from octomate import Octomate
 from octomate.config.mcp import OAuthMcpConfig
@@ -41,6 +43,10 @@ async def served_inkling_mcp(
 ) -> AsyncGenerator[None]:
     """Exercise Inkling's HTTP bearer and session headers against the real MCP app."""
 
+    async def lifespan_app(scope: Scope, receive: Receive, send: Send) -> None:
+        # FastMCP's runner omits the state needed by Octomate's lifespan result.
+        await host({**scope, "state": {}}, receive, send)
+
     def asgi(
         headers: dict[str, str] | None = None,
         timeout: httpx2.Timeout | None = None,
@@ -55,7 +61,7 @@ async def served_inkling_mcp(
             follow_redirects=follow_redirects,
         )
 
-    async with host.router.lifespan_context(host) if lifespan else nullcontext():
+    async with run_asgi_lifespan(lifespan_app) if lifespan else nullcontext():
 
         class ServedMcp(MCPToolset[None]):
             def __init__(

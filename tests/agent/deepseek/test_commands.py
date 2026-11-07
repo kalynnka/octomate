@@ -43,7 +43,6 @@ def client(payload: JsonObject) -> AsyncMock:
 async def agent(client: AsyncMock) -> AsyncGenerator[DeepseekTentacle]:
     host = Octomate()
     agent = DeepseekTentacle(
-        "deepseek",
         host,
         auth=host.auth,
         sandboxes=host.sandboxes,
@@ -221,7 +220,6 @@ async def test_connection_startup_replaces_unavailable_catalog_and_shutdown_expi
     FakeDeepseekApi.results["commands/list"] = OkResult(value=[])
     host = Octomate()
     agent = DeepseekTentacle(
-        "deepseek",
         host,
         auth=host.auth,
         sandboxes=host.sandboxes,

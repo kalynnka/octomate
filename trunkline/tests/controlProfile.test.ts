@@ -253,9 +253,9 @@ test('channel names blend their brand colors with theme text for a muted palette
     { id: 'slack', name: 'Slack', color: '#746576' },
     { id: 'lark', name: 'Lark', color: '#666D82' },
     { id: 'napcat', name: 'Napcat', color: '#6A828B' },
-    { id: 'claude-native', name: 'Claude', color: '#98796A' },
-    { id: 'codex-native', name: 'Codex', color: '#677D73' },
-    { id: 'deepseek-native', name: 'DeepSeek', color: '#66709B' },
+    { id: 'claude', name: 'Claude', color: '#98796A' },
+    { id: 'codex', name: 'Codex', color: '#677D73' },
+    { id: 'deepseek', name: 'DeepSeek', color: '#66709B' },
     { id: 'custom', name: 'Custom', color: 'var(--fg-3)' },
   ]
   useConsole.getInitialState().mgmtSec = 'profile'

@@ -21,7 +21,7 @@ from octomate.config.agents import Claim, ClaudeCodeConfig, CodexConfig, Deepsee
 from octomate.config.agents.codex import CodexReasoningEffort
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.tentacles.agent import AgentTentacle
-from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
@@ -59,8 +59,7 @@ async def test_claude_uses_native_metadata_before_config(
     prefix = "bedrock" if provider == "bedrock" else "anthropic"
     configured = Claim("Configured fallback", efforts=("medium",))
     host = Octomate()
-    tentacle = ClaudeCodeTentacle(
-        "claude",
+    tentacle = ClaudeTentacle(
         host,
         auth=host.auth,
         sandboxes=host.sandboxes,
@@ -106,8 +105,7 @@ async def test_claude_discovery_claims_its_session_through_client_cleanup(
     monkeypatch: pytest.MonkeyPatch, fails: bool
 ) -> None:
     host = Octomate()
-    tentacle = ClaudeCodeTentacle(
-        "claude",
+    tentacle = ClaudeTentacle(
         host,
         auth=host.auth,
         sandboxes=host.sandboxes,
@@ -214,7 +212,6 @@ async def test_codex_reads_provider_configured_default_and_every_catalog_page(
     prefix = provider or "openai"
     host = Octomate()
     tentacle = CodexTentacle(
-        "codex",
         host,
         sandboxes=host.sandboxes,
         config=CodexConfig(
@@ -295,7 +292,6 @@ async def test_codex_claims_the_effort_a_turn_runs_at_by_default(
     ]
     host = Octomate()
     tentacle = CodexTentacle(
-        "codex",
         host,
         sandboxes=host.sandboxes,
         config=CodexConfig(effort=ours),
@@ -326,7 +322,6 @@ async def test_codex_empty_catalog_fails_without_fabricating_models(
     ]
     host = Octomate()
     tentacle = CodexTentacle(
-        "codex",
         host,
         sandboxes=host.sandboxes,
         config=CodexConfig(),
@@ -384,7 +379,6 @@ async def test_deepseek_preserves_provider_pairs_and_native_effort_ids(
     )
     host = Octomate(conversations=FakeConversationManager())
     tentacle = DeepseekTentacle(
-        "deepseek",
         host,
         auth=host.auth,
         sandboxes=host.sandboxes,
@@ -440,7 +434,6 @@ async def test_deepseek_reports_catalog_failure_without_inventing_models(
     )
     host = Octomate()
     tentacle = DeepseekTentacle(
-        "deepseek",
         host,
         auth=host.auth,
         sandboxes=host.sandboxes,
@@ -473,8 +466,7 @@ def harness(
         monkeypatch.setattr(
             claude_ink, "ClaudeSDKClient", MagicMock(return_value=client)
         )
-        return ClaudeCodeTentacle(
-            "claude",
+        return ClaudeTentacle(
             octomate,
             auth=octomate.auth,
             sandboxes=octomate.sandboxes,
@@ -503,7 +495,6 @@ def harness(
             ),
         ]
         return CodexTentacle(
-            "codex",
             octomate,
             sandboxes=octomate.sandboxes,
             config=CodexConfig(),
@@ -537,7 +528,6 @@ def harness(
         }
     )
     return DeepseekTentacle(
-        "deepseek",
         octomate,
         auth=octomate.auth,
         sandboxes=octomate.sandboxes,
@@ -551,6 +541,9 @@ async def test_harness_catalogs_expose_all_models_and_native_defaults(
     tentacle = harness
     assert tentacle.routes == []
     assert tentacle.default_model is None
+    assert tentacle.resolve_model() is None
+    with pytest.raises(ValueError, match="no available model catalog"):
+        tentacle.resolve_model("source:included")
     async with tentacle:
         names = ["source:included", "source:excluded"]
         assert list(tentacle.models) == names
@@ -562,6 +555,10 @@ async def test_harness_catalogs_expose_all_models_and_native_defaults(
         )
         assert tentacle.resolve_model() is None
         tentacle.octomate.connect(tentacle)
+        assert tentacle.resolve_model("included") == "source:included"
+        assert tentacle.resolve_model("source:excluded") == "source:excluded"
+        with pytest.raises(ValueError, match="does not serve model"):
+            tentacle.resolve_model("missing")
         channel = TrunklineTentacle(
             "console",
             tentacle.octomate,
@@ -584,6 +581,8 @@ async def test_inkling_uses_the_shared_agent_lifecycle() -> None:
     )
     async with tentacle as entered:
         assert entered is tentacle
+        assert tentacle.default_model == "test"
+        assert tentacle.resolve_model() == "test"
         routes = tentacle.routes
         assert len(routes) == 1
         assert routes[0].claim is claim

@@ -375,7 +375,9 @@ class Octomate(FastAPI):
                         impulses=impulses,
                     )
                     try:
-                        return await run_reflex(signal, state=ReflexState(), deps=deps)
+                        return await run_reflex(
+                            signal, origin=origin, state=ReflexState(), deps=deps
+                        )
                     finally:
                         # Nothing sent on the stream is heard before this task next
                         # yields: the thread is let go before the reflex is heard

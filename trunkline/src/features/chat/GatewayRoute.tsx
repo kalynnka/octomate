@@ -2,6 +2,7 @@ import { useEffect, useId, useRef } from 'react'
 import type { CSSProperties } from 'react'
 import type { ApiAgentRoute } from '@/lib/api/events'
 import { ellipsis, fieldLabel, label, mono } from '@/components/text'
+import { TextSwap } from '@/components/TextSwap'
 import { navigateGatewayMenu, type EffortLevel } from './gateway'
 
 const accent = (share: number) => `color-mix(in srgb, var(--color-accent) ${share}%, transparent)`
@@ -85,7 +86,7 @@ export function EffortSlider({ supported, preset, effort, onEffort, bare = false
     <span style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 12px 8px' }}>
       <span style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
         <span style={{ ...fieldLabel, color: 'var(--fg-2)' }}>Effort</span>
-        <span style={{ ...label(8, '.1em'), color: 'var(--color-accent)' }}>{read}</span>
+        <TextSwap style={{ ...label(8, '.1em'), color: 'var(--color-accent)' }}>{read}</TextSwap>
         <span style={{ flex: 1 }} />
         <span style={{ ...mono(7.5), color: 'var(--fg-3)' }}>
           {real.length
@@ -152,10 +153,10 @@ export function SummonRoute({ routes, route, efforts, effort, open, reason, onOp
           whiteSpace: 'nowrap', minWidth: 0, maxWidth: '100%', alignSelf: 'flex-start',
         }}
       >
-        <span style={{ color: 'var(--color-accent)' }}>{route?.agent_id ?? 'agent'}</span>
+        <TextSwap style={{ color: 'var(--color-accent)' }}>{route?.agent_id ?? 'agent'}</TextSwap>
         <span style={{ color: 'var(--fg-3)' }}>·</span>
-        <span style={{ color: 'var(--fg-1)', minWidth: 0, ...ellipsis }}>{route?.model ?? '—'}</span>
-        <span style={{ color: 'var(--fg-3)' }}>[{effort}]</span>
+        <TextSwap style={{ color: 'var(--fg-1)', minWidth: 0, ...ellipsis }}>{route?.model ?? '—'}</TextSwap>
+        <TextSwap style={{ color: 'var(--fg-3)' }}>{`[${effort}]`}</TextSwap>
         <span style={{ fontSize: 7, color: 'var(--fg-3)', lineHeight: 1, marginTop: 1 }}>▾</span>
       </button>
       {shown && (

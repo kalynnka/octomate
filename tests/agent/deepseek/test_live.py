@@ -33,7 +33,7 @@ from octomate import Octomate
 from octomate.config.agents import DeepseekConfig
 from octomate.nerve import Impulse
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.thread import DEEPSEEK_NATIVE_ID, ThreadKey
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.deepseek.base import DeepseekBridgeContext
@@ -98,7 +98,6 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
     octomate = Octomate()
     conversations = octomate.conversations
     tentacle = DeepseekTentacle(
-        "deepseek",
         octomate,
         auth=octomate.auth,
         sandboxes=octomate.sandboxes,
@@ -185,15 +184,15 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
         ]
         assert kinds.count("turn/end") == 2
         assert "tool/result" in kinds
-        tailer = DeepseekEventTailer(conversations, octomate.threads)
+        tailer = DeepseekEventTailer(
+            conversations, octomate.threads, agent_tentacle_id="deepseek"
+        )
         state, _ = await tailer.attach_remote(
             first_session,
             home / "session.jsonl",
             str(tmp_path),
             UserProfile(channel_user_id="smoke", name="Smoke"),
-            address=ThreadKey(DEEPSEEK_NATIVE_ID, "thread", first_session).address(
-                "smoke"
-            ),
+            address=ThreadKey("deepseek", "thread", first_session).address("smoke"),
             impulses=tail_impulses,
         )
         for record in records:
@@ -273,7 +272,6 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
     assert (native_profile / "cordis.patch.yml").read_text() == native_patch
     assert "OCTOMATE_DSH_TEST_TOKEN: synthetic\n" in credentials.read_text()
     restarted = DeepseekTentacle(
-        "deepseek",
         tentacle.octomate,
         auth=tentacle.octomate.auth,
         sandboxes=tentacle.octomate.sandboxes,

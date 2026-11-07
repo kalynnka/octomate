@@ -4,29 +4,45 @@ over the real ConversationManager/ThreadManager on in-memory SQLite."""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import UUID7
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai.messages import ModelMessage, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.events import RunErrorEvent
+from octomate.capabilities.harness.events import (
+    ActionBatchEvent,
+    ReflexAsleepEvent,
+    ReflexAwakeEvent,
+    ReflexPhaseChangedEvent,
+    RunActivityChangedEvent,
+    RunEndedEvent,
+    RunErrorEvent,
+    RunStartedEvent,
+)
 from octomate.config import (
     ChannelConfig,
     ChannelStreamConfig,
 )
 from octomate.config.channels import ChatRecapConfig
 from octomate.database import async_session
-from octomate.nerve import ThreadTopic
+from octomate.nerve import ChannelTopic, ThreadTopic
 from octomate.prompts import untagged
-from octomate.reflex.state import RECAP_HEADER
-from octomate.schemas.awakes import StillAwake, UserMessageSignal
+from octomate.reflex.state import RECAP_HEADER, ReflexDeps, ReflexRuntime
+from octomate.schemas.awakes import (
+    DeferredActionBatchResponse,
+    StillAwake,
+    UserMessageSignal,
+)
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
@@ -792,3 +808,145 @@ def test_the_typed_views_follow_each_connect() -> None:
     assert list(octomate.tentacles) == ["inkling", "im"]
     assert octomate.agents == {"inkling": agent}
     assert octomate.channels == {"im": channel}
+
+
+@pytest.mark.parametrize(
+    "ending", ["completed", "deferred", "summon", "teleport", "handed_off"]
+)
+async def test_status_facts_keep_the_reflex_open_across_runs(ending: str) -> None:
+    app = Octomate()
+    entry = FakeAgent()
+    if ending == "deferred":
+        entry.reception_output = DeferredToolRequests(
+            approvals=[ToolCallPart("shell", {"cmd": "pwd"}, "call-1")]
+        )
+    elif ending == "summon":
+        entry.reception_summon = SummonDecision(
+            agent_id="claude",
+            model="opus",
+            reason="Continue there.",
+            hint="Taking over",
+            brief="Finish the work.",
+        )
+    elif ending in {"teleport", "handed_off"}:
+        entry.reception_teleport = "Continue in a thread."
+        entry.reception_teleport_resume = ending == "teleport"
+    app.connect(entry)
+    app.connect(FakeAgent(id="claude"))
+    app.connect(FakeChannelTentacle(config=_summon_config(stream=False)))
+
+    async with (
+        app.nerve.subscribe(ThreadTopic(ThreadKey.from_address(_key()))) as live,
+        app.nerve.subscribe(ChannelTopic("im")) as channel_live,
+    ):
+        await kicked(app, UserMessageSignal([_event()]))
+        events = [impulse.event for impulse in held(live)]
+        channel_events = [impulse.event for impulse in held(channel_live)]
+    assert channel_events[0] == events[0]
+    assert channel_events[-1] == events[-1]
+
+    assert isinstance(events[0], ReflexAwakeEvent)
+    assert isinstance(events[-1], ReflexAsleepEvent)
+    assert events[-1].outcome == (
+        ending if ending in {"deferred", "handed_off"} else "completed"
+    )
+    assert sum(isinstance(event, ReflexAwakeEvent) for event in events) == 1
+    assert sum(isinstance(event, ReflexAsleepEvent) for event in events) == 1
+    phases = [
+        event.phase for event in events if isinstance(event, ReflexPhaseChangedEvent)
+    ]
+    assert phases[:2] == ["preparing", "routing"]
+    assert phases[-1] == "finalizing"
+    ended = [event.outcome for event in events if isinstance(event, RunEndedEvent)]
+    assert (
+        ended
+        == {
+            "completed": ["completed"],
+            "deferred": ["deferred"],
+            "summon": ["completed", "completed"],
+            "teleport": ["deferred", "completed"],
+            "handed_off": ["deferred"],
+        }[ending]
+    )
+    active = False
+    for event in events:
+        if isinstance(event, RunStartedEvent):
+            assert not active
+            active = True
+        elif isinstance(event, RunActivityChangedEvent):
+            assert active
+        elif isinstance(event, RunEndedEvent):
+            assert active
+            active = False
+    assert not active
+    if ending in {"summon", "teleport", "handed_off"}:
+        moving = next(
+            i
+            for i, event in enumerate(events)
+            if isinstance(event, ReflexPhaseChangedEvent) and event.phase == "moving"
+        )
+        ends = [i for i, event in enumerate(events) if isinstance(event, RunEndedEvent)]
+        assert ends[0] < moving < len(events) - 1
+        if len(ends) == 2:
+            assert moving < ends[1]
+    if ending == "deferred":
+        [batch] = [event for event in events if isinstance(event, ActionBatchEvent)]
+        assert batch.response_mode == "resume"
+        assert batch.blocks_run is True
+
+        entry.reception_output = "Resumed and finished."
+        [approval] = batch.approvals
+        assert approval.batch_id is not None
+        async with app.nerve.subscribe(
+            ThreadTopic(ThreadKey.from_address(_key()))
+        ) as live:
+            await kicked(
+                app,
+                DeferredActionBatchResponse(
+                    batch_id=approval.batch_id,
+                    approvals={approval.id: True},
+                ),
+            )
+            resumed = [impulse.event for impulse in held(live)]
+        assert resumed[-1] == ReflexAsleepEvent(outcome="completed")
+        assert [
+            event.outcome for event in resumed if isinstance(event, RunEndedEvent)
+        ] == ["completed"]
+
+
+@pytest.mark.parametrize("phase", ["preparation", "execution", "finalization"])
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_status_outcomes_survive_failed_or_cancelled_lifecycle(
+    phase: str,
+    cancel: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = Octomate()
+    app.connect(FakeAgent())
+    app.connect(FakeChannelTentacle(config=_entry_config(stream=False)))
+    failure = AsyncMock(
+        side_effect=asyncio.CancelledError if cancel else RuntimeError("stopped")
+    )
+    if phase == "preparation":
+        monkeypatch.setattr(ReflexRuntime, "resources", failure)
+    elif phase == "execution":
+        monkeypatch.setattr(ReflexDeps, "carry", failure)
+    else:
+        monkeypatch.setattr(app.workspaces, "save", failure)
+
+    async with app.nerve.subscribe(ThreadTopic(ThreadKey.from_address(_key()))) as live:
+        with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
+            await kicked(app, UserMessageSignal([_event()]))
+        events = [impulse.event for impulse in held(live)]
+
+    assert events[-1] == ReflexAsleepEvent(outcome="cancelled" if cancel else "failed")
+    ended = [event.outcome for event in events if isinstance(event, RunEndedEvent)]
+    assert (
+        ended
+        == {
+            "preparation": [],
+            "execution": ["cancelled" if cancel else "failed"],
+            "finalization": ["completed"],
+        }[phase]
+    )
+    assert not app.awakes

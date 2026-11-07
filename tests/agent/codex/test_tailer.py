@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+import anyio
 import pytest
 from openai_codex.generated.v2_all import (
     AgentMessageDeltaNotification,
@@ -18,9 +19,11 @@ from pydantic_ai.messages import (
     EnqueuedMessagesEvent,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
+    NativeToolCallPart,
     PartEndEvent,
     TextPart,
     ThinkingPart,
+    ToolReturnPart,
 )
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -246,9 +249,338 @@ def test_rollout_parts_match_the_completed_driven_parts() -> None:
     ]
 
 
+def test_rollout_keeps_commentary_and_reasoning_formats_separate() -> None:
+    turn = OpenTurn(TURN_ID, 0, 0, NOW, "local")
+    payloads: list[JsonObject] = [
+        {
+            "type": "message",
+            "role": "assistant",
+            "phase": "commentary",
+            "content": [{"type": "output_text", "text": "I am checking the setup."}],
+        },
+        {
+            "type": "reasoning",
+            "content": [{"type": "reasoning_text", "text": "Detailed reasoning"}],
+            "summary": [
+                {"type": "summary_text", "text": "**Awaiting macOS admin setup**"}
+            ],
+        },
+    ]
+    events = [
+        event
+        for payload in payloads
+        for event in CodexTranscriptTailer.consume_response_item(
+            turn,
+            RolloutLine(timestamp=NOW, type="response_item", payload=payload),
+        )
+    ]
+    parts = [event.part for event in events if isinstance(event, PartEndEvent)]
+    assert isinstance(parts[0], TextPart)
+    assert parts[0].content == "I am checking the setup."
+    assert turn.answer == ""
+    assert isinstance(parts[1], ThinkingPart)
+    assert parts[1].provider_details == {"reasoning_format": "reasoning"}
+    assert isinstance(parts[2], ThinkingPart)
+    assert parts[2].provider_details == {"reasoning_format": "summary"}
+    assert parts[2].content == "**Awaiting macOS admin setup**"
+    assert [part.part_kind for message in turn.messages for part in message.parts] == [
+        "text",
+        "thinking",
+        "thinking",
+    ]
+
+
+@pytest.mark.parametrize("readable", [None, "content", "summary"])
+def test_encrypted_reasoning_keeps_one_part_without_copying_ciphertext(
+    readable: str | None,
+) -> None:
+    turn = OpenTurn(TURN_ID, 0, 0, NOW, "local")
+    payload: JsonObject = {
+        "type": "reasoning",
+        "id": "reasoning-1",
+        "content": None,
+        "summary": [],
+        "encrypted_content": "opaque-ciphertext",
+    }
+    if readable is not None:
+        payload[readable] = [{"text": "Readable reasoning"}]
+    events = list(
+        CodexTranscriptTailer.consume_response_item(
+            turn, RolloutLine(timestamp=NOW, type="response_item", payload=payload)
+        )
+    )
+    assert [event.event_kind for event in events] == ["part_start", "part_end"]
+    completed = events[-1]
+    assert isinstance(completed, PartEndEvent)
+    part = completed.part
+    assert isinstance(part, ThinkingPart)
+    assert part.content == ("Readable reasoning" if readable else "")
+    if readable is None:
+        assert part.id == "reasoning-1"
+        assert part.provider_name == "openai_codex"
+    else:
+        assert part.provider_details == {
+            "reasoning_format": "summary" if readable == "summary" else "reasoning"
+        }
+    assert len(turn.messages) == 1
+    assert turn.messages[0].parts == [part]
+    assert "opaque-ciphertext" not in str(turn.messages)
+
+
+@pytest.mark.parametrize("encrypted", [None, "", False])
+def test_empty_reasoning_without_ciphertext_does_not_create_a_placeholder(
+    encrypted: JsonValue,
+) -> None:
+    turn = OpenTurn(TURN_ID, 0, 0, NOW, "local")
+    events = list(
+        CodexTranscriptTailer.consume_response_item(
+            turn,
+            RolloutLine(
+                timestamp=NOW,
+                type="response_item",
+                payload={
+                    "type": "reasoning",
+                    "content": None,
+                    "summary": [],
+                    "encrypted_content": encrypted,
+                },
+            ),
+        )
+    )
+    assert events == []
+    assert turn.messages == []
+
+
+@pytest.mark.parametrize("status", ["completed", "failed", "declined"])
+def test_native_command_items_keep_classifications_without_duplicate_calls(
+    status: str,
+) -> None:
+    turn = OpenTurn(TURN_ID, 0, 0, NOW, "local")
+    line = RolloutLine(
+        timestamp=NOW,
+        type="event_msg",
+        payload={
+            "type": "item_completed",
+            "item": {
+                "type": "CommandExecution",
+                "id": "nested-command",
+                "command": ["cat", "app.py"],
+                "cwd": "/repo",
+                "status": status,
+                "aggregated_output": "contents",
+                "parsed_cmd": [
+                    {
+                        "type": "read",
+                        "cmd": "cat app.py",
+                        "name": "app.py",
+                        "path": "/repo/app.py",
+                    }
+                ],
+            },
+        },
+    )
+    events = list(CodexTranscriptTailer.consume_completed_command(turn, line))
+    call, result = events
+    assert isinstance(call, FunctionToolCallEvent)
+    assert isinstance(result, FunctionToolResultEvent)
+    assert isinstance(result.part, ToolReturnPart)
+    assert call.part.args_as_dict()["commandActions"] == [
+        {"type": "read", "cmd": "cat app.py", "name": "app.py", "path": "/repo/app.py"}
+    ]
+    assert (
+        result.part.outcome
+        == {"completed": "success", "failed": "failed", "declined": "denied"}[status]
+    )
+    saved = turn.messages[0].parts[0]
+    assert isinstance(saved, NativeToolCallPart)
+    assert saved.args == call.part.args
+    assert list(CodexTranscriptTailer.consume_completed_command(turn, line)) == []
+
+    turn.messages.clear()
+    turn.pending_calls[saved.tool_call_id] = saved
+    assert list(CodexTranscriptTailer.consume_completed_command(turn, line)) == []
+    assert turn.messages == []
+
+
 @pytest.fixture
 async def db(in_memory_engine: AsyncEngine) -> None:
     return
+
+
+@pytest.mark.usefixtures("db")
+@pytest.mark.parametrize("kind", ["function_call", "custom_tool_call"])
+async def test_tool_start_reaches_subscribers_before_a_result_or_turn_end(
+    kind: str,
+) -> None:
+    octomate = Octomate()
+    tailer = CodexTranscriptTailer(
+        octomate.conversations,
+        octomate.threads,
+        octomate.files,
+        agent_tentacle_id="codex",
+    )
+    async with octomate.nerve.subscribe(
+        ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
+    ) as live:
+        async with octomate.nerve.publish(SESSION_ADDRESS) as publisher:
+            state, _ = await tailer.attach_remote(
+                SESSION_ID, ROLLOUT_LABEL, SENDER, SESSION_ADDRESS, publisher
+            )
+            await feed_records(
+                tailer,
+                state,
+                [
+                    {
+                        "timestamp": NOW.isoformat(),
+                        "type": "event_msg",
+                        "payload": {"type": "task_started", "turn_id": TURN_ID},
+                    },
+                    {
+                        "timestamp": NOW.isoformat(),
+                        "type": "response_item",
+                        "payload": {
+                            "type": kind,
+                            "call_id": "cmd-1",
+                            "name": "exec_command",
+                            "arguments": '{"cmd":"sleep 10"}',
+                        },
+                    },
+                ],
+            )
+            with anyio.fail_after(1):
+                assert (await live.receive()).event.event_kind == "run_started"
+                call = (await live.receive()).event
+            assert isinstance(call, FunctionToolCallEvent)
+            assert call.part.tool_call_id == "cmd-1"
+            tailer.detach_remote(state)
+
+
+@pytest.mark.usefixtures("db")
+async def test_completed_command_activity_is_published_and_saved() -> None:
+    octomate = Octomate()
+    tailer = CodexTranscriptTailer(
+        octomate.conversations,
+        octomate.threads,
+        octomate.files,
+        agent_tentacle_id="codex",
+    )
+    async with octomate.nerve.subscribe(
+        ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
+    ) as live:
+        async with octomate.nerve.publish(SESSION_ADDRESS) as publisher:
+            state, _ = await tailer.attach_remote(
+                SESSION_ID, ROLLOUT_LABEL, SENDER, SESSION_ADDRESS, publisher
+            )
+            await feed_records(
+                tailer,
+                state,
+                [
+                    {
+                        "timestamp": NOW.isoformat(),
+                        "type": "event_msg",
+                        "payload": {"type": "task_started", "turn_id": TURN_ID},
+                    },
+                    {
+                        "timestamp": NOW.isoformat(),
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "item_completed",
+                            "item": {
+                                "type": "CommandExecution",
+                                "id": "command-read",
+                                "command": ["cat", "app.py"],
+                                "cwd": "/repo",
+                                "status": "completed",
+                                "aggregated_output": "contents",
+                                "parsed_cmd": [{"type": "read"}],
+                            },
+                        },
+                    },
+                    {
+                        "timestamp": NOW.isoformat(),
+                        "type": "event_msg",
+                        "payload": {"type": "task_complete", "turn_id": TURN_ID},
+                    },
+                ],
+            )
+            with anyio.fail_after(1):
+                assert isinstance((await live.receive()).event, RunStartedEvent)
+                call = (await live.receive()).event
+                result = (await live.receive()).event
+            assert isinstance(call, FunctionToolCallEvent)
+            assert isinstance(result, FunctionToolResultEvent)
+            assert call.part.args_as_dict()["commandActions"] == [{"type": "read"}]
+            assert state.conversation is not None
+            stored = await octomate.conversations.get(state.conversation.id)
+            saved = stored.messages[0].parts[0]
+            assert isinstance(saved, NativeToolCallPart)
+            assert saved.args == call.part.args
+            tailer.detach_remote(state)
+
+
+@pytest.mark.usefixtures("db")
+async def test_encrypted_reasoning_placeholder_is_published_and_saved() -> None:
+    octomate = Octomate()
+    tailer = CodexTranscriptTailer(
+        octomate.conversations,
+        octomate.threads,
+        octomate.files,
+        agent_tentacle_id="codex",
+    )
+    async with octomate.nerve.subscribe(
+        ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
+    ) as live:
+        async with octomate.nerve.publish(SESSION_ADDRESS) as publisher:
+            state, _ = await tailer.attach_remote(
+                SESSION_ID, ROLLOUT_LABEL, SENDER, SESSION_ADDRESS, publisher
+            )
+            await feed_records(
+                tailer,
+                state,
+                [
+                    {
+                        "timestamp": NOW.isoformat(),
+                        "type": "event_msg",
+                        "payload": {"type": "task_started", "turn_id": TURN_ID},
+                    },
+                    {
+                        "timestamp": NOW.isoformat(),
+                        "type": "response_item",
+                        "payload": {
+                            "type": "reasoning",
+                            "id": "reasoning-1",
+                            "content": None,
+                            "summary": [],
+                            "encrypted_content": "opaque-ciphertext",
+                        },
+                    },
+                    {
+                        "timestamp": NOW.isoformat(),
+                        "type": "event_msg",
+                        "payload": {"type": "task_complete", "turn_id": TURN_ID},
+                    },
+                ],
+            )
+            assert state.conversation is not None
+            stored = await octomate.conversations.get(state.conversation.id)
+            assert len(stored.messages) == 1
+            part = stored.messages[0].parts[0]
+            assert isinstance(part, ThinkingPart)
+            assert part.content == ""
+            assert part.id == "reasoning-1"
+            assert part.provider_name == "openai_codex"
+            assert "opaque-ciphertext" not in str(stored.messages)
+            tailer.detach_remote(state)
+        events = [impulse.event for impulse in held(live)]
+        assert [event.event_kind for event in events] == [
+            "run_started",
+            "part_start",
+            "part_end",
+            "run_ended",
+        ]
+        completed = events[2]
+        assert isinstance(completed, PartEndEvent)
+        assert completed.part == part
 
 
 @pytest.mark.usefixtures("db")
@@ -260,7 +592,10 @@ async def test_live_turn_restarts_then_settles_and_committed_replay_is_silent(
     records = path.read_text().splitlines()
     octomate = Octomate()
     tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.threads, octomate.files
+        octomate.conversations,
+        octomate.threads,
+        octomate.files,
+        agent_tentacle_id="codex",
     )
     key = ThreadKey.from_address(SESSION_ADDRESS)
     async with octomate.nerve.subscribe(ThreadTopic(key)) as live:
@@ -307,7 +642,10 @@ async def test_failed_commit_never_publishes_run_ended(
 ) -> None:
     octomate = Octomate()
     tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.threads, octomate.files
+        octomate.conversations,
+        octomate.threads,
+        octomate.files,
+        agent_tentacle_id="codex",
     )
     owner, method = (
         (octomate.conversations, "record_external_run")
@@ -354,7 +692,10 @@ async def test_failed_commit_never_publishes_run_ended(
 async def test_empty_reserved_turn_commits_its_checkpoint_and_settles() -> None:
     octomate = Octomate()
     tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.threads, octomate.files
+        octomate.conversations,
+        octomate.threads,
+        octomate.files,
+        agent_tentacle_id="codex",
     )
     async with octomate.nerve.subscribe(
         ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
@@ -365,7 +706,9 @@ async def test_empty_reserved_turn_commits_its_checkpoint_and_settles() -> None:
             )
             assert state.conversation is not None
             await octomate.conversations.record_external_run(
-                state.conversation, run_id=TURN_ID, native_session_id=SESSION_ID
+                state.conversation,
+                run_id=TURN_ID,
+                native_session_id=SESSION_ID,
             )
             await feed_records(
                 tailer,

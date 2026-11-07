@@ -6,13 +6,14 @@ entries, and the result variants a run ends in.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload
 
 from anyio.abc import ObjectSendStream
 from opentelemetry import trace
@@ -24,6 +25,7 @@ from pydantic_graph import BaseNode, End, GraphRunContext
 
 from octomate.capabilities.harness.events import (
     MessageSentEvent,
+    RunActivityChangedEvent,
     RunEndedEvent,
     RunErrorEvent,
     RunStartedEvent,
@@ -158,6 +160,7 @@ class ReflexResult:
     decision: SummonDecision | None
     target: ResponseTarget
     result: AgentRunResult[ChannelOutput] | None = None
+    outcome: Literal["completed", "handed_off"] = "completed"
 
 
 @dataclass
@@ -624,8 +627,11 @@ class ReflexRuntime:
                 RunStartedEvent(address=address, sender=ctx.state.user_profile), address
             )
         )
-        reply: ThreadMessage | None = None
+        ended = RunEndedEvent(outcome="failed")
         try:
+            await ctx.deps.impulses.send(
+                Impulse(RunActivityChangedEvent(activity="working"), address)
+            )
             async with aclosing(source), aclosing(events()) as stream:
                 await ctx.deps.carry(address, stream)
             if not results:
@@ -633,11 +639,17 @@ class ReflexRuntime:
                     f"react stream for {address} completed without a result"
                 )
             reply = await self.record_reply(ctx, suspender, results[-1])
-            return results[-1]
-        finally:
-            ended = RunEndedEvent(
-                thread_message_id=reply.id if reply is not None else None
+            ended.thread_message_id = reply.id if reply is not None else None
+            ended.outcome = (
+                "deferred"
+                if isinstance(results[-1].output, DeferredToolRequests)
+                else "completed"
             )
+            return results[-1]
+        except asyncio.CancelledError:
+            ended.outcome = "cancelled"
+            raise
+        finally:
             await ctx.deps.impulses.send(Impulse(ended, address))
 
     async def record_reply(

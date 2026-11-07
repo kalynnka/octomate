@@ -40,7 +40,7 @@ from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import AgentRouteModelName
+from octomate.config.agents import AgentConfig, AgentRouteModelName
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.auth import IssuedApiKey
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -96,6 +96,8 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     api_key_lock: asyncio.Lock
     sandboxes: SandboxManager
     sandbox: str | None = None  # Selected provider ID; None runs natively.
+    # Programmatically assembled agents may have no deployment config.
+    config: AgentConfig | None = None
 
     def __init__(
         self,
@@ -167,13 +169,20 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     # in `__init__`.
     gateway: bool = True
 
-    # Native hook/stream identity for this runtime, shared by its configured agents.
-    native_id: ClassVar[str | None] = None
+    # Browser-loadable brand mark, replaceable by the deployment's agent config.
+    default_icon_url: ClassVar[str | None] = None
+
+    @property
+    def icon_url(self) -> str | None:
+        if self.config is not None and self.config.icon_url is not None:
+            return self.config.icon_url
+        return self.default_icon_url
 
     @property
     def info(self) -> AgentInfo:
         return AgentInfo(
             id=self.id,
+            icon_url=self.icon_url,
             description=self.description,
             gateway=self.gateway,
             default_model=self.default_model,
@@ -193,6 +202,11 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     def native_sessions(self) -> Counter[str]:
         """Accepted native transcript streams currently attached to this agent."""
         return Counter()
+
+    @property
+    def native_running_threads(self) -> set[ThreadKey]:
+        """Threads with open native turns; attached idle streams are excluded."""
+        return set()
 
     @cached_property
     def run_tasks(self) -> set[asyncio.Task[None]]:
@@ -308,17 +322,16 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     @cached_property
     def default_model(self) -> str | None:
         """Configured first model, replaced by discovery with the harness's default."""
-        return next(iter(self.models), None) if self.native_id is None else None
+        return next(iter(self.models), None)
 
     def resolve_model(
         self, model: AgentRouteModelName | None = None
     ) -> AgentRouteModelName | None:
-        """Resolve a default, exact model or unambiguous provider-less name."""
+        """Preserve an omitted model; resolve exact or unambiguous model names."""
+        if model is None:
+            return None
         if not self.models:
             raise ValueError(f"agent {self.id!r} has no available model catalog")
-        if model is None:
-            # Native harnesses retain their settings and resumed model selection.
-            return self.default_model if self.native_id is None else None
         served = self.served_model(model)
         if served is not None:
             return served
@@ -587,16 +600,13 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         if owner_id is None:
             raise ValueError("A fork requires a registered owner")
         source = await self.conversations.get(source.id)
-        if (
-            source.agent_tentacle_id not in {self.id, self.native_id}
-            or source.subagent_id
-        ):
+        if source.agent_tentacle_id != self.id or source.subagent_id:
             raise ValueError("Only a root conversation of this runtime can be forked")
-        driven = source.agent_tentacle_id == self.id
         threads = self.threads
         source_thread = await threads.get(source.thread_id, with_messages=False)
         if source_thread is None:
             raise FileNotFoundError("No conversation")
+        driven = source_thread.kind != "native_thread"
         surface = await threads.get(
             source_thread.parent_thread_id or source_thread.id,
             with_messages=False,

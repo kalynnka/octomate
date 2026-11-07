@@ -3,7 +3,8 @@ import type { SyntheticEvent } from 'react'
 import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
 import { useAuth } from '@/state/auth'
 import { useConsole } from '@/state/console'
-import { useAddresses, useAgents, useChannels, useCommandCatalog, usePermissionModes, useRoutes, useThreadOperations } from '@/lib/api/hooks'
+import { TextSwap } from '@/components/TextSwap'
+import { useAddresses, useAgents, useChannels, useCommandCatalog, usePermissionModes, useRoutes, useThreadOperations, useThreadSummary } from '@/lib/api/hooks'
 import type { CommandContextBody } from '@/lib/api/events'
 import { channelMeta } from '@/lib/api/live'
 import { Icon } from '@/components/Icon'
@@ -122,10 +123,10 @@ function RouteSelector() {
             minWidth: 0,
           }}
         >
-          <span style={{ color: 'var(--color-accent)' }}>{ntAgent}</span>
+          <span style={{ color: 'var(--color-accent)' }}><TextSwap>{ntAgent}</TextSwap></span>
           <span style={{ color: 'var(--fg-3)' }}>·</span>
-          <span style={{ color: 'var(--fg-1)', minWidth: 0, ...ellipsis }}>{ntModel}</span>
-          <span style={{ color: 'var(--fg-3)' }}>[{nativeEffort.effort}]</span>
+          <span style={{ color: 'var(--fg-1)', minWidth: 0, ...ellipsis }}><TextSwap style={{ ...ellipsis }}>{ntModel}</TextSwap></span>
+          <TextSwap style={{ color: 'var(--fg-3)' }}>{`[${nativeEffort.effort}]`}</TextSwap>
           <span style={{ fontSize: 7, color: 'var(--fg-3)', lineHeight: 1, marginTop: 1 }}>▾</span>
         </button>
         {open && (
@@ -342,7 +343,7 @@ function PermissionChip() {
         }}
       >
         {switchable && <span style={{ color: 'var(--fg-3)' }}>⇧⇥</span>}
-        <span style={{ color: 'var(--color-gold)' }}>{selected?.name ?? mode}</span>
+        <span style={{ color: 'var(--color-gold)' }}><TextSwap>{selected?.name ?? mode}</TextSwap></span>
         {switchable && <span style={{ fontSize: 7, color: 'var(--fg-3)', lineHeight: 1 }}>▾</span>}
       </button>
       {open && (
@@ -434,6 +435,7 @@ export function Composer() {
   const syncCaret = (e: SyntheticEvent<HTMLTextAreaElement>) =>
     setCaretAt(e.currentTarget.selectionStart)
   const selThreadId = useConsole((s) => s.selThreadId)
+  const thread = useThreadSummary(selThreadId)
   const selChannel = useConsole((s) => s.selChannel)
   const detail = useConsole((s) => s.detail)
   const queue = useConsole((s) => s.queue)
@@ -455,7 +457,7 @@ export function Composer() {
   // in it; its display name is the same table the sidebar reads.
   const channel = channelMeta(selChannel)
   const nativeReadOnly = !ntOn && detail?.kind === 'native_thread'
-  const routeChip = `${channel.label.toLowerCase()}/${detail?.key ?? selThreadId}`
+  const routeChip = `${channel.label.toLowerCase()}/${detail?.key ?? (thread?.key || thread?.tag) ?? '—'}`
   const modelChip = ntOn ? `${ntAgent} · ${ntModel}[${ntEffort}]` : (lastSes?.route ?? '')
   const [sesAgent, sesModel] = (lastSes?.route ?? '').split(' · ')
 
@@ -805,7 +807,7 @@ export function Composer() {
             }}
           >
             <Icon name={copy.icon} size={13} style={{ flexShrink: 0 }} />
-            <span style={label(9)}>{copy.title}</span>
+            <TextSwap style={label(9)}>{copy.title}</TextSwap>
             <span style={{ flex: 1, minWidth: 0, ...mono(8.5), color: 'var(--fg-3)', ...ellipsis }}>{copy.description}</span>
             <button
               type="button"
@@ -845,8 +847,8 @@ export function Composer() {
           <span style={{ ...mono(13, 700), color: 'var(--color-accent)', lineHeight: 1 }}>{mode || line ? '^' : '>_'}</span>
           <span style={{ ...mono(10.5), ...ellipsis, minWidth: 0 }}>
             <span style={{ fontWeight: 700, color: 'var(--color-accent)' }}>{username}@trunkline</span>
-            <span style={{ color: 'var(--info-strong)' }}>:{routeChip}</span>{' '}
-            <span style={{ color: 'var(--fg-2)' }}>{modelChip}</span>
+            <span style={{ color: 'var(--info-strong)' }}>:<TextSwap>{routeChip}</TextSwap></span>{' '}
+            <TextSwap style={{ color: 'var(--fg-2)' }}>{modelChip}</TextSwap>
           </span>
           <span style={{ flex: 1 }} />
           <span
@@ -989,8 +991,8 @@ export function Composer() {
               role={copy && !blocked && exposed ? 'alert' : undefined}
               style={{ ...mono(8), color: copy && !blocked && exposed ? 'var(--color-gold)' : 'var(--fg-3)', letterSpacing: '.08em', textTransform: 'uppercase', ...ellipsis, minWidth: 0 }}
             >
-              {copy ? (blocked ?? (exposed ? `▲ ${exposed}` : copy.hint))
-                : '↵ send · ⇧↵ newline · / commands · ⇧⇥ posture · **b** _i_ `code` ``` fence'}
+              <TextSwap style={{ ...ellipsis }}>{copy ? (blocked ?? (exposed ? `▲ ${exposed}` : copy.hint))
+                : '↵ send · ⇧↵ newline · / commands · ⇧⇥ posture · **b** _i_ `code` ``` fence'}</TextSwap>
             </span>
           </div>
         )}
@@ -1009,7 +1011,7 @@ export function Composer() {
               <Icon name="globe" size={15} />
             </span>
             <span style={{ width: 1, height: 16, background: 'var(--trk-vline)', margin: '0 6px' }} />
-            <span style={{ ...fieldLabel, color: copy ? 'var(--color-teal)' : 'var(--color-accent)' }}>{copy?.field ?? 'Directive'}</span>
+            <span style={{ ...fieldLabel, color: copy ? 'var(--color-teal)' : 'var(--color-accent)' }}><TextSwap>{copy?.field ?? 'Directive'}</TextSwap></span>
           </span>
           {queue.length > 0 && (
             <span style={{ ...mono(8, 700), color: 'var(--color-accent)', letterSpacing: '.08em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
@@ -1029,8 +1031,8 @@ export function Composer() {
                     gap: 5, whiteSpace: 'nowrap', flexShrink: 0,
                   }}
                 >
-                  <span>{sesAgent || '—'}</span>
-                  {sesModel && <><span>·</span><span>{sesModel}</span></>}
+                  <span><TextSwap>{sesAgent || '—'}</TextSwap></span>
+                  {sesModel && <><span>·</span><span><TextSwap style={{ ...ellipsis }}>{sesModel}</TextSwap></span></>}
                 </span>
               )}
               {mode === 'teleport' && availability && (
@@ -1077,7 +1079,7 @@ export function Composer() {
                   whiteSpace: 'nowrap', transition: 'background var(--motion-fast) linear, color var(--motion-fast) linear',
                 }}
               >
-                {copy.title} ⌘↵
+                <TextSwap>{`${copy.title} ⌘↵`}</TextSwap>
               </button>
             </span>
           ) : (
@@ -1104,16 +1106,16 @@ export function Composer() {
                 minWidth: 0,
               }}
             >
-              <span style={{ color: 'var(--color-accent)' }}>{sesAgent || '—'}</span>
+              <span style={{ color: 'var(--color-accent)' }}><TextSwap>{sesAgent || '—'}</TextSwap></span>
               {/* A session nothing routed carries its runtime alone, and one with
                   no effort set runs at whatever its runtime defaults to. */}
               {sesModel && (
                 <>
                   <span style={{ color: 'var(--fg-3)' }}>·</span>
-                  <span style={{ color: 'var(--fg-1)', minWidth: 0, ...ellipsis }}>{sesModel}</span>
+                  <span style={{ color: 'var(--fg-1)', minWidth: 0, ...ellipsis }}><TextSwap style={{ ...ellipsis }}>{sesModel}</TextSwap></span>
                 </>
               )}
-              {lastSes?.effort && <span style={{ color: 'var(--fg-3)' }}>[{lastSes.effort}]</span>}
+              {lastSes?.effort && <span style={{ color: 'var(--fg-3)' }}><TextSwap>{`[${lastSes.effort}]`}</TextSwap></span>}
             </span>
           )}
           <span style={{ marginLeft: 8, flexShrink: 0 }}>

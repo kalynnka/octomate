@@ -68,7 +68,7 @@ from octomate.capabilities.harness.react import (
     iter_react_graph_events,
     resolve_conversation,
 )
-from octomate.config.agents import AgentRouteModelName
+from octomate.config.agents import AgentRouteModelName, InklingConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH
@@ -168,6 +168,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     """Inkling agent wrapper with pydantic-ai-style run entrypoints."""
 
     brand_color: ClassVar[Style | None] = Style(color="#C29145", bold=True)
+    config: InklingConfig | None = None
 
     agent: Agent[None, InklingOutput] = field(init=False)
     mcp: McpManager = field(init=False)
@@ -180,8 +181,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     user_scoped_capabilities: list[UserScopedCapability[None]] = field(init=False)
     conversation_manager: ConversationManager = field(init=False)
     deferred_resolver: DeferredResolver | None = None
-    # The posture a conversation that declares none of its own runs under. Unlike
-    # claude and codex, inkling takes no config object, so its default arrives here.
+    # The posture a conversation that declares none of its own runs under.
     permission_mode: InklingPermissionMode = "default"
     request_limit: int = 256
     # Separate auxiliary model; None follows the model chosen for the turn.
@@ -191,6 +191,14 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         PermissionMode(value=mode, name=mode)
         for mode in get_args(InklingPermissionMode)
     )
+
+    def resolve_model(
+        self, model: AgentRouteModelName | None = None
+    ) -> AgentRouteModelName | None:
+        """Use the configured default when no model is selected."""
+        if not self.models:
+            raise ValueError(f"agent {self.id!r} has no available model catalog")
+        return self.default_model if model is None else super().resolve_model(model)
 
     @property
     def default_permission_mode(self) -> str | None:
@@ -233,6 +241,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         permission_mode: InklingPermissionMode = "default",
         request_limit: int = 256,
         gateway: bool = True,
+        config: InklingConfig | None = None,
     ) -> None:
         super().__init__(
             id=id,
@@ -245,6 +254,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             sandboxes=sandboxes,
             sandbox=sandbox,
         )
+        self.config = config
         self.mcp = octomate.mcp
         self.workspaces = octomate.workspaces
         self.permission_mode = permission_mode

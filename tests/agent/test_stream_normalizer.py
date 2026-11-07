@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import dataclass
 from typing import cast
@@ -11,12 +12,15 @@ from pydantic_ai import AgentRunResultEvent, AgentStreamEvent, RunContext
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
+    FunctionToolResultEvent,
     ModelMessage,
     PartDeltaEvent,
     PartStartEvent,
     TextPart,
     TextPartDelta,
     ThinkingPart,
+    ToolCallPart,
+    ToolReturnPart,
 )
 from pydantic_ai.models.function import (
     AgentInfo,
@@ -35,6 +39,7 @@ from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.events import (
     ResultSegmentEvent,
     ResultTextDeltaEvent,
+    RunActivityChangedEvent,
     TodoCreatedEvent,
 )
 from octomate.schemas.segments import MessageSegment
@@ -86,6 +91,9 @@ async def test_segment_output_streams_one_event_per_segment() -> None:
     final = next(e for e in events if isinstance(e, FinalResult))
     assert [segment.type for segment in streamed] == ["text", "markdown", "at"]
     assert streamed == final.output
+    activities = [e.activity for e in events if isinstance(e, RunActivityChangedEvent)]
+    assert "writing" in activities
+    assert "using_tools" not in activities
 
 
 async def test_segment_output_streams_each_segment_exactly_once() -> None:
@@ -238,3 +246,57 @@ async def test_terminal_agent_run_result_event_closes_stream() -> None:
     # terminal AgentRunResultEvent, exactly once.
     assert isinstance(events[-1], AgentRunResultEvent)
     assert sum(isinstance(event, AgentRunResultEvent) for event in events) == 1
+
+
+async def test_activity_distinguishes_model_generation_and_parallel_tools() -> None:
+    slow_started = asyncio.Event()
+    fast_finished = asyncio.Event()
+
+    async def stream(
+        messages: list[ModelMessage],
+        info: AgentInfo,
+    ) -> AsyncIterator[str | DeltaThinkingCalls | DeltaToolCalls]:
+        if any(
+            isinstance(part, ToolReturnPart)
+            for message in messages
+            for part in message.parts
+        ):
+            yield "Both done."
+            return
+        yield {2: DeltaThinkingPart(content="Considering both calls.")}
+        yield {
+            0: DeltaToolCall(name="fast", json_args="{", tool_call_id="fast-call"),
+            1: DeltaToolCall(name="slow", json_args="{", tool_call_id="slow-call"),
+        }
+        yield {0: DeltaToolCall(json_args="}"), 1: DeltaToolCall(json_args="}")}
+
+    agent = Agent(FunctionModel(stream_function=stream))
+
+    @agent.tool_plain
+    async def fast() -> str:
+        await slow_started.wait()
+        fast_finished.set()
+        return "fast done"
+
+    @agent.tool_plain
+    async def slow() -> str:
+        slow_started.set()
+        await fast_finished.wait()
+        return "slow done"
+
+    async with asyncio.timeout(3):
+        events = [event async for event in agent.stream_events("Do both.")]
+    activities = [
+        event.activity for event in events if isinstance(event, RunActivityChangedEvent)
+    ]
+    assert "thinking" in activities
+    assert activities[-2:] == ["working", "writing"]
+    assert sum(isinstance(event, FunctionToolResultEvent) for event in events) == 2
+    activity = ""
+    for event in events:
+        if isinstance(event, RunActivityChangedEvent):
+            activity = event.activity
+        elif isinstance(event, PartStartEvent) and isinstance(event.part, ToolCallPart):
+            assert activity == "working"
+        elif isinstance(event, FunctionToolCallEvent | FunctionToolResultEvent):
+            assert activity == "using_tools"

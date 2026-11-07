@@ -564,6 +564,7 @@ class AcpBroker:
                 tool_call=schema.ToolCallUpdate(
                     tool_call_id=approval.tool_call_id,
                     title=approval.args.title,
+                    status="pending",
                     raw_input=approval.args.args,
                     content=[
                         schema.ContentToolCallContent(

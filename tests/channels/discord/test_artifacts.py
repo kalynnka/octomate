@@ -34,6 +34,7 @@ from tests.channels.discord.fakes import (
 )
 from tests.channels.discord.test_feelers import RecordingDiscordUIInk
 from tests.channels.discord.test_streaming import RecordingDiscordInk
+from tests.support.channels import RecordingStatusFeeler
 from tests.support.nerve import drawing
 
 
@@ -57,6 +58,7 @@ async def test_card_reaches_discord_with_its_own_ledger_id(
         config=DiscordChannelConfig(bot_token=SecretStr("test"), agents=["codex"]),
     )
     channel.config.stream.enabled = mode == "stream"
+    channel.feelers.status = RecordingStatusFeeler()
     destination._state = channel.client._connection
     monkeypatch.setattr(
         channel.client,

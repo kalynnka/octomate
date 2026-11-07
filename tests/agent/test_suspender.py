@@ -258,4 +258,6 @@ async def test_a_live_run_pauses_on_its_batch_without_suspending() -> None:
     # The run stays live, so nothing records it as ended suspended.
     assert suspender.suspended_batch_id is None
     # The run's own stream presents it.
-    assert event == ActionBatchEvent.from_batch(cast(DeferredActionBatch, batch))
+    assert event == ActionBatchEvent.from_batch(
+        cast(DeferredActionBatch, batch), blocks_run=True
+    )

@@ -16,13 +16,14 @@ let server: ViteDevServer
 let liveThreadDetail: typeof import('../src/lib/api/live.ts').liveThreadDetail
 let withOlderPage: typeof import('../src/lib/api/live.ts').withOlderPage
 let holdingBack: typeof import('../src/lib/api/live.ts').holdingBack
+let threadMetrics: typeof import('../src/lib/api/live.ts').threadMetrics
 
 before(async () => {
   server = await createServer({
     root: fileURLToPath(new URL('../', import.meta.url)),
     server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom',
   })
-  ;({ liveThreadDetail, withOlderPage, holdingBack } = await server.ssrLoadModule('/src/lib/api/live.ts'))
+  ;({ liveThreadDetail, withOlderPage, holdingBack, threadMetrics } = await server.ssrLoadModule('/src/lib/api/live.ts'))
 })
 after(async () => { await server?.close() })
 
@@ -47,6 +48,18 @@ const conversation: ApiConversation = {
     permission_mode: null, cwd: null, parent_run_id: null, parent_tool_call_id: null, started_at: null,
   }],
 }
+
+test('metrics keep aggregate cache totals and use the newest parent run for context', () => {
+  const newer: ApiConversation = { ...conversation, id: 'newer', runs: [{ ...conversation.runs[0], id: 'newer-run', started_at: '2026-10-31T10:00:00Z', context_used: 24000, context_window: 262144 }] }
+  const child: ApiConversation = { ...newer, id: 'child', subagent_id: 'worker', runs: [{ ...newer.runs[0], id: 'child-run', started_at: '2026-10-31T11:00:00Z', context_used: 99000 }] }
+  assert.deepEqual(threadMetrics([newer, conversation, child], { input_tokens: 500000, output_tokens: 4588, cache_read_tokens: 464192 }), {
+    usage: { input: 500000, output: 4588, cacheRead: 464192, cacheWrite: 0, cacheRate: 464192 / 500000 },
+    ctxK: 24, contextWindow: 262144,
+  })
+  assert.deepEqual(threadMetrics([], {}), {
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null }, ctxK: 0, contextWindow: null,
+  })
+})
 
 const said = (id: string, text: string, actor: 'human' | 'system'): ApiThreadMessage => ({
   kind: 'message', id, thread_id: 'thread', platform_message_id: null, reply_id: '', happened_at: at, direction: 'inbound',
@@ -103,9 +116,9 @@ test('binding an inbound row preserves its position in the saved conversation', 
   assert.equal(after.ledger.filter(item => item.uid === inbound.id).length, 1)
 })
 
-for (const [agent, bound] of [['codex-native', true], ['codex-native', false], ['deepseek-native', true], ['deepseek-native', false]] as const) {
+for (const [agent, bound] of [['coding', true], ['coding', false], ['deepseek', true], ['deepseek', false]] as const) {
   test(`${agent} question replies remain readable ${bound ? 'after binding' : 'before their run commits'}`, () => {
-    const deepseek = agent === 'deepseek-native'
+    const deepseek = agent === 'deepseek'
     const text = deepseek ? JSON.stringify({ kind: 'answer_to_pending_question', tool: 'ask_user_question', callId: 'native-q', answers: [{ id: 'inspect', selected: ['Yes'] }] }) : `<send_user_message_question_reply>\n${JSON.stringify([{
       questionItemId: JSON.stringify(['request_user_input_async', 'native-q', 0]), question: 'Inspect?', answer: 'Yes',
     }])}\n</send_user_message_question_reply>`
@@ -119,7 +132,7 @@ for (const [agent, bound] of [['codex-native', true], ['codex-native', false], [
       parts: [{ part_kind: 'user-prompt', content: text }], thread_messages: [replied],
     }
     const native = reads(bound ? [asked, reply] : [asked], bound ? [] : [replied], { model: null, unbound: null })
-    native.conversations = [{ ...conversation, agent_tentacle_id: agent }]
+    native.conversations = [{ ...conversation, agent_tentacle_id: agent, runs: conversation.runs.map(run => ({ ...run, kind: 'external' })) }]
     const ledger = liveThreadDetail(native).ledger
     const card = ledger.find(item => item.kind === 'ask')
     assert.equal(card?.kind === 'ask' && card.state, 'answered')
@@ -139,7 +152,7 @@ test('a thread is rebuilt from its model messages, in the words its rows were sa
   const tool = whole.ledger.find((item) => item.kind === 'tool')
   assert.equal(tool?.kind === 'tool' && tool.detail.type === 'plain' && tool.detail.res, 'built')
   const reply = whole.ledger.at(-1)
-  assert.deepEqual(reply?.kind === 'agent' && [reply.label, reply.blocks], ['claude', [{ type: 'p', text: 'fixed' }]])
+  assert.deepEqual(reply?.kind === 'agent' && [reply.label, reply.blocks], ['Octomate(Claude)', [{ type: 'p', text: 'fixed' }]])
   assert.equal(whole.sessions[0].anchor, '010')
   assert.equal(whole.msgCount, 5)
 })
@@ -202,12 +215,12 @@ test('replayed model answers carry the reply reference from their bound channel 
   assert.deepEqual(item?.kind === 'agent' && item.reply, { who: 'Ada', text: 'fix the build' })
 })
 
-for (const [nativeId, label] of [['codex-native', 'Codex'], ['claude-native', 'Claude'], ['deepseek-native', 'DeepSeek']]) {
+for (const [agent, nativeId, label] of [['coding', 'codex', 'Octomate(Coding)'], ['claude', 'claude', 'Octomate(Claude)'], ['deepseek', 'deepseek', 'Octomate(Dsh)']]) {
   test(`${nativeId} labels native and imported replies by runtime, while keeping the uploading user's identity on prompts`, () => {
     const owner = { ...said('owner', '', 'human').sender!, name: 'test', channel_tentacle_id: nativeId }
     const outbound: ApiThreadMessage = {
       ...said('045', 'Native answer', 'human'), direction: 'outbound', actor_kind: 'agent',
-      agent_tentacle_id: nativeId, sender: owner, platform_message_id: 'native-answer',
+      agent_tentacle_id: agent, sender: owner, platform_message_id: 'native-answer',
     }
     const quoted = { ...said('060', 'Follow-up', 'human'), sender: owner, reply_id: 'native-answer' }
     const bound = { ...answer, thread_messages: [{ ...outbound, id: '046', platform_message_id: 'bound-answer' }] }
@@ -215,7 +228,7 @@ for (const [nativeId, label] of [['codex-native', 'Codex'], ['claude-native', 'C
     const native: ThreadReads = {
       ...reads([bound, bare], [outbound, quoted], { model: null, unbound: null }),
       thread: { ...thread, kind: 'native_thread', channel_tentacle_id: nativeId },
-      conversations: [{ ...conversation, agent_tentacle_id: nativeId }],
+      conversations: [{ ...conversation, agent_tentacle_id: agent }],
     }
     const imported = { ...native, thread }
     for (const source of [native, imported]) {
@@ -229,14 +242,14 @@ for (const [nativeId, label] of [['codex-native', 'Codex'], ['claude-native', 'C
   })
 }
 
-test('channel bot replies retain the bot name and agent name together', () => {
+test('channel bot replies use Octomate and the agent id instead of the channel profile name', () => {
   const outbound: ApiThreadMessage = {
     ...said('045', 'Channel answer', 'human'), direction: 'outbound', actor_kind: 'agent', agent_tentacle_id: 'inkling',
     sender: { ...said('bot', '', 'human').sender!, name: '玥葉', channel_tentacle_id: 'napcat' },
   }
   const detail = liveThreadDetail(reads([], [outbound], { model: null, unbound: null }))
   const item = detail.ledger.find((item) => item.kind === 'agent')
-  assert.equal(item?.kind === 'agent' && item.label, '玥葉 (Inkling)')
+  assert.equal(item?.kind === 'agent' && item.label, 'Octomate(Inkling)')
 })
 
 test('a reply segment retains its quote even without a reply_id or a loaded original', () => {
@@ -310,10 +323,10 @@ test('artifact references survive pagination with their row identity and no text
 
 for (const text of ['Here is the chart.', '']) {
   test(`captured HTML stays after its originating response on reload (${text ? 'caption' : 'reference only'})`, () => {
-    const artifact: ApiThreadMessage = { ...said('052', '', 'system'), direction: 'outbound', kind: 'artifact', artifact_id: 'saved-html' }
+    const artifact: ApiThreadMessage = { ...said('019', '', 'system'), direction: 'outbound', kind: 'artifact', artifact_id: 'saved-html' }
     const response: ApiModelMessage = { ...answer, parts: [{ part_kind: 'text', content: text }], thread_messages: [artifact] }
     const next: ApiModelMessage = { ...prompt, id: '060', thread_messages: [said('055', 'Next question', 'human')] }
-    const detail = liveThreadDetail(reads([prompt, response, next], [], { model: null, unbound: null }))
+    const detail = liveThreadDetail(reads([prompt, response, next], [artifact], { model: null, unbound: null }))
     assert.deepEqual(detail.ledger.map(item => item.kind), text
       ? ['session-open', 'user', 'agent', 'artifact', 'user']
       : ['session-open', 'user', 'artifact', 'user'])
@@ -323,7 +336,7 @@ for (const text of ['Here is the chart.', '']) {
   })
 }
 
-for (const runtime of ['claude-native', 'codex-native', 'deepseek-native']) {
+for (const runtime of ['claude', 'codex', 'deepseek']) {
   test(`${runtime} preserves append order despite source clocks, including the pagination horizon`, () => {
     const native = { ...thread, kind: 'native_thread' as const, channel_tentacle_id: runtime, handoffs: [] }
     const earlier = { ...answer, id: '010', timestamp: '2026-10-09T11:00:00Z', parts: [{ part_kind: 'text' as const, content: 'Earlier' }] }

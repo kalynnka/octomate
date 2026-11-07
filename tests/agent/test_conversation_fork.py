@@ -77,7 +77,6 @@ async def test_fork_shares_the_source_history_and_grows_apart(
         permission_mode="ask",
         cwd=Path("/workspace"),
         external_id="source-session",
-        native_id="codex-native",
         native_turn_id="source-turn",
     )
     assert first is not None
@@ -301,12 +300,10 @@ async def test_fork_shares_the_source_history_and_grows_apart(
 @pytest.mark.parametrize("bound", [True, False])
 async def test_native_fork_leaves_unfinished_turns_behind(bound: bool) -> None:
     manager = ConversationManager()
-    source = await manager.ensure(
-        await a_thread("native"), agent_tentacle_id="claude-native"
-    )
+    source = await manager.ensure(await a_thread("native"), agent_tentacle_id="claude")
     target = await manager.ensure(await a_thread("driven"), agent_tentacle_id="claude")
     sender = UserProfile(
-        channel_tentacle_id="claude-native", channel_user_id="alice", name="Alice"
+        channel_tentacle_id="claude", channel_user_id="alice", name="Alice"
     )
     async with async_session() as session:
         session.add(sender)
@@ -350,7 +347,7 @@ async def test_native_fork_leaves_unfinished_turns_behind(bound: bool) -> None:
         session.add(
             Handoff(
                 thread_id=source.thread_id,
-                to_agent_tentacle_id="claude-native",
+                to_agent_tentacle_id="claude",
                 target_conversation_id=source.id,
                 created_at=datetime(2026, 1, 1, tzinfo=UTC),
             )

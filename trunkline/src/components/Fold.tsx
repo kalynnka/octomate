@@ -10,7 +10,7 @@ export function Fold({ open, children }: { open: boolean; children: ReactNode })
 }
 
 /** Rotating ▸ disclosure marker. */
-export function Disclose({ open, style }: { open: boolean; style?: CSSProperties }) {
+export function Disclose({ open, style }: { open?: boolean; style?: CSSProperties }) {
   return (
     <span className="lt-disclose" data-open={open ? '' : undefined} style={style}>
       ▸

@@ -65,6 +65,7 @@ from octomate.tentacles.feelers.output import (
     TimelineFeeler,
     TimelineState,
 )
+from octomate.tentacles.feelers.status import StatusFeeler
 
 NativeMessage = dict[str, str]
 
@@ -310,6 +311,15 @@ class RecordingFeelers(Feelers):
         return await super().present(address, event)
 
 
+class RecordingStatusFeeler(StatusFeeler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.presented: list[tuple[ChannelAddress, str]] = []
+
+    async def present(self, address: ChannelAddress, text: str) -> None:
+        self.presented.append((address, text))
+
+
 class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
     """Real channel pipeline over recording fakes. `start_sub_thread` succeeds
     and records, so the graph tests can route receptions into "hint-thread".
@@ -358,6 +368,7 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
         self.dm_openers = self.recording_ink.dm_openers
         self.self_profile = self.recording_ink.self_profile
         self.feelers = RecordingFeelers(
+            status=RecordingStatusFeeler(),
             markdown=self.feelers.markdown,
             artifacts=self.feelers.artifacts,
             timeline=RecordingTimelineFeeler(self.feelers.timeline, self.consumed),

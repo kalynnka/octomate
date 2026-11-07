@@ -27,11 +27,11 @@ from octomate.schemas.mcp import McpServerSummary
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude.mcp import octomate_mcp_server
 from octomate.tentacles.mcp import BareMcpTentacle
-from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.agent.test_mcp import ENCRYPTION_KEY, a_turn, an_upstream, upstream_of
 from tests.agent.test_mcp_serving import over, served
 from tests.channels.slack.test_mcp import into
 from tests.managers.test_mcp import install_request
+from tests.support.agents import FakeAgent
 from tests.support.managers import fixed_session
 from tests.support.users import a_api_key, a_user, auth_config
 
@@ -45,6 +45,7 @@ async def test_served_endpoint_uses_authenticated_owner_and_sees_new_installs(
     host = Octomate(
         config=OctomateConfig(auth=auth_config()), oauth_encryption_key=ENCRYPTION_KEY
     )
+    host.connect(FakeAgent(id="claude"))
     host.connect(
         BareMcpTentacle(
             "research",
@@ -63,7 +64,7 @@ async def test_served_endpoint_uses_authenticated_owner_and_sees_new_installs(
                     host,
                     {
                         "Authorization": "Bearer alice-token",
-                        CLIENT_HEADER: CLAUDE_NATIVE_ID,
+                        CLIENT_HEADER: "claude",
                     },
                 ) as alice_client,
                 over(
@@ -71,7 +72,7 @@ async def test_served_endpoint_uses_authenticated_owner_and_sees_new_installs(
                     host,
                     {
                         "Authorization": "Bearer bob-token",
-                        CLIENT_HEADER: CLAUDE_NATIVE_ID,
+                        CLIENT_HEADER: "claude",
                     },
                 ) as bob_client,
             ):

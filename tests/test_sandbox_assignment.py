@@ -35,9 +35,9 @@ def test_factory_assigns_each_harness_without_launching_a_sandbox(
                 {"id": "batch", "mode": "sbx", "image": IMAGE, "cpus": 4},
             ],
             "tentacles": {
-                "writer": {"type": "claude", "sandbox": sandbox},
-                "coder": {"type": "codex", "sandbox": sandbox},
-                "researcher": {"type": "deepseek", "sandbox": sandbox},
+                "claude": {"type": "claude", "sandbox": sandbox},
+                "codex": {"type": "codex", "sandbox": sandbox},
+                "deepseek": {"type": "deepseek", "sandbox": sandbox},
                 "assistant": {
                     "type": "inkling",
                     "sandbox": sandbox,
@@ -62,7 +62,7 @@ def test_factory_assigns_each_harness_without_launching_a_sandbox(
         ),
     ):
         app = application.create_app()
-    assert set(app.agents) == {"writer", "coder", "researcher", "assistant", "external"}
+    assert set(app.agents) == {"claude", "codex", "deepseek", "assistant", "external"}
     for agent in app.agents.values():
         assert agent.sandboxes is app.sandboxes
         assert agent.sandbox == sandbox
@@ -108,8 +108,8 @@ def test_sandbox_definitions_and_agent_assignments_round_trip() -> None:
         {
             "sandbox": [{"id": "local", "image": IMAGE}],
             "tentacles": {
-                "writer": {"type": "claude", "sandbox": "local"},
-                "coder": {"type": "codex"},
+                "claude": {"type": "claude", "sandbox": "local"},
+                "codex": {"type": "codex"},
             },
         }
     )
@@ -150,7 +150,7 @@ def test_duplicate_sandbox_ids_are_rejected() -> None:
 def test_unknown_or_empty_agent_assignment_is_rejected(sandbox: str) -> None:
     with pytest.raises(ValidationError):
         OctomateConfig.model_validate(
-            {"tentacles": {"writer": {"type": "claude", "sandbox": sandbox}}}
+            {"tentacles": {"claude": {"type": "claude", "sandbox": sandbox}}}
         )
 
 

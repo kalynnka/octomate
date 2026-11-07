@@ -18,7 +18,7 @@ from octomate.reflex.graph import reflex_graph
 from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
-from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex.base import CodexBridgeContext
 from octomate.tentacles.deepseek import DeepseekTentacle
@@ -28,7 +28,7 @@ from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import a_thread
 from tests.support.nerve import awake_on, kick_and_wait
 
-type LiveAgent = ClaudeCodeTentacle | CodexTentacle | DeepseekTentacle
+type LiveAgent = ClaudeTentacle | CodexTentacle | DeepseekTentacle
 
 ADDRESS = ChannelAddress(
     channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
@@ -41,8 +41,7 @@ async def live_agent(
 ) -> tuple[LiveAgent, Conversation]:
     app = Octomate(tentacles={"im": FakeChannelTentacle()})
     if request.param == "claude":
-        agent = ClaudeCodeTentacle(
-            "claude",
+        agent = ClaudeTentacle(
             app,
             auth=app.auth,
             sandboxes=app.sandboxes,
@@ -60,7 +59,6 @@ async def live_agent(
         )
     elif request.param == "codex":
         agent = CodexTentacle(
-            "codex",
             app,
             sandboxes=app.sandboxes,
             config=CodexConfig(),
@@ -78,7 +76,6 @@ async def live_agent(
         )
     else:
         agent = DeepseekTentacle(
-            "deepseek",
             app,
             auth=app.auth,
             sandboxes=app.sandboxes,
@@ -114,7 +111,7 @@ async def ask(
         approvals=[ToolCallPart("shell", {"cmd": "pwd"}, "call-1")]
     )
     suspender = a_suspender(agent, conversation)
-    if isinstance(agent, ClaudeCodeTentacle):
+    if isinstance(agent, ClaudeTentacle):
         return await agent._await_human(
             requests, suspender=suspender, interjections=Interjections()
         )
@@ -181,6 +178,8 @@ async def test_a_reply_reaches_the_live_request(
 
     assert response is not None
     stored = await app.deferred_actions.get_batch(UUID(batch.batch_id))
+    assert batch.response_mode == "live"
+    assert batch.blocks_run is True
     assert stored.response_mode == "live"
     assert stored.status == "resolved"
     assert not agent.pendings
@@ -242,7 +241,6 @@ async def test_missing_waiter_does_not_determine_response_routing(
 ) -> None:
     app = Octomate()
     agent = CodexTentacle(
-        "codex",
         app,
         sandboxes=app.sandboxes,
         config=CodexConfig(),
@@ -329,3 +327,27 @@ async def test_an_answer_that_finds_its_thread_busy_waits_out_the_turn(
         run.assert_not_awaited()
     await answering
     run.assert_awaited_once()
+
+
+async def test_async_question_does_not_block_its_live_run(
+    live_agent: tuple[LiveAgent, Conversation],
+) -> None:
+    agent, conversation = live_agent
+    suspender = a_suspender(agent, conversation)
+    event = await suspender.request(
+        DeferredToolRequests(
+            calls=[
+                ToolCallPart(
+                    "ask_questions",
+                    {"questions": [{"question": "Which option?"}]},
+                    "question-1",
+                )
+            ]
+        )
+    )
+    assert event.response_mode == "resume"
+    assert event.blocks_run is False
+    assert suspender.suspended_batch_id is None
+    assert (
+        await agent.octomate.deferred_actions.get_batch(UUID(event.batch_id))
+    ).status == "pending"

@@ -25,7 +25,7 @@ from octomate.managers.files import FileManager
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.files import File
 from octomate.schemas.runs import ExternalAgentRun
-from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
+from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex.transcript import TurnPermissions
 from octomate.types.json import JsonObject
@@ -47,7 +47,9 @@ class ForkCase:
 
 @pytest.fixture
 async def case(
-    in_memory_engine: AsyncEngine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    in_memory_engine: AsyncEngine,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> ForkCase:
     octomate = Octomate(
         files=FileManager(
@@ -56,7 +58,6 @@ async def case(
     )
     home = tmp_path / "codex"
     tentacle = CodexTentacle(
-        "codex",
         octomate,
         sandboxes=octomate.sandboxes,
         config=CodexConfig(runtime=RuntimeConfig(env={"CODEX_HOME": str(home)})),
@@ -76,10 +77,11 @@ async def case(
     tentacle.models = {"openai:gpt-6-luna": "gpt-6-luna"}
     owner = await a_user()
     source_thread = await octomate.threads.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "thread", str(owner.id), uuid7().hex)
+        ThreadKey("codex", "thread", str(owner.id), uuid7().hex), native=True
     )
     source = await octomate.conversations.ensure(
-        source_thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+        source_thread.id,
+        agent_tentacle_id=tentacle.id,
     )
     target = await octomate.conversations.ensure(
         await a_thread("target"), agent_tentacle_id=tentacle.id
@@ -157,6 +159,16 @@ async def case(
     fork = AsyncMock(return_value=str(uuid7()))
     monkeypatch.setattr(tentacle, "fork_session", fork)
     return ForkCase(tentacle, source, target, owner.id, prefix, pending, home, fork)
+
+
+async def test_configured_owner_does_not_make_a_driven_thread_tailed(
+    case: ForkCase,
+) -> None:
+    driven = await case.tentacle.octomate.conversations.ensure(
+        await a_thread("driven"), agent_tentacle_id=case.tentacle.id
+    )
+    with pytest.raises(ValueError, match="tailed thread"):
+        await case.tentacle.read_fork_transcript(driven, owner_id=case.owner_id)
 
 
 @pytest.mark.parametrize("partial_tail", [b"", b'{"type":"event_msg","payload":'])

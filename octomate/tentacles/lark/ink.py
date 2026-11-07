@@ -25,6 +25,7 @@ from lark_oapi.api.im.v1 import (
     CreateImageRequestBody,
     CreateMessageRequest,
     CreateMessageRequestBody,
+    DeleteMessageRequest,
     GetChatMembersRequest,
     GetChatRequest,
     GetMessageResourceRequest,
@@ -627,6 +628,15 @@ class LarkInk(Ink[LarkOutboundMessage]):
         except Exception:
             logger.warning("LarkInk: finish stream card failed", exc_info=True)
         return False
+
+    async def delete_message(self, message_id: str) -> None:
+        request = DeleteMessageRequest.builder().message_id(message_id).build()
+        im = self.client.im
+        if im is None or im.v1 is None:
+            raise RuntimeError("Lark messaging client is unavailable")
+        response = await im.v1.message.adelete(request)
+        if not response.success():
+            raise RuntimeError(f"Lark recall failed: {response.code} {response.msg}")
 
     async def patch_card(self, message_id: str, content: str) -> bool:
         """Replace the card of an already-sent interactive message in place."""

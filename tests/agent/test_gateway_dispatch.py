@@ -27,7 +27,6 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import ChannelSurfaces
 from octomate.tentacles.claude.mcp import sdk_tool
 from octomate.tentacles.trunkline import TrunklineTentacle
-from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import a_project, a_registry, fixed_session
@@ -73,6 +72,7 @@ async def summon_session(
     )
     caller = host.connect(FakeAgent(id="inkling"))
     receiver = host.connect(FakeAgent(id="claude", reception_output="Found the cause"))
+    host.connect(FakeAgent(id="coding"))
     await a_user("someone", profiles={"im": "alice"})
     profile = await host.users.profile("im", "alice")
     assert profile is not None
@@ -374,7 +374,7 @@ async def test_native_summon_starts_work_without_a_source_thread(
 ) -> None:
     _session, channel, _caller, receiver = summon_session
     host = channel.octomate
-    session = await native_session(host, CLAUDE_NATIVE_ID, "someone")
+    session = await native_session(host, "coding", "someone")
     server = octomate_mcp(
         fixed_session(session),
         host.threads,
@@ -411,7 +411,7 @@ async def test_native_summon_starts_work_without_a_source_thread(
     assert thread is not None
     assert thread.active_agent_tentacle_id == "claude"
     [handoff] = thread.handoffs
-    assert handoff.source_agent_tentacle_id == CLAUDE_NATIVE_ID
+    assert handoff.source_agent_tentacle_id == "coding"
     assert handoff.source_conversation_id is None
     profile = await host.users.profile("im", "alice")
     assert profile is not None
@@ -429,7 +429,7 @@ async def test_native_summon_validates_linked_identity_before_opening(
     host = channel.octomate
     await a_user("unlinked")
     username = "unlinked" if user_id == "alice" else "someone"
-    session = await native_session(host, CLAUDE_NATIVE_ID, username)
+    session = await native_session(host, "coding", username)
     with pytest.raises(GatewayRefusal, match=r"Link your profile|does not belong"):
         await session.summon(
             **ARGUMENTS, destination=ChannelAddress("im", "dm", "", user_id)
@@ -446,7 +446,7 @@ async def test_native_summon_attributes_a_console_thread_to_its_owner(
         TrunklineTentacle("web", host, config=TrunklineChannelConfig(agents=["claude"]))
     )
     console.self_profile = await console.ink.inspect()
-    session = await native_session(host, CLAUDE_NATIVE_ID, "someone")
+    session = await native_session(host, "coding", "someone")
     assert session.user_profile is not None
     user_id = session.user_profile.user_id
     assert user_id is not None

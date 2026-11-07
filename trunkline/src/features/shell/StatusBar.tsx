@@ -6,6 +6,7 @@
  */
 import { useState, type CSSProperties, type ReactNode } from 'react'
 import { Icon } from '@/components/Icon'
+import { TextSwap } from '@/components/TextSwap'
 import { mono } from '@/components/text'
 import { useHealth } from '@/lib/api/hooks'
 import type { StatusChip } from '@/lib/api/types'
@@ -140,7 +141,7 @@ export function StatusBar() {
             boxShadow: 'inset 0 -2px 0 var(--color-accent)',
           }}
         >
-          #{selChannel}
+          <TextSwap>{`#${selChannel}`}</TextSwap>
         </span>
       )}
       <span
@@ -155,9 +156,9 @@ export function StatusBar() {
         }}
       >
         {left.map((s) => (
-          <Chip key={s.t} tip={s.tip}>
+          <Chip key="relay" tip={s.tip}>
             {s.dot && <Dot tone={s.dot} />}
-            {s.t}
+            <TextSwap>{s.t}</TextSwap>
           </Chip>
         ))}
       </span>
@@ -195,7 +196,7 @@ export function StatusBar() {
             onClick={() => setMenuOpen((open) => !open)}
             style={{ color: onAccount || menuOpen ? 'var(--color-accent)' : undefined }}
           >
-            <Dot tone="teal" />@{user?.username}
+            <Dot tone="teal" /><TextSwap>{`@${user?.username ?? ''}`}</TextSwap>
             <span style={{ fontSize: 7, lineHeight: 1, marginTop: 1 }}>▾</span>
           </Chip>
           <div
@@ -259,7 +260,7 @@ export function StatusBar() {
               }}
             >
               <Icon name="logOut" size={11} style={{ opacity: 0.7 }} />
-              {signingOut ? 'signing out…' : signOutError ? 'sign-out failed · retry' : 'sign out'}
+              <TextSwap>{signingOut ? 'signing out…' : signOutError ? 'sign-out failed · retry' : 'sign out'}</TextSwap>
             </div>
           </div>
         </span>

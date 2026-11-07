@@ -23,7 +23,7 @@ from octomate import Octomate
 from octomate.config.agents import ClaudeCodeConfig
 from octomate.schemas.commands import CommandContext, CommandDescriptor
 from octomate.schemas.conversation import ChannelAddress, Conversation
-from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.claude.catalog import ClaudeCommandDescriptor, ClaudeServerInfo
 from octomate.types.json import JsonObject
@@ -49,10 +49,9 @@ def client(payload: JsonObject, monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
 
 
 @pytest.fixture
-def agent(client: AsyncMock) -> ClaudeCodeTentacle:
+def agent(client: AsyncMock) -> ClaudeTentacle:
     host = Octomate()
-    return ClaudeCodeTentacle(
-        "claude",
+    return ClaudeTentacle(
         host,
         auth=host.auth,
         sandboxes=host.sandboxes,
@@ -112,7 +111,7 @@ def test_captured_commands_keep_native_metadata_and_are_hashable(
 
 @pytest.mark.parametrize("resumed", [False, True])
 async def test_probe_uses_context_and_preserves_driven_settings_without_a_query(
-    agent: ClaudeCodeTentacle,
+    agent: ClaudeTentacle,
     context: CommandContext,
     client: AsyncMock,
     monkeypatch: pytest.MonkeyPatch,
@@ -159,7 +158,7 @@ async def test_probe_uses_context_and_preserves_driven_settings_without_a_query(
 
 
 async def test_host_settings_are_disabled_only_when_advertised(
-    agent: ClaudeCodeTentacle,
+    agent: ClaudeTentacle,
     context: CommandContext,
     client: AsyncMock,
     payload: JsonObject,
@@ -209,7 +208,7 @@ async def test_host_settings_are_disabled_only_when_advertised(
 
 @pytest.mark.parametrize("has_path", [False, True])
 async def test_probe_never_prepares_a_missing_workspace(
-    agent: ClaudeCodeTentacle,
+    agent: ClaudeTentacle,
     context: CommandContext,
     client: AsyncMock,
     has_path: bool,
@@ -228,7 +227,7 @@ async def test_probe_never_prepares_a_missing_workspace(
 
 @pytest.mark.parametrize("commands", [None, [], [{"name": "broken"}]])
 async def test_absent_empty_and_malformed_catalogs_are_distinct(
-    agent: ClaudeCodeTentacle,
+    agent: ClaudeTentacle,
     context: CommandContext,
     client: AsyncMock,
     payload: JsonObject,
@@ -249,7 +248,7 @@ async def test_absent_empty_and_malformed_catalogs_are_distinct(
 
 
 async def test_refresh_and_workspace_change_initialize_again(
-    agent: ClaudeCodeTentacle,
+    agent: ClaudeTentacle,
     context: CommandContext,
     client: AsyncMock,
     payload: JsonObject,
@@ -278,7 +277,7 @@ async def test_refresh_and_workspace_change_initialize_again(
 
 
 async def test_runtime_lifecycle_invalidates_cached_commands(
-    agent: ClaudeCodeTentacle,
+    agent: ClaudeTentacle,
     context: CommandContext,
 ) -> None:
     await agent.discover_commands(context)
@@ -291,7 +290,7 @@ async def test_runtime_lifecycle_invalidates_cached_commands(
 
 
 async def test_probe_cancellation_closes_client_and_releases_native_claim(
-    agent: ClaudeCodeTentacle,
+    agent: ClaudeTentacle,
     context: CommandContext,
     client: AsyncMock,
 ) -> None:

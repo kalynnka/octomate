@@ -222,6 +222,14 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     # Every `relocate` the graph asked for: the conversation's id and where to.
     relocated: list[tuple[UUID7, Path]] = field(default_factory=list)
 
+    def resolve_model(
+        self, model: AgentRouteModelName | None = None
+    ) -> AgentRouteModelName | None:
+        """Use the configured default, as Inkling does."""
+        if not self.models:
+            raise ValueError(f"agent {self.id!r} has no available model catalog")
+        return self.default_model if model is None else super().resolve_model(model)
+
     async def fork_session(
         self, conversation: Conversation, *, cwd: Path
     ) -> str | None:

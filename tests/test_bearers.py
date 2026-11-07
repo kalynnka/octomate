@@ -120,6 +120,6 @@ async def test_hook_guard_rejects_invalid_headers(auth: AuthManager) -> None:
 
 
 async def test_hook_sender_demands_a_registered_username() -> None:
-    resolve = hook_sender(UserManager(), "claude-native", hook_guard(KnownBearers()))
+    resolve = hook_sender(UserManager(), "claude", hook_guard(KnownBearers()))
     with pytest.raises(RuntimeError, match="registry holds no such user"):
         await resolve("lu")

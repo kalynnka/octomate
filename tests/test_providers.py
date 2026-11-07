@@ -81,6 +81,25 @@ def test_inkling_claims_the_thinking_level_built_into_a_model() -> None:
     assert tentacle.claims["openai:gpt-5-mini"].default_effort is None
 
 
+@pytest.mark.parametrize("icon_url", [None, "/custom-agent.svg", ""])
+def test_inkling_build_keeps_configured_icon(icon_url: str | None) -> None:
+    config = InklingConfig.model_validate(
+        {"models": [{"name": "openai:gpt-5.2"}], "icon_url": icon_url}
+    )
+    host = Octomate()
+    tentacle = build_inkling(
+        "inkling",
+        config,
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
+        registry=make_registry(),
+    )
+    assert tentacle.info.icon_url == icon_url
+    config.icon_url = "/updated-agent.svg"
+    assert tentacle.info.icon_url == "/updated-agent.svg"
+
+
 def test_unsupported_provider_prefix_is_rejected() -> None:
     with pytest.raises(ValidationError, match="unsupported model provider prefix"):
         ModelConfig(name="xai:grok-3")

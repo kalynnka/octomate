@@ -337,7 +337,6 @@ def _tentacle(
 ) -> DeepseekTentacle:
     host = octomate or Octomate(conversations=conversations)
     return DeepseekTentacle(
-        "deepseek",
         host,
         auth=host.auth,
         sandboxes=host.sandboxes,
@@ -423,7 +422,6 @@ async def test_driven_names_are_persisted_and_revised(
             stored.external_id = session_id
             await session.commit()
     tentacle = DeepseekTentacle(
-        "deepseek",
         octomate,
         auth=octomate.auth,
         sandboxes=octomate.sandboxes,
@@ -477,7 +475,6 @@ async def test_driven_child_name_does_not_rename_parent_thread(
         parent_conversation_id=parent.id,
     )
     tentacle = DeepseekTentacle(
-        "deepseek",
         octomate,
         auth=octomate.auth,
         sandboxes=octomate.sandboxes,
@@ -616,7 +613,7 @@ async def test_run_stream_events_creates_session_proxies_events_and_persists(
     [recorded] = conversations.runs
     fake, _label, messages = recorded
     assert fake.external_id == "sess-1"
-    assert fake.runs[-1].native_id == "deepseek-native"
+    assert fake.agent_tentacle_id == "deepseek"
     assert fake.runs[-1].native_session_id == "sess-1"
     assert fake.runs[-1].native_turn_id == "sess-1:1"
     assert messages
@@ -954,7 +951,6 @@ async def test_driving_covers_runtime_cleanup_before_persistence_and_workspace_e
         permission_mode: str | None,
         cwd: Path,
         external_id: str,
-        native_id: str,
         native_turn_id: str | None,
     ) -> None:
         assert tentacle.driven_sessions == {}
@@ -970,7 +966,6 @@ async def test_driving_covers_runtime_cleanup_before_persistence_and_workspace_e
             permission_mode=permission_mode,
             cwd=cwd,
             external_id=external_id,
-            native_id=native_id,
             native_turn_id=native_turn_id,
         )
 

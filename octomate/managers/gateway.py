@@ -449,7 +449,7 @@ class OctomateSession:
         agent = self.agents.get(agent_id) if self.agents is not None else None
         return (
             agent is not None
-            and agent.native_id == self.current_agent_id
+            and self.current_agent_id == agent.id
             and type(agent).fork_transcript is not AgentTentacle.fork_transcript
         )
 
@@ -637,12 +637,14 @@ class OctomateSession:
             with_messages=False,
             user_id=profile.user_id,
         )
-        if thread is None:
+        if thread is None or thread.kind != "native_thread":
             raise GatewayRefusal(
                 "Octomate holds no uploaded history for this session yet. Finish a "
                 "turn with Octomate's hooks installed, then teleport again."
             )
         self.thread_id = thread.id
+        if thread.active_agent_tentacle_id is not None:
+            self.current_agent_id = thread.active_agent_tentacle_id
         self.conversation_address = thread.key.address(profile.channel_user_id)
 
     def thread_operation(self) -> DrivenGatewaySignal:
