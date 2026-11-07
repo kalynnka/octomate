@@ -18,7 +18,6 @@ from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import (
     MessageSentEvent,
     ReflexAsleepEvent,
@@ -166,16 +165,7 @@ async def test_direct_command_delivers_feedback_without_model_history_and_replay
     capabilities.assert_awaited_once()
     assert isinstance(agent.suspender, ReflexSuspender)
     assert agent.suspender.decision is None
-    assert (
-        bool(
-            [
-                cap
-                for cap in agent.capabilities or []
-                if isinstance(cap, GatewayCapability)
-            ]
-        )
-        is gateway
-    )
+    assert (agent.session is not None) is gateway
     assert isinstance(app.workspaces, RecordingWorkspaceManager)
     assert app.workspaces.saved == [conversation.thread_id]
 
@@ -395,19 +385,17 @@ async def test_command_gateway_handoff_continues_in_the_same_reflex_graph(
     runs = other.turns
     assert len(runs) == 1
     assert runs[0].prompt == "Continue this review"
-    command_gateway = next(
-        cap for cap in agent.capabilities or [] if isinstance(cap, GatewayCapability)
-    )
-    handoff_gateway = next(
-        cap for cap in runs[0].capabilities if isinstance(cap, GatewayCapability)
-    )
-    assert handoff_gateway.session is not command_gateway.session
-    assert command_gateway.session.current_agent_id == agent.id
-    assert command_gateway.session.conversation_id == conversation.id
-    assert handoff_gateway.session.current_agent_id == other.id
-    assert handoff_gateway.session.conversation_id != conversation.id
+    command_gateway = agent.session
+    assert command_gateway is not None
+    handoff_gateway = runs[0].session
+    assert handoff_gateway is not None
+    assert handoff_gateway is not command_gateway
+    assert command_gateway.current_agent_id == agent.id
+    assert command_gateway.conversation_id == conversation.id
+    assert handoff_gateway.current_agent_id == other.id
+    assert handoff_gateway.conversation_id != conversation.id
     assert state.selection == AgentRouteKey(other.id, "opus")
-    assert state.conversation_id == handoff_gateway.session.conversation_id
+    assert state.conversation_id == handoff_gateway.conversation_id
     assert not app.gateway.sessions
 
 
@@ -549,7 +537,9 @@ async def test_a_commands_events_reach_its_trunkline_thread(
     if model_run:
         agent.behavior = "stream_complete"
         monkeypatch.setattr(agent, "events", events)
-    with app.nerve.subscribe(ThreadTopic(ThreadKey.from_address(address))) as live:
+    async with app.nerve.subscribe(
+        ThreadTopic(ThreadKey.from_address(address))
+    ) as live:
         await kicked(app, signal)
         received = [impulse.event for impulse in held(live)]
     assert [type(event) for event in received] == [

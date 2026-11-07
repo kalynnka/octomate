@@ -203,7 +203,7 @@ async def test_thinking_events_pass_through_before_final() -> None:
 @dataclass
 class InjectingCapability(AbstractCapability[None]):
     """Minimal capability that injects one extra event onto the run stream,
-    mirroring how TodoCapability forwards stashed todo events."""
+    exercising custom events carried by a capability."""
 
     event: TodoCreatedEvent
 
@@ -214,7 +214,7 @@ class InjectingCapability(AbstractCapability[None]):
         stream: AsyncIterable[AgentStreamEvent],
     ) -> AsyncIterable[AgentStreamEvent]:
         # The injected display event is not an AgentStreamEvent; one
-        # dynamic-boundary cast, exactly as TodoCapability does.
+        # dynamic-boundary cast at the custom event boundary.
         yield cast(AgentStreamEvent, self.event)
         async for event in stream:
             yield event

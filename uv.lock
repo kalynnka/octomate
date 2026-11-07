@@ -2111,6 +2111,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "pyyaml" },
     { name = "rich" },
+    { name = "sh" },
     { name = "slack-bolt" },
     { name = "sqlalchemy", extra = ["aiosqlite"] },
     { name = "typer" },
@@ -2137,6 +2138,13 @@ docs = [
     { name = "mkdocs-material" },
     { name = "mkdocstrings", extra = ["python"] },
     { name = "ruff" },
+]
+sandbox = [
+    { name = "agent-client-protocol" },
+    { name = "claude-agent-sdk" },
+    { name = "openai-codex" },
+    { name = "pydantic-ai-harness", extra = ["code-mode"] },
+    { name = "pydantic-ai-slim", extra = ["anthropic", "bedrock", "google", "mcp", "openai"] },
 ]
 
 [package.metadata]
@@ -2172,6 +2180,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "rich", specifier = ">=13" },
+    { name = "sh", specifier = ">=2.4,<3" },
     { name = "slack-bolt", specifier = ">=1.18" },
     { name = "sqlalchemy", extras = ["aiosqlite"], specifier = ">=2.0" },
     { name = "typer", specifier = ">=0.25.1" },
@@ -2198,6 +2207,13 @@ docs = [
     { name = "mkdocs-material", specifier = ">=9.6,<10" },
     { name = "mkdocstrings", extras = ["python"], specifier = ">=0.30,<1" },
     { name = "ruff", specifier = "==0.16.4" },
+]
+sandbox = [
+    { name = "agent-client-protocol" },
+    { name = "claude-agent-sdk" },
+    { name = "openai-codex" },
+    { name = "pydantic-ai-harness", extras = ["code-mode"] },
+    { name = "pydantic-ai-slim", extras = ["anthropic", "bedrock", "google", "mcp", "openai"] },
 ]
 
 [[package]]
@@ -3698,6 +3714,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/1c/03/e834bcd866f2f8a49a85eaff47340affa3bfa391ee9912a952a1faa68c7b/secretstorage-3.5.0.tar.gz", hash = "sha256:f04b8e4689cbce351744d5537bf6b1329c6fc68f91fa666f60a380edddcd11be", size = 19884, upload-time = "2025-11-23T19:02:53.191Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/46/f5af3402b579fd5e11573ce652019a67074317e18c1935cc0b4ba9b35552/secretstorage-3.5.0-py3-none-any.whl", hash = "sha256:0ce65888c0725fcb2c5bc0fdb8e5438eece02c523557ea40ce0703c266248137", size = 15554, upload-time = "2025-11-23T19:02:51.545Z" },
+]
+
+[[package]]
+name = "sh"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e9/c8/137093889a8b8c9a66c9b46079cf2a0e155a8be027df212a4041e3b7b09c/sh-2.4.0.tar.gz", hash = "sha256:a250aef68509ed93419c9a1d90b0647cd5cbe26107ba94d3717ef5b6d595ffd9", size = 136950, upload-time = "2026-07-25T21:44:42.705Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/23/dd/6b9aceecddbb3df894003d6a5005bd90bce3cf4743c28c406ebecc8d80f6/sh-2.4.0-py3-none-any.whl", hash = "sha256:98eba32eeb5ecdd310668737d7461e668afc42b273550d0bc198a1c5c2b1ab36", size = 48619, upload-time = "2026-07-25T21:44:41.216Z" },
 ]
 
 [[package]]

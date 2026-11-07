@@ -231,7 +231,7 @@ class FakeConversationManager(ConversationManager):
         self,
         run_id: str,
         *,
-        parent_run_id: str,
+        parent_run_id: str | None,
         parent_tool_call_id: str | None,
     ) -> None:
         self.parent_links.append((run_id, parent_run_id, parent_tool_call_id))

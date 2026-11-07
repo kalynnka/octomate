@@ -16,7 +16,6 @@ import uuid
 from collections.abc import AsyncGenerator, Generator, Sequence
 from contextvars import Context, copy_context
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
 from functools import cached_property, partial
 from io import BytesIO
 from itertools import chain
@@ -169,6 +168,7 @@ if TYPE_CHECKING:
     from octomate.managers.files import FileManager
     from octomate.managers.gateway import GatewayManager, OctomateSession
     from octomate.managers.project import ProjectManager
+    from octomate.managers.sandbox import SandboxManager
     from octomate.managers.thread import ThreadManager
     from octomate.managers.user import UserManager
     from octomate.managers.workspaces import WorkspaceManager
@@ -254,10 +254,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         default_factory=dict, init=False
     )
     conversation_locks: SessionLocks = field(default_factory=SessionLocks, init=False)
-    api_keys: dict[uuid.UUID, IssuedApiKey] = field(
-        default_factory=dict, init=False, repr=False
-    )  # One MCP credential per user for this runtime.
-    api_key_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     bridge_contexts: dict[str, CodexBridgeContext] = field(
         default_factory=dict, init=False
     )
@@ -323,6 +319,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         octomate: Octomate,
         *,
         config: CodexConfig,
+        sandboxes: SandboxManager,
         commands: CommandManager,
         projects: ProjectManager,
         threads: ThreadManager,
@@ -343,18 +340,18 @@ class CodexTentacle(AgentTentacle[str, None]):
             projects=projects,
             threads=threads,
             files=files,
+            auth=auth,
+            sandboxes=sandboxes,
+            sandbox=config.sandbox,
         )
         self.conversations = conversations
         self.deferred_actions = deferred_actions
         self.workspaces = workspaces
         self.users = users
         self.bearers = bearers
-        self.auth = auth
         self.gateway_manager = gateway_manager
         self.config = config
         self.description = description or self.description
-        self.api_keys = {}
-        self.api_key_lock = asyncio.Lock()
         self.live_turns = {}
         self.conversation_locks = SessionLocks()
         self.bridge_contexts = {}
@@ -1218,40 +1215,10 @@ class CodexTentacle(AgentTentacle[str, None]):
         )
 
     async def runtime_api_key(self, user_id: uuid.UUID | None) -> IssuedApiKey | None:
-        """Reuse one MCP key per user, replacing it when its lifetime expires."""
-        auth = self.auth
-        if user_id is None or auth is None:
-            return None
-        async with self.api_key_lock:
-            if not self.ink.running:
-                raise RuntimeError("Codex runtime is not running")
-            issued = self.api_keys.get(user_id)
-            if issued is not None and (
-                issued.key.expires_at is None
-                or issued.key.expires_at > datetime.now(UTC)
-            ):
-                return issued
-            with anyio.CancelScope(shield=True):
-                if issued is not None:
-                    await auth.revoke_api_key(user_id, issued.key.id)
-                issued = await auth.create_api_key(
-                    user_id,
-                    name=f"Codex {self.id}",
-                    scopes=["mcp"],
-                    expires_at=datetime.now(UTC) + auth.config.runtime_api_key_lifetime,
-                )
-                self.api_keys[user_id] = issued
-            return issued
-
-    async def revoke_runtime_keys(self) -> None:
-        """Revoke user credentials at tentacle shutdown."""
-        async with self.api_key_lock:
-            api_keys, self.api_keys = self.api_keys, {}
-            auth = self.auth
-            if auth is None:
-                return
-            for issued in api_keys.values():
-                await auth.revoke_api_key(issued.key.user_id, issued.key.id)
+        """Issue credentials only while the native runtime is available."""
+        if user_id is not None and self.auth is not None and not self.ink.running:
+            raise RuntimeError("Codex runtime is not running")
+        return await super().runtime_api_key(user_id)
 
     async def discover_models(self) -> None:
         catalog = await self.ink.models()

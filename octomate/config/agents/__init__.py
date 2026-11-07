@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from octomate.config.agents.claude import (
-    ClaudeCodeConfig,
-    ClaudeSSHConfig,
-)
+from octomate.config.agents.claude import ClaudeCodeConfig
 from octomate.config.agents.codex import (
     CodexConfig,
     CodexPersonality,
@@ -36,7 +33,6 @@ __all__ = [
     "AgentRouteModelName",
     "Claim",
     "ClaudeCodeConfig",
-    "ClaudeSSHConfig",
     "CodexConfig",
     "CodexPersonality",
     "CodexReasoningEffort",

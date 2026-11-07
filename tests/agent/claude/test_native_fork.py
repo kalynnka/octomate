@@ -48,6 +48,8 @@ async def a_native_session() -> tuple[Octomate, ClaudeTentacle, UserProfile]:
     tentacle = octomate.connect(
         ClaudeTentacle(
             octomate,
+            auth=octomate.auth,
+            sandboxes=octomate.sandboxes,
             config=ClaudeCodeConfig(),
             commands=octomate.commands,
             projects=octomate.projects,

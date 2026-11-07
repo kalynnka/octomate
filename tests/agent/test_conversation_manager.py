@@ -474,6 +474,66 @@ async def test_permission_defaults_and_grant_round_trip() -> None:
     assert reloaded.allowed_tools == ["Bash", "Write"]
 
 
+@pytest.mark.parametrize("external", [False, True])
+async def test_tool_results_link_only_unbound_children_of_their_conversation(
+    external: bool,
+) -> None:
+    manager = ConversationManager()
+    thread = await a_thread()
+    parent = await manager.ensure(thread, agent_tentacle_id="inkling")
+    other = await manager.ensure(thread, agent_tentacle_id="other")
+    child_runs: list[AgentRun] = []
+    existing_parent = str(uuid7())
+    for name, owner, call_id, parent_run_id in (
+        ("mine", parent, "same-call", None),
+        ("foreign", other, "same-call", None),
+        ("unrelated", parent, "another-call", None),
+        ("linked", parent, "same-call", existing_parent),
+    ):
+        child = await manager.ensure(
+            thread,
+            agent_tentacle_id="helper",
+            subagent_id=name,
+            parent_conversation_id=owner.id,
+        )
+        run = await manager.record_agent_run(
+            child,
+            str(uuid7()),
+            [RawModelResponse(parts=[TextPart("Report")])],
+        )
+        assert run is not None
+        await manager.link_parent_run(
+            run.id,
+            parent_run_id=parent_run_id,
+            parent_tool_call_id=call_id,
+        )
+        child_runs.append(run)
+
+    result = RawModelRequest(
+        parts=[ToolReturnPart("commission", "Report", tool_call_id="same-call")]
+    )
+    parent_run_id = str(uuid7())
+    if external:
+        await manager.record_external_run(
+            parent,
+            run_id=parent_run_id,
+            messages=[result],
+            native_session_id="native-session",
+            end_offset=42,
+        )
+    else:
+        await manager.record_agent_run(parent, parent_run_id, [result])
+
+    async with async_session() as session:
+        stored = [await session.get(AgentRun, run.id) for run in child_runs]
+        assert [run.parent_run_id for run in stored if run is not None] == [
+            parent_run_id,
+            None,
+            None,
+            existing_parent,
+        ]
+
+
 async def test_ensure_loads_existing_conversation() -> None:
     first = ConversationManager()
     created = await first.ensure(await _thread(), agent_tentacle_id="inkling")

@@ -419,7 +419,7 @@ async def test_tool_start_reaches_subscribers_before_a_result_or_turn_end(
         octomate.files,
         agent_tentacle_id="codex",
     )
-    with octomate.nerve.subscribe(
+    async with octomate.nerve.subscribe(
         ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
     ) as live:
         async with octomate.nerve.publish(SESSION_ADDRESS) as publisher:
@@ -464,7 +464,7 @@ async def test_completed_command_activity_is_published_and_saved() -> None:
         octomate.files,
         agent_tentacle_id="codex",
     )
-    with octomate.nerve.subscribe(
+    async with octomate.nerve.subscribe(
         ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
     ) as live:
         async with octomate.nerve.publish(SESSION_ADDRESS) as publisher:
@@ -527,7 +527,7 @@ async def test_encrypted_reasoning_placeholder_is_published_and_saved() -> None:
         octomate.files,
         agent_tentacle_id="codex",
     )
-    with octomate.nerve.subscribe(
+    async with octomate.nerve.subscribe(
         ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
     ) as live:
         async with octomate.nerve.publish(SESSION_ADDRESS) as publisher:
@@ -598,7 +598,7 @@ async def test_live_turn_restarts_then_settles_and_committed_replay_is_silent(
         agent_tentacle_id="codex",
     )
     key = ThreadKey.from_address(SESSION_ADDRESS)
-    with octomate.nerve.subscribe(ThreadTopic(key)) as live:
+    async with octomate.nerve.subscribe(ThreadTopic(key)) as live:
         for finished in (False, True, True):
             async with octomate.nerve.publish(SESSION_ADDRESS) as publisher:
                 state, _ = await tailer.attach_remote(
@@ -655,7 +655,7 @@ async def test_failed_commit_never_publishes_run_ended(
     monkeypatch.setattr(
         owner, method, AsyncMock(side_effect=RuntimeError("commit failed"))
     )
-    with octomate.nerve.subscribe(
+    async with octomate.nerve.subscribe(
         ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
     ) as live:
         async with octomate.nerve.publish(SESSION_ADDRESS) as publisher:
@@ -697,7 +697,7 @@ async def test_empty_reserved_turn_commits_its_checkpoint_and_settles() -> None:
         octomate.files,
         agent_tentacle_id="codex",
     )
-    with octomate.nerve.subscribe(
+    async with octomate.nerve.subscribe(
         ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
     ) as live:
         async with octomate.nerve.publish(SESSION_ADDRESS) as publisher:

@@ -14,7 +14,6 @@ from typing import ClassVar, cast
 
 import pytest
 from arcanus import Relation
-from octomate_protocol.gateway import GatewayTool
 from pydantic_ai import AgentCapability, AgentRunResult, AgentRunResultEvent, RunContext
 from pydantic_ai.messages import ToolCallPart, UserPromptPart
 from pydantic_ai.settings import ThinkingEffort
@@ -22,7 +21,6 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import (
     GatewayEvent,
     MessageSentEvent,
@@ -34,7 +32,7 @@ from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.config.mirrors import MirrorsConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
-from octomate.managers.gateway import GatewayManager
+from octomate.managers.gateway import GatewayManager, OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
@@ -116,10 +114,12 @@ async def _run(
     # One host, as in production: a channel marks the rows and presents the
     # batches the graph recorded through the managers it recorded them on.
     host = FakeOctomate()
+    host.gateway = deps.gateway
     host.threads = deps.thread_manager
     host.deferred_actions = deps.action_manager
     for agent in deps.agents.values():
         if isinstance(agent, FakeAgent):
+            agent.octomate = host
             agent.conversations = deps.conversation_manager
     for channel in deps.channels.values():
         channel.octomate = host
@@ -276,14 +276,10 @@ def _two_reception_config(*, stream: bool) -> ChannelConfig:
     )
 
 
-def _recorded_gate_capability(run: RecordedRun) -> GatewayCapability:
-    gates = [
-        capability
-        for capability in run.capabilities
-        if isinstance(capability, GatewayCapability)
-    ]
-    assert len(gates) == 1
-    return gates[0]
+def _recorded_session(run: RecordedRun) -> OctomateSession:
+    assert run.session is not None
+    assert not run.capabilities
+    return run.session
 
 
 def test_available_routes_skip_disconnected_reception_agents() -> None:
@@ -610,7 +606,7 @@ async def test_route_entry_run_claims_no_ownership() -> None:
     assert list(thread.handoffs) == []
 
 
-async def test_reception_mounts_gate_capability() -> None:
+async def test_reception_registers_gateway_session() -> None:
     address = _key()
     agent = FakeAgent(id="other", reception_output="done")
     conversations = FakeConversationManager()
@@ -625,15 +621,19 @@ async def test_reception_mounts_gate_capability() -> None:
 
     await _run(
         React(),
-        state=ReflexState(source_target=target, target=target, decision=_summon()),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=_thread(address),
+        ),
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
     )
 
-    gate = _recorded_gate_capability(agent.turns[0])
-    assert gate.toolset is not None
-    inspect_tool = gate.toolset.tools[GatewayTool.INSPECT].function
-    routes = await inspect_tool(FAKE_CONTEXT, "routes")
-    places = await inspect_tool(FAKE_CONTEXT, "destinations")
+    gate = _recorded_session(agent.turns[0])
+    inspect_tool = gate.inspect
+    routes = await inspect_tool("routes")
+    places = await inspect_tool("destinations")
     assert routes == []
     # One list for every spell: this run is a DM, so `dm` is not among them — it is
     # already where it would go — and nothing links this asker to another channel.
@@ -686,12 +686,11 @@ async def test_react_mounts_a_commissioning_gate_in_a_thread() -> None:
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
     )
 
-    gate = _recorded_gate_capability(agent.turns[0])
-    assert gate.commissioning
-    assert gate.session.thread_id == thread.id
-    assert gate.session.conversation_address == address
-    assert gate.toolset is not None
-    assert "commission" in gate.toolset.tools
+    gate = _recorded_session(agent.turns[0])
+    assert gate.agents is not None
+    assert gate.thread_id == thread.id
+    assert gate.conversation_address == address
+    assert gate.conversation_id is not None
 
 
 async def test_a_finished_turn_saves_the_threads_workspace() -> None:
@@ -824,9 +823,9 @@ async def test_react_keys_the_octomate_session_by_the_turns_conversation() -> No
         ),
     )
 
-    gate = _recorded_gate_capability(agent.turns[0])
+    gate = _recorded_session(agent.turns[0])
     conversation = await conversations.ensure(thread.id, agent_tentacle_id="other")
-    assert gate.session.conversation_id == conversation.id
+    assert gate.conversation_id == conversation.id
     assert registry.sessions == {}
 
 
@@ -902,11 +901,7 @@ async def test_an_agent_with_gateway_off_mounts_none_on_any_channel() -> None:
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
     )
 
-    assert not [
-        capability
-        for capability in agent.turns[0].capabilities
-        if isinstance(capability, GatewayCapability)
-    ]
+    assert agent.turns[0].session is None
 
 
 async def test_react_passes_the_decision_effort_to_the_run() -> None:
@@ -1017,11 +1012,16 @@ async def test_reception_allow_here_false_on_group_main() -> None:
 
     await _run(
         React(),
-        state=ReflexState(source_target=target, target=target, decision=_summon()),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=_thread(address),
+        ),
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
     )
 
-    assert _recorded_gate_capability(agent.turns[0]).session.allow_here is False
+    assert _recorded_session(agent.turns[0]).allow_here is False
 
 
 async def test_summon_here_takes_over_current_conversation() -> None:
@@ -1137,44 +1137,47 @@ def _private_key(thread_id: str = "") -> ChannelAddress:
 async def _gate_for(
     address: ChannelAddress,
     channel: FakeChannelTentacle | None = None,
-) -> GatewayCapability:
+) -> OctomateSession:
     agent = FakeAgent(id="other", reception_output="done")
     im = channel or FakeChannelTentacle(config=_two_reception_config(stream=False))
     target = _source_target(address)
     await _run(
         React(),
-        state=ReflexState(source_target=target, target=target, decision=_summon()),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=_thread(address),
+        ),
         deps=_deps(
             conversations=FakeConversationManager(),
             channels={"im": im},
             agent=agent,
         ),
     )
-    return _recorded_gate_capability(agent.turns[0])
+    return _recorded_session(agent.turns[0])
 
 
 async def test_scheme_is_reachable_only_from_a_group_with_an_asker() -> None:
     # The reason travels with the refusal, so the model is told which of the three
     # walls it hit. None of it reaches the tool schema — see test_gateway.
-    assert (await _gate_for(_group_key())).session.private_blocked_by is None
-    assert (await _gate_for(_group_key("in-thread"))).session.private_blocked_by is None
+    assert (await _gate_for(_group_key())).private_blocked_by is None
+    assert (await _gate_for(_group_key("in-thread"))).private_blocked_by is None
 
     # Already one-to-one with this person, thread inside it or not.
-    assert (await _gate_for(_key())).session.private_blocked_by == "already_private"
+    assert (await _gate_for(_key())).private_blocked_by == "already_private"
     private = await _gate_for(_private_key("assistant"))
-    assert private.session.private_blocked_by == "already_private"
+    assert private.private_blocked_by == "already_private"
 
     # Nobody in particular asked (a scheduled or awake run).
     anonymous = replace(_group_key(), user_id="")
-    assert (await _gate_for(anonymous)).session.private_blocked_by == "no_user"
+    assert (await _gate_for(anonymous)).private_blocked_by == "no_user"
 
     class NoDmChannel(FakeChannelTentacle):
         surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(sub_thread=True)
 
     without = NoDmChannel(config=_two_reception_config(stream=False))
-    assert (
-        await _gate_for(_group_key(), without)
-    ).session.private_blocked_by == "no_surface"
+    assert (await _gate_for(_group_key(), without)).private_blocked_by == "no_surface"
 
 
 async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:

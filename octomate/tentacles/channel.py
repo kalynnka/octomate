@@ -13,6 +13,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
+from types import TracebackType
 from typing import (
     TYPE_CHECKING,
     ClassVar,
@@ -321,12 +322,17 @@ class ChannelTentacle(
         await self.ink.__aenter__()
         await self.probe()
         # Before any inbound event, so no run this channel draws is missed.
-        self.siphon.start()
+        await self.siphon.__aenter__()
         return self
 
-    async def __aexit__(self, *exc: object) -> None:
-        await self.siphon.stop()
-        await self.ink.__aexit__(*exc)
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        await self.siphon.__aexit__(exc_type, exc, traceback)
+        await self.ink.__aexit__(exc_type, exc, traceback)
 
     @property
     def name(self) -> str:

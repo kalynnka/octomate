@@ -85,10 +85,6 @@
   #   permission_mode: default
   #   max_turns: ~
   #   approval_timeout: 3600   # seconds before a card expires; ~ = forever
-  #   ssh: ~                # remote runs are disabled: a run happens in its
-  #                         # thread's project root, and that is a local path the
-  #                         # remote host has nothing to match. Setting a block is
-  #                         # refused rather than ignored.
 
   # OpenAI Codex agent. Runs Codex through the openai-codex SDK, and serves its own
   # hook router.

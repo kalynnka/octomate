@@ -29,6 +29,11 @@ HISTORY_MIGRATIONS = ScriptDirectory.from_config(
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
+        "--sbx",
+        action="store_true",
+        help="Run disposable local sbx VM checks; requires SBX_TEST_IMAGE by digest.",
+    )
+    parser.addoption(
         "--native-sandbox",
         action="store_true",
         help="Run the manual native sandbox integration tests with synthetic fixtures.",
@@ -36,6 +41,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
+    if collection_path == Path(__file__).parent / "integration" / "sbx":
+        return not config.getoption("--sbx")
     if collection_path == Path(__file__).parent / "integration" / "native_sandbox":
         return not config.getoption("--native-sandbox")
     return None

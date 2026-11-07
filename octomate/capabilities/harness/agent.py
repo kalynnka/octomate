@@ -21,7 +21,7 @@ final `Agent[Deps, list[Row]].stream_events(...)` value is a `FinalResult[list[R
 from __future__ import annotations
 
 import time
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from typing import Any, cast, overload
 
 from pydantic import ValidationError
@@ -103,7 +103,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
         builtin_tools: Sequence[AgentNativeTool[AgentDepsT]] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: dict[str, Any] | AgentSpec | None = None,
-    ) -> AsyncIterator[
+    ) -> AsyncGenerator[
         StreamEvents[OutputDataT] | AgentRunResultEvent[OutputDataT]
     ]: ...
 
@@ -129,7 +129,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
         builtin_tools: Sequence[AgentNativeTool[AgentDepsT]] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: dict[str, Any] | AgentSpec | None = None,
-    ) -> AsyncIterator[
+    ) -> AsyncGenerator[
         StreamEvents[RunOutputDataT] | AgentRunResultEvent[RunOutputDataT]
     ]: ...
 
@@ -154,7 +154,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
         builtin_tools: Sequence[AgentNativeTool[AgentDepsT]] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: dict[str, Any] | AgentSpec | None = None,
-    ) -> AsyncIterator[StreamEvents[Any] | AgentRunResultEvent[Any]]:
+    ) -> AsyncGenerator[StreamEvents[Any] | AgentRunResultEvent[Any]]:
         # builtin_tools and output_retries are deprecated run kwargs in pydantic-ai
         # 1.x: native tools register as NativeTool capabilities, and the output-retry
         # budget moves under retries={"output": ...}.

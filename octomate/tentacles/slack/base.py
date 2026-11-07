@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import replace
+from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self
 
 from mcp.shared.auth import OAuthClientInformationFull
@@ -231,11 +232,16 @@ class SlackTentacle(
         await self.handler.connect_async()
         return self
 
-    async def __aexit__(self, *exc: object) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         if self.handler:
             await self.handler.close_async()
             self.handler = None
-        await super().__aexit__(*exc)
+        await super().__aexit__(exc_type, exc, traceback)
 
     async def probe(self) -> None:
         await super().probe()

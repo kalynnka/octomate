@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import replace
+from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self
 
 import lark_oapi
@@ -219,7 +220,12 @@ class LarkTentacle(
         self.ping_task = asyncio.create_task(self.ws_client._ping_loop())  # type: ignore[attr-defined]
         return self
 
-    async def __aexit__(self, *exc: object) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         if self.ping_task is not None:
             ping_task = self.ping_task
             self.ping_task = None
@@ -231,7 +237,7 @@ class LarkTentacle(
         try:
             await self.ws_client.close()
         finally:
-            await super().__aexit__(*exc)
+            await super().__aexit__(exc_type, exc, traceback)
 
     def is_shared(self, address: ChannelAddress) -> bool:
         """A one-to-one chat is keyed on the person's open id, `ou_…`, and a topic

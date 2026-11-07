@@ -1,6 +1,6 @@
 """The public ACP endpoint drives registered agents through the real reflex graph."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
 from uuid import UUID
 
@@ -38,11 +38,14 @@ from octomate.tentacles.inkling.base import InklingTentacle
 from tests.agent.claude.test_tentacle import FakeClaudeClient
 from tests.support.agents import ScriptedStream, ScriptedTurn
 from tests.support.managers import a_project, a_registry
+from tests.support.mcp import served_inkling_mcp
 from tests.support.users import a_user, auth_config
 
 
 @pytest.fixture
-async def client(in_memory_engine: AsyncEngine) -> TestClient:
+async def client(
+    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> AsyncGenerator[TestClient]:
     app = Octomate(config=OctomateConfig(auth=auth_config()))
     for name in ("first", "second"):
         model = FunctionModel(
@@ -50,6 +53,8 @@ async def client(in_memory_engine: AsyncEngine) -> TestClient:
         )
         app.connect(
             InklingTentacle(
+                auth=app.auth,
+                sandboxes=app.sandboxes,
                 id=name,
                 octomate=app,
                 models={
@@ -67,9 +72,11 @@ async def client(in_memory_engine: AsyncEngine) -> TestClient:
     user = await a_user("alice")
     assert app.auth is not None
     key = await app.auth.create_api_key(user.id, name="ACP client", scopes=["acp"])
-    return TestClient(
-        app, headers={"Authorization": f"Bearer {key.token.get_secret_value()}"}
-    )
+    async with served_inkling_mcp(app, monkeypatch, lifespan=False):
+        with TestClient(
+            app, headers={"Authorization": f"Bearer {key.token.get_secret_value()}"}
+        ) as client:
+            yield client
 
 
 def rpc(
@@ -144,7 +151,7 @@ async def test_unified_model_selection_stream_and_history(
         assert isinstance(app, Octomate)
         thread = await app.threads.get(UUID(session_id), with_messages=False)
         assert thread is not None
-        with app.nerve.subscribe(ThreadTopic(thread.key)) as events:
+        async with app.nerve.subscribe(ThreadTopic(thread.key)) as events:
             first = prompt(socket, session_id)
             heard = []
             while True:
@@ -413,6 +420,8 @@ async def test_questions_resume_or_cancel_through_reflex(
     )
     app.connect(
         InklingTentacle(
+            auth=app.auth,
+            sandboxes=app.sandboxes,
             id="questions",
             octomate=app,
             models={"test": model},
@@ -499,6 +508,8 @@ async def test_agent_permissions_and_cancellation(
     model = FunctionModel(stream_function=reply)
     app.connect(
         InklingTentacle(
+            auth=app.auth,
+            sandboxes=app.sandboxes,
             id="tools",
             octomate=app,
             models={"test": model},
@@ -675,6 +686,8 @@ async def test_native_live_approval_returns_to_existing_run(
     agent = app.connect(
         ClaudeTentacle(
             app,
+            auth=app.auth,
+            sandboxes=app.sandboxes,
             config=ClaudeCodeConfig(gateway=False),
             commands=app.commands,
             projects=app.projects,

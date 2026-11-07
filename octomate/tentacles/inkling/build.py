@@ -25,6 +25,8 @@ from octomate.tentacles.inkling.base import InklingTentacle
 
 if TYPE_CHECKING:
     from octomate import Octomate
+    from octomate.managers.auth import AuthManager
+    from octomate.managers.sandbox import SandboxManager
     from octomate.providers import ProviderRegistry
 
 
@@ -34,6 +36,8 @@ def build_inkling(
     octomate: Octomate,
     *,
     registry: ProviderRegistry,
+    auth: AuthManager | None,
+    sandboxes: SandboxManager,
 ) -> InklingTentacle:
     """The inkling tentacle, with its models and capability stack.
 
@@ -51,8 +55,6 @@ def build_inkling(
     from pydantic_ai_harness.warn_on_cache_busts import WarnOnCacheBusts
 
     from octomate.capabilities.ask import AskCapability
-    from octomate.capabilities.history import HistoryCapability
-    from octomate.capabilities.todos import TodoCapability
     from octomate.capabilities.tools import ToolFailureCapability
     from octomate.managers.spills import SpillStore
     from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
@@ -63,18 +65,6 @@ def build_inkling(
         WarnOnCacheBusts(),
         ToolFailureCapability(),
         AskCapability(),
-        TodoCapability(
-            id="todos",
-            description="Persisted task list for planning and tracking multi-step work.",
-            defer_loading=True,
-        ),
-        HistoryCapability(
-            octomate.threads,
-            id="history",
-            description="Search and page every thread the person you are answering "
-            "has spoken in, on any of their linked accounts.",
-            defer_loading=True,
-        ),
     ]
     # An MCP server answers with whatever it answers with, and a tool return persists
     # in history, so one oversized reply is re-sent on every later request for the rest
@@ -119,6 +109,9 @@ def build_inkling(
         id,
         octomate,
         models=models,
+        auth=auth,
+        sandboxes=sandboxes,
+        sandbox=config.sandbox,
         naming_model=(
             registry.build_model(config.naming_model)
             if config.naming_model is not None

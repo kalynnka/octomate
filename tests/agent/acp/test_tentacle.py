@@ -77,8 +77,13 @@ async def test_catalog_discovery_closes_its_temporary_session_when_supported(
             },
         }
     )
+    host = Octomate()
     agent = AcpAgentTentacle(
-        "custom", Octomate(), config=AcpAgentConfig(provider=provider)
+        "custom",
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
+        config=AcpAgentConfig(provider=provider),
     )
     async with agent:
         assert set(agent.models) == {"fast", "careful"}
@@ -112,7 +117,13 @@ async def test_custom_harness_discovers_selects_and_reopens(
     )
     app = Octomate(config=OctomateConfig(auth=auth_config()))
     agent = app.connect(
-        AcpAgentTentacle("custom", app, config=AcpAgentConfig(provider=provider))
+        AcpAgentTentacle(
+            "custom",
+            app,
+            auth=app.auth,
+            sandboxes=app.sandboxes,
+            config=AcpAgentConfig(provider=provider),
+        )
     )
     user = await a_user("alice")
     sender = await app.users.native_profile(agent.id, user.username)
@@ -188,7 +199,13 @@ async def test_harness_efforts_follow_model_and_reach_new_and_loaded_sessions(
     )
     app = Octomate(config=OctomateConfig(auth=auth_config()))
     agent = app.connect(
-        AcpAgentTentacle("custom", app, config=AcpAgentConfig(provider=provider))
+        AcpAgentTentacle(
+            "custom",
+            app,
+            auth=app.auth,
+            sandboxes=app.sandboxes,
+            config=AcpAgentConfig(provider=provider),
+        )
     )
     user = await a_user("alice")
     sender = await app.users.native_profile(agent.id, user.username)
@@ -261,7 +278,13 @@ async def test_public_endpoint_drives_custom_harness(
 ) -> None:
     app = Octomate(config=OctomateConfig(auth=auth_config()))
     agent = app.connect(
-        AcpAgentTentacle("custom", app, config=AcpAgentConfig(provider=custom_provider))
+        AcpAgentTentacle(
+            "custom",
+            app,
+            auth=app.auth,
+            sandboxes=app.sandboxes,
+            config=AcpAgentConfig(provider=custom_provider),
+        )
     )
     app.connect(AcpChannelTentacle("entry", app))
     user = await a_user("alice")
@@ -335,7 +358,11 @@ async def test_harness_without_http_mcp(
     app = Octomate(config=OctomateConfig(auth=auth_config()))
     agent = app.connect(
         AcpAgentTentacle(
-            "custom", app, config=AcpAgentConfig(provider=provider, gateway=gateway)
+            "custom",
+            app,
+            auth=app.auth,
+            sandboxes=app.sandboxes,
+            config=AcpAgentConfig(provider=provider, gateway=gateway),
         )
     )
     user = await a_user("alice")
@@ -387,7 +414,11 @@ async def agent(
     app.workspaces.projects = await a_registry(a_project(root, name="project"))
     tentacle = app.connect(
         AcpAgentTentacle(
-            id="acp", octomate=app, config=AcpAgentConfig(provider=provider)
+            auth=app.auth,
+            sandboxes=app.sandboxes,
+            id="acp",
+            octomate=app,
+            config=AcpAgentConfig(provider=provider),
         )
     )
     user = await a_user("alice")
@@ -423,7 +454,7 @@ async def test_reflex_owns_dispatch_and_history(
         segments=[TextSegment(data={"text": "hello from the reflex"})],
     )
     inbound = await app.threads.record_inbound(message)
-    with app.nerve.subscribe(ThreadTopic(thread.key)) as stream:
+    async with app.nerve.subscribe(ThreadTopic(thread.key)) as stream:
         task = await app.kick(
             UserMessageSignal(
                 [message], agent_id=tentacle.id, trigger_thread_message_id=inbound.id
@@ -549,7 +580,7 @@ async def test_cancel_settles_provider_and_keeps_partial_history(
         segments=[TextSegment(data={"text": "wait for approval"})],
     )
     inbound = await app.threads.record_inbound(message)
-    with app.nerve.subscribe(ThreadTopic(thread.key)) as stream:
+    async with app.nerve.subscribe(ThreadTopic(thread.key)) as stream:
         task = await app.kick(
             UserMessageSignal(
                 [message], agent_id=tentacle.id, trigger_thread_message_id=inbound.id

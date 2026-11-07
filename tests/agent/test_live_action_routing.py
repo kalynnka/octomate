@@ -43,6 +43,8 @@ async def live_agent(
     if request.param == "claude":
         agent = ClaudeTentacle(
             app,
+            auth=app.auth,
+            sandboxes=app.sandboxes,
             config=ClaudeCodeConfig(),
             commands=app.commands,
             projects=app.projects,
@@ -58,6 +60,7 @@ async def live_agent(
     elif request.param == "codex":
         agent = CodexTentacle(
             app,
+            sandboxes=app.sandboxes,
             config=CodexConfig(),
             commands=app.commands,
             projects=app.projects,
@@ -72,7 +75,12 @@ async def live_agent(
             gateway_manager=app.gateway,
         )
     else:
-        agent = DeepseekTentacle(app, config=DeepseekConfig())
+        agent = DeepseekTentacle(
+            app,
+            auth=app.auth,
+            sandboxes=app.sandboxes,
+            config=DeepseekConfig(),
+        )
     app.connect(agent)
     conversation = await app.conversations.ensure(
         await a_thread(), agent_tentacle_id=agent.id
@@ -234,6 +242,7 @@ async def test_missing_waiter_does_not_determine_response_routing(
     app = Octomate()
     agent = CodexTentacle(
         app,
+        sandboxes=app.sandboxes,
         config=CodexConfig(),
         commands=app.commands,
         projects=app.projects,

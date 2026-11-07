@@ -191,6 +191,8 @@ def _build(
     octomate.deferred_actions = cast(DeferredActionManager, dam)
     tentacle = ClaudeTentacle(
         octomate,
+        auth=octomate.auth,
+        sandboxes=octomate.sandboxes,
         config=config or ClaudeCodeConfig(),
         commands=octomate.commands,
         projects=octomate.projects,

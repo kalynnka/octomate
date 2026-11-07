@@ -194,7 +194,7 @@ async def test_app_call_is_durable_before_publication(
 
         monkeypatch.setattr(OctomateSession, "publish", after_commit)
         xml = "<diagram>✓</diagram>" * 100
-        with turn.host.nerve.subscribe(ThreadTopic(turn.thread.key)) as live:
+        async with turn.host.nerve.subscribe(ThreadTopic(turn.thread.key)) as live:
             result = await turn.server.call_tool(
                 CALL_MCP_TOOL,
                 {
@@ -259,7 +259,7 @@ async def test_two_calls_inside_a_wrapper_remain_two_invocations(
                 )
             return "wrapper output has no app metadata"
 
-        with turn.host.nerve.subscribe(ThreadTopic(turn.thread.key)) as live:
+        async with turn.host.nerve.subscribe(ThreadTopic(turn.thread.key)) as live:
             async with Client(wrapper) as client:
                 await client.call_tool("functions_exec", {})
             events = [(await live.receive()).event, (await live.receive()).event]
@@ -319,7 +319,7 @@ async def test_capture_uses_refreshed_tool_declaration(
             )
             await manager.catalog(turn.scope, other.namespace)
             assert McpClientKey(turn.user.id, turn.installation.id) in manager.clients
-        with turn.host.nerve.subscribe(ThreadTopic(turn.thread.key)) as live:
+        async with turn.host.nerve.subscribe(ThreadTopic(turn.thread.key)) as live:
             await manager.call_tool(
                 turn.scope, turn.installation.namespace, "draw", {"xml": "<updated />"}
             )
@@ -366,7 +366,7 @@ async def test_capabilities_and_results_are_independent_of_rendering(
             await other.probe()
             turn.scope.channels[turn.channel.id] = other
         name = "ordinary" if case == "ordinary" else "draw"
-        with turn.host.nerve.subscribe(ThreadTopic(turn.thread.key)) as live:
+        async with turn.host.nerve.subscribe(ThreadTopic(turn.thread.key)) as live:
             result = await turn.server.call_tool(
                 CALL_MCP_TOOL,
                 {
@@ -451,7 +451,7 @@ async def test_storage_failure_does_not_publish_or_repeat_tool(
             "record_artifact",
             AsyncMock(side_effect=RuntimeError("storage refused")),
         )
-        with turn.host.nerve.subscribe(ThreadTopic(turn.thread.key)) as live:
+        async with turn.host.nerve.subscribe(ThreadTopic(turn.thread.key)) as live:
             with pytest.raises(RuntimeError, match="storage refused"):
                 await turn.host.mcp.call_tool(
                     turn.scope, turn.installation.namespace, "draw", {"xml": "once"}

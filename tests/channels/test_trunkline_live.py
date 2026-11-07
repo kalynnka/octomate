@@ -14,7 +14,7 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.capabilities.harness.events import wire_event_adapter
 from octomate.config.channels import TrunklineChannelConfig
-from octomate.nerve import Impulse, ThreadTopic, Topic, UserTopic
+from octomate.nerve import EventTopic, Impulse, ThreadTopic, UserTopic
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.trunkline import base as trunkline_base
 from octomate.tentacles.trunkline.base import TrunklineTentacle
@@ -58,7 +58,7 @@ class ConsoleSocket:
 
 
 async def streaming(
-    socket: ConsoleSocket, topic: Topic
+    socket: ConsoleSocket, topic: EventTopic
 ) -> tuple[Octomate, asyncio.Task[None]]:
     """A console watching `topic` through `socket`, subscribed and held."""
     octomate = Octomate()
@@ -87,6 +87,17 @@ async def test_a_threads_events_reach_its_socket() -> None:
     assert octomate.nerve.subscribers == {}
 
 
+async def test_console_siphon_context_does_not_subscribe_without_a_socket() -> None:
+    octomate = Octomate()
+    channel = TrunklineTentacle(
+        "web", octomate, config=TrunklineChannelConfig(agents=["first"])
+    )
+    async with channel.siphon as siphon:
+        assert siphon is channel.siphon
+        assert not octomate.nerve.subscribers
+    assert not octomate.nerve.subscribers
+
+
 async def test_a_console_that_is_gone_ends_quietly() -> None:
     socket = ConsoleSocket()
     octomate, task = await streaming(socket, ThreadTopic(KEY))
@@ -103,7 +114,7 @@ async def test_a_console_that_is_gone_ends_quietly() -> None:
 
 @pytest.mark.parametrize("topic", [ThreadTopic(KEY), UserTopic(uuid7())])
 async def test_a_console_that_fell_behind_is_closed_to_read_the_thread_again(
-    monkeypatch: pytest.MonkeyPatch, topic: Topic
+    monkeypatch: pytest.MonkeyPatch, topic: EventTopic
 ) -> None:
     monkeypatch.setattr(trunkline_base, "CONSOLE_BACKLOG", 1)
     socket = ConsoleSocket()

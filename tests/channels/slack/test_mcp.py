@@ -13,6 +13,7 @@ from __future__ import annotations
 from base64 import urlsafe_b64encode
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from types import TracebackType
 from typing import Self, cast
 from urllib.parse import parse_qs
 
@@ -91,11 +92,16 @@ class ServedSlackTentacle(SlackTentacle):
     siphon starts as any channel's does, so it draws what the nerve carries."""
 
     async def __aenter__(self) -> Self:
-        self.siphon.start()
+        await self.siphon.__aenter__()
         return self
 
-    async def __aexit__(self, *exc: object) -> None:
-        await self.siphon.stop()
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        await self.siphon.__aexit__(exc_type, exc, traceback)
 
 
 async def a_deployment() -> Octomate:
@@ -260,7 +266,10 @@ async def in_memory(
     `transport`."""
     channel.octomate.mcp.httpx_client_factory = into(transport)
     server = octomate_mcp(
-        fixed_session(session), FakeThreadManager(), manager=channel.octomate.mcp
+        fixed_session(session),
+        FakeThreadManager(),
+        manager=channel.octomate.mcp,
+        conversations=channel.octomate.conversations,
     )
     async with channel.octomate.mcp.lifespan(), Client(server) as client:
         yield client

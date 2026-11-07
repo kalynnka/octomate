@@ -39,6 +39,11 @@ class AgentConfig(BaseModel):
         "tentacle's default icon; an empty string uses its text name instead.",
     )
 
+    sandbox: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Sandbox deployment ID; omitted or null runs the SDK natively.",
+    )
     enabled: bool = Field(
         default=True,
         description="Whether to register the tentacle when its config block exists.",

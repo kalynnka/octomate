@@ -63,7 +63,14 @@ async def scenario(
         ]
     )
     app = Octomate(workspaces=RecordingWorkspaceManager())
-    agent = app.connect(DeepseekTentacle(app, config=DeepseekConfig(type="deepseek")))
+    agent = app.connect(
+        DeepseekTentacle(
+            app,
+            auth=app.auth,
+            sandboxes=app.sandboxes,
+            config=DeepseekConfig(type="deepseek"),
+        )
+    )
     channel = app.connect(
         FakeChannelTentacle(
             octomate=app, config=ChannelConfig(type="fake", agents=[agent.id])
