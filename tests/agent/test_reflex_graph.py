@@ -1701,7 +1701,6 @@ async def test_reception_returns_deferred_result_on_human_question() -> None:
                     tool_call_id="call_question",
                     position=0,
                     args={"question": "What should I clarify?"},
-                    metadata={},
                 )
             ]
         )
