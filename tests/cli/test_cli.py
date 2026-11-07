@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 import yaml
+from click import unstyle
 from octomate_cli.config import CLISettings, user_config_path
 from octomate_cli.main import app
 from octomate_cli.streaming import deepseek as deepseek_stream
@@ -746,7 +747,7 @@ def test_mcp_install_refuses_agent_id_overrides(runtime: str) -> None:
     result = runner.invoke(app, [runtime, "mcp", "install", "--agent", "coding"])
     assert result.exit_code == 2
     assert "No such option" in result.output
-    assert "--agent" in result.output
+    assert "--agent" in unstyle(result.output)
 
 
 def test_claude_mcp_install_writes_the_entry_beside_everything_else(
