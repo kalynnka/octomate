@@ -13,7 +13,7 @@ export function ThreadActivity({ id, threadKey, enabled = true, fallback }: {
     <span
       data-thread-activity={activity ? id : undefined}
       title={activity?.text}
-      style={{ ...mono(8.5), ...ellipsis, minWidth: 0, color: activity?.attention ? 'var(--color-gold)' : activity ? 'var(--color-accent)' : 'var(--fg-3)' }}
+      style={{ ...mono(8.5), ...ellipsis, minWidth: 0, color: activity?.attention ? 'var(--color-gold)' : activity ? 'var(--trk-thread-running)' : 'var(--fg-3)' }}
     >
       {activity?.text ?? fallback}
     </span>

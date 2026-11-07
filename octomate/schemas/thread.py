@@ -29,21 +29,7 @@ from octomate.schemas.project import Project
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.user import UserProfile
 from octomate.types.conversations import ChatType
-
-# The native ids are re-exported under their old home: they moved to
-# `types.threads` so `types.permissions` could name them without importing a schema
-# that imports it back, and every reader already reaches for them through here.
 from octomate.types.threads import (
-    CLAUDE_NATIVE_ID as CLAUDE_NATIVE_ID,
-)
-from octomate.types.threads import (
-    CODEX_NATIVE_ID as CODEX_NATIVE_ID,
-)
-from octomate.types.threads import (
-    DEEPSEEK_NATIVE_ID as DEEPSEEK_NATIVE_ID,
-)
-from octomate.types.threads import (
-    NATIVE_TENTACLE_IDS,
     ChannelActorKind,
     MessageBindingKind,
     ThreadKind,
@@ -98,13 +84,6 @@ class ThreadKey:
             channel_thread_id=self.channel_thread_id,
             user_id=user_id,
         )
-
-    @property
-    def kind(self) -> ThreadKind:
-        """What this key names — the chat type, unless a native client owns it."""
-        if self.channel_tentacle_id in NATIVE_TENTACLE_IDS:
-            return "native_thread"
-        return self.chat_type
 
     def __str__(self) -> str:
         return (
@@ -299,8 +278,9 @@ class Thread(BaseTransmuter):
     kind: ThreadKind = Field(
         frozen=True,
         description=(
-            "Which surface this thread is. Set from `ThreadKey.kind` when the row is "
-            "created; only a `thread` and a `native_thread` may carry a project."
+            "Which surface this thread is. Native ingest records `native_thread` "
+            "when the row is created; only a `thread` and a `native_thread` may "
+            "carry a project."
         ),
     )
 
@@ -362,14 +342,11 @@ class Thread(BaseTransmuter):
 
     @model_validator(mode="after")
     def kind_agrees_with_the_key(self) -> Self:
-        """The channel's key is the fact; this row is our copy of it.
-
-        A copy that contradicts the fact is corrupt, and it would answer questions
-        — chiefly whether a project may be attached — with the wrong surface.
-        """
-        if self.kind != self.key.kind:
+        """A tailed thread has a thread address; other surfaces match their chat type."""
+        chat_type = "thread" if self.kind == "native_thread" else self.kind
+        if chat_type != self.chat_type:
             raise ValueError(
-                f"thread {self.key} is a {self.key.kind}, "
+                f"thread {self.key} is a {self.chat_type}, "
                 f"but the row calls itself a {self.kind}"
             )
         return self

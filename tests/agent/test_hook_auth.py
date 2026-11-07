@@ -26,7 +26,7 @@ from octomate.config import (
     DeepseekConfig,
     OctomateConfig,
 )
-from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
 from tests.support.users import a_api_key, a_user, auth_config
@@ -43,8 +43,7 @@ async def db(in_memory_engine: AsyncEngine) -> None:
 def client_for(path: str) -> TestClient:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
     if path == CLAUDE_HOOK_PATH:
-        tentacle = ClaudeCodeTentacle(
-            "claude",
+        tentacle = ClaudeTentacle(
             octomate,
             config=ClaudeCodeConfig(),
             commands=octomate.commands,
@@ -60,7 +59,6 @@ def client_for(path: str) -> TestClient:
         )
     elif path == CODEX_HOOK_PATH:
         tentacle = CodexTentacle(
-            "codex",
             octomate,
             config=CodexConfig(permission_mode="auto_review"),
             commands=octomate.commands,
@@ -77,7 +75,6 @@ def client_for(path: str) -> TestClient:
         )
     else:
         tentacle = DeepseekTentacle(
-            "deepseek",
             octomate,
             config=DeepseekConfig(),
         )
@@ -125,8 +122,7 @@ def test_the_api_token_is_accepted(path: str) -> None:
 
 def test_a_hook_router_mounts_before_any_user_registers() -> None:
     host = Octomate(config=OctomateConfig(auth=auth_config()))
-    tentacle = ClaudeCodeTentacle(
-        "claude",
+    tentacle = ClaudeTentacle(
         host,
         config=ClaudeCodeConfig(),
         commands=host.commands,
@@ -147,8 +143,7 @@ def test_a_hook_router_mounts_before_any_user_registers() -> None:
 async def test_stream_authentication_has_its_own_database_context(token: str) -> None:
     app = Octomate(config=OctomateConfig(auth=auth_config()))
     app.connect(
-        ClaudeCodeTentacle(
-            "claude",
+        ClaudeTentacle(
             app,
             config=ClaudeCodeConfig(),
             commands=app.commands,

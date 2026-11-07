@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from octomate.schemas.thread import (
-    CLAUDE_NATIVE_ID,
     Thread,
     ThreadKey,
 )
@@ -71,7 +70,7 @@ class ClaudeHookIngest:
             event.agent_id is None
             and event.prompt_id
             and await self.conversations.driven_run(
-                CLAUDE_NATIVE_ID, event.session_id, event.prompt_id
+                self.tailer.agent_tentacle_id, event.session_id, event.prompt_id
             )
             is not None
         ):
@@ -167,18 +166,21 @@ class ClaudeHookIngest:
         assert event.prompt_id
         thread = await self.session_thread(event)
         parent = await self.conversations.ensure(
-            thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+            thread.id,
+            agent_tentacle_id=self.tailer.agent_tentacle_id,
+            native=True,
         )
         child = await self.conversations.ensure(
             thread.id,
-            agent_tentacle_id=CLAUDE_NATIVE_ID,
+            agent_tentacle_id=self.tailer.agent_tentacle_id,
+            native=True,
             subagent_id=event.agent_id,
             parent_conversation_id=parent.id,
         )
         await self.conversations.record_external_run(
             child,
             run_id=f"{event.agent_id}:{event.prompt_id}",
-            name=CLAUDE_NATIVE_ID,
+            name=self.tailer.agent_tentacle_id,
             cwd=Path(event.cwd) if event.cwd else None,
             native_session_id=event.agent_id,
             parent_run_id=event.prompt_id,
@@ -190,7 +192,11 @@ class ClaudeHookIngest:
         itself arrives only through the stream; nothing here follows the path a hook
         claims."""
         thread = await self.session_thread(event)
-        await self.conversations.ensure(thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID)
+        await self.conversations.ensure(
+            thread.id,
+            agent_tentacle_id=self.tailer.agent_tentacle_id,
+            native=True,
+        )
 
     async def session_thread(self, event: ClaudeHookInput) -> Thread:
         """This session's thread, filed under the project already holding the directory
@@ -213,12 +219,13 @@ class ClaudeHookIngest:
         project = self.projects.get(holder) if holder is not None else None
         return await self.threads.ensure(
             ThreadKey(
-                channel_tentacle_id=CLAUDE_NATIVE_ID,
+                channel_tentacle_id=self.tailer.agent_tentacle_id,
                 chat_type="thread",
                 chat_id=event.session_id,
                 channel_thread_id=None,
             ),
             project=project,
+            native=True,
         )
 
     async def ensure_run(self, event: ClaudeHookInput) -> None:
@@ -227,12 +234,14 @@ class ClaudeHookIngest:
             return
         thread = await self.session_thread(event)
         conversation = await self.conversations.ensure(
-            thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+            thread.id,
+            agent_tentacle_id=self.tailer.agent_tentacle_id,
+            native=True,
         )
         await self.conversations.record_external_run(
             conversation,
             run_id=event.prompt_id,
-            name=CLAUDE_NATIVE_ID,
+            name=self.tailer.agent_tentacle_id,
             cwd=Path(event.cwd) if event.cwd else None,
             native_session_id=event.session_id,
         )

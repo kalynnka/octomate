@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate.database import async_session
 from octomate.managers.user import UserManager
 from octomate.schemas.user import User, UserProfile
-from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.users import a_user
 
 
@@ -150,7 +149,7 @@ async def test_owner_reloads_updates_from_the_database() -> None:
 async def test_native_profile_reloads_updates_and_deletion_from_the_database() -> None:
     user = await a_user("original", name="Original")
     manager = UserManager()
-    first = await manager.native_profile(CLAUDE_NATIVE_ID, "original")
+    first = await manager.native_profile("claude", "original")
     assert first is not None
     assert first.user.value is not None
     assert first.user.value.id == user.id
@@ -161,7 +160,7 @@ async def test_native_profile_reloads_updates_and_deletion_from_the_database() -
         stored.name = "Updated"
         await session.commit()
 
-    fresh = await manager.native_profile(CLAUDE_NATIVE_ID, "original")
+    fresh = await manager.native_profile("claude", "original")
     assert fresh is not None
     assert fresh.user_id == user.id
     assert fresh.name == "Updated"
@@ -173,7 +172,7 @@ async def test_native_profile_reloads_updates_and_deletion_from_the_database() -
         assert stored is not None
         await session.delete(stored)
         await session.commit()
-    assert await manager.native_profile(CLAUDE_NATIVE_ID, "original") is None
+    assert await manager.native_profile("claude", "original") is None
 
 
 async def test_linked_profiles_follow_a_registered_human(
@@ -215,15 +214,15 @@ async def test_ensure_profile_keeps_a_verified_owner() -> None:
     created owned, and re-anchored by a later write."""
     await a_user("lu")
     manager = UserManager()
-    anchor = await manager.native_profile(CLAUDE_NATIVE_ID, "lu")
+    anchor = await manager.native_profile("claude", "lu")
     assert anchor is not None
 
-    stored = await manager.ensure_profile(CLAUDE_NATIVE_ID, anchor)
+    stored = await manager.ensure_profile("claude", anchor)
 
     assert stored.user_id == anchor.user_id
     owner = await manager.owner(stored)
     assert owner is not None
     assert owner.username == "lu"
 
-    rewritten = await manager.ensure_profile(CLAUDE_NATIVE_ID, anchor)
+    rewritten = await manager.ensure_profile("claude", anchor)
     assert rewritten.user_id == anchor.user_id

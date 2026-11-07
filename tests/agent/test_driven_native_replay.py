@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.database import async_session
 from octomate.nerve import Impulse
+from octomate.schemas.conversation import Conversation
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
 from octomate.schemas.thread import ThreadKey, ThreadMessage
 from octomate.schemas.user import UserProfile
@@ -41,7 +42,7 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
     tail_impulses: ObjectSendStream[Impulse],
 ) -> None:
     octomate = Octomate()
-    native_id = f"{runtime}-native"
+    agent_tentacle_id = f"custom-{runtime}"
     old_turn = f"{SESSION_ID}:1" if runtime == "deepseek" else "p1"
     new_turn = f"{SESSION_ID}:2" if runtime == "deepseek" else "p2"
     driven = await octomate.conversations.ensure(
@@ -55,14 +56,17 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
             ModelResponse(parts=[TextPart(content="same answer")]),
         ],
         external_id=SESSION_ID,
-        native_id=native_id,
         native_turn_id=old_turn,
     )
     if restart:
         octomate = Octomate()
 
     if runtime == "claude":
-        tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
+        tailer = ClaudeTranscriptTailer(
+            octomate.conversations,
+            octomate.threads,
+            agent_tentacle_id=f"custom-{runtime}",
+        )
         ingest = ClaudeHookIngest(
             tailer,
             conversations=octomate.conversations,
@@ -79,7 +83,10 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
         )
     elif runtime == "codex":
         codex_tailer = CodexTranscriptTailer(
-            octomate.conversations, octomate.threads, octomate.files
+            octomate.conversations,
+            octomate.threads,
+            octomate.files,
+            agent_tentacle_id=f"custom-{runtime}",
         )
         codex_ingest = CodexHookIngest(
             codex_tailer,
@@ -113,12 +120,16 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
                     ),
                 )
             ]
-            tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
+            tailer = ClaudeTranscriptTailer(
+                octomate.conversations,
+                octomate.threads,
+                agent_tentacle_id=f"custom-{runtime}",
+            )
             state, offsets = await tailer.attach_remote(
                 SESSION_ID,
                 Path("/client/session.jsonl"),
                 SENDER,
-                address=ThreadKey(native_id, "thread", SESSION_ID).address(
+                address=ThreadKey(agent_tentacle_id, "thread", SESSION_ID).address(
                     SENDER.channel_user_id
                 ),
                 impulses=tail_impulses,
@@ -133,13 +144,16 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
             await tailer.finish_remote(state)
         elif runtime == "codex":
             codex_tailer = CodexTranscriptTailer(
-                octomate.conversations, octomate.threads, octomate.files
+                octomate.conversations,
+                octomate.threads,
+                octomate.files,
+                agent_tentacle_id=f"custom-{runtime}",
             )
             codex_state, offsets = await codex_tailer.attach_remote(
                 SESSION_ID,
                 Path("/client/rollout.jsonl"),
                 SENDER,
-                ThreadKey(native_id, "thread", SESSION_ID).address(
+                ThreadKey(agent_tentacle_id, "thread", SESSION_ID).address(
                     SENDER.channel_user_id
                 ),
                 tail_impulses,
@@ -173,14 +187,16 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
             codex_tailer.detach_remote(codex_state)
         else:
             deepseek_tailer = DeepseekEventTailer(
-                octomate.conversations, octomate.threads
+                octomate.conversations,
+                octomate.threads,
+                agent_tentacle_id=f"custom-{runtime}",
             )
             deepseek_state, offsets = await deepseek_tailer.attach_remote(
                 SESSION_ID,
                 Path("/client/session.jsonl"),
                 "",
                 SENDER,
-                address=ThreadKey(native_id, "thread", SESSION_ID).address(
+                address=ThreadKey(agent_tentacle_id, "thread", SESSION_ID).address(
                     SENDER.channel_user_id
                 ),
                 impulses=tail_impulses,
@@ -212,20 +228,37 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
             external_runs = [run for run in runs if isinstance(run, ExternalAgentRun)]
             assert len(external_runs) == turn - 1
             assert all(run.end_offset is not None for run in external_runs)
+            assert all(run.name == agent_tentacle_id for run in external_runs)
+            for run in external_runs:
+                owner = await session.get(Conversation, run.conversation_id)
+                assert owner is not None
+                assert owner.agent_tentacle_id == f"custom-{runtime}"
+                thread = await octomate.threads.get(
+                    ThreadKey(agent_tentacle_id, "thread", SESSION_ID)
+                )
+                assert thread is not None
+                assert thread.id == owner.thread_id
+                assert thread.kind == "native_thread"
             assert await session.count(ThreadMessage) == (turn - 1) * 2
         octomate = Octomate()
 
 
 @pytest.mark.parametrize(
-    ("native_id", "session_id", "turn_id"),
+    ("agent_id", "session_id", "turn_id", "matches"),
     [
-        ("codex-native", SESSION_ID, "p1"),
-        ("claude-native", "other-session", "p1"),
-        ("claude-native", SESSION_ID, "other-turn"),
+        ("custom-claude", SESSION_ID, "p1", True),
+        ("custom-codex", SESSION_ID, "p1", False),
+        ("another-claude", SESSION_ID, "p1", False),
+        ("custom-claude", "other-session", "p1", False),
+        ("custom-claude", SESSION_ID, "other-turn", False),
     ],
 )
-async def test_driven_identity_does_not_match_another_runtime_session_or_turn(
-    in_memory_engine: AsyncEngine, native_id: str, session_id: str, turn_id: str
+async def test_driven_identity_matches_only_its_agent_session_and_turn(
+    in_memory_engine: AsyncEngine,
+    agent_id: str,
+    session_id: str,
+    turn_id: str,
+    matches: bool,
 ) -> None:
     octomate = Octomate()
     driven = await octomate.conversations.ensure(
@@ -235,10 +268,10 @@ async def test_driven_identity_does_not_match_another_runtime_session_or_turn(
         driven,
         run_id="driven-run",
         messages=[ModelRequest(parts=[UserPromptPart(content="same prompt")])],
-        native_id="claude-native",
         external_id=SESSION_ID,
         native_turn_id="p1",
     )
-    assert (
-        await octomate.conversations.driven_run(native_id, session_id, turn_id) is None
+    found = await octomate.conversations.driven_run(agent_id, session_id, turn_id)
+    assert (found.id if found is not None else None) == (
+        "driven-run" if matches else None
     )

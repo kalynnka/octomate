@@ -1,8 +1,10 @@
-import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { Fragment, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { nearChatBottom, useConsole } from '@/state/console'
 import { useThreadActivity } from '@/state/activity'
-import { useThreadSummary } from '@/lib/api/hooks'
-import { LedgerRow } from './cards'
+import { useAgents, useThreadSummary } from '@/lib/api/hooks'
+import { botLabel } from '@/lib/api/fold'
+import { AgentLabel, LedgerRow, TraceGroupRow } from './cards'
+import { traceRows } from './trace'
 import { label, mono, display, statusNote } from '@/components/text'
 
 const CARD_MAX = 'var(--trk-card-max)'
@@ -11,8 +13,10 @@ export function ChatLog() {
   const threadId = useConsole((s) => s.selThreadId)
   const channel = useConsole((s) => s.selChannel)
   const thread = useThreadSummary(threadId)
+  const { data: agents } = useAgents(true, false)
   const detail = useConsole((s) => s.detail)
   const live = useConsole((s) => s.live)
+  const running = useConsole((s) => s.running)
   const notices = useConsole((s) => s.notices)
   const ledgerN = useConsole((s) => s.ledgerN)
   const ntOn = useConsole((s) => s.ntOn)
@@ -27,10 +31,12 @@ export function ChatLog() {
   const logRef = useRef<HTMLDivElement>(null)
   const ledgerRef = useRef<HTMLDivElement>(null)
   const following = useRef(true)
+  const revealing = useRef<HTMLElement | null>(null)
   const dimensions = useRef({ height: 0, viewport: 0 })
 
   useLayoutEffect(() => {
     following.current = true
+    revealing.current = null
     const log = logRef.current!
     const observer = new ResizeObserver(() => {
       if (following.current) log.scrollTop = log.scrollHeight
@@ -38,7 +44,17 @@ export function ChatLog() {
     })
     observer.observe(log)
     observer.observe(ledgerRef.current!)
-    return () => observer.disconnect()
+    const selectHistory = (event: MouseEvent) => {
+      if (!(event.target instanceof Element) || !event.target.closest('#trk-timeline [data-uid]')) return
+      following.current = false
+      revealing.current = null
+    }
+    // Release the tail before a timeline selection opens a card and resizes it.
+    document.addEventListener('click', selectHistory, true)
+    return () => {
+      observer.disconnect()
+      document.removeEventListener('click', selectHistory, true)
+    }
   }, [threadId])
 
   const cardMax = ['64%', '78%', '88%', '92%'][
@@ -52,6 +68,17 @@ export function ChatLog() {
   const rows = [...visible, ...live.filter((item) => !saved.has(item.uid))]
   const dispatch = rows.findLast((item) => item.kind === 'dots')
   const items = rows.filter((item) => item.kind !== 'dots')
+  const firstLive = live.find(item => item.kind !== 'dots' && !saved.has(item.uid))
+  const copyable = new Set<string>()
+  let lastOutput: string | undefined
+  for (const item of items) {
+    if (item === firstLive || item.kind === 'user' || item.kind === 'end' || item.kind === 'session-open') {
+      if (lastOutput) copyable.add(lastOutput)
+      lastOutput = undefined
+    }
+    if (item.kind === 'agent' || item.kind === 'stream') lastOutput = item.uid
+  }
+  if (!running && lastOutput) copyable.add(lastOutput)
   const status = activity ?? (dispatch && { text: dispatch.label, attention: false })
   const [shown, setShown] = useState({ threadId, status })
   if (shown.threadId !== threadId || (status && (status.text !== shown.status?.text || status.attention !== shown.status?.attention))) {
@@ -59,12 +86,49 @@ export function ChatLog() {
   }
   const earlier = visible.length < ledger.length || detail?.earlier === true
   const blank = ntOn && live.length === 0
+  let assistantLabel: string | undefined
 
   return (
     <div
       id="trk-chatlog"
       ref={logRef}
       className="lt-fade-in"
+      onClickCapture={(event) => {
+        const toggle = event.target instanceof Element ? event.target.closest<HTMLElement>('button[aria-expanded], summary') : null
+        if (!toggle) return
+        following.current = false
+        revealing.current = null
+        const card = toggle.closest<HTMLElement>('.trk-trace-row, details.trk-trace-group')
+        const opening = toggle.tagName === 'SUMMARY' ? !card?.hasAttribute('open') : toggle.getAttribute('aria-expanded') === 'false'
+        if (!card || !opening) return
+        const log = event.currentTarget
+        revealing.current = card
+        requestAnimationFrame(async () => {
+          // The disclosure shares the native group's timing; its pseudo-element isn't exposed by getAnimations in every browser.
+          const motion = card.querySelector(':scope > .lt-fold, :scope > summary > .lt-disclose')
+          await Promise.allSettled((motion?.getAnimations() ?? []).map(animation => animation.finished))
+          if (revealing.current !== card || !card.isConnected) return
+          revealing.current = null
+          const viewport = log.getBoundingClientRect()
+          const bounds = card.getBoundingClientRect()
+          if (bounds.bottom <= viewport.bottom) return
+          const scale = viewport.height / log.clientHeight
+          // Reveal the bottom when it fits; keep the header visible for taller cards.
+          const distance = Math.min(bounds.bottom - viewport.bottom + 8 * scale, bounds.top - viewport.top - 8 * scale) / scale
+          if (distance > 0) {
+            const behavior = log.style.scrollBehavior
+            log.style.scrollBehavior = matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
+            // Round up in layout pixels to preserve the reveal gap under CSS zoom.
+            log.scrollTop += Math.ceil(distance)
+            log.style.scrollBehavior = behavior
+          }
+        })
+      }}
+      onWheelCapture={() => { revealing.current = null }}
+      onTouchMoveCapture={() => { revealing.current = null }}
+      onKeyDownCapture={(event) => {
+        if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'].includes(event.key)) revealing.current = null
+      }}
       onScroll={(e) => {
         const log = e.currentTarget
         // Layout can fire a scroll before ResizeObserver updates the anchor.
@@ -81,7 +145,7 @@ export function ChatLog() {
           flexDirection: 'column',
           flex: 1,
           minHeight: 0,
-          overflowY: 'auto',
+          overflowY: 'scroll',
           overflowX: 'hidden',
         } as CSSProperties
       }
@@ -121,10 +185,25 @@ export function ChatLog() {
             </span>
           </div>
         )}
-        {items.map((item, i) => (
+        {traceRows(items, running).map((item, i) => {
+          const first = item.kind === 'trace' ? item.items[0] : item
+          let heading
+          if (first.kind === 'agent' || first.kind === 'stream' || first.kind === 'think' || first.kind === 'tool') {
+            const label = first.kind === 'agent' || first.kind === 'stream' ? first.label ?? botLabel(first.agentId) : botLabel(first.agentId)
+            const author = first.agentId ?? label
+            if (author !== assistantLabel) {
+              const agent = agents?.find(agent => agent.id === first.agentId)
+              heading = <AgentLabel label={label} iconUrl={agent?.icon_url} />
+            }
+            assistantLabel = author
+          } else if (item.kind === 'user' || item.kind === 'end' || item.kind === 'session-open') {
+            assistantLabel = undefined
+          }
           // The newest page enters first; earlier reveals stay calm.
-          <LedgerRow key={item.uid} item={item} cardMax={CARD_MAX} i={Math.min(items.length - 1 - i, 7)} />
-        ))}
+          return <Fragment key={item.uid}>{heading}{item.kind === 'trace'
+            ? <TraceGroupRow group={item} cardMax={CARD_MAX} />
+            : <LedgerRow item={item} cardMax={CARD_MAX} showAgentLabel={false} showCopy={copyable.has(item.uid)} i={Math.min(items.length - 1 - i, 7)} />}</Fragment>
+        })}
         {notices.map((item) => (
           <LedgerRow key={item.uid} item={item} cardMax={CARD_MAX} />
         ))}

@@ -26,10 +26,10 @@ from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude.hooks import ClaudeHookInput
-from octomate.tentacles.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
+from octomate.tentacles.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
 from octomate.tentacles.codex.hooks import CodexHookInput
-from octomate.tentacles.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
+from octomate.tentacles.codex.ingest import CodexHookIngest
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer
 from tests.agent.codex.test_native_ingest import stream_rollout
 from tests.support.managers import a_project, a_registry
@@ -51,7 +51,9 @@ def repo(path: Path) -> Path:
 
 async def claude_session(octomate: Octomate, session_id: str, cwd: Path | str) -> str:
     """Ingest one native Claude turn, and answer with its thread's project."""
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
+    tailer = ClaudeTranscriptTailer(
+        octomate.conversations, octomate.threads, agent_tentacle_id="claude"
+    )
     ingest = ClaudeHookIngest(
         tailer,
         conversations=octomate.conversations,
@@ -69,9 +71,7 @@ async def claude_session(octomate: Octomate, session_id: str, cwd: Path | str) -
             }
         ),
     )
-    thread = await octomate.threads.ensure(
-        ThreadKey(CLAUDE_NATIVE_ID, "thread", session_id)
-    )
+    thread = await octomate.threads.ensure(ThreadKey("claude", "thread", session_id))
     project = await thread.project
     return project.name if project is not None else ""
 
@@ -79,7 +79,10 @@ async def claude_session(octomate: Octomate, session_id: str, cwd: Path | str) -
 async def codex_session(octomate: Octomate, session_id: str, cwd: Path | str) -> str:
     """Ingest one native Codex turn, and answer with its thread's project."""
     tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.threads, octomate.files
+        octomate.conversations,
+        octomate.threads,
+        octomate.files,
+        agent_tentacle_id="codex",
     )
     ingest = CodexHookIngest(
         tailer,
@@ -98,9 +101,7 @@ async def codex_session(octomate: Octomate, session_id: str, cwd: Path | str) ->
             }
         ),
     )
-    thread = await octomate.threads.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "thread", session_id)
-    )
+    thread = await octomate.threads.ensure(ThreadKey("codex", "thread", session_id))
     project = await thread.project
     return project.name if project is not None else ""
 
@@ -195,7 +196,7 @@ async def test_both_runtimes_file_under_the_same_declared_project(
     assert first == "inky"
     assert second == "inky"
     reloaded = await octomate.threads.ensure(
-        ThreadKey(CLAUDE_NATIVE_ID, "thread", "sess-claude")
+        ThreadKey("claude", "thread", "sess-claude")
     )
     attributed = await reloaded.project
     assert attributed is not None
@@ -265,11 +266,9 @@ async def test_attribution_does_not_touch_thread_identity(tmp_path: Path) -> Non
     )
 
     await claude_session(octomate, "sess-keyed", inky)
-    thread = await octomate.threads.ensure(
-        ThreadKey(CLAUDE_NATIVE_ID, "thread", "sess-keyed")
-    )
+    thread = await octomate.threads.ensure(ThreadKey("claude", "thread", "sess-keyed"))
 
-    assert thread.key == ThreadKey(CLAUDE_NATIVE_ID, "thread", "sess-keyed")
+    assert thread.key == ThreadKey("claude", "thread", "sess-keyed")
     attributed = await thread.project
     assert attributed is not None
     assert attributed.name == "inky"
@@ -280,7 +279,9 @@ async def end_session(octomate: Octomate, session_id: str, cwd: Path | str) -> N
     session, so the per-turn hooks that would have filed its thread never reached
     it. The hook still creates the thread: it is the last event carrying a cwd, and
     a backfill tail attaching later would otherwise create it unfiled."""
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
+    tailer = ClaudeTranscriptTailer(
+        octomate.conversations, octomate.threads, agent_tentacle_id="claude"
+    )
     ingest = ClaudeHookIngest(
         tailer,
         conversations=octomate.conversations,
@@ -300,9 +301,7 @@ async def end_session(octomate: Octomate, session_id: str, cwd: Path | str) -> N
 
 async def filed_under(octomate: Octomate, session_id: str) -> str:
     """The name of the project a Claude session's thread is filed under, or ""."""
-    thread = await octomate.threads.ensure(
-        ThreadKey(CLAUDE_NATIVE_ID, "thread", session_id)
-    )
+    thread = await octomate.threads.ensure(ThreadKey("claude", "thread", session_id))
     project = await thread.project
     return project.name if project is not None else ""
 
@@ -369,7 +368,10 @@ async def tail_rollout(octomate: Octomate, rollout: Path) -> None:
     """Stream one rollout the way production reaches it: a tail attaches and feeds
     the file's framed lines."""
     tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.threads, octomate.files
+        octomate.conversations,
+        octomate.threads,
+        octomate.files,
+        agent_tentacle_id="codex",
     )
     await stream_rollout(tailer, "codex-ws", rollout)
 

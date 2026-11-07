@@ -32,7 +32,7 @@ from octomate import Octomate
 from octomate.capabilities.harness.agent import Agent
 from octomate.config.agents import ClaudeCodeConfig, CodexConfig, DeepseekConfig
 from octomate.schemas.conversation import ChannelAddress
-from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.inkling import InklingTentacle
@@ -140,7 +140,6 @@ async def codex_runner(
             ),
         )
         tentacle = CodexTentacle(
-            "codex",
             octomate,
             config=CodexConfig(runtime=runtime),
             commands=octomate.commands,
@@ -198,8 +197,7 @@ async def claude_runner(
     monkeypatch.setenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
     with local_provider(state) as url:
         monkeypatch.setenv("ANTHROPIC_BASE_URL", url)
-        tentacle = ClaudeCodeTentacle(
-            "claude",
+        tentacle = ClaudeTentacle(
             octomate,
             config=ClaudeCodeConfig(permission_mode="bypassPermissions"),
             commands=octomate.commands,
@@ -301,7 +299,6 @@ async def deepseek_runner(
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
     tentacle = DeepseekTentacle(
-        "deepseek",
         octomate,
         config=DeepseekConfig(
             executable=executable,

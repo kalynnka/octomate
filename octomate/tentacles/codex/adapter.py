@@ -177,6 +177,7 @@ def command_args(item: CommandExecutionThreadItem) -> JsonObject:
         "command": item.command,
         "cwd": item.cwd.root,
         "status": item.status.value,
+        "commandActions": [model_json(action.root) for action in item.command_actions],
     }
 
 

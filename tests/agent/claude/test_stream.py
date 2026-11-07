@@ -39,7 +39,7 @@ from octomate.nerve import Impulse, ThreadTopic
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer, TailState
 from octomate.types.json import JsonObject
 from tests.agent.claude.test_tailer import (
@@ -96,7 +96,9 @@ async def feed(
 
 def remote_tailer() -> tuple[Octomate, ClaudeTranscriptTailer]:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
-    return octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
+    return octomate, ClaudeTranscriptTailer(
+        octomate.conversations, octomate.threads, agent_tentacle_id="claude"
+    )
 
 
 async def test_remote_feed_assembles_the_same_runs_as_a_local_tail(
@@ -290,11 +292,10 @@ async def test_a_new_attach_replaces_a_lingering_registration(
     assert SESSION_ID not in tailer.sessions
 
 
-def stream_client() -> tuple[TestClient, ClaudeCodeTentacle]:
+def stream_client() -> tuple[TestClient, ClaudeTentacle]:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
     tentacle = octomate.connect(
-        ClaudeCodeTentacle(
-            "claude",
+        ClaudeTentacle(
             octomate,
             config=ClaudeCodeConfig(),
             commands=octomate.commands,
@@ -490,45 +491,27 @@ def test_a_session_already_used_by_the_sdk_streams_as_external() -> None:
             [state] = tentacle.session_tailer.sessions.values()
             assert state.conversation is not None
             assert state.conversation.id != sdk.id
-            assert state.conversation.agent_tentacle_id == "claude-native"
+            assert state.conversation.agent_tentacle_id == tentacle.id
+            uploaded_thread = client.portal.call(
+                tentacle.threads.get, state.conversation.thread_id
+            )
+            assert uploaded_thread is not None
+            assert uploaded_thread.kind == "native_thread"
+            assert uploaded_thread.active_agent_tentacle_id == tentacle.id
             websocket.send_text(StreamEof().model_dump_json())
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
 
 
-@pytest.mark.parametrize("other_tentacle", [False, True])
-async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
-    other_tentacle: bool,
-) -> None:
+async def test_driven_sessions_are_accepted_by_both_ingest_endpoints() -> None:
     client, tentacle = stream_client()
-    driver = (
-        tentacle.octomate.connect(
-            ClaudeCodeTentacle(
-                "other-claude",
-                tentacle.octomate,
-                config=ClaudeCodeConfig(),
-                commands=tentacle.octomate.commands,
-                projects=tentacle.octomate.projects,
-                threads=tentacle.octomate.threads,
-                conversations=tentacle.octomate.conversations,
-                deferred_actions=tentacle.octomate.deferred_actions,
-                workspaces=tentacle.octomate.workspaces,
-                users=tentacle.octomate.users,
-                bearers=tentacle.octomate.bearers,
-                mcp=tentacle.octomate.mcp,
-                files=tentacle.octomate.files,
-            )
-        )
-        if other_tentacle
-        else tentacle
-    )
 
     async def native_threads() -> list[Thread]:
         async with async_session() as session:
             return list(await session.list(Thread, limit=None, order_bys=[]))
 
     with client:
-        async with driver.driving(SESSION_ID):
+        async with tentacle.driving(SESSION_ID):
             posted = client.post(
                 CLAUDE_HOOK_PATH,
                 json={
@@ -715,7 +698,7 @@ async def test_transcript_ledger_uses_the_authenticated_stream_sender(
 ) -> None:
     octomate, tailer = remote_tailer()
     user = await a_user("tail-owner")
-    sender = await octomate.users.native_profile("claude-native", user.username)
+    sender = await octomate.users.native_profile("claude", user.username)
     assert sender is not None
     state, _ = await tailer.attach_remote(
         SESSION_ID, CLIENT_PATH, sender, SESSION_ADDRESS, tail_impulses
@@ -723,11 +706,11 @@ async def test_transcript_ledger_uses_the_authenticated_stream_sender(
     await feed(tailer, state, frames(TURN_ONE))
     await tailer.finish_remote(state)
     thread = await octomate.threads.ensure(
-        ThreadKey("claude-native", "thread", SESSION_ID)
+        ThreadKey("claude", "thread", SESSION_ID), native=True
     )
     page = await octomate.threads.messages_page(thread.id, limit=100)
     assert len(page.items) == 2
-    profile = await octomate.users.profile("claude-native", sender.channel_user_id)
+    profile = await octomate.users.profile("claude", sender.channel_user_id)
     assert profile is not None
     assert all(row.sender_id == profile.id for row in page.items)
     prompt = next(row for row in page.items if row.direction == "inbound")
@@ -742,9 +725,9 @@ async def test_opening_transcript_prompt_grants_access_and_replays_once(
 ) -> None:
     octomate, tailer = remote_tailer()
     user = await a_user("tail-owner")
-    sender = await octomate.users.native_profile("claude-native", user.username)
+    sender = await octomate.users.native_profile("claude", user.username)
     assert sender is not None
-    key = ThreadKey("claude-native", "thread", SESSION_ID)
+    key = ThreadKey("claude", "thread", SESSION_ID)
 
     for _ in range(2):
         state, offsets = await tailer.attach_remote(

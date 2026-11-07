@@ -45,7 +45,6 @@ from octomate.schemas.triage import (
 )
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.trunkline import TrunklineTentacle
-from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import FakeThreadManager, fixed_session
 from tests.support.nerve import drawing, held
@@ -116,11 +115,11 @@ async def a_native_call(
     threads = FakeThreadManager()
     session = OctomateSession(
         channel_routes={"im": [CLAUDE_ROUTE]},
-        current_agent_id=CLAUDE_NATIVE_ID,
+        current_agent_id="coding",
         channels={"im": channel},
         nerve=channel.octomate.nerve,
         users=users,
-        user_profile=await users.native_profile(CLAUDE_NATIVE_ID, "luhui"),
+        user_profile=await users.native_profile("coding", "luhui"),
         native=True,
     )
 
@@ -461,7 +460,7 @@ async def test_a_native_teleport_moves_the_session_it_names(
     Octomate's hook stamps in, Codex in every call's `_meta` — and the move goes
     ahead from that session's thread."""
     server, session, _channel, _threads, kicks = await a_native_call()
-    thread = ChannelAddress(CLAUDE_NATIVE_ID, "thread", "sess-1", "native")
+    thread = ChannelAddress("coding", "thread", "sess-1", "native")
     decision = TeleportDecision(
         agent_id="claude", hint="moving over", destination=thread
     )
@@ -487,7 +486,7 @@ async def test_a_native_teleport_moves_the_session_it_names(
     assert kicks == [
         NativeGatewaySignal(
             decision=decision,
-            agent_id=CLAUDE_NATIVE_ID,
+            agent_id="coding",
             user_profile=session.user_profile,
             source=thread,
         )
@@ -553,7 +552,7 @@ async def test_a_native_send_delivers_to_a_crossing(
     assert channel.opened_dms == ["alice"]
     [outbound] = threads.outbounds
     # The ledger row is attributed to the native runtime, never to a session.
-    assert outbound.agent_tentacle_id == CLAUDE_NATIVE_ID
+    assert outbound.agent_tentacle_id == "coding"
     assert kicks == []
 
 
@@ -589,7 +588,7 @@ async def test_a_native_scheme_kicks_its_handoff_at_once(
 
     assert result.data.startswith("Taking this to")
     [signal] = kicks
-    assert signal.agent_id == CLAUDE_NATIVE_ID
+    assert signal.agent_id == "coding"
     assert isinstance(signal.decision, SchemeDecision)
     assert signal.decision.brief == "The operator asked for a summary."
     assert signal.decision.destination.user_id == "alice"
@@ -684,10 +683,10 @@ async def test_a_native_session_reads_its_users_history(
     )
     session = OctomateSession(
         channel_routes={"im": []},
-        current_agent_id=CLAUDE_NATIVE_ID,
+        current_agent_id="coding",
         channels={"im": FakeChannelTentacle()},
         users=users,
-        user_profile=await users.native_profile(CLAUDE_NATIVE_ID, "luhui"),
+        user_profile=await users.native_profile("coding", "luhui"),
         native=True,
     )
     server = octomate_mcp(

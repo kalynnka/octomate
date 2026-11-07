@@ -19,8 +19,6 @@ export interface ChannelMeta {
   sub: string
   /** brand color (CSS color) used for the channel letter tile and labels */
   brand: string
-  /** hook-ingested native agent channel (claude / codex) */
-  native?: boolean
 }
 
 /** Visual tone of a thread's status dot. */
@@ -123,6 +121,8 @@ export type ToolDetail =
     }
   | { type: 'summon'; rows: [string, string][] }
 
+export type CommandActivity = 'read' | 'list' | 'search' | 'command'
+
 export interface AskOption {
   label: string
   sum: string
@@ -164,11 +164,12 @@ export type LedgerItem =
       tone: 'plain' | 'summon'
     }
   | { kind: 'user'; uid: string; t: string; who: string; userId?: string | null; text: string; reply?: MessageReply; chips?: QueueChip[] }
-  | { kind: 'agent'; uid: string; label: string; blocks: AgentBlock[]; reply?: MessageReply }
+  | { kind: 'agent'; uid: string; agentId?: string; label: string; blocks: AgentBlock[]; reply?: MessageReply }
   | { kind: 'code'; uid: string; lang: string; lines: string[] }
   /** `thinking` is false once the part closed — the card folds itself then,
-   *  the way `stream.streaming` marks a reply as settled */
-  | { kind: 'think'; uid: string; dur: string; text: string; thinking: boolean; format?: 'reasoning' | 'summary' }
+   *  the way `stream.streaming` marks a reply as settled.
+   *  `startedAt` is the browser timestamp (ms) of the first live thinking delta. */
+  | { kind: 'think'; uid: string; agentId?: string; dur: string; startedAt?: number; text: string; thinking: boolean; format?: 'reasoning' | 'summary' }
   | {
       kind: 'plan'
       uid: string
@@ -177,12 +178,17 @@ export type LedgerItem =
   | {
       kind: 'tool'
       uid: string
+      agentId?: string
       name: string
-      icon: 'search' | 'file-diff' | 'summon' | 'send' | 'file'
+      icon: 'search' | 'file-diff' | 'summon' | 'send' | 'file' | 'code' | 'terminal' | 'wrench'
       dur?: string
       status: 'run' | 'done'
       badge?: { label: string; tone: 'gold' | 'terra' }
       detail: ToolDetail
+      /** Command classifications supplied by the harness, before display arguments are clipped. */
+      activities?: CommandActivity[]
+      /** Recorded action and target, extracted before display arguments are clipped. */
+      action?: { kind: CommandActivity | 'edit' | 'code' | 'load'; target: string }
       defaultOpen?: boolean
     }
   | { kind: 'file'; uid: string; name: string; rev: string; note: string }
@@ -234,7 +240,7 @@ export type LedgerItem =
       connectorId: string
     }
   | { kind: 'dots'; uid: string; label: string; attention?: boolean }
-  | { kind: 'stream'; uid: string; text: string; streaming: boolean; label?: string }
+  | { kind: 'stream'; uid: string; agentId?: string; text: string; streaming: boolean; label?: string }
   | { kind: 'end'; uid: string; label: string }
   | { kind: 'notice'; uid: string; text: string; tone?: 'error' | 'warning' | 'info' }
 

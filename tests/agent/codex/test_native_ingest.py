@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,7 +27,7 @@ from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.codex.hooks import CodexHookInput
-from octomate.tentacles.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
+from octomate.tentacles.codex.ingest import CodexHookIngest
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer, TailState
 from octomate.tentacles.codex.transcript import rollout_line_adapter
 from octomate.tentacles.locks import SessionLocks
@@ -36,7 +37,7 @@ from tests.support.managers import a_loaded_thread, a_thread
 SENDER = UserProfile(channel_user_id="lu", name="lu")
 
 SESSION_ID = "codex-session"
-SESSION_ADDRESS = ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID).address(
+SESSION_ADDRESS = ThreadKey("codex", "thread", SESSION_ID).address(
     SENDER.channel_user_id
 )
 
@@ -133,7 +134,11 @@ def write_rollout(path: Path) -> None:
 def wired(octomate: Octomate) -> tuple[CodexHookIngest, CodexTranscriptTailer]:
     locks = SessionLocks()
     tailer = CodexTranscriptTailer(
-        octomate.conversations, octomate.threads, octomate.files, locks
+        octomate.conversations,
+        octomate.threads,
+        octomate.files,
+        locks,
+        agent_tentacle_id="codex",
     )
     return CodexHookIngest(
         tailer,
@@ -169,9 +174,7 @@ async def stream_rollout(
     rollout: Path,
 ) -> None:
     """Stream one client file through the same scoped publisher as the route."""
-    address = ThreadKey(CODEX_NATIVE_ID, "thread", session_id).address(
-        SENDER.channel_user_id
-    )
+    address = ThreadKey("codex", "thread", session_id).address(SENDER.channel_user_id)
     async with Nerve().publish(address) as publisher:
         state, _ = await tailer.attach_remote(
             session_id, rollout, SENDER, address, publisher
@@ -213,10 +216,10 @@ async def test_context_snapshot_and_last_response_usage_persist_together(
     _, tailer = wired(octomate)
     await stream_rollout(tailer, SESSION_ID, path)
     thread = await octomate.threads.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+        ThreadKey("codex", "thread", SESSION_ID), native=True
     )
     conversation = await octomate.conversations.ensure(
-        thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+        thread.id, agent_tentacle_id="codex"
     )
     [run] = conversation.runs
     assert run.context_used == 42
@@ -247,7 +250,7 @@ async def test_hooks_bind_session_and_only_rollout_writes_runs_and_messages(
         ),
     )
     thread = await octomate.threads.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+        ThreadKey("codex", "thread", SESSION_ID), native=True
     )
     unbound = await octomate.threads.messages_page(thread.id, unbound=True, limit=100)
     assert not unbound.items
@@ -265,10 +268,10 @@ async def test_hooks_bind_session_and_only_rollout_writes_runs_and_messages(
     conversation = await octomate.conversations.ensure(
         (
             await octomate.threads.ensure(
-                ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+                ThreadKey("codex", "thread", SESSION_ID), native=True
             )
         ).id,
-        agent_tentacle_id=CODEX_NATIVE_ID,
+        agent_tentacle_id="codex",
     )
     assert conversation.external_id == SESSION_ID
     assert not conversation.runs
@@ -283,7 +286,7 @@ async def test_hooks_bind_session_and_only_rollout_writes_runs_and_messages(
     await stream_rollout(tailer, SESSION_ID, path)
 
     conversation = await octomate.conversations.ensure(
-        conversation.thread_id, agent_tentacle_id=CODEX_NATIVE_ID
+        conversation.thread_id, agent_tentacle_id="codex"
     )
     [run] = conversation.runs
     assert isinstance(run, ExternalAgentRun)
@@ -308,11 +311,21 @@ async def test_hooks_bind_session_and_only_rollout_writes_runs_and_messages(
     await tailer.shutdown()
 
 
-@pytest.mark.parametrize("supported", [True, False])
+@pytest.mark.parametrize(
+    ("sandbox", "supported"),
+    [
+        ({"type": "workspace-write"}, True),
+        ({"type": "read-only"}, False),
+        ({"type": "workspace-write", "network_access": True}, False),
+    ],
+)
 async def test_turn_settings_are_captured_at_context_and_persisted_at_completion(
+    sandbox: JsonObject,
     supported: bool,
     impulses: ObjectSendStream[Impulse],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level(logging.DEBUG, logger="octomate.tentacles.codex.tailer")
     octomate = Octomate()
     _, tailer = wired(octomate)
     state, _ = await tailer.attach_remote(
@@ -330,9 +343,7 @@ async def test_turn_settings_are_captured_at_context_and_persisted_at_completion
                     "model": "gpt-6-luna",
                     "approval_policy": "on-request",
                     "approvals_reviewer": "auto_review",
-                    "sandbox_policy": {
-                        "type": "workspace-write" if supported else "read-only"
-                    },
+                    "sandbox_policy": sandbox,
                 },
             },
         ],
@@ -340,6 +351,16 @@ async def test_turn_settings_are_captured_at_context_and_persisted_at_completion
     assert state.open_turn is not None
     assert state.open_turn.model_name == "gpt-6-luna"
     assert state.open_turn.permission_mode == ("auto_review" if supported else None)
+    if not supported:
+        assert "history sync continues, but forking is unavailable" in caplog.text
+        assert "sandbox_policy" in caplog.text
+    if sandbox.get("network_access"):
+        assert "network_access: Input should be False" in caplog.text
+    assert all(
+        record.levelno < logging.WARNING
+        for record in caplog.records
+        if record.name == "octomate.tentacles.codex.tailer"
+    )
     assert state.conversation is not None
     assert not (await octomate.conversations.get(state.conversation.id)).runs
     await feed_records(
@@ -351,6 +372,7 @@ async def test_turn_settings_are_captured_at_context_and_persisted_at_completion
     completed = await octomate.conversations.get(state.conversation.id)
     assert completed.runs[-1].model_name == "gpt-6-luna"
     assert completed.runs[-1].permission_mode == ("auto_review" if supported else None)
+    assert [message.message_text for message in completed.runs[-1].messages] == ["done"]
     await tailer.shutdown()
 
 
@@ -377,7 +399,7 @@ async def test_a_session_start_hook_never_tails_the_claimed_path(
 async def test_hooks_persist_and_revise_the_codex_session_name(event: str) -> None:
     octomate = Octomate()
     ingest, _ = wired(octomate)
-    key = ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+    key = ThreadKey("codex", "thread", SESSION_ID)
     await ingest.handle(
         CodexHookInput(
             hook_event_name="UserPromptSubmit",
@@ -396,7 +418,7 @@ async def test_hooks_persist_and_revise_the_codex_session_name(event: str) -> No
         )
         thread = await a_loaded_thread(octomate.threads, key)
         conversation = await octomate.conversations.ensure(
-            thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+            thread.id, agent_tentacle_id="codex"
         )
         expected = (
             "First generated name"
@@ -426,10 +448,10 @@ async def test_a_child_hook_cannot_rename_the_parent_session() -> None:
         ),
     )
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+        octomate.threads, ThreadKey("codex", "thread", SESSION_ID)
     )
     conversation = await octomate.conversations.ensure(
-        thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+        thread.id, agent_tentacle_id="codex"
     )
     assert conversation.name == "Parent name"
     assert thread.title == "Parent name"
@@ -458,7 +480,7 @@ async def test_hooks_for_an_sdk_session_are_recorded_as_external() -> None:
     )
 
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+        octomate.threads, ThreadKey("codex", "thread", SESSION_ID)
     )
     assert not thread.messages
     sdk = await octomate.conversations.get(sdk_conversation.id)
@@ -484,7 +506,7 @@ async def test_a_legacy_driven_flag_does_not_suppress_ingestion() -> None:
     )
 
     [thread] = await octomate.threads.list_threads()
-    assert thread.key == ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+    assert thread.key == ThreadKey("codex", "thread", SESSION_ID)
     await tailer.shutdown()
 
 
@@ -581,10 +603,10 @@ async def streamed_runs(
     await feed_records(tailer, state, records)
     tailer.detach_remote(state)
     thread = await octomate.threads.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+        ThreadKey("codex", "thread", SESSION_ID), native=True
     )
     conversation = await octomate.conversations.ensure(
-        thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+        thread.id, agent_tentacle_id="codex"
     )
     return conversation.runs
 
@@ -657,7 +679,7 @@ async def test_a_backfilled_row_is_dated_by_the_rollout_not_the_replay(
     await stream_rollout(tailer, SESSION_ID, path)
 
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+        octomate.threads, ThreadKey("codex", "thread", SESSION_ID)
     )
     dated = {message.direction: message.happened_at for message in thread.messages}
     assert dated  # the tailer did write the ledger
@@ -691,7 +713,7 @@ async def test_hook_receipt_time_never_becomes_message_time(
     )
 
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+        octomate.threads, ThreadKey("codex", "thread", SESSION_ID)
     )
     assert not thread.messages
     write_rollout(path)
@@ -747,14 +769,12 @@ async def test_thread_spawn_rollout_tree_records_resumed_child_runs(
     tailer.detach_remote(state)
 
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+        octomate.threads, ThreadKey("codex", "thread", SESSION_ID)
     )
-    parent = await octomate.conversations.ensure(
-        thread.id, agent_tentacle_id=CODEX_NATIVE_ID
-    )
+    parent = await octomate.conversations.ensure(thread.id, agent_tentacle_id="codex")
     child = await octomate.conversations.ensure(
         thread.id,
-        agent_tentacle_id=CODEX_NATIVE_ID,
+        agent_tentacle_id="codex",
         subagent_id=CHILD_THREAD_ID,
         parent_conversation_id=parent.id,
     )
@@ -812,7 +832,7 @@ async def test_guardian_rollout_is_not_ingested_as_a_subagent(
     tailer.detach_remote(state)
 
     thread = await octomate.threads.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+        ThreadKey("codex", "thread", SESSION_ID), native=True
     )
     assert all(
         conversation.subagent_id == ""

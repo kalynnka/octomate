@@ -11,6 +11,7 @@ let server: ViteDevServer
 let Markdown: typeof import('../src/components/Markdown.tsx').Markdown
 let DraftMarkdown: typeof import('../src/features/chat/DraftMarkdown.tsx').DraftMarkdown
 let LedgerRow: typeof import('../src/features/chat/cards.tsx').LedgerRow
+let TraceGroupRow: typeof import('../src/features/chat/cards.tsx').TraceGroupRow
 let useConsole: typeof import('../src/state/console.ts').useConsole
 let useAuth: typeof import('../src/state/auth.ts').useAuth
 let TurnFold: typeof import('../src/lib/api/fold.ts').TurnFold
@@ -23,7 +24,7 @@ before(async () => {
   })
   ;({ Markdown } = await server.ssrLoadModule('/src/components/Markdown.tsx'))
   ;({ DraftMarkdown } = await server.ssrLoadModule('/src/features/chat/DraftMarkdown.tsx'))
-  ;({ LedgerRow } = await server.ssrLoadModule('/src/features/chat/cards.tsx'))
+  ;({ LedgerRow, TraceGroupRow } = await server.ssrLoadModule('/src/features/chat/cards.tsx'))
   ;({ useConsole } = await server.ssrLoadModule('/src/state/console.ts'))
   ;({ useAuth } = await server.ssrLoadModule('/src/state/auth.ts'))
   ;({ TurnFold, replayRun } = await server.ssrLoadModule('/src/lib/api/fold.ts'))
@@ -195,6 +196,42 @@ test('thinking renders Markdown while distinguishing summaries from normal reaso
   }
 })
 
+for (const [text, format, expected] of [
+  ['**Testing persisted data cleanup**\n\nThe checks are running.', 'summary', 'Testing persisted data cleanup'],
+  ['**Checking the schema**\n\n**Testing persisted data cleanup**', 'summary', 'Testing persisted data cleanup'],
+  ['## Testing `__init__` cleanup\n\nThe checks are running.', 'summary', 'Testing __init__ cleanup'],
+  ['Checking [persisted data](https://example.com).\n\nThe checks are running.', 'summary', 'Checking persisted data.'],
+  ['', 'summary', 'Read files'],
+  ['**Detailed internal reasoning**', 'reasoning', 'Read files'],
+] as const) {
+  test(`activity header uses ${expected} for ${format} ${JSON.stringify(text)}`, () => {
+    const html = renderToStaticMarkup(createElement(TraceGroupRow, {
+      group: { kind: 'trace', uid: 'group', active: false, items: [
+        { kind: 'think', uid: 'summary', dur: '', text, format, thinking: false },
+        { kind: 'tool', uid: 'tool', name: 'Read', icon: 'file', status: 'done', detail: { type: 'plain', args: '{}', res: 'Read' } },
+      ] },
+      cardMax: '100%',
+    }))
+    const header = html.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/)![1]
+    assert.ok(header.includes(`>${expected}</span>`))
+    assert.ok(!header.includes('**'))
+  })
+}
+
+test('a group keeps the latest supplied summary when a newer reasoning block has no summary', () => {
+  const html = renderToStaticMarkup(createElement(TraceGroupRow, {
+    group: { kind: 'trace', uid: 'group', active: true, items: [
+      { kind: 'think', uid: 'first', dur: '', text: '**Checking the schema**', format: 'summary', thinking: false },
+      { kind: 'think', uid: 'next', dur: '', text: '**Testing persisted data cleanup**', format: 'summary', thinking: false },
+      { kind: 'think', uid: 'empty', dur: '', text: '', format: 'summary', thinking: true },
+    ] },
+    cardMax: '100%',
+  }))
+  const header = html.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/)![1]
+  assert.ok(header.includes('>Testing persisted data cleanup</span>'))
+  assert.ok(!header.includes('Checking the schema'))
+})
+
 for (const format of [undefined, 'reasoning', 'summary'] as const) {
   test(`saved ${format ?? 'unmarked'} thinking without readable text has only an unavailable badge`, () => {
     const cards = replayRun([{
@@ -206,11 +243,39 @@ for (const format of [undefined, 'reasoning', 'summary'] as const) {
     assert.equal(cards[0].item.kind === 'think' && cards[0].item.thinking, false)
     const html = renderToStaticMarkup(createElement(LedgerRow, { item: { ...cards[0].item, uid: cards[0].id }, cardMax: '100%' }))
     assert.ok(html.includes('aria-expanded="false"'))
-    assert.equal((html.match(/>Unavailable<\/span>/g) ?? []).length, 1)
+    assert.equal((html.match(/>\(unavailable\)<\/span>/g) ?? []).length, 1)
     assert.ok(html.includes('no readable reasoning text or summary'))
     assert.ok(html.includes('trk-thinking-format'))
-    assert.ok(!html.includes('>Summary</span>'))
+    assert.ok(!html.includes('>(summary)</span>'))
     assert.ok(!html.includes('trk-print-caret'))
+  })
+}
+
+for (const [streamed, elapsed, expected] of [[false, 5000, ''], [true, 250, '<1s'], [true, 4200, '4s']] as const) {
+  test(`thinking duration is ${expected || 'unknown'} for ${streamed ? 'streamed' : 'completed'} reasoning`, (t) => {
+    let now = 1000
+    t.mock.method(Date, 'now', () => now)
+    const items: LedgerItem[] = []
+    const fold = new TurnFold({
+      push(draft) { const uid = `part-${items.length}`; items.push({ ...draft, uid }); return uid },
+      patch(uid, patch) { Object.assign(items.find(item => item.uid === uid)!, patch) },
+      done() {},
+    })
+    const part: ThinkingPart = { part_kind: 'thinking', content: 'Checking', provider_name: 'openai_codex' }
+    fold.feed({ event_kind: 'part_start', index: 0, part })
+    if (streamed) fold.feed({ event_kind: 'part_delta', index: 0, delta: { part_delta_kind: 'thinking', content_delta: ' files' } })
+    assert.equal(items[0].kind === 'think' && items[0].startedAt, streamed ? now : undefined)
+    now += elapsed
+    if (streamed) {
+      fold.feed({ event_kind: 'function_tool_call', part: { part_kind: 'tool-call', tool_name: 'Read', tool_call_id: 'read', args: {} } })
+      now += 5000
+    }
+    fold.feed({ event_kind: 'part_end', index: 0, part: { ...part, content: 'Checked files' } })
+    assert.equal(items[0].kind, 'think')
+    if (items[0].kind !== 'think') return
+    assert.equal(items[0].dur, expected)
+    assert.equal(items[0].thinking, false)
+    assert.equal(items[0].text, 'Checked files')
   })
 }
 
@@ -224,7 +289,7 @@ test('live and replayed reasoning retain their formats and authoritative complet
     },
     patch(uid, patch) { Object.assign(items.find(item => item.uid === uid)!, patch) },
     done() {},
-  })
+  }, 'Codex')
   const parts: ThinkingPart[] = [
     { part_kind: 'thinking', content: '**Reasoning**', provider_name: 'deepseek' },
     { part_kind: 'thinking', content: '**Summary**', provider_name: 'codex', provider_details: { reasoning_format: 'summary' } },
@@ -246,9 +311,119 @@ test('live and replayed reasoning retain their formats and authoritative complet
     assert.equal(item.text, parts[index].content)
     assert.equal(item.thinking, false)
     assert.equal(item.format, index === 0 ? 'reasoning' : 'summary')
-    assert.deepEqual({ ...replayed[index].item, uid: item.uid, dur: item.dur }, item)
+    const settled = { ...item }
+    delete settled.startedAt
+    assert.deepEqual({ ...replayed[index].item, uid: item.uid, dur: item.dur }, settled)
   }
 })
+
+test('tool icons distinguish execution, files and unknown tools in live calls and replay', () => {
+  for (const [name, icon] of [
+    ['exec', 'code'], ['functions.exec', 'code'], ['mcp__tools__exec', 'code'],
+    ['exec_command', 'terminal'], ['Bash', 'terminal'], ['shell_command', 'terminal'],
+    ['codex_command_execution', 'terminal'], ['functions.write_stdin', 'terminal'],
+    ['Read', 'file'], ['mcp__search__read_file', 'file'],
+    ['Grep', 'search'], ['Glob', 'search'], ['web_search', 'search'],
+    ['apply_patch', 'file-diff'], ['codex_file_change', 'file-diff'],
+    ['send_message', 'send'], ['mcp__files__unknown', 'wrench'],
+  ] as const) {
+    const part = { part_kind: 'tool-call' as const, tool_name: name, tool_call_id: 'tool', args: {} }
+    const result = { part_kind: 'tool-return' as const, tool_name: name, tool_call_id: 'tool', content: 'Done' }
+    const items: LedgerItem[] = []
+    const fold = new TurnFold({
+      push(draft) { items.push({ ...draft, uid: 'tool' }); return 'tool' },
+      patch(uid, patch) { Object.assign(items.find(item => item.uid === uid)!, patch) },
+      done() {},
+    })
+    fold.feed({ event_kind: 'function_tool_call', part })
+    for (const status of ['run', 'done'] as const) {
+      if (status === 'done') fold.feed({ event_kind: 'function_tool_result', part: result })
+      const replayed = replayRun([
+        { id: 'call', run_id: 'run', kind: 'response', timestamp: '2026-11-05T00:00:00Z', thread_messages: [], parts: [part] },
+        { id: 'result', run_id: 'run', kind: 'request', timestamp: null, thread_messages: [], parts: status === 'done' ? [result] : [] },
+      ], 'Codex')
+      assert.equal(items[0].kind === 'tool' && items[0].icon, icon, `${name} live ${status}`)
+      assert.equal(replayed[0].item.kind === 'tool' && replayed[0].item.icon, icon, `${name} replay ${status}`)
+    }
+  }
+})
+
+for (const serialized of [false, true]) {
+  test(`tool briefs use ${serialized ? 'serialized' : 'structured'} recorded targets before clipping in live calls and replay`, () => {
+    for (const [name, args, kind, target] of [
+      ['Read', { file_path: '/work/MEMORY.md' }, 'read', 'MEMORY.md'],
+      ['mcp__filesystem__read_multiple_files', { paths: ['/work/a.py', '/work/b.py'] }, 'read', 'a.py, b.py'],
+      ['Bash', { command: 'git status --short' }, 'command', 'git status --short'],
+      ['functions.exec_command', { cmd: 'git diff\n--stat' }, 'command', 'git diff --stat'],
+      ['Grep', { pattern: 'TODO' }, 'search', 'TODO'],
+      ['Edit', { file_path: '/work/app.py' }, 'edit', 'app.py'],
+      ['ToolSearch', { query: 'files' }, 'load', 'tools: files'],
+      ['codex_command_execution', { command: 'cat /work/MEMORY.md', padding: '.'.repeat(800), commandActions: [{ type: 'read', path: '/work/MEMORY.md' }] }, 'read', 'MEMORY.md'],
+      ['codex_command_execution', { command: 'rg FIXME /work', commandActions: [{ type: 'search', query: 'FIXME', path: '/work' }] }, 'search', 'FIXME'],
+      ['codex_command_execution', { command: 'ls /work', commandActions: [{ type: 'list_files', path: '/work' }] }, 'list', '/work'],
+      ['codex_command_execution', { command: '/bin/zsh -lc "git status --short"', commandActions: [{ type: 'unknown', cmd: 'git status --short' }] }, 'command', 'git status --short'],
+    ] as const) {
+      const part = { part_kind: 'tool-call' as const, tool_name: name, tool_call_id: 'brief', args: serialized ? JSON.stringify(args) : args }
+      const result = { part_kind: 'tool-return' as const, tool_name: name, tool_call_id: 'brief', content: 'Finished' }
+      const items: LedgerItem[] = []
+      const fold = new TurnFold({
+        push(draft) { items.push({ ...draft, uid: 'brief' }); return 'brief' },
+        patch(uid, patch) { Object.assign(items.find(item => item.uid === uid)!, patch) },
+        done() {},
+      }, 'Codex')
+      fold.feed({ event_kind: 'function_tool_call', part })
+      assert.equal(items[0].kind, 'tool')
+      assert.deepEqual(items[0].kind === 'tool' && items[0].action, { kind, target })
+      fold.feed({ event_kind: 'function_tool_result', part: result })
+      const replayed = replayRun([
+        { id: 'call', run_id: 'run', kind: 'response', timestamp: '2026-11-05T00:00:00Z', thread_messages: [], parts: [part] },
+        { id: 'result', run_id: 'run', kind: 'request', timestamp: null, thread_messages: [], parts: [result] },
+      ], 'Codex')
+      assert.deepEqual({ ...replayed[0].item, uid: 'brief' }, items[0])
+      const html = renderToStaticMarkup(createElement(LedgerRow, { item: items[0], cardMax: '100%' }))
+      assert.ok(!html.includes('>Tool</span>'))
+      assert.ok(html.includes(target))
+      if (kind === 'read') assert.equal(items[0].kind === 'tool' && items[0].icon, 'file')
+    }
+  })
+}
+
+test('freeform code gets a brief while unknown tools and incomplete JSON keep their original names', () => {
+  const cards = replayRun([{
+    id: 'call', run_id: 'run', kind: 'response', timestamp: '2026-11-05T00:00:00Z', thread_messages: [], parts: [
+      { part_kind: 'tool-call', tool_name: 'exec', tool_call_id: 'code', args: 'const result = await tools.read_file(...)' },
+      { part_kind: 'tool-call', tool_name: 'apply_patch', tool_call_id: 'patch', args: '*** Begin Patch\n*** Update File: app.py\n*** End Patch' },
+      { part_kind: 'tool-call', tool_name: 'Read', tool_call_id: 'partial', args: '{"file_path":' },
+      { part_kind: 'tool-call', tool_name: 'custom_tool', tool_call_id: 'unknown', args: { command: 'not necessarily a shell command' } },
+    ],
+  }], 'Codex')
+  assert.deepEqual(cards.map(card => card.item.kind === 'tool' && card.item.action), [{ kind: 'code', target: 'code' }, { kind: 'edit', target: 'files' }, undefined, undefined])
+})
+
+for (const serialized of [false, true]) {
+  test(`command classifications survive ${serialized ? 'serialized' : 'structured'} arguments and display clipping live and on replay`, () => {
+    const args = { command: 'cat app.py', padding: '.'.repeat(800), commandActions: [{ type: 'read' }, { type: 'list_files' }, { type: 'search' }, { type: 'read' }, { type: 'unknown' }] }
+    const part = { part_kind: 'tool-call' as const, tool_name: 'codex_command_execution', tool_call_id: 'command', args: serialized ? JSON.stringify(args) : args }
+    const items: LedgerItem[] = []
+    const fold = new TurnFold({
+      push(draft) { items.push({ ...draft, uid: 'command' }); return 'command' },
+      patch(uid, patch) { Object.assign(items.find(item => item.uid === uid)!, patch) },
+      done() {},
+    })
+    fold.feed({ event_kind: 'function_tool_call', part })
+    fold.feed({ event_kind: 'function_tool_result', part: { part_kind: 'tool-return', tool_name: part.tool_name, tool_call_id: part.tool_call_id, content: 'Contents' } })
+    const replayed = replayRun([
+      { id: 'call', run_id: 'run', kind: 'response', timestamp: '2026-11-04T10:00:00Z', thread_messages: [], parts: [part] },
+      { id: 'result', run_id: 'run', kind: 'request', timestamp: null, thread_messages: [], parts: [{ part_kind: 'tool-return', tool_name: part.tool_name, tool_call_id: part.tool_call_id, content: 'Contents' }] },
+    ], 'Codex')
+    for (const item of [items[0], replayed[0].item]) {
+      assert.equal(item.kind, 'tool')
+      if (item.kind !== 'tool') continue
+      assert.deepEqual(item.activities, ['read', 'list', 'search', 'command'])
+      assert.ok(item.detail.type === 'plain' && !item.detail.args.includes('commandActions'))
+    }
+  })
+}
 
 test('progress messages stay separate and completed plans use the final harness text', () => {
   const items: LedgerItem[] = []
@@ -288,8 +463,8 @@ for (const [agent, label] of [
       id: 'response', run_id: 'run', kind: 'response', timestamp: '2026-10-30T10:00:00Z', thread_messages: [],
       parts: [{ part_kind: 'text', content: 'Answer' }],
     }], agent ?? 'agent')
-    assert.deepEqual(replayed[0].item, { kind: 'agent', label, blocks: [{ type: 'p', text: 'Answer' }] })
-    assert.deepEqual(items[0], { ...replayed[0].item, uid: 'reply' })
+    assert.deepEqual(replayed[0].item, { kind: 'agent', agentId: agent ?? 'agent', label, blocks: [{ type: 'p', text: 'Answer' }] })
+    assert.deepEqual(items[0], { ...replayed[0].item, agentId: agent, uid: 'reply' })
     const html = renderToStaticMarkup(createElement(LedgerRow, { item: items[0], cardMax: '100%' }))
     assert.ok(html.includes(`>${label}</span>`))
   })

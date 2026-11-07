@@ -14,6 +14,8 @@ const longCode = ['message = """First line', 'Second line', 'Third line"""', '',
 const diagram = '```mermaid\nflowchart LR\n    accTitle: Octomate dispatch\n    Core[Octomate core] --> Worker[Alice worker]\n    Worker --> CLI[CLI tools]\n```'
 const second = '> ```mermaid\n> flowchart TD\n>     accTitle: Thread lifecycle\n>     Start --> Done\n> ```'
 const tall = '```mermaid\nflowchart TD\n    Start([Start]) --> Setup[Set a = 2 and b = 3]\n    Setup --> Calculate[Calculate sum = a + b]\n    Calculate --> Decision{Is sum greater than 0?}\n    Decision -->|Yes| Positive[Print sum]\n    Decision -->|No| Other[Print zero]\n    Positive --> End([End])\n    Other --> End\n```'
+const toolArgs = JSON.stringify({ command: '/bin/zsh -lc "git diff --cached -- trunkline/src/features/chat/cards.tsx trunkline/src/styles/console.css"', cwd: '/work/project', commandActions: [{ type: 'unknown' }], options: { staged: true, limit: 3 } })
+const toolDiff = 'diff --git a/trunkline/src/features/chat/cards.tsx b/trunkline/src/features/chat/cards.tsx\nindex 12abc34..56def78 100644\n--- a/trunkline/src/features/chat/cards.tsx\n+++ b/trunkline/src/features/chat/cards.tsx\n@@ -10,3 +10,4 @@ function render() {\n-  return raw\n+  const label = "<script>literal</script>"\n+  return format(raw, label)\n }'
 const math = String.raw`Inline $2^6 - 1 = 63$ and \(a^2+b^2=c^2\).
 
 $$
@@ -29,6 +31,8 @@ export function Harness() {
   const [message, setMessage] = useState({ text: code, cursor: false })
   const [reasoning, setReasoning] = useState(false)
   const [thinking, setThinking] = useState(true)
+  const [tools, setTools] = useState(false)
+  const [toolResult, setToolResult] = useState(toolDiff)
   const reasoningItems: LedgerItem[] = [
     { kind: 'user', uid: 'copy-user', who: 'Owner', t: '10:00', text: '**Keep** the `workspace`.\n\nSecond line.', reply: { who: 'Octomate', text: 'Earlier context, not part of this message.' } },
     { kind: 'agent', uid: 'progress', label: botLabel('codex'), blocks: [{ type: 'p', text: '**Checking macOS setup**\nI am checking the admin permissions before continuing.' }] },
@@ -65,10 +69,19 @@ export function Harness() {
       <button onClick={() => setTheme('light')}>Light</button>
       <button onClick={() => setTheme('dark')}>Dark</button>
       <button onClick={() => setReasoning(true)}>Reasoning</button>
+      <button onClick={() => setTools(true)}>Tool details</button>
+      {tools && <>
+        <button onClick={() => setToolResult(toolDiff)}>Diff result</button>
+        <button onClick={() => setToolResult('{"ok":true,"files":["cards.tsx","console.css"]}')}>JSON result</button>
+        <button onClick={() => setToolResult('  <script>literal</script>\n    - a plain log line')}>Plain result</button>
+      </>}
       {reasoning && <button onClick={() => setThinking(false)}>Finish reasoning</button>}
     </nav>
-    {reasoning ? <section aria-label="Reasoning cards" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {reasoningItems.map(item => <LedgerRow key={item.uid} item={item} cardMax="100%" />)}
+    {tools ? <section aria-label="Tool cards" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <LedgerRow cardMax="100%" item={{ kind: 'tool', uid: 'formatted-tool', name: 'codex_command_execution', icon: 'terminal', status: 'done', defaultOpen: true, detail: { type: 'plain', args: toolArgs, res: toolResult } }} />
+      <LedgerRow cardMax="100%" item={{ kind: 'tool', uid: 'partial-tool', name: 'exec', icon: 'code', status: 'done', defaultOpen: true, detail: { type: 'plain', args: '{"command":"unfinished …', res: 'ordinary output' } }} />
+    </section> : reasoning ? <section aria-label="Reasoning cards" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {reasoningItems.map(item => <LedgerRow key={item.uid} item={item} cardMax="100%" showCopy={item.uid === 'copy-agent' || item.uid === 'copy-stream'} />)}
     </section> : <Markdown text={message.text} cursor={message.cursor} />}
   </main>
 }

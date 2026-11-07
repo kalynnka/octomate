@@ -46,7 +46,7 @@ from octomate.schemas.deferred import (
     DeferredApproval,
     DeferredQuestion,
 )
-from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from tests.support.managers import (
     FakeConversation,
@@ -181,7 +181,7 @@ def _build(
     *,
     config: ClaudeCodeConfig | None = None,
     conversation: FakeConversation | None = None,
-) -> tuple[ClaudeCodeTentacle, RecordingDeferredActions, RecordingSuspender]:
+) -> tuple[ClaudeTentacle, RecordingDeferredActions, RecordingSuspender]:
     suspender = RecordingSuspender(agent_tentacle_id="claude", batch=batch)
     dam = RecordingDeferredActions(batch=suspender.batch)
     conversations = FakeConversationManager()
@@ -189,8 +189,7 @@ def _build(
         conversations.store[(_THREAD, "claude", "")] = conversation
     octomate = Octomate(conversations=conversations)
     octomate.deferred_actions = cast(DeferredActionManager, dam)
-    tentacle = ClaudeCodeTentacle(
-        "claude",
+    tentacle = ClaudeTentacle(
         octomate,
         config=config or ClaudeCodeConfig(),
         commands=octomate.commands,
@@ -208,13 +207,13 @@ def _build(
     return tentacle, dam, suspender
 
 
-def _conversation(tentacle: ClaudeCodeTentacle) -> FakeConversation:
+def _conversation(tentacle: ClaudeTentacle) -> FakeConversation:
     convs = cast(FakeConversationManager, tentacle.octomate.conversations)
     return convs.store[(_THREAD, "claude", "")]
 
 
 async def _drain(
-    tentacle: ClaudeCodeTentacle, suspender: RecordingSuspender
+    tentacle: ClaudeTentacle, suspender: RecordingSuspender
 ) -> list[ReactStreamEvent[str]]:
     async with tentacle.run_stream_events(
         "do it",
@@ -227,7 +226,7 @@ async def _drain(
 
 
 async def _wait_for_pending(
-    tentacle: ClaudeCodeTentacle, suspender: RecordingSuspender
+    tentacle: ClaudeTentacle, suspender: RecordingSuspender
 ) -> UUID7:
     await asyncio.wait_for(suspender.put_up.wait(), timeout=5)
     return next(iter(tentacle.pendings))

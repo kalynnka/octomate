@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 import yaml
+from click import unstyle
 from octomate_cli.config import CLISettings, user_config_path
 from octomate_cli.main import app
 from octomate_cli.streaming import deepseek as deepseek_stream
@@ -23,7 +24,6 @@ from typer.testing import CliRunner
 
 from octomate.mcp import gateway as served_gateway
 from octomate.mcp import server as served
-from octomate.types import threads
 
 runner = CliRunner()
 URL = "http://127.0.0.1:9999/hooks/claude"
@@ -742,6 +742,14 @@ def gateway_ready(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OCTOMATE_CLI_TOKEN", "the-token")
 
 
+@pytest.mark.parametrize("runtime", ["claude", "codex", "deepseek"])
+def test_mcp_install_refuses_agent_id_overrides(runtime: str) -> None:
+    result = runner.invoke(app, [runtime, "mcp", "install", "--agent", "coding"])
+    assert result.exit_code == 2
+    assert "No such option" in result.output
+    assert "--agent" in unstyle(result.output)
+
+
 def test_claude_mcp_install_writes_the_entry_beside_everything_else(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -752,7 +760,8 @@ def test_claude_mcp_install_writes_the_entry_beside_everything_else(
     )
 
     result = runner.invoke(
-        claude_typer, ["mcp", "install", "--scope", "user", "--file", str(path)]
+        claude_typer,
+        ["mcp", "install", "--scope", "user", "--file", str(path)],
     )
     assert result.exit_code == 0, result.output
 
@@ -764,7 +773,7 @@ def test_claude_mcp_install_writes_the_entry_beside_everything_else(
         "url": "http://127.0.0.1:9999/octomate/mcp",
         "headers": {
             "Authorization": "Bearer the-token",
-            "X-Octomate-Client": "claude-native",
+            "X-Octomate-Client": "claude",
         },
     }
 
@@ -879,7 +888,7 @@ def test_claude_mcp_local_install_nests_under_the_project(
         "url": "http://127.0.0.1:9999/octomate/mcp",
         "headers": {
             "Authorization": "Bearer the-token",
-            "X-Octomate-Client": "claude-native",
+            "X-Octomate-Client": "claude",
         },
     }
 
@@ -984,7 +993,10 @@ def test_codex_mcp_install_preserves_comments_and_foreign_tables(
         '[mcp_servers.logfire]\nurl = "https://logfire.dev/mcp"\n'
     )
 
-    result = runner.invoke(codex_typer, ["mcp", "install", "--config-file", str(path)])
+    result = runner.invoke(
+        codex_typer,
+        ["mcp", "install", "--config-file", str(path)],
+    )
     assert result.exit_code == 0, result.output
 
     text = path.read_text()
@@ -998,7 +1010,7 @@ def test_codex_mcp_install_preserves_comments_and_foreign_tables(
         "url": "http://127.0.0.1:9999/octomate/mcp",
         "http_headers": {
             "Authorization": "Bearer the-token",
-            "X-Octomate-Client": "codex-native",
+            "X-Octomate-Client": "codex",
         },
         "tools": {"gateway_teleport": {"approval_mode": "prompt"}},
     }
@@ -1075,7 +1087,8 @@ def test_deepseek_mcp_install_writes_the_octomate_row_beside_the_hooks_row(
     runner.invoke(deepseek_typer, ["hooks", "install", "--home", str(tmp_path)])
     for _ in range(2):  # running twice must not duplicate the row
         result = runner.invoke(
-            deepseek_typer, ["mcp", "install", "--home", str(tmp_path)]
+            deepseek_typer,
+            ["mcp", "install", "--home", str(tmp_path)],
         )
         assert result.exit_code == 0, result.output
 
@@ -1093,7 +1106,7 @@ def test_deepseek_mcp_install_writes_the_octomate_row_beside_the_hooks_row(
         "url": "http://127.0.0.1:9999/octomate/mcp",
         "headers": {
             "Authorization": "Bearer the-token",
-            "X-Octomate-Client": "deepseek-native",
+            "X-Octomate-Client": "deepseek",
         },
     }
 
@@ -1152,10 +1165,7 @@ def test_deepseek_mcp_show_masks_the_credential(
 
 def test_the_cli_literals_match_the_server() -> None:
     """The CLI cannot import the server package, so its `/octomate/mcp`, header,
-    and client-id literals are copies — this test is what holds them together."""
+    literals are copies — this test is what holds them together."""
     assert cli_mcp.OCTOMATE_MCP_PATH == served.OCTOMATE_MCP_PATH
     assert cli_mcp.OCTOMATE_SERVER_KEY == served.OCTOMATE_SERVER_NAME
     assert cli_mcp.CLIENT_HEADER == served_gateway.CLIENT_HEADER
-    assert cli_mcp.CLAUDE_NATIVE_CLIENT == threads.CLAUDE_NATIVE_ID
-    assert cli_mcp.CODEX_NATIVE_CLIENT == threads.CODEX_NATIVE_ID
-    assert cli_mcp.DEEPSEEK_NATIVE_CLIENT == threads.DEEPSEEK_NATIVE_ID

@@ -11,7 +11,7 @@ from rich.style import Style
 from octomate import Octomate
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.tentacles.base import TentacleLogFormatter, TentacleLogHandler
-from octomate.tentacles.claude.base import ClaudeCodeTentacle
+from octomate.tentacles.claude.base import ClaudeTentacle
 from octomate.tentacles.codex.base import CodexTentacle
 from octomate.tentacles.deepseek.base import DeepseekTentacle
 from octomate.tentacles.discord.base import DiscordTentacle
@@ -25,7 +25,7 @@ from octomate.tentacles.trunkline.base import TrunklineTentacle
 
 def test_tentacles_have_stable_brand_styles() -> None:
     assert (
-        ClaudeCodeTentacle.brand_color,
+        ClaudeTentacle.brand_color,
         CodexTentacle.brand_color,
         DeepseekTentacle.brand_color,
         DiscordTentacle.brand_color,

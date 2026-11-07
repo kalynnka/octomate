@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -49,15 +50,19 @@ from octomate.schemas.artifacts import HtmlArtifact
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import (
-    CODEX_NATIVE_ID,
     ThreadKey,
 )
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import codex_logfire
-from octomate.tentacles.codex.adapter import CODEX_PROVIDER_NAME, codex_metadata
+from octomate.tentacles.codex.adapter import (
+    CODEX_PROVIDER_NAME,
+    codex_metadata,
+    model_json,
+)
 from octomate.tentacles.codex.html import visualization_text
 from octomate.tentacles.codex.transcript import (
     CompactedItem,
+    CompletedCommandItem,
     RolloutLine,
     SessionMetadata,
     TurnPermissions,
@@ -227,13 +232,18 @@ class CodexTranscriptTailer:
     Never clear offsets automatically or change a live database without approval.
     """
 
+    agent_tentacle_id: str
+
     def __init__(
         self,
         conversations: ConversationManager,
         threads: ThreadManager,
         files: FileManager,
         locks: SessionLocks | None = None,
+        *,
+        agent_tentacle_id: str,
     ) -> None:
+        self.agent_tentacle_id = agent_tentacle_id
         self.conversation_manager = conversations
         self.thread_manager = threads
         self.files: FileManager = files
@@ -375,10 +385,11 @@ class CodexTranscriptTailer:
 
     async def ensure_session(self, session_id: str) -> Conversation:
         thread = await self.thread_manager.ensure(
-            ThreadKey(CODEX_NATIVE_ID, "thread", session_id)
+            ThreadKey(self.agent_tentacle_id, "thread", session_id),
+            native=True,
         )
         return await self.conversation_manager.ensure(
-            thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+            thread.id, agent_tentacle_id=self.agent_tentacle_id, native=True
         )
 
     async def process_line(
@@ -465,7 +476,9 @@ class CodexTranscriptTailer:
             return
         if line.type != "event_msg":
             return
-        if kind == "token_count":
+        if kind == "item_completed" and turn.native is not None:
+            await turn.native.fold(self.consume_completed_command(turn, line))
+        elif kind == "token_count":
             turn.usage = self.parse_usage(line.payload)
         elif kind == "sub_agent_activity":
             child_thread_id = line.payload.get("agent_thread_id")
@@ -536,7 +549,8 @@ class CodexTranscriptTailer:
         assert parent is not None
         tail.conversation = await self.conversation_manager.ensure(
             parent.thread_id,
-            agent_tentacle_id=CODEX_NATIVE_ID,
+            agent_tentacle_id=self.agent_tentacle_id,
+            native=True,
             subagent_id=tail.thread_id,
             parent_conversation_id=parent.id,
         )
@@ -600,7 +614,10 @@ class CodexTranscriptTailer:
             return
         if line.type != "event_msg":
             return
-        if kind == "token_count":
+        if kind == "item_completed":
+            for _ in self.consume_completed_command(turn, line):
+                pass
+        elif kind == "token_count":
             turn.usage = self.parse_usage(line.payload)
         elif kind in {"task_complete", "turn_aborted"}:
             ended_id = line.payload.get("turn_id")
@@ -683,7 +700,7 @@ class CodexTranscriptTailer:
                     conversation,
                     run_id=turn.turn_id,
                     messages=turn.messages,
-                    name=CODEX_NATIVE_ID,
+                    name=self.agent_tentacle_id,
                     model_name=turn.model_name,
                     context_used=turn.usage.input_tokens
                     if turn.usage is not None
@@ -753,7 +770,7 @@ class CodexTranscriptTailer:
                     conversation,
                     run_id=turn.turn_id,
                     messages=turn.messages,
-                    name=CODEX_NATIVE_ID,
+                    name=self.agent_tentacle_id,
                     model_name=turn.model_name,
                     context_used=turn.usage.input_tokens
                     if turn.usage is not None
@@ -819,7 +836,7 @@ class CodexTranscriptTailer:
                         file_id=stored.id,
                     ),
                     sender=state.sender,
-                    agent_tentacle_id=CODEX_NATIVE_ID,
+                    agent_tentacle_id=self.agent_tentacle_id,
                 )
                 await self.thread_manager.bind_messages(
                     [message.id],
@@ -883,10 +900,88 @@ class CodexTranscriptTailer:
             turn.permission_mode = TurnPermissions.model_validate(
                 line.payload
             ).permission_mode
-        except ValueError:
-            # Keep ingesting history; an unknown preset makes this turn unforkable.
+        except ValueError as error:
+            # Custom native permissions are valid history, but not a forkable preset.
             turn.permission_mode = None
-            logger.warning("Codex turn %s has unsupported permissions", turn.turn_id)
+            reason = str(error)
+            if isinstance(error, ValidationError):
+                reason = "; ".join(
+                    f"{'.'.join(map(str, detail['loc']))}: {detail['msg']}"
+                    for detail in error.errors(
+                        include_input=False, include_context=False, include_url=False
+                    )
+                )
+            logger.debug(
+                "Codex turn %s has no matching permission preset; "
+                "history sync continues, but forking is unavailable: %s",
+                turn.turn_id,
+                reason,
+            )
+
+    @staticmethod
+    def consume_completed_command(
+        turn: OpenTurn, line: RolloutLine
+    ) -> Iterator[AgentStreamEvent]:
+        payload = line.payload.get("item")
+        if not isinstance(payload, dict) or payload.get("type") != "CommandExecution":
+            return
+        item = CompletedCommandItem.model_validate(payload)
+        if item.id in turn.pending_calls or any(
+            isinstance(part, NativeToolCallPart) and part.tool_call_id == item.id
+            for message in turn.messages
+            for part in message.parts
+        ):
+            return
+        call = NativeToolCallPart(
+            tool_name="codex_command_execution",
+            tool_call_id=item.id,
+            args={
+                "command": shlex.join(item.command),
+                "cwd": item.cwd,
+                "status": item.status,
+                "commandActions": [model_json(action) for action in item.parsed_cmd],
+            },
+            provider_name=CODEX_PROVIDER_NAME,
+        )
+        outcome = (
+            "success"
+            if item.status == "completed"
+            else "denied"
+            if item.status == "declined"
+            else "failed"
+        )
+        result = NativeToolReturnPart(
+            tool_name=call.tool_name,
+            tool_call_id=item.id,
+            content=item.aggregated_output,
+            outcome=outcome,
+            provider_name=CODEX_PROVIDER_NAME,
+        )
+        turn.messages.append(
+            ModelResponse(
+                parts=[call, result],
+                timestamp=line.timestamp,
+                provider_name=CODEX_PROVIDER_NAME,
+                provider_response_id=item.id,
+                metadata=codex_metadata(),
+            )
+        )
+        yield FunctionToolCallEvent(
+            part=ToolCallPart(
+                tool_name=call.tool_name,
+                tool_call_id=item.id,
+                args=call.args,
+                provider_name=CODEX_PROVIDER_NAME,
+            )
+        )
+        yield FunctionToolResultEvent(
+            part=ToolReturnPart(
+                tool_name=call.tool_name,
+                tool_call_id=item.id,
+                content=result.content,
+                outcome=outcome,
+            )
+        )
 
     @staticmethod
     def consume_response_item(

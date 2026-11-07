@@ -16,7 +16,6 @@ from tomlkit.items import Table
 from octomate_cli.config import CLISettings
 from octomate_cli.tentacles.mcp import (
     CLIENT_HEADER,
-    CODEX_NATIVE_CLIENT,
     OCTOMATE_SERVER_KEY,
     octomate_secret,
     octomate_url,
@@ -61,7 +60,7 @@ def mcp_install(
     """Point native Codex sessions at the served MCP server.
 
     Writes the `mcp_servers.octomate` table — the server's URL, the bearer,
-    the runtime attribution header, and teleport's approval requirement — preserving
+    the agent attribution header, and teleport's approval requirement — preserving
     the operator's comments and every other table. The credential is embedded;
     rotating means re-running install. Driven sessions disable inherited MCP servers
     and supply their caller's connection separately.
@@ -80,7 +79,7 @@ def mcp_install(
     entry["url"] = target
     headers = tomlkit.inline_table()
     headers["Authorization"] = f"Bearer {secret}"
-    headers[CLIENT_HEADER] = CODEX_NATIVE_CLIENT
+    headers[CLIENT_HEADER] = "codex"
     entry["http_headers"] = headers
     entry["tools"] = {gateway_tool(GatewayTool.TELEPORT): {"approval_mode": "prompt"}}
     servers[OCTOMATE_SERVER_KEY] = entry
@@ -88,7 +87,7 @@ def mcp_install(
     path.write_text(tomlkit.dumps(document))
     typer.echo(f"Installed the Octomate MCP entry → {target}")
     typer.echo(f"  file:   {path}")
-    typer.echo(f"  client: {CODEX_NATIVE_CLIENT}")
+    typer.echo("  client: codex")
     typer.echo(
         "  auth:   embedded — the file holds the literal credential; rotation "
         "means re-running install"

@@ -2,9 +2,9 @@ import type { CSSProperties } from 'react'
 
 /** Corner brackets — the dossier's clipped-document mark. Frames tool and file
  *  cards and the account pages; the parent must be positioned. */
-export function Brackets() {
+export function Brackets({ size = 11 }: { size?: number }) {
   const c = (pos: CSSProperties, borders: CSSProperties) => (
-    <span style={{ position: 'absolute', width: 11, height: 11, ...pos, ...borders }} />
+    <span style={{ position: 'absolute', width: size, height: size, ...pos, ...borders }} />
   )
   const b = '2px solid var(--trk-bracket)'
   return (

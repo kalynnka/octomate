@@ -112,12 +112,6 @@ class AgentRun(Base, TransmuterProxiedMixin):
     started_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime, nullable=True, index=True
     )
-    native_id: Mapped[str | None] = mapped_column(
-        String,
-        nullable=True,
-        index=True,
-        comment="The native runtime owning this run's native session and turn IDs.",
-    )
     native_turn_id: Mapped[str | None] = mapped_column(
         String,
         nullable=True,
