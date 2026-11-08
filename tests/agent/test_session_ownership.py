@@ -15,7 +15,7 @@ async def test_unregistered_agents_keep_overlapping_claims_until_the_last_releas
     driver = ClaudeTentacle(
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         config=ClaudeCodeConfig(),
         commands=host.commands,
         projects=host.projects,

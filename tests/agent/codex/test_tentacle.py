@@ -610,7 +610,7 @@ async def test_driven_names_are_persisted_and_revised_without_reading_turns(
             await session.commit()
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -670,7 +670,7 @@ async def test_driven_child_name_does_not_rename_parent_thread(
     )
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -730,7 +730,7 @@ def _tentacle(
     host = Octomate(conversations=conversations)
     return CodexTentacle(
         host,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         config=config or CodexConfig(permission_mode="auto_review"),
         commands=host.commands,
         projects=host.projects,
@@ -951,7 +951,7 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
     thread = await octomate.threads.ensure(KEY)
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -1204,7 +1204,7 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
     octomate.deferred_actions = cast(DeferredActionManager, deferred_actions)
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode="user_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -1263,7 +1263,7 @@ async def test_question_requests_bridge_to_cards() -> None:
     octomate.deferred_actions = cast(DeferredActionManager, deferred_actions)
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode="user_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -1327,7 +1327,7 @@ async def test_an_mcp_tool_prompt_bridges_to_an_approval_card(approved: bool) ->
     octomate.deferred_actions = cast(DeferredActionManager, deferred_actions)
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode="user_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -1399,7 +1399,7 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
     octomate.deferred_actions = cast(DeferredActionManager, deferred_actions)
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode="user_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -1464,7 +1464,7 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
     octomate.deferred_actions = cast(DeferredActionManager, deferred_actions)
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode="user_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -2033,7 +2033,7 @@ async def test_native_identity_is_persisted_before_a_failed_first_turn(
     )
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -2072,7 +2072,7 @@ async def test_concurrent_first_turns_share_the_persisted_native_identity(
     thread_id = await a_thread()
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -2230,7 +2230,7 @@ async def test_shared_client_reuses_keys_per_user(
     )
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -2361,7 +2361,7 @@ async def test_expired_user_key_is_replaced_once_and_applied_to_each_thread(
     )
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -2482,7 +2482,7 @@ async def test_cached_binding_reconfigures_a_changed_caller(
     octomate.gateway.register(session)
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -2577,7 +2577,7 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
     )
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode=permission_mode),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -2761,7 +2761,7 @@ async def test_a_turn_kicked_by_an_unregistered_user_launches_clean(
     )
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -2800,7 +2800,7 @@ async def test_an_mcp_wiring_flip_reloads_only_the_conversations_thread(
     )
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -2863,7 +2863,7 @@ async def test_a_registered_gateway_uses_the_default_served_endpoint(
     )
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -2974,7 +2974,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
     monkeypatch.setattr(codex_ink.CodexInk, "start_thread", start_binding_thread)
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -3100,7 +3100,7 @@ async def test_async_questions_continue_and_answers_resume_the_same_thread(
     thread_id = (await octomate.threads.ensure(KEY)).id
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,

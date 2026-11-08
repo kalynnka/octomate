@@ -14,11 +14,11 @@ from anyio.streams.buffered import BufferedByteReceiveStream
 from pydantic import BaseModel
 from uuid_utils.compat import uuid7
 
-from octomate.config.sandbox import SbxSandboxConfig
-from octomate.managers.sandbox import SandboxManager
+from octomate.config.habitat import SbxHabitatConfig
+from octomate.habitat.sbx import SbxHabitat
+from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
-from octomate.sandbox.sbx import SbxSandbox
-from octomate.schemas.sandbox import InvocationScope
+from octomate.schemas.habitat import InvocationScope
 
 
 class GuestMemory(BaseModel):
@@ -55,7 +55,7 @@ async def host_usage() -> dict[int, HostUsage]:
     return result
 
 
-async def sample_load(sandbox: SbxSandbox, pids: set[int]) -> float:
+async def sample_load(sandbox: SbxHabitat, pids: set[int]) -> float:
     peak_rss_mib = 0.0
     async with asyncio.TaskGroup() as tasks:
         load = tasks.create_task(
@@ -81,11 +81,11 @@ async def test_single_user_resource_cost(tmp_path: Path) -> None:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
-    config = SbxSandboxConfig(image=image)
-    manager = SandboxManager(config, Nerve())
+    config = SbxHabitatConfig(image=image)
+    manager = HabitatManager(config, Nerve())
     scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
-    sandbox = manager.state(scope).sandbox
-    assert isinstance(sandbox, SbxSandbox)
+    sandbox = manager.residence(scope).habitat
+    assert isinstance(sandbox, SbxHabitat)
     assert (
         sandbox.name
         not in (await sandbox.command("ls", quiet=True)).decode().splitlines()
@@ -93,7 +93,7 @@ async def test_single_user_resource_cost(tmp_path: Path) -> None:
     before = await host_usage()
     started = monotonic()
     try:
-        async with manager.acquire(scope, uuid7()):
+        async with manager.enter(scope, uuid7()):
             startup_seconds = monotonic() - started
             invoked = monotonic()
             async with sandbox.execute(
@@ -142,10 +142,10 @@ async def test_single_user_resource_cost(tmp_path: Path) -> None:
             )
             peak_rss_mib = await sample_load(sandbox, pids)
         stopped = monotonic()
-        await manager.stop(manager.state(scope))
+        await manager.stop(manager.residence(scope))
         stop_seconds = monotonic() - stopped
         resumed = monotonic()
-        async with manager.acquire(scope, uuid7()):
+        async with manager.enter(scope, uuid7()):
             resume_seconds = monotonic() - resumed
         report = {
             "host": f"{platform.system()} {platform.machine()}",

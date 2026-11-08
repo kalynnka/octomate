@@ -1,4 +1,4 @@
-"""The runtime base class consumed by the sandbox manager."""
+"""The base class every habitat provider subclasses."""
 
 from abc import ABC, abstractmethod
 from contextlib import AbstractAsyncContextManager
@@ -6,17 +6,17 @@ from contextlib import AbstractAsyncContextManager
 from anyio.abc import ByteStream
 
 
-class SandboxError(RuntimeError):
+class HabitatError(RuntimeError):
     """An actionable failure safe to publish without guest or credential output."""
 
 
-class Sandbox(ABC):
-    """One user's isolated runtime; each provider subclasses this."""
+class Habitat(ABC):
+    """One user's isolated, durable agent runtime; a sandbox is one kind."""
 
     @property
     @abstractmethod
     def name(self) -> str:
-        """Stable identifier of this sandbox instance."""
+        """Stable identifier of this habitat."""
 
     @property
     @abstractmethod

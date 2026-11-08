@@ -23,7 +23,7 @@ async def test_inkling_reuses_one_scoped_key_per_user_and_revokes_on_exit(
         "inkling",
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         models={"test": TestModel()},
     )
     assert host.auth is not None
@@ -65,7 +65,7 @@ async def test_inkling_refreshes_expired_credentials_once(
         "inkling",
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         models={"test": TestModel()},
     )
     assert host.auth is not None
@@ -95,7 +95,7 @@ async def test_runtime_keys_require_a_registered_identity_and_configured_auth() 
         "inkling",
         host,
         auth=None,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         models={"test": TestModel()},
     )
     assert agent.auth is None

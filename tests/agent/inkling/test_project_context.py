@@ -96,7 +96,7 @@ async def inkling_run(octomate: Octomate, thread: Thread, scripted: Scripted) ->
         "inkling",
         octomate,
         auth=octomate.auth,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         agent=scripted.agent(),
     )
     await tentacle.run(
@@ -184,7 +184,7 @@ async def test_project_file_calls_defer_for_user_approval(tmp_path: Path) -> Non
         "inkling",
         octomate,
         auth=octomate.auth,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         agent=agent,
     )
 
@@ -222,7 +222,7 @@ def test_every_capability_is_rooted_at_the_workspace(tmp_path: Path) -> None:
         "inkling",
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         agent=Scripted().agent(),
     )
 

@@ -227,7 +227,7 @@ async def test_inkling_output_reaches_napcat(
         "inkling",
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         models={
             "scripted": FunctionModel(stream_function=respond, model_name="scripted")
         },

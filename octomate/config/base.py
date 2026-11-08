@@ -53,6 +53,7 @@ from octomate.config.channels import (
     LarkChannelConfig,
     SlackChannelConfig,
 )
+from octomate.config.habitat import HabitatConfig, NativeHabitatConfig
 from octomate.config.mcp import DiscoveredOAuthMcpConfig, OAuthMcpConfig
 from octomate.config.mcp.base import AuthorizationCodeFlowConfig
 from octomate.config.mcp.pool import McpPoolConfig
@@ -61,7 +62,6 @@ from octomate.config.oauth import OAuthConfig
 from octomate.config.observability import LogfireConfig, LoggingConfig
 from octomate.config.projects import ProjectsConfig
 from octomate.config.providers import ProvidersConfig
-from octomate.config.sandbox import NativeSandboxConfig, SandboxConfig
 from octomate.config.tentacles import TentacleConfigVariant
 from octomate.config.workspaces import WorkspacesConfig
 from octomate.schemas.project import Project
@@ -135,8 +135,8 @@ class OctomateConfig(BaseSettings):
         default_factory=WorkspacesConfig,
         description="When a thread's workspace is reclaimed.",
     )
-    sandbox: SandboxConfig = Field(
-        default_factory=NativeSandboxConfig,
+    habitat: HabitatConfig = Field(
+        default_factory=NativeHabitatConfig,
         description="How every agent of this service runs, chosen by `mode`.",
     )
 

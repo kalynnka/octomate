@@ -38,6 +38,7 @@ from octomate.config.channels import (
     SlackStreamConfig,
 )
 from octomate.config.database import DatabaseSettings, database_settings
+from octomate.config.habitat import NativeHabitatConfig, SbxHabitatConfig
 from octomate.config.mcp import (
     BareMcpConfig,
     DiscoveredOAuthMcpConfig,
@@ -66,7 +67,6 @@ from octomate.config.providers import (
     ProvidersConfig,
     VertexProviderConfig,
 )
-from octomate.config.sandbox import NativeSandboxConfig, SbxSandboxConfig
 from octomate.config.tentacles import TentacleConfigVariant
 from octomate.config.workspaces import WorkspacesConfig
 
@@ -78,8 +78,8 @@ __all__ = [  # noqa: RUF022
     "AcpAgentConfig",
     "AcpChannelConfig",
     "ArtifactConfig",
-    "NativeSandboxConfig",
-    "SbxSandboxConfig",
+    "NativeHabitatConfig",
+    "SbxHabitatConfig",
     # agents
     "AgentConfig",
     "AgentRouteModelName",

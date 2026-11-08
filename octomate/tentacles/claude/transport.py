@@ -1,4 +1,4 @@
-"""Claude's native control protocol over an acquired sandbox process."""
+"""Claude's native control protocol over a process inside a habitat."""
 
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
@@ -15,15 +15,15 @@ from pydantic import TypeAdapter, ValidationError
 from uuid_utils.compat import uuid7
 
 from octomate.fibers import MAX_FRAME_BYTES, FiberError
-from octomate.managers.sandbox import SandboxManager
-from octomate.schemas.sandbox import InvocationScope
+from octomate.managers.habitat import HabitatManager
+from octomate.schemas.habitat import InvocationScope
 from octomate.types.json import JsonObject
 
 message_adapter = TypeAdapter(JsonObject)
 
 
 @dataclass
-class SandboxTransport(Transport):
+class HabitatTransport(Transport):
     """A duplex SDK connection; the caller owns the guest process and VM lease."""
 
     stream: ByteStream
@@ -81,13 +81,13 @@ class SandboxTransport(Transport):
     @asynccontextmanager
     async def client(
         cls,
-        sandboxes: SandboxManager,
+        habitats: HabitatManager,
         scope: InvocationScope,
         options: ClaudeAgentOptions,
     ) -> AsyncGenerator[ClaudeSDKClient]:
         """Acquire, run and release using options whose paths refer to the guest."""
         if options.cwd is None:
-            raise ValueError("Sandbox Claude runs require a guest workspace")
+            raise ValueError("Habitat Claude runs require a guest workspace")
         command_options = replace(
             _configure_can_use_tool(options),
             cli_path=options.cli_path or "claude",
@@ -95,8 +95,8 @@ class SandboxTransport(Transport):
         # Reuse the pinned SDK's flag mapping for its native control protocol.
         command = SubprocessCLITransport("", command_options)._build_command()
         async with (
-            sandboxes.acquire(scope, uuid7()) as state,
-            state.sandbox.execute(
+            habitats.enter(scope, uuid7()) as residence,
+            residence.habitat.execute(
                 *command,
                 workdir=str(options.cwd),
                 env={

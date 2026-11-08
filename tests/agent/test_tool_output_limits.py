@@ -77,7 +77,7 @@ def _tentacle() -> tuple[InklingTentacle, FakeConversationManager]:
         "inkling",
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         models={
             "test": FunctionModel(
                 stream_function=_call_then_answer, model_name="scripted"

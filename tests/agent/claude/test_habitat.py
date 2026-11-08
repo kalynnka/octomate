@@ -19,15 +19,15 @@ from pydantic import BaseModel
 from pydantic_ai.messages import PartDeltaEvent
 from uuid_utils.compat import uuid7
 
-from octomate.config.sandbox import SbxSandboxConfig
+from octomate.config.habitat import SbxHabitatConfig
 from octomate.fibers import FiberError
-from octomate.managers.sandbox import SandboxManager
+from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
-from octomate.schemas.sandbox import InvocationScope
+from octomate.schemas.habitat import InvocationScope
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
-from octomate.tentacles.claude.transport import SandboxTransport
+from octomate.tentacles.claude.transport import HabitatTransport
 from octomate.types.json import JsonObject
-from tests.test_sandbox_contracts import IMAGE
+from tests.test_habitat_contracts import IMAGE
 
 
 class ProcessInfo(BaseModel):
@@ -53,7 +53,7 @@ def options(tmp_path: Path) -> ClaudeAgentOptions:
 
 
 @pytest.fixture
-def manager(tmp_path: Path) -> SandboxManager:
+def manager(tmp_path: Path) -> HabitatManager:
     executable = tmp_path / "sbx"
     executable.write_text(
         f"#!{sys.executable}\n"
@@ -76,23 +76,23 @@ def manager(tmp_path: Path) -> SandboxManager:
         "os.execvpe(command[0], command, os.environ)\n"
     )
     executable.chmod(0o700)
-    return SandboxManager(
-        SbxSandboxConfig(executable=str(executable), image=IMAGE),
+    return HabitatManager(
+        SbxHabitatConfig(executable=str(executable), image=IMAGE),
         Nerve(),
     )
 
 
 @pytest.fixture
-def scope(manager: SandboxManager, monkeypatch: pytest.MonkeyPatch) -> InvocationScope:
+def scope(manager: HabitatManager, monkeypatch: pytest.MonkeyPatch) -> InvocationScope:
     scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
-    sandbox = manager.state(scope).sandbox
-    monkeypatch.setattr(sandbox, "prepare", AsyncMock())
-    monkeypatch.setattr(sandbox, "stop", AsyncMock())
+    habitat = manager.residence(scope).habitat
+    monkeypatch.setattr(habitat, "prepare", AsyncMock())
+    monkeypatch.setattr(habitat, "stop", AsyncMock())
     return scope
 
 
 async def test_native_events_approval_and_controls_share_the_connection(
-    manager: SandboxManager,
+    manager: HabitatManager,
     scope: InvocationScope,
     options: ClaudeAgentOptions,
     monkeypatch: pytest.MonkeyPatch,
@@ -115,8 +115,8 @@ async def test_native_events_approval_and_controls_share_the_connection(
     accumulator.begin("Run the tool")
     deltas: list[str] = []
     try:
-        async with SandboxTransport.client(manager, scope, options) as client:
-            assert len(manager.state(scope).invocations) == 1
+        async with HabitatTransport.client(manager, scope, options) as client:
+            assert len(manager.residence(scope).invocations) == 1
             assert await client.get_server_info() == {"commands": [], "models": []}
             await client.query("Run the tool")
             async with asyncio.timeout(5):
@@ -131,7 +131,7 @@ async def test_native_events_approval_and_controls_share_the_connection(
             assert deltas
     finally:
         await manager.close()
-    assert not manager.state(scope).invocations
+    assert not manager.residence(scope).invocations
     log = await anyio.Path(options.env["CLAUDE_TEST_LOG"]).read_text()
     info = ProcessInfo.model_validate_json(log.splitlines()[0])
     assert "--permission-prompt-tool" in info.argv
@@ -155,7 +155,7 @@ async def test_invalid_frames_fail_without_echoing_payloads(
 ) -> None:
     stream = AsyncMock(spec=ByteStream)
     stream.receive.side_effect = [frame, anyio.EndOfStream]
-    transport = SandboxTransport(stream, max_frame_bytes=10)
+    transport = HabitatTransport(stream, max_frame_bytes=10)
     with pytest.raises(FiberError, match=reason) as error:
         await anext(transport.read_messages())
     assert "secret" not in str(error.value)
@@ -164,17 +164,17 @@ async def test_invalid_frames_fail_without_echoing_payloads(
 
 
 async def test_initialization_failure_releases_process_and_lease(
-    manager: SandboxManager, scope: InvocationScope, options: ClaudeAgentOptions
+    manager: HabitatManager, scope: InvocationScope, options: ClaudeAgentOptions
 ) -> None:
     options.env["CLAUDE_TEST_FAIL_INIT"] = "1"
     try:
         async with asyncio.timeout(5):
             with pytest.raises(FiberError, match="stream closed"):
-                async with SandboxTransport.client(manager, scope, options):
+                async with HabitatTransport.client(manager, scope, options):
                     pytest.fail("The CLI exited before initialization")
     finally:
         await manager.close()
-    assert not manager.state(scope).invocations
+    assert not manager.residence(scope).invocations
     info = ProcessInfo.model_validate_json(
         (await anyio.Path(options.env["CLAUDE_TEST_LOG"]).read_text()).splitlines()[0]
     )
@@ -185,7 +185,7 @@ async def test_initialization_failure_releases_process_and_lease(
 async def test_end_input_allows_the_peer_to_finish_its_output() -> None:
     stream = AsyncMock(spec=ByteStream)
     stream.receive.side_effect = [b'{"type":"result"}\n', anyio.EndOfStream]
-    transport = SandboxTransport(stream)
+    transport = HabitatTransport(stream)
     await transport.connect()
     assert transport.is_ready()
     await transport.end_input()
@@ -197,7 +197,7 @@ async def test_end_input_allows_the_peer_to_finish_its_output() -> None:
 
 @pytest.mark.parametrize("cancel_task", [False, True])
 async def test_interrupt_and_cancellation_release_process_and_lease(
-    manager: SandboxManager,
+    manager: HabitatManager,
     scope: InvocationScope,
     options: ClaudeAgentOptions,
     cancel_task: bool,
@@ -214,7 +214,7 @@ async def test_interrupt_and_cancellation_release_process_and_lease(
     options.can_use_tool = approve
 
     async def run() -> None:
-        async with SandboxTransport.client(manager, scope, options) as client:
+        async with HabitatTransport.client(manager, scope, options) as client:
             await client.query("Wait for approval")
             await asked.wait()
             if cancel_task:
@@ -236,7 +236,7 @@ async def test_interrupt_and_cancellation_release_process_and_lease(
                 await task
     finally:
         await manager.close()
-    assert not manager.state(scope).invocations
+    assert not manager.residence(scope).invocations
     info = ProcessInfo.model_validate_json(
         (await anyio.Path(options.env["CLAUDE_TEST_LOG"]).read_text()).splitlines()[0]
     )

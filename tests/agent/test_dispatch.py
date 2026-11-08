@@ -697,7 +697,7 @@ def _inkling(octomate: Octomate, stream_text: str) -> InklingTentacle:
         "inkling",
         octomate,
         auth=octomate.auth,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         agent=cast(
             Agent[None, InklingOutput],
             Agent(

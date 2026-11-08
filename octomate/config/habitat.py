@@ -1,11 +1,11 @@
-"""The service's execution mode and the local sbx resource budget."""
+"""The service's habitat mode and the local sbx resource budget."""
 
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class NativeSandboxConfig(BaseModel):
+class NativeHabitatConfig(BaseModel):
     """Each harness runs directly on the host, inside its own sandbox."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -13,7 +13,7 @@ class NativeSandboxConfig(BaseModel):
     mode: Literal["native"] = "native"
 
 
-class SbxSandboxConfig(BaseModel):
+class SbxHabitatConfig(BaseModel):
     """Each registered user's agents run in one persistent sbx VM."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -47,6 +47,6 @@ class SbxSandboxConfig(BaseModel):
     )
 
 
-type SandboxConfig = Annotated[
-    NativeSandboxConfig | SbxSandboxConfig, Field(discriminator="mode")
+type HabitatConfig = Annotated[
+    NativeHabitatConfig | SbxHabitatConfig, Field(discriminator="mode")
 ]

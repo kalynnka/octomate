@@ -339,7 +339,7 @@ def _tentacle(
     return DeepseekTentacle(
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         config=config or DeepseekConfig(),
     )
 
@@ -424,7 +424,7 @@ async def test_driven_names_are_persisted_and_revised(
     tentacle = DeepseekTentacle(
         octomate,
         auth=octomate.auth,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=DeepseekConfig(),
     )
     names = [None, "", "  ", " First name ", "修复会话名称", "修复会话名称", None, " "]
@@ -477,7 +477,7 @@ async def test_driven_child_name_does_not_rename_parent_thread(
     tentacle = DeepseekTentacle(
         octomate,
         auth=octomate.auth,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=DeepseekConfig(),
     )
     async with tentacle:

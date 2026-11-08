@@ -72,7 +72,7 @@ def test_inkling_claims_the_thinking_level_built_into_a_model() -> None:
         config,
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         registry=make_registry(),
     )
 
@@ -92,7 +92,7 @@ def test_inkling_build_keeps_configured_icon(icon_url: str | None) -> None:
         config,
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         registry=make_registry(),
     )
     assert tentacle.info.icon_url == icon_url
@@ -137,7 +137,7 @@ def test_inkling_naming_model_uses_registry_settings_without_adding_a_route(
         config,
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         registry=registry,
     )
     assert list(tentacle.models) == ["test"]

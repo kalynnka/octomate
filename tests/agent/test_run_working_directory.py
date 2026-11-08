@@ -445,7 +445,7 @@ async def test_a_driven_claude_run_records_where_it_dispatched(
     tentacle = ClaudeTentacle(
         octomate,
         auth=octomate.auth,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=ClaudeCodeConfig(),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -482,7 +482,7 @@ async def test_a_driven_codex_run_records_where_it_dispatched() -> None:
     thread = await a_thread(octomate)
     tentacle = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,

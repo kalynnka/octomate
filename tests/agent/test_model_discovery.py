@@ -62,7 +62,7 @@ async def test_claude_uses_native_metadata_before_config(
     tentacle = ClaudeTentacle(
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         config=ClaudeCodeConfig(
             claims={
                 f"{prefix}:future-model": configured,
@@ -108,7 +108,7 @@ async def test_claude_discovery_claims_its_session_through_client_cleanup(
     tentacle = ClaudeTentacle(
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         config=ClaudeCodeConfig(),
         commands=host.commands,
         projects=host.projects,
@@ -213,7 +213,7 @@ async def test_codex_reads_provider_configured_default_and_every_catalog_page(
     host = Octomate()
     tentacle = CodexTentacle(
         host,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         config=CodexConfig(
             claims={f"{prefix}:future-model": Claim("Old metadata", efforts=("low",))}
         ),
@@ -293,7 +293,7 @@ async def test_codex_claims_the_effort_a_turn_runs_at_by_default(
     host = Octomate()
     tentacle = CodexTentacle(
         host,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         config=CodexConfig(effort=ours),
         commands=Octomate().commands,
         projects=Octomate().projects,
@@ -323,7 +323,7 @@ async def test_codex_empty_catalog_fails_without_fabricating_models(
     host = Octomate()
     tentacle = CodexTentacle(
         host,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         config=CodexConfig(),
         commands=host.commands,
         projects=host.projects,
@@ -381,7 +381,7 @@ async def test_deepseek_preserves_provider_pairs_and_native_effort_ids(
     tentacle = DeepseekTentacle(
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         config=DeepseekConfig(),
     )
     async with tentacle:
@@ -436,7 +436,7 @@ async def test_deepseek_reports_catalog_failure_without_inventing_models(
     tentacle = DeepseekTentacle(
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         config=DeepseekConfig(),
     )
     with pytest.raises(ValueError, match="no available models"):
@@ -469,7 +469,7 @@ def harness(
         return ClaudeTentacle(
             octomate,
             auth=octomate.auth,
-            sandboxes=octomate.sandboxes,
+            habitats=octomate.habitats,
             config=ClaudeCodeConfig(),
             commands=octomate.commands,
             projects=octomate.projects,
@@ -496,7 +496,7 @@ def harness(
         ]
         return CodexTentacle(
             octomate,
-            sandboxes=octomate.sandboxes,
+            habitats=octomate.habitats,
             config=CodexConfig(),
             commands=octomate.commands,
             projects=octomate.projects,
@@ -530,7 +530,7 @@ def harness(
     return DeepseekTentacle(
         octomate,
         auth=octomate.auth,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=DeepseekConfig(),
     )
 
@@ -575,7 +575,7 @@ async def test_inkling_uses_the_shared_agent_lifecycle() -> None:
         "inkling",
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         models={"test": TestModel()},
         claims={"test": claim},
     )

@@ -56,6 +56,6 @@ class AgentConfig(BaseModel):
         if isinstance(value, dict) and "sandbox" in value:
             raise ValueError(
                 "Agents no longer choose a sandbox; remove sandbox and set the "
-                "service's sandbox.mode (Codex's own sandbox is its permission_mode)"
+                "service's habitat.mode (Codex's own sandbox is its permission_mode)"
             )
         return value

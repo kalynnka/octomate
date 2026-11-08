@@ -94,7 +94,7 @@ async def test_group_naming_only_runs_inside_a_work_subthread(
         "inkling",
         octomate,
         auth=octomate.auth,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         models={"test": naming_model},
     )
     address = ChannelAddress("test", chat_type, "room", "test")
@@ -124,7 +124,7 @@ async def test_new_prompts_name_and_revise_the_session_and_thread(
         "inkling",
         octomate,
         auth=octomate.auth,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         models={"test": naming_model},
     )
     thread_id = (await tentacle.threads.ensure(ADDRESS)).id
@@ -176,7 +176,7 @@ async def test_naming_model_override_and_active_model_default(
         "inkling",
         octomate,
         auth=octomate.auth,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         models={"default": TestModel()},
         naming_model=naming_model if configured else None,
     )
@@ -220,7 +220,7 @@ async def test_naming_and_foreground_stream_run_concurrently(
         "inkling",
         octomate,
         auth=octomate.auth,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         models={"default": naming_model},
     )
     thread_id = (await tentacle.threads.ensure(ADDRESS)).id
@@ -268,7 +268,7 @@ async def test_child_name_does_not_replace_the_parent_thread_title(
         "inkling",
         octomate,
         auth=octomate.auth,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         models={"test": naming_model},
     )
     thread_id = (await tentacle.threads.ensure(ADDRESS)).id
@@ -304,7 +304,7 @@ async def test_naming_failure_preserves_the_reply_and_existing_name(
         "inkling",
         octomate,
         auth=octomate.auth,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         models={"test": naming_model},
     )
     thread_id = (await tentacle.threads.ensure(ADDRESS)).id
@@ -341,7 +341,7 @@ async def test_cancelling_a_run_cleans_up_its_naming_task(
         "inkling",
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         models={"test": naming_model},
     )
     monkeypatch.setattr(inkling_base, "generate_name", name)
@@ -369,7 +369,7 @@ async def test_a_prompt_names_a_deferred_turn_but_its_resume_does_not(
         "inkling",
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         models={"test": TestModel(call_tools=["ask_questions"])},
         naming_model=naming_model,
         capabilities=[AskCapability()],

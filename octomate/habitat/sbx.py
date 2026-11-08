@@ -17,8 +17,8 @@ import sh
 from anyio.abc import UNIXSocketStream
 from pydantic import UUID7
 
-from octomate.config.sandbox import SbxSandboxConfig
-from octomate.sandbox.base import Sandbox, SandboxError
+from octomate.config.habitat import SbxHabitatConfig
+from octomate.habitat.base import Habitat, HabitatError
 
 COMMAND_TIMEOUT = 30.0
 PREPARE_TIMEOUT = 300.0
@@ -47,8 +47,8 @@ class SbxOptions(TypedDict, total=False):
 
 
 @dataclass
-class SbxSandbox(Sandbox):
-    config: SbxSandboxConfig
+class SbxHabitat(Habitat):
+    config: SbxHabitatConfig
     user_id: UUID7
     managed: bool = field(default=False, init=False)  # Name found or create tried.
 
@@ -77,7 +77,7 @@ class SbxSandbox(Sandbox):
                 _return_cmd=True,
             )
         except sh.CommandNotFound:
-            raise SandboxError(
+            raise HabitatError(
                 "Cannot launch sbx; check the configured executable"
             ) from None
 
@@ -96,14 +96,14 @@ class SbxSandbox(Sandbox):
             await process
             return process.stdout
         except sh.TimeoutException:
-            raise SandboxError(f"sbx {args[0]} timed out") from None
+            raise HabitatError(f"sbx {args[0]} timed out") from None
         except sh.ErrorReturnCode as error:
-            raise SandboxError(
+            raise HabitatError(
                 f"sbx {args[0]} failed (exit {error.exit_code}); "
                 "check Docker sign-in, daemon readiness and image availability"
             ) from None
         except (OSError, sh.ForkException):
-            raise SandboxError(
+            raise HabitatError(
                 "Cannot launch sbx; check the configured executable"
             ) from None
         finally:
@@ -117,21 +117,21 @@ class SbxSandbox(Sandbox):
         system, machine = platform.system(), platform.machine()
         if system == "Darwin":
             if machine != "arm64" or int(platform.mac_ver()[0].split(".")[0]) < 14:
-                raise SandboxError("Local sbx requires Apple Silicon and macOS 14+")
+                raise HabitatError("Local sbx requires Apple Silicon and macOS 14+")
         elif system == "Linux":
             release = platform.freedesktop_os_release()
             if release.get("ID") != "ubuntu" or tuple(
                 int(part) for part in release.get("VERSION_ID", "0").split(".")
             ) < (24, 4):
-                raise SandboxError("Local sbx requires Ubuntu 24.04+")
+                raise HabitatError("Local sbx requires Ubuntu 24.04+")
             if machine not in {"x86_64", "aarch64"} or not os.access(
                 "/dev/kvm", os.R_OK | os.W_OK
             ):
-                raise SandboxError(
+                raise HabitatError(
                     "Local sbx requires accessible KVM on amd64 or arm64"
                 )
         else:
-            raise SandboxError("Local sbx supports macOS and Linux hosts only")
+            raise HabitatError("Local sbx supports macOS and Linux hosts only")
         version = await self.command("version")
         if not re.search(
             rb"(?:Client Version:\s+|sbx version )v"
@@ -139,10 +139,10 @@ class SbxSandbox(Sandbox):
             + rb"(?:\s|$)",
             version,
         ):
-            raise SandboxError(f"Install the pinned sbx release {self.config.version}")
+            raise HabitatError(f"Install the pinned sbx release {self.config.version}")
         forwarding = await self.command("settings", "get", "ssh.agentForwardingEnabled")
         if forwarding.strip() != b"false":
-            raise SandboxError(
+            raise HabitatError(
                 "Turn off sbx SSH agent forwarding: sbx settings set "
                 "ssh.agentForwardingEnabled false, then sbx daemon restart"
             )
@@ -174,12 +174,12 @@ class SbxSandbox(Sandbox):
             "exec",
             self.name,
             "printenv",
-            *(f"OCTOMATE_SANDBOX_{key.upper()}" for key in kit_args),
+            *(f"OCTOMATE_HABITAT_{key.upper()}" for key in kit_args),
         )
         if metadata.splitlines() != [
             str(value).encode() for value in kit_args.values()
         ]:
-            raise SandboxError(
+            raise HabitatError(
                 "Existing sandbox owner, image, resource or network settings differ; no automatic replacement is allowed"
             )
 
@@ -211,7 +211,7 @@ class SbxSandbox(Sandbox):
             else:
                 parent.close()
             if isinstance(error, (OSError, sh.ForkException)):
-                raise SandboxError("Cannot launch the sandbox command") from None
+                raise HabitatError("Cannot launch the sandbox command") from None
             raise
         finally:
             child.close()

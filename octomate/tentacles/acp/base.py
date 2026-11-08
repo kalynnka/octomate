@@ -67,7 +67,7 @@ from octomate.utils import drain_task
 if TYPE_CHECKING:
     from octomate.base import Octomate
     from octomate.managers.auth import AuthManager
-    from octomate.managers.sandbox import SandboxManager
+    from octomate.managers.habitat import HabitatManager
 
 
 class AcpAgentTentacle(AgentTentacle[str, None]):
@@ -95,7 +95,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         *,
         config: AcpAgentConfig,
         auth: AuthManager | None,
-        sandboxes: SandboxManager,
+        habitats: HabitatManager,
     ) -> None:
         super().__init__(
             id=id,
@@ -105,7 +105,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             threads=octomate.threads,
             files=octomate.files,
             auth=auth,
-            sandboxes=sandboxes,
+            habitats=habitats,
         )
         self.config = config
         self.gateway = config.gateway

@@ -25,7 +25,7 @@ async def test_inkling_fork_needs_no_external_session(tmp_path: Path) -> None:
         "inkling",
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         models={"test": TestModel()},
     )
     conversation = Conversation(thread_id=uuid7(), agent_tentacle_id="inkling")
@@ -45,7 +45,7 @@ async def test_shared_fork_can_share_history_without_an_external_session(
         "inkling",
         app,
         auth=app.auth,
-        sandboxes=app.sandboxes,
+        habitats=app.habitats,
         models={"test": TestModel()},
     )
     owner = await a_user()

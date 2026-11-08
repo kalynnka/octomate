@@ -1,4 +1,4 @@
-"""Sandbox ownership and lifecycle observations published by the core."""
+"""Habitat ownership and lifecycle observations published by the core."""
 
 from __future__ import annotations
 
@@ -10,37 +10,37 @@ from pydantic import UUID7, AwareDatetime, BaseModel, ConfigDict, Field
 from octomate.schemas.user import UserProfile
 
 
-class SandboxObservation(BaseModel):
+class HabitatObservation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     user_id: UUID7
-    sandbox: str
+    habitat: str
     sequence: int = Field(ge=0, description="Monotonic within this manager lifetime.")
     updated_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
     invocation_id: UUID7 | None = None
     thread_id: UUID7 | None = None
 
 
-class SandboxProgress(SandboxObservation):
-    event_kind: Literal["sandbox_progress"] = "sandbox_progress"
+class HabitatProgress(HabitatObservation):
+    event_kind: Literal["habitat_progress"] = "habitat_progress"
     phase: Literal["unknown", "preparing", "starting", "ready", "stopping", "stopped"]
 
 
-class SandboxFailed(SandboxObservation):
-    event_kind: Literal["sandbox_failed"] = "sandbox_failed"
+class HabitatFailed(HabitatObservation):
+    event_kind: Literal["habitat_failed"] = "habitat_failed"
     phase: Literal["failed"] = "failed"
     message: str = Field(
         description="Operator-actionable text without guest diagnostics."
     )
 
 
-type SandboxSnapshot = Annotated[
-    SandboxProgress | SandboxFailed, Field(discriminator="event_kind")
+type HabitatStatus = Annotated[
+    HabitatProgress | HabitatFailed, Field(discriminator="event_kind")
 ]
 
 
 class InvocationScope(BaseModel):
-    """Core-established ownership, never derived from an incoming sandbox signal."""
+    """Core-established ownership, never derived from an incoming guest signal."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -58,7 +58,7 @@ class InvocationScope(BaseModel):
     ) -> Self:
         """Accept only a profile already resolved by the core user registry."""
         if profile.user_id is None:
-            raise ValueError("Sandbox access requires a registered user")
+            raise ValueError("Habitat access requires a registered user")
         return cls(
             user_id=profile.user_id,
             conversation_id=conversation_id,

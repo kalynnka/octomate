@@ -130,7 +130,7 @@ if TYPE_CHECKING:
     from octomate.managers.auth import AuthManager
     from octomate.managers.conversation import ConversationManager
     from octomate.managers.deferred import DeferredActionManager
-    from octomate.managers.sandbox import SandboxManager
+    from octomate.managers.habitat import HabitatManager
     from octomate.managers.user import UserManager
     from octomate.managers.workspaces import WorkspaceManager
     from octomate.mcp.base import KnownBearers
@@ -226,7 +226,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         *,
         config: DeepseekConfig,
         auth: AuthManager | None,
-        sandboxes: SandboxManager,
+        habitats: HabitatManager,
         description: str | None = None,
     ) -> None:
         super().__init__(
@@ -237,7 +237,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             threads=octomate.threads,
             files=octomate.files,
             auth=auth,
-            sandboxes=sandboxes,
+            habitats=habitats,
         )
         self.config = config
         self.conversations = octomate.conversations

@@ -12,11 +12,11 @@ from anyio.streams.buffered import BufferedByteReceiveStream
 from pydantic import BaseModel
 from uuid_utils.compat import uuid7
 
-import octomate.sandbox.sbx as sbx_module
-from octomate.config.sandbox import SbxSandboxConfig
-from octomate.sandbox import SandboxError
-from octomate.sandbox.sbx import SbxSandbox
-from tests.test_sandbox_contracts import IMAGE
+import octomate.habitat.sbx as sbx_module
+from octomate.config.habitat import SbxHabitatConfig
+from octomate.habitat import HabitatError
+from octomate.habitat.sbx import SbxHabitat
+from tests.test_habitat_contracts import IMAGE
 
 
 class ProcessInfo(BaseModel):
@@ -27,7 +27,7 @@ class ProcessInfo(BaseModel):
 
 
 @pytest.fixture
-def sandbox(tmp_path: Path) -> SbxSandbox:
+def sandbox(tmp_path: Path) -> SbxHabitat:
     executable = tmp_path / "fake sbx"
     executable.write_text(
         f"#!{sys.executable}\n"
@@ -50,15 +50,15 @@ def sandbox(tmp_path: Path) -> SbxSandbox:
         "        sys.stdout.buffer.flush()\n"
     )
     executable.chmod(0o755)
-    return SbxSandbox(
-        config=SbxSandboxConfig(image=IMAGE, executable=str(executable)),
+    return SbxHabitat(
+        config=SbxHabitatConfig(image=IMAGE, executable=str(executable)),
         user_id=uuid7(),
     )
 
 
 @pytest.mark.parametrize("internet_access", [True, False])
 async def test_sh_preserves_named_arguments_and_filters_host_environment(
-    sandbox: SbxSandbox, monkeypatch: pytest.MonkeyPatch, internet_access: bool
+    sandbox: SbxHabitat, monkeypatch: pytest.MonkeyPatch, internet_access: bool
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "synthetic-secret")
     monkeypatch.setenv("OCTOMATE_DB_URL", "synthetic-secret")
@@ -93,7 +93,7 @@ async def test_sh_preserves_named_arguments_and_filters_host_environment(
 
 
 async def test_sh_attachment_preserves_duplex_bytes_and_eof(
-    sandbox: SbxSandbox, monkeypatch: pytest.MonkeyPatch
+    sandbox: SbxHabitat, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "synthetic-secret")
     async with sandbox.execute(
@@ -132,15 +132,15 @@ async def test_sh_attachment_preserves_duplex_bytes_and_eof(
         os.kill(info.pid, 0)
 
 
-async def test_sh_failure_does_not_expose_command_output(sandbox: SbxSandbox) -> None:
-    with pytest.raises(SandboxError, match=r"failed \(exit 7\)") as failure:
+async def test_sh_failure_does_not_expose_command_output(sandbox: SbxHabitat) -> None:
+    with pytest.raises(HabitatError, match=r"failed \(exit 7\)") as failure:
         await sandbox.command("fail")
     assert "synthetic-secret" not in str(failure.value)
 
 
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_command_context_reaps_its_child_without_stopping_the_vm(
-    sandbox: SbxSandbox, cancel: bool
+    sandbox: SbxHabitat, cancel: bool
 ) -> None:
     started: asyncio.Future[ProcessInfo] = asyncio.Future()
 
@@ -168,7 +168,7 @@ async def test_command_context_reaps_its_child_without_stopping_the_vm(
 
 
 async def test_concurrent_commands_have_independent_lifetimes(
-    sandbox: SbxSandbox,
+    sandbox: SbxHabitat,
 ) -> None:
     async with sandbox.execute("cat", workdir="/workspace") as first:
         receive = BufferedByteReceiveStream(first)
@@ -190,7 +190,7 @@ async def test_concurrent_commands_have_independent_lifetimes(
 
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_sh_timeout_and_cancellation_reap_child(
-    sandbox: SbxSandbox, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel: bool
+    sandbox: SbxHabitat, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel: bool
 ) -> None:
     monkeypatch.setattr(sbx_module, "COMMAND_TIMEOUT", 5 if cancel else 0.3)
     started = asyncio.Event()
@@ -209,13 +209,13 @@ async def test_sh_timeout_and_cancellation_reap_child(
                 with pytest.raises(asyncio.CancelledError):
                     await task
             else:
-                with pytest.raises(SandboxError, match="timed out"):
+                with pytest.raises(HabitatError, match="timed out"):
                     await task
         with pytest.raises(ProcessLookupError):
             os.kill(int(pid_file.read_text()), 0)
     finally:
         task.cancel()
-        with suppress(asyncio.CancelledError, SandboxError):
+        with suppress(asyncio.CancelledError, HabitatError):
             await task
 
 
@@ -223,14 +223,14 @@ async def test_sh_timeout_and_cancellation_reap_child(
 async def test_missing_sbx_has_an_actionable_error(
     tmp_path: Path, attach: bool
 ) -> None:
-    sandbox = SbxSandbox(
-        config=SbxSandboxConfig(image=IMAGE, executable=str(tmp_path / "missing")),
+    sandbox = SbxHabitat(
+        config=SbxHabitatConfig(image=IMAGE, executable=str(tmp_path / "missing")),
         user_id=uuid7(),
     )
     if attach:
-        with pytest.raises(SandboxError, match="configured executable"):
+        with pytest.raises(HabitatError, match="configured executable"):
             async with sandbox.execute("cat", workdir="/workspace"):
                 pytest.fail("missing executable launched")
     else:
-        with pytest.raises(SandboxError, match="configured executable"):
+        with pytest.raises(HabitatError, match="configured executable"):
             await sandbox.command("version")

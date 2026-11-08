@@ -26,7 +26,7 @@ from octomate.tentacles.inkling.base import InklingTentacle
 if TYPE_CHECKING:
     from octomate import Octomate
     from octomate.managers.auth import AuthManager
-    from octomate.managers.sandbox import SandboxManager
+    from octomate.managers.habitat import HabitatManager
     from octomate.providers import ProviderRegistry
 
 
@@ -37,7 +37,7 @@ def build_inkling(
     *,
     registry: ProviderRegistry,
     auth: AuthManager | None,
-    sandboxes: SandboxManager,
+    habitats: HabitatManager,
 ) -> InklingTentacle:
     """The inkling tentacle, with its models and capability stack.
 
@@ -110,7 +110,7 @@ def build_inkling(
         octomate,
         models=models,
         auth=auth,
-        sandboxes=sandboxes,
+        habitats=habitats,
         naming_model=(
             registry.build_model(config.naming_model)
             if config.naming_model is not None

@@ -54,7 +54,7 @@ def agent(client: AsyncMock) -> ClaudeTentacle:
     return ClaudeTentacle(
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         config=ClaudeCodeConfig(),
         commands=host.commands,
         projects=host.projects,

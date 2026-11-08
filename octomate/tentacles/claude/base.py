@@ -148,9 +148,9 @@ if TYPE_CHECKING:
     from octomate.managers.conversation import ConversationManager
     from octomate.managers.deferred import DeferredActionManager
     from octomate.managers.files import FileManager
+    from octomate.managers.habitat import HabitatManager
     from octomate.managers.mcp import McpManager
     from octomate.managers.project import ProjectManager
-    from octomate.managers.sandbox import SandboxManager
     from octomate.managers.thread import ThreadManager
     from octomate.managers.user import UserManager
     from octomate.managers.workspaces import WorkspaceManager
@@ -227,7 +227,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         *,
         config: ClaudeCodeConfig,
         auth: AuthManager | None,
-        sandboxes: SandboxManager,
+        habitats: HabitatManager,
         commands: CommandManager,
         projects: ProjectManager,
         threads: ThreadManager,
@@ -248,7 +248,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             threads=threads,
             files=files,
             auth=auth,
-            sandboxes=sandboxes,
+            habitats=habitats,
         )
         self.conversations = conversations
         self.deferred_actions = deferred_actions
