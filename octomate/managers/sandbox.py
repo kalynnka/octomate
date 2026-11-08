@@ -1,16 +1,20 @@
-"""One persistent environment per sandbox deployment and registered user."""
+"""One persistent environment per registered user."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from dataclasses import InitVar, dataclass, field
+from dataclasses import dataclass, field
 from typing import Literal
 
 from pydantic import UUID7
 
-from octomate.config.sandbox import SandboxConfig
+from octomate.config.sandbox import (
+    NativeSandboxConfig,
+    SandboxConfig,
+    SbxSandboxConfig,
+)
 from octomate.nerve import (
     Impulse,
     Nerve,
@@ -31,7 +35,6 @@ from octomate.schemas.sandbox import (
 @dataclass
 class UserSandbox:
     user_id: UUID7
-    config: SandboxConfig
     sandbox: Sandbox
     snapshot: SandboxSnapshot
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -43,28 +46,21 @@ class UserSandbox:
 
 @dataclass
 class SandboxManager:
-    config: InitVar[list[SandboxConfig]]
+    config: SandboxConfig
     nerve: Nerve
-    configs: dict[str, SandboxConfig] = field(init=False)
-    sandboxes: dict[tuple[str, UUID7], UserSandbox] = field(
-        default_factory=dict, init=False
-    )
+    sandboxes: dict[UUID7, UserSandbox] = field(default_factory=dict, init=False)
     closed: bool = field(default=False, init=False)
-
-    def __post_init__(self, config: list[SandboxConfig]) -> None:
-        self.configs = {sandbox.id: sandbox for sandbox in config}
 
     def state(self, scope: InvocationScope) -> UserSandbox:
         """Internal lookup; callers must supply a core-authorized owner."""
-        if scope.sandbox not in self.configs:
-            raise SandboxError(f"Unknown sandbox deployment {scope.sandbox!r}")
-        key = (scope.sandbox, scope.user_id)
-        if key not in self.sandboxes:
-            config = self.configs[scope.sandbox]
-            sandbox = SbxSandbox(config=config, user_id=scope.user_id)
-            self.sandboxes[key] = UserSandbox(
+        if scope.user_id not in self.sandboxes:
+            match self.config:
+                case SbxSandboxConfig() as config:
+                    sandbox = SbxSandbox(config=config, user_id=scope.user_id)
+                case NativeSandboxConfig():
+                    raise SandboxError("Sandbox mode is 'native'; no sandbox runs")
+            self.sandboxes[scope.user_id] = UserSandbox(
                 user_id=scope.user_id,
-                config=config,
                 sandbox=sandbox,
                 snapshot=SandboxProgress(
                     user_id=scope.user_id,
@@ -73,7 +69,7 @@ class SandboxManager:
                     phase="unknown",
                 ),
             )
-        return self.sandboxes[key]
+        return self.sandboxes[scope.user_id]
 
     def snapshot(self, scope: InvocationScope) -> SandboxSnapshot:
         return self.state(scope).snapshot
@@ -137,7 +133,7 @@ class SandboxManager:
                 state.invocations.discard(invocation_id)
                 if not state.invocations and not self.closed:
                     state.idle = asyncio.get_running_loop().call_later(
-                        state.config.idle_timeout, self.schedule_stop, state
+                        state.sandbox.idle_timeout, self.schedule_stop, state
                     )
 
     async def prepare(

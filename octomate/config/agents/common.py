@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 type AgentRouteModelName = Annotated[str, Field(min_length=1)]
 
@@ -39,11 +39,6 @@ class AgentConfig(BaseModel):
         "tentacle's default icon; an empty string uses its text name instead.",
     )
 
-    sandbox: str | None = Field(
-        default=None,
-        min_length=1,
-        description="Sandbox deployment ID; omitted or null runs the SDK natively.",
-    )
     enabled: bool = Field(
         default=True,
         description="Whether to register the tentacle when its config block exists.",
@@ -54,3 +49,13 @@ class AgentConfig(BaseModel):
         "routing, and binding a thread to a project. Off, no channel connection can "
         "switch them on for it.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_agent_sandbox[T](cls, value: T) -> T:
+        if isinstance(value, dict) and "sandbox" in value:
+            raise ValueError(
+                "Agents no longer choose a sandbox; remove sandbox and set the "
+                "service's sandbox.mode (Codex's own sandbox is its permission_mode)"
+            )
+        return value

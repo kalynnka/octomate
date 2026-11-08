@@ -45,9 +45,6 @@ class InvocationScope(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     user_id: UUID7
-    sandbox: str = Field(
-        min_length=1, description="Core-selected sandbox deployment ID."
-    )
     conversation_id: UUID7
     thread_id: UUID7 | None = None
 
@@ -56,7 +53,6 @@ class InvocationScope(BaseModel):
         cls,
         profile: UserProfile,
         *,
-        sandbox: str,
         conversation_id: UUID7,
         thread_id: UUID7 | None = None,
     ) -> Self:
@@ -65,14 +61,11 @@ class InvocationScope(BaseModel):
             raise ValueError("Sandbox access requires a registered user")
         return cls(
             user_id=profile.user_id,
-            sandbox=sandbox,
             conversation_id=conversation_id,
             thread_id=thread_id,
         )
 
     def require_binding(self, bound: InvocationScope) -> None:
-        """Refuse another owner's or sandbox deployment's private conversation state."""
+        """Refuse another owner's private conversation state."""
         if self != bound:
-            raise ValueError(
-                "Invocation owner, sandbox deployment or conversation does not match"
-            )
+            raise ValueError("Invocation owner or conversation does not match")

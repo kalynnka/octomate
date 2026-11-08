@@ -111,7 +111,6 @@ def build_inkling(
         models=models,
         auth=auth,
         sandboxes=sandboxes,
-        sandbox=config.sandbox,
         naming_model=(
             registry.build_model(config.naming_model)
             if config.naming_model is not None

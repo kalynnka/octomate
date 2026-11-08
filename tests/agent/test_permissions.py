@@ -126,7 +126,7 @@ def test_old_deny_all_config_requires_an_explicit_preset_choice() -> None:
 
 @pytest.mark.parametrize("sandbox", ["read_only", "workspace_write", "full_access"])
 def test_separate_sandbox_config_is_not_silently_ignored(sandbox: str) -> None:
-    with pytest.raises(ValidationError, match="unknown sandbox"):
+    with pytest.raises(ValidationError, match=r"sandbox\.mode"):
         OctomateConfig.model_validate(
             {"tentacles": {"codex": {"type": "codex", "sandbox": sandbox}}}
         )

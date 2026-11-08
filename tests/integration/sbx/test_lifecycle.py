@@ -18,9 +18,9 @@ async def test_command_attachment_reuse_and_stop_start_persistence() -> None:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
-    manager = SandboxManager([SbxSandboxConfig(id="local", image=image)], Nerve())
-    owner = InvocationScope(user_id=uuid7(), sandbox="local", conversation_id=uuid7())
-    other = InvocationScope(user_id=uuid7(), sandbox="local", conversation_id=uuid7())
+    manager = SandboxManager(SbxSandboxConfig(image=image), Nerve())
+    owner = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
+    other = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
     sandbox = manager.state(owner).sandbox
     assert isinstance(sandbox, SbxSandbox)
     existing = (await sandbox.command("ls", "--quiet")).decode().splitlines()

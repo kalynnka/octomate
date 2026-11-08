@@ -227,7 +227,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         auth: AuthManager | None,
         sandboxes: SandboxManager,
         agent: Agent[None, InklingOutput] | None = None,
-        sandbox: str | None = None,
         models: Mapping[AgentRouteModelName, Model | str] | None = None,
         naming_model: Model | str | None = None,
         name: str = "octomate-inkling",
@@ -252,7 +251,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             files=octomate.files,
             auth=auth,
             sandboxes=sandboxes,
-            sandbox=sandbox,
         )
         self.config = config
         self.mcp = octomate.mcp

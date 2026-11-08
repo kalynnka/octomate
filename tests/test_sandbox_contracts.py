@@ -17,7 +17,7 @@ from octomate.capabilities.harness.agent import Agent
 from octomate.config.agents import InklingConfig
 from octomate.config.base import OctomateConfig
 from octomate.config.models import ModelConfig
-from octomate.config.sandbox import SbxSandboxConfig
+from octomate.config.sandbox import NativeSandboxConfig, SbxSandboxConfig
 from octomate.managers.sandbox import SandboxError, SandboxManager
 from octomate.nerve import (
     Impulse,
@@ -40,9 +40,9 @@ async def test_native_default_constructs_an_idle_sandbox_manager(
     cli = Mock(side_effect=AssertionError("Native mode must not launch sbx"))
     monkeypatch.setattr(SbxSandbox, "cli", cli)
     app = Octomate()
-    assert app.config.sandbox == []
+    assert app.config.sandbox == NativeSandboxConfig()
     assert isinstance(app.sandboxes, SandboxManager)
-    assert app.sandboxes.configs == {item.id: item for item in app.config.sandbox}
+    assert app.sandboxes.config is app.config.sandbox
     assert app.sandboxes.nerve is app.nerve
     assert app.sandboxes.sandboxes == {}
     await app.sandboxes.close()
@@ -52,8 +52,8 @@ async def test_native_default_constructs_an_idle_sandbox_manager(
 
 async def test_native_manager_refuses_vm_acquisition() -> None:
     app = Octomate()
-    scope = InvocationScope(user_id=uuid7(), sandbox="local", conversation_id=uuid7())
-    with pytest.raises(SandboxError, match="Unknown sandbox deployment"):
+    scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
+    with pytest.raises(SandboxError, match="mode is 'native'"):
         async with app.sandboxes.acquire(scope, uuid7()):
             pytest.fail("Native configuration must not allocate a VM")
     assert app.sandboxes.sandboxes == {}
@@ -79,11 +79,11 @@ def test_invalid_sbx_settings_are_rejected(
     changes: dict[str, str | int | float],
 ) -> None:
     with pytest.raises(ValidationError):
-        SbxSandboxConfig.model_validate({"id": "local", "image": IMAGE, **changes})
+        SbxSandboxConfig.model_validate({"image": IMAGE, **changes})
 
 
 def test_sbx_internet_access_is_enabled_by_default() -> None:
-    assert SbxSandboxConfig(id="local", image=IMAGE).internet_access
+    assert SbxSandboxConfig(image=IMAGE).internet_access
 
 
 async def test_sbx_cannot_silently_serve_native_before_dispatch_is_implemented() -> (
@@ -91,10 +91,10 @@ async def test_sbx_cannot_silently_serve_native_before_dispatch_is_implemented()
 ):
     app = Octomate(
         config=OctomateConfig(
-            sandbox=[SbxSandboxConfig(id="local", image=IMAGE)],
+            sandbox=SbxSandboxConfig(image=IMAGE),
             tentacles={
                 "inkling": InklingConfig(
-                    sandbox="local", models=[ModelConfig(name="openai:gpt-4.1-mini")]
+                    models=[ModelConfig(name="openai:gpt-4.1-mini")]
                 )
             },
         )
@@ -106,29 +106,27 @@ async def test_sbx_cannot_silently_serve_native_before_dispatch_is_implemented()
             auth=app.auth,
             sandboxes=app.sandboxes,
             agent=Agent(TestModel()),
-            sandbox="local",
         )
     )
-    assert isinstance(app.sandboxes, SandboxManager)
-    assert app.sandboxes.configs == {item.id: item for item in app.config.sandbox}
+    assert app.sandboxes.config is app.config.sandbox
     with pytest.raises(RuntimeError, match="not yet wired into React"):
         async with app.lifespan(app):
             pytest.fail("sbx must not reach native serving")
 
 
-def test_ownership_and_sandbox_are_bound_to_the_registered_user() -> None:
+def test_ownership_is_bound_to_the_registered_user() -> None:
     profile = UserProfile(user_id=uuid7())
     scope = InvocationScope.from_profile(
-        profile, sandbox="local", conversation_id=uuid7(), thread_id=uuid7()
+        profile, conversation_id=uuid7(), thread_id=uuid7()
     )
     scope.require_binding(scope)
     with pytest.raises(ValueError, match="does not match"):
         scope.require_binding(scope.model_copy(update={"user_id": uuid7()}))
     with pytest.raises(ValueError, match="does not match"):
-        scope.require_binding(scope.model_copy(update={"sandbox": "another"}))
+        scope.require_binding(scope.model_copy(update={"conversation_id": uuid7()}))
     with pytest.raises(ValueError, match="registered user"):
         InvocationScope.from_profile(
-            UserProfile(), sandbox="local", conversation_id=scope.conversation_id
+            UserProfile(), conversation_id=scope.conversation_id
         )
 
 

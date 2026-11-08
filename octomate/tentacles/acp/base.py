@@ -106,7 +106,6 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             files=octomate.files,
             auth=auth,
             sandboxes=sandboxes,
-            sandbox=config.sandbox,
         )
         self.config = config
         self.gateway = config.gateway

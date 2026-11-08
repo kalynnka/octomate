@@ -61,7 +61,7 @@ from octomate.config.oauth import OAuthConfig
 from octomate.config.observability import LogfireConfig, LoggingConfig
 from octomate.config.projects import ProjectsConfig
 from octomate.config.providers import ProvidersConfig
-from octomate.config.sandbox import SandboxConfig
+from octomate.config.sandbox import NativeSandboxConfig, SandboxConfig
 from octomate.config.tentacles import TentacleConfigVariant
 from octomate.config.workspaces import WorkspacesConfig
 from octomate.schemas.project import Project
@@ -135,24 +135,10 @@ class OctomateConfig(BaseSettings):
         default_factory=WorkspacesConfig,
         description="When a thread's workspace is reclaimed.",
     )
-    sandbox: list[SandboxConfig] = Field(
-        default_factory=list,
-        description="Named sandbox deployments available for agent assignment; only sbx is supported.",
+    sandbox: SandboxConfig = Field(
+        default_factory=NativeSandboxConfig,
+        description="How every agent of this service runs, chosen by `mode`.",
     )
-
-    @model_validator(mode="after")
-    def validate_sandbox_assignments(self) -> Self:
-        ids = {sandbox.id for sandbox in self.sandbox}
-        if len(ids) != len(self.sandbox):
-            raise ValueError("Sandbox deployment IDs must be unique")
-        for id, tentacle in self.tentacles.items():
-            if not isinstance(tentacle, AgentConfig) or tentacle.sandbox is None:
-                continue
-            if tentacle.sandbox not in ids:
-                raise ValueError(
-                    f"Agent {id!r} references unknown sandbox {tentacle.sandbox!r}"
-                )
-        return self
 
     @field_validator("projects", mode="wrap")
     @classmethod

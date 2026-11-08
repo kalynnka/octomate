@@ -19,9 +19,7 @@ from tests.test_sandbox_contracts import IMAGE
 
 @pytest.fixture
 async def manager(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[SandboxManager]:
-    manager = SandboxManager(
-        [SbxSandboxConfig(id="local", image=IMAGE, idle_timeout=60)], Nerve()
-    )
+    manager = SandboxManager(SbxSandboxConfig(image=IMAGE, idle_timeout=60), Nerve())
 
     monkeypatch.setattr(SbxSandbox, "prepare", AsyncMock())
     monkeypatch.setattr(SbxSandbox, "stop", AsyncMock())
@@ -33,10 +31,7 @@ async def manager(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[SandboxManag
 
 @pytest.fixture
 def owners() -> list[InvocationScope]:
-    return [
-        InvocationScope(user_id=uuid7(), sandbox="local", conversation_id=uuid7())
-        for _ in range(8)
-    ]
+    return [InvocationScope(user_id=uuid7(), conversation_id=uuid7()) for _ in range(8)]
 
 
 async def test_active_user_sandboxes_are_not_capped(
@@ -98,9 +93,7 @@ async def test_failed_stop_does_not_block_another_user(
 async def test_idle_timer_resets_on_reuse_and_stopped_sandbox_can_restart(
     manager: SandboxManager, owners: list[InvocationScope]
 ) -> None:
-    manager.configs["local"] = SbxSandboxConfig(
-        id="local", image=IMAGE, idle_timeout=0.01
-    )
+    manager.config = SbxSandboxConfig(image=IMAGE, idle_timeout=0.01)
     scope = owners[0]
     async with manager.acquire(scope, uuid7()) as state:
         pass

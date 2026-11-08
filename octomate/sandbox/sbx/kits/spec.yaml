@@ -2,8 +2,6 @@ schemaVersion: "2"
 kind: sandbox
 name: octomate
 args:
-  id:
-    required: true
   user_id:
     required: true
   image:
@@ -23,7 +21,6 @@ sandbox:
     memory: "${{ kit.args.memory_mib }}m"
 environment:
   variables:
-    OCTOMATE_SANDBOX_ID: "${{ kit.args.id }}"
     OCTOMATE_SANDBOX_USER_ID: "${{ kit.args.user_id }}"
     OCTOMATE_SANDBOX_IMAGE: "${{ kit.args.image }}"
     OCTOMATE_SANDBOX_CPUS: "${{ kit.args.cpus }}"

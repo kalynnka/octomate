@@ -51,7 +51,7 @@ def sandbox(tmp_path: Path) -> SbxSandbox:
     )
     executable.chmod(0o755)
     return SbxSandbox(
-        config=SbxSandboxConfig(id="local", image=IMAGE, executable=str(executable)),
+        config=SbxSandboxConfig(image=IMAGE, executable=str(executable)),
         user_id=uuid7(),
     )
 
@@ -224,9 +224,7 @@ async def test_missing_sbx_has_an_actionable_error(
     tmp_path: Path, attach: bool
 ) -> None:
     sandbox = SbxSandbox(
-        config=SbxSandboxConfig(
-            id="local", image=IMAGE, executable=str(tmp_path / "missing")
-        ),
+        config=SbxSandboxConfig(image=IMAGE, executable=str(tmp_path / "missing")),
         user_id=uuid7(),
     )
     if attach:

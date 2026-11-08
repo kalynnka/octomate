@@ -41,8 +41,8 @@ async def guest() -> AsyncGenerator[tuple[SandboxManager, InvocationScope, SbxSa
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
-    manager = SandboxManager([SbxSandboxConfig(id="local", image=image)], Nerve())
-    scope = InvocationScope(user_id=uuid7(), sandbox="local", conversation_id=uuid7())
+    manager = SandboxManager(SbxSandboxConfig(image=image), Nerve())
+    scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
     sandbox = manager.state(scope).sandbox
     assert isinstance(sandbox, SbxSandbox)
     assert (

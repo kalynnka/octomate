@@ -77,14 +77,14 @@ def manager(tmp_path: Path) -> SandboxManager:
     )
     executable.chmod(0o700)
     return SandboxManager(
-        [SbxSandboxConfig(id="local", executable=str(executable), image=IMAGE)],
+        SbxSandboxConfig(executable=str(executable), image=IMAGE),
         Nerve(),
     )
 
 
 @pytest.fixture
 def scope(manager: SandboxManager, monkeypatch: pytest.MonkeyPatch) -> InvocationScope:
-    scope = InvocationScope(user_id=uuid7(), sandbox="local", conversation_id=uuid7())
+    scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
     sandbox = manager.state(scope).sandbox
     monkeypatch.setattr(sandbox, "prepare", AsyncMock())
     monkeypatch.setattr(sandbox, "stop", AsyncMock())

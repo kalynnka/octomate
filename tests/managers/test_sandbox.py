@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Unpack
 from unittest.mock import AsyncMock
@@ -16,6 +15,7 @@ import octomate.sandbox.sbx as sandbox_module
 from octomate.config.sandbox import SbxSandboxConfig
 from octomate.managers.sandbox import SandboxError, SandboxManager
 from octomate.nerve import Nerve, SandboxTopic, UserTopic
+from octomate.sandbox import Sandbox
 from octomate.sandbox.sbx import SbxOptions, SbxSandbox
 from octomate.schemas.sandbox import InvocationScope, SandboxFailed, SandboxProgress
 from tests.support.nerve import held
@@ -24,14 +24,12 @@ from tests.test_sandbox_contracts import IMAGE
 
 @pytest.fixture
 def scope() -> InvocationScope:
-    return InvocationScope(user_id=uuid7(), sandbox="local", conversation_id=uuid7())
+    return InvocationScope(user_id=uuid7(), conversation_id=uuid7())
 
 
 @pytest.fixture
 def manager(monkeypatch: pytest.MonkeyPatch, scope: InvocationScope) -> SandboxManager:
-    manager = SandboxManager(
-        [SbxSandboxConfig(id="local", image=IMAGE, idle_timeout=0.01)], Nerve()
-    )
+    manager = SandboxManager(SbxSandboxConfig(image=IMAGE, idle_timeout=0.01), Nerve())
     monkeypatch.setattr(SbxSandbox, "preflight", AsyncMock())
     monkeypatch.setattr(
         SbxSandbox,
@@ -46,8 +44,9 @@ def manager(monkeypatch: pytest.MonkeyPatch, scope: InvocationScope) -> SandboxM
             names.add(options["name"])
         if args[0] == "exec":
             assert args[2] == "printenv"
-            internet_access = str(manager.configs["local"].internet_access).lower()
-            return f"local\n{scope.user_id}\n{IMAGE}\n2\n2048\n{internet_access}\n".encode()
+            assert isinstance(manager.config, SbxSandboxConfig)
+            internet_access = str(manager.config.internet_access).lower()
+            return f"{scope.user_id}\n{IMAGE}\n2\n2048\n{internet_access}\n".encode()
         return "\n".join(sorted(names)).encode() if args[0] == "ls" else b""
 
     monkeypatch.setattr(SbxSandbox, "command", AsyncMock(side_effect=command))
@@ -117,8 +116,8 @@ async def test_cancelled_prepare_stops_runtime_without_launching_an_agent(
 async def test_create_is_mountless_scoped_and_budgeted(
     manager: SandboxManager, scope: InvocationScope, internet_access: bool
 ) -> None:
-    manager.configs["local"] = SbxSandboxConfig(
-        id="local", image=IMAGE, idle_timeout=0.01, internet_access=internet_access
+    manager.config = SbxSandboxConfig(
+        image=IMAGE, idle_timeout=0.01, internet_access=internet_access
     )
     async with (
         manager.nerve.subscribe(UserTopic(scope.user_id)) as events,
@@ -139,7 +138,6 @@ async def test_create_is_mountless_scoped_and_budgeted(
     assert create.args[0] == "create"
     assert (Path(create.args[1]) / "spec.yaml").is_file()
     assert create.kwargs["kit_arg"] == [
-        "id=local",
         f"user_id={scope.user_id}",
         f"image={IMAGE}",
         "cpus=2",
@@ -160,14 +158,19 @@ async def test_create_is_mountless_scoped_and_budgeted(
     )
 
 
-async def test_manager_uses_the_sandbox_protocol(
+async def test_manager_uses_the_sandbox_base_class(
     manager: SandboxManager, scope: InvocationScope
 ) -> None:
     calls: list[str] = []
 
-    @dataclass
-    class OtherSandbox:
-        name: str
+    class OtherSandbox(Sandbox):
+        @property
+        def name(self) -> str:
+            return "another-runtime"
+
+        @property
+        def idle_timeout(self) -> float:
+            return 0.01
 
         async def prepare(self) -> None:
             calls.append("prepare")
@@ -183,7 +186,7 @@ async def test_manager_uses_the_sandbox_protocol(
             calls.append("stop")
 
     state = manager.state(scope)
-    state.sandbox = OtherSandbox(name="another-runtime")
+    state.sandbox = OtherSandbox()
     async with manager.acquire(scope, uuid7()):
         assert state.snapshot.phase == "ready"
         assert manager.snapshot(scope).sandbox == "another-runtime"
@@ -207,14 +210,13 @@ async def test_reuse_does_not_create_or_replace_a_sandbox(
     assert "create" not in [c.args[0] for c in command.await_args_list]
 
 
-@pytest.mark.parametrize("field", [0, 1, 2, 3, 4, 5])
+@pytest.mark.parametrize("field", [0, 1, 2, 3, 4])
 async def test_configuration_mismatch_stops_runtime_without_replacing_it(
     manager: SandboxManager, scope: InvocationScope, field: int
 ) -> None:
     command = SbxSandbox.command
     assert isinstance(command, AsyncMock)
     metadata = [
-        b"local",
         str(scope.user_id).encode(),
         IMAGE.encode(),
         b"2",
@@ -329,32 +331,37 @@ async def test_first_acquisitions_race_without_creating_two_vms(
     await manager.close()
 
 
+def sbx_replies(version: str, forwarding: str = "false") -> AsyncMock:
+    replies = {"version": version, "settings": f"{forwarding}\n"}
+    return AsyncMock(side_effect=lambda *args: replies[args[0]].encode())
+
+
 @pytest.mark.parametrize(
-    ("system", "machine", "version", "error"),
+    ("system", "machine", "version", "forwarding", "error"),
     [
-        ("Darwin", "arm64", "0.48.0", None),
-        ("Darwin", "x86_64", "0.48.0", "Apple Silicon"),
-        ("Windows", "AMD64", "0.48.0", "macOS and Linux"),
-        ("Darwin", "arm64", "0.49.0", "pinned sbx release"),
+        ("Darwin", "arm64", "0.48.0", "false", None),
+        ("Darwin", "x86_64", "0.48.0", "false", "Apple Silicon"),
+        ("Windows", "AMD64", "0.48.0", "false", "macOS and Linux"),
+        ("Darwin", "arm64", "0.49.0", "false", "pinned sbx release"),
+        ("Darwin", "arm64", "0.48.0", "true", "SSH agent forwarding"),
     ],
 )
 @pytest.mark.parametrize("prefix", ["Client Version: v", "sbx version v"])
-async def test_preflight_checks_host_and_exact_cli_version(
+async def test_preflight_checks_host_cli_version_and_ssh_forwarding(
     monkeypatch: pytest.MonkeyPatch,
     system: str,
     machine: str,
     version: str,
+    forwarding: str,
     error: str | None,
     prefix: str,
 ) -> None:
-    sandbox = SbxSandbox(SbxSandboxConfig(id="local", image=IMAGE), uuid7())
+    sandbox = SbxSandbox(SbxSandboxConfig(image=IMAGE), uuid7())
     monkeypatch.setattr(sandbox_module.platform, "system", lambda: system)
     monkeypatch.setattr(sandbox_module.platform, "machine", lambda: machine)
     monkeypatch.setattr(sandbox_module.platform, "mac_ver", lambda: ("14.1", (), ""))
     monkeypatch.setattr(
-        sandbox,
-        "command",
-        AsyncMock(return_value=f"{prefix}{version} build\n".encode()),
+        sandbox, "command", sbx_replies(f"{prefix}{version} build\n", forwarding)
     )
     if error is None:
         await sandbox.preflight()
@@ -382,7 +389,7 @@ async def test_linux_preflight_requires_supported_host_and_accessible_kvm(
     kvm: bool,
     error: str | None,
 ) -> None:
-    sandbox = SbxSandbox(SbxSandboxConfig(id="local", image=IMAGE), uuid7())
+    sandbox = SbxSandbox(SbxSandboxConfig(image=IMAGE), uuid7())
     monkeypatch.setattr(sandbox_module.platform, "system", lambda: "Linux")
     monkeypatch.setattr(sandbox_module.platform, "machine", lambda: machine)
     monkeypatch.setattr(
@@ -392,7 +399,7 @@ async def test_linux_preflight_requires_supported_host_and_accessible_kvm(
     )
     monkeypatch.setattr(sandbox_module.os, "access", lambda path, mode: kvm)
     monkeypatch.setattr(
-        sandbox, "command", AsyncMock(return_value=b"Client Version: v0.48.0 build\n")
+        sandbox, "command", sbx_replies("Client Version: v0.48.0 build\n")
     )
     if error is None:
         await sandbox.preflight()

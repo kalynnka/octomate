@@ -20,8 +20,8 @@ async def test_guest_cli_controls_and_process_cleanup() -> None:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
-    manager = SandboxManager([SbxSandboxConfig(id="local", image=image)], Nerve())
-    scope = InvocationScope(user_id=uuid7(), sandbox="local", conversation_id=uuid7())
+    manager = SandboxManager(SbxSandboxConfig(image=image), Nerve())
+    scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
     state = manager.state(scope)
     sandbox = state.sandbox
     assert isinstance(sandbox, SbxSandbox)

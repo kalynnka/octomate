@@ -238,7 +238,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             files=octomate.files,
             auth=auth,
             sandboxes=sandboxes,
-            sandbox=config.sandbox,
         )
         self.config = config
         self.conversations = octomate.conversations

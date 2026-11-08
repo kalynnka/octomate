@@ -81,9 +81,9 @@ async def test_single_user_resource_cost(tmp_path: Path) -> None:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
-    config = SbxSandboxConfig(id="local", image=image)
-    manager = SandboxManager([config], Nerve())
-    scope = InvocationScope(user_id=uuid7(), sandbox="local", conversation_id=uuid7())
+    config = SbxSandboxConfig(image=image)
+    manager = SandboxManager(config, Nerve())
+    scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
     sandbox = manager.state(scope).sandbox
     assert isinstance(sandbox, SbxSandbox)
     assert (

@@ -95,7 +95,6 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     api_keys: dict[UUID7, IssuedApiKey]  # One MCP credential per user for this agent.
     api_key_lock: asyncio.Lock
     sandboxes: SandboxManager
-    sandbox: str | None = None  # Selected provider ID; None runs natively.
     # Programmatically assembled agents may have no deployment config.
     config: AgentConfig | None = None
 
@@ -110,7 +109,6 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         files: FileManager,
         auth: AuthManager | None,
         sandboxes: SandboxManager,
-        sandbox: str | None = None,
     ) -> None:
         super().__init__(id=id, octomate=octomate)
         self.commands = commands
@@ -121,7 +119,6 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         self.api_keys = {}
         self.api_key_lock = asyncio.Lock()
         self.sandboxes = sandboxes
-        self.sandbox = sandbox
 
     async def runtime_api_key(self, user_id: UUID7 | None) -> IssuedApiKey | None:
         """Reuse the user's MCP credential, replacing it when its lifetime expires."""

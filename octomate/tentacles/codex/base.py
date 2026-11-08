@@ -342,7 +342,6 @@ class CodexTentacle(AgentTentacle[str, None]):
             files=files,
             auth=auth,
             sandboxes=sandboxes,
-            sandbox=config.sandbox,
         )
         self.conversations = conversations
         self.deferred_actions = deferred_actions

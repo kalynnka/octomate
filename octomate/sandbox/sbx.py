@@ -18,7 +18,7 @@ from anyio.abc import UNIXSocketStream
 from pydantic import UUID7
 
 from octomate.config.sandbox import SbxSandboxConfig
-from octomate.sandbox.base import SandboxError
+from octomate.sandbox.base import Sandbox, SandboxError
 
 COMMAND_TIMEOUT = 30.0
 PREPARE_TIMEOUT = 300.0
@@ -27,7 +27,6 @@ PREPARE_TIMEOUT = 300.0
 class SbxKitArgs(TypedDict):
     """Inputs declared by the bundled sandbox kit's args block."""
 
-    id: str
     user_id: UUID7
     image: str
     cpus: int
@@ -48,14 +47,18 @@ class SbxOptions(TypedDict, total=False):
 
 
 @dataclass
-class SbxSandbox:
+class SbxSandbox(Sandbox):
     config: SbxSandboxConfig
     user_id: UUID7
     managed: bool = field(default=False, init=False)  # Name found or create tried.
 
     @property
     def name(self) -> str:
-        return f"octomate-{self.config.id}-{self.user_id.hex}"
+        return f"octomate-{self.user_id.hex}"
+
+    @property
+    def idle_timeout(self) -> float:
+        return self.config.idle_timeout
 
     def cli(self) -> sh.Command[sh.RunningCommand]:
         """Keep host credentials out of child processes and use ordinary stdio."""
@@ -137,12 +140,17 @@ class SbxSandbox:
             version,
         ):
             raise SandboxError(f"Install the pinned sbx release {self.config.version}")
+        forwarding = await self.command("settings", "get", "ssh.agentForwardingEnabled")
+        if forwarding.strip() != b"false":
+            raise SandboxError(
+                "Turn off sbx SSH agent forwarding: sbx settings set "
+                "ssh.agentForwardingEnabled false, then sbx daemon restart"
+            )
 
     async def prepare(self) -> None:
         await self.preflight()
         names = (await self.command("ls", quiet=True)).decode().splitlines()
         kit_args: SbxKitArgs = {
-            "id": self.config.id,
             "user_id": self.user_id,
             "image": self.config.image,
             "cpus": self.config.cpus,
@@ -172,7 +180,7 @@ class SbxSandbox:
             str(value).encode() for value in kit_args.values()
         ]:
             raise SandboxError(
-                "Existing sandbox deployment, owner, image, resource or network settings differ; no automatic replacement is allowed"
+                "Existing sandbox owner, image, resource or network settings differ; no automatic replacement is allowed"
             )
 
     @asynccontextmanager

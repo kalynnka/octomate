@@ -21,18 +21,15 @@ async def test_internet_access_is_applied_at_creation(internet_access: bool) -> 
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
     manager = SandboxManager(
-        [
-            SbxSandboxConfig(
-                id="local",
-                image=image,
-                cpus=1,
-                memory_mib=1024,
-                internet_access=internet_access,
-            )
-        ],
+        SbxSandboxConfig(
+            image=image,
+            cpus=1,
+            memory_mib=1024,
+            internet_access=internet_access,
+        ),
         Nerve(),
     )
-    scope = InvocationScope(user_id=uuid7(), sandbox="local", conversation_id=uuid7())
+    scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
     sandbox = manager.state(scope).sandbox
     assert isinstance(sandbox, SbxSandbox)
     assert (
