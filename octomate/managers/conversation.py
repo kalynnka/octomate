@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Literal, TypeVar
+from typing import Literal, TypeVar, cast
 
 from arcanus import Cursor, Page, RelationCollection
 from arcanus.materia.sqlalchemy import lazyload, noload, selectinload
@@ -17,8 +18,17 @@ from sqlalchemy import Select, and_, func, insert, literal, or_, select
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.files import FileManager
-from octomate.schemas.compactions import Compaction, ExternalCompaction
-from octomate.schemas.conversation import Conversation, ConversationKey, ConversationRun
+from octomate.schemas.compactions import (
+    Compaction,
+    CompactionMembership,
+    ExternalCompaction,
+)
+from octomate.schemas.conversation import (
+    Conversation,
+    ConversationCompaction,
+    ConversationKey,
+    ConversationRun,
+)
 from octomate.schemas.files import FileVariant, Jsonl
 from octomate.schemas.messages import ModelMessage, ModelRequest, ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
@@ -28,7 +38,11 @@ from octomate.schemas.thread import (
     ThreadLedger,
     ThreadMessage,
 )
-from octomate.types.compactions import CompactionSessionKey, CompactionTrigger
+from octomate.types.compactions import (
+    CompactionSessionKey,
+    CompactionStage,
+    CompactionTrigger,
+)
 from octomate.types.permissions import AgentPermissionMode
 
 RunT = TypeVar("RunT", bound=AgentRun)
@@ -59,6 +73,207 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
     `(thread_id, agent_tentacle_id, subagent_id)`: every sender in a group thread
     keys to the same owning agent's conversation, regardless of who woke it.
     """
+
+    async def effective_messages(
+        self, conversation: Conversation
+    ) -> list[ModelRequest | ModelResponse]:
+        """Replay complete, ordered rewrites over the run archive.
+
+        Each input must match the effective prefix at that boundary. Later run
+        messages follow its replacement; unknown membership or order cannot be
+        replayed safely and is refused rather than reviving the archive. Only
+        message ids are replayed; bodies are loaded for the final context.
+        """
+        async with async_session() as session:
+            linked = select(ConversationCompaction["compaction_id"]).where(
+                ConversationCompaction["conversation_id"] == conversation.id
+            )
+            exists, unlinked = (
+                await session.execute(
+                    select(
+                        select(Conversation["id"])
+                        .where(Conversation["id"] == conversation.id)
+                        .exists(),
+                        select(Compaction["id"])
+                        .where(
+                            Compaction["conversation_id"] == conversation.id,
+                            Compaction["id"].not_in(linked),
+                        )
+                        .exists(),
+                    )
+                )
+            ).one()
+            if not exists:
+                raise ValueError(f"unknown conversation {conversation.id}")
+            if unlinked:
+                raise ValueError(
+                    "effective context requires every compaction to be linked"
+                )
+            links = await session.list(
+                ConversationCompaction,
+                limit=None,
+                expressions=[
+                    ConversationCompaction["conversation_id"] == conversation.id
+                ],
+                order_bys=[ConversationCompaction["position"]],
+            )
+            if any(
+                link.position != index for index, link in enumerate(links)
+            ) or await session.scalar(
+                select(
+                    select(Compaction["id"])
+                    .where(
+                        Compaction["id"].in_(linked),
+                        Compaction["membership_complete"].is_(False),
+                    )
+                    .exists()
+                )
+            ):
+                raise ValueError(
+                    "effective context requires complete, ordered compactions"
+                )
+            message_ids = deque(
+                (
+                    await session.scalars(
+                        select(ModelMessage["id"])
+                        .select_from(Conversation)
+                        .join(Conversation["runs"])
+                        .join(AgentRun["messages"])
+                        .where(Conversation["id"] == conversation.id)
+                        .order_by(
+                            AgentRun["started_at"], AgentRun["id"], ModelMessage["id"]
+                        )
+                    )
+                ).all()
+            )
+            members = (
+                await session.list(
+                    CompactionMembership,
+                    limit=None,
+                    expressions=[CompactionMembership["compaction_id"].in_(linked)],
+                    order_bys=[
+                        CompactionMembership["compaction_id"],
+                        CompactionMembership["stage"],
+                        CompactionMembership["position"],
+                    ],
+                )
+                if links
+                else []
+            )
+            stages: dict[UUID7, dict[CompactionStage, list[UUID7]]] = {
+                link.compaction_id: {"before": [], "after": []} for link in links
+            }
+            for member in members:
+                stages[member.compaction_id][member.stage].append(
+                    member.model_message_id
+                )
+            for link in links:
+                before = stages[link.compaction_id]["before"]
+                if (
+                    not before
+                    or len(before) > len(message_ids)
+                    or any(message_ids.popleft() != message_id for message_id in before)
+                ):
+                    raise ValueError(
+                        "compaction input does not match the effective context"
+                    )
+                message_ids.extendleft(reversed(stages[link.compaction_id]["after"]))
+            if not message_ids:
+                return []
+            # Arcanus resolves the abstract query anchor through its concrete mappings.
+            rows = cast(
+                Sequence[ModelRequest | ModelResponse],
+                await session.list(
+                    ModelMessage,
+                    limit=None,
+                    expressions=[ModelMessage["id"].in_(message_ids)],
+                ),
+            )
+        by_id = {message.id: message for message in rows}
+        return [by_id[message_id] for message_id in message_ids]
+
+    async def record_context_compaction(
+        self,
+        conversation: Conversation,
+        *,
+        before: list[ModelRequest | ModelResponse],
+        after: list[ModelRequest | ModelResponse],
+        trigger: CompactionTrigger,
+        happened_at: AwareDatetime | None = None,
+    ) -> Compaction | None:
+        """Persist an exact history rewrite after its original run messages exist.
+
+        Retained inputs keep their ids and ownership. New replacement messages
+        belong to the compaction, whose two ordered stages include every input
+        and output message. A later suffix already archived by the run is allowed.
+        """
+        before_ids = [message.id for message in before]
+        after_ids = [message.id for message in after]
+        if before_ids == after_ids:
+            return None
+        if (
+            not before_ids
+            or len(set(before_ids)) != len(before_ids)
+            or len(set(after_ids)) != len(after_ids)
+        ):
+            raise ValueError(
+                "compaction requires nonempty input and unique stage members"
+            )
+        async with self.lock(conversation.key):
+            effective = await self.effective_messages(conversation)
+            if [message.id for message in effective[: len(before)]] != before_ids:
+                raise ValueError(
+                    "compaction input does not match the effective context"
+                )
+            replacements = [
+                message for message in after if message.id not in before_ids
+            ]
+            if any(
+                message.run_id is not None or message.compaction_id is not None
+                for message in replacements
+            ):
+                raise ValueError("replacement messages must not already have an owner")
+            for message in replacements:
+                message.conversation_id = str(conversation.id)
+            compaction = Compaction(
+                conversation_id=conversation.id,
+                trigger=trigger,
+                happened_at=happened_at,
+                membership_complete=True,
+                messages=RelationCollection(replacements),
+            )
+            async with async_session() as session:
+                position = await session.count(
+                    ConversationCompaction,
+                    expressions=[
+                        ConversationCompaction["conversation_id"] == conversation.id
+                    ],
+                )
+                session.add(compaction)
+                await session.flush()
+                stages: tuple[tuple[CompactionStage, list[UUID7]], ...] = (
+                    ("before", before_ids),
+                    ("after", after_ids),
+                )
+                session.add_all(
+                    CompactionMembership(
+                        compaction_id=compaction.id,
+                        stage=stage,
+                        position=index,
+                        model_message_id=message_id,
+                    )
+                    for stage, message_ids in stages
+                    for index, message_id in enumerate(message_ids)
+                )
+                session.add(
+                    ConversationCompaction(
+                        conversation_id=conversation.id,
+                        compaction_id=compaction.id,
+                        position=position,
+                    )
+                )
+                await session.commit()
+            return compaction
 
     async def record_driven_compaction(
         self,
