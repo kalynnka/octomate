@@ -144,14 +144,9 @@ async def test_create_is_mountless_scoped_and_budgeted(
         "memory_mib=2048",
         f"internet_access={str(internet_access).lower()}",
     ]
-    kits = create.kwargs["kit"]
-    assert kits == ([] if internet_access else [str(Path(create.args[1]) / "offline")])
-    for kit in kits:
-        assert (Path(kit) / "spec.yaml").is_file()
+    assert create.kwargs["deny_network"] == ([] if internet_access else ["**"])
     assert create.kwargs["skills"] == "off"
-    assert not {"template", "cpus", "memory", "env", "deny_network"}.intersection(
-        create.kwargs
-    )
+    assert not {"template", "cpus", "memory", "env", "kit"}.intersection(create.kwargs)
     assert not {"mount", "volume", "workspace"}.intersection(create.kwargs)
     assert not {"rm", "prune", "reset"}.intersection(
         c.args[0] for c in command.await_args_list

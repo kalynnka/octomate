@@ -42,7 +42,7 @@ class SbxOptions(TypedDict, total=False):
     skills: Literal["off", "readonly", "readwrite"]
     no_progress: bool
     quiet: bool
-    kit: list[str]
+    deny_network: list[str]
     kit_arg: list[str]
 
 
@@ -159,12 +159,11 @@ class SbxHabitat(Habitat):
         }
         self.managed = True
         if self.name not in names:
-            kit = Path(__file__).with_suffix("") / "kits"
             await self.command(
                 "create",
-                str(kit),
+                str(Path(__file__).parent),
                 kit_arg=[f"{key}={value}" for key, value in kit_args.items()],
-                kit=[] if self.config.internet_access else [str(kit / "offline")],
+                deny_network=[] if self.config.internet_access else ["**"],
                 name=self.name,
                 pull="missing",
                 skills="off",
