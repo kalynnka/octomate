@@ -740,6 +740,68 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             )
         )
 
+    @overload
+    def iter_graph_events(
+        self,
+        *,
+        user_prompt: str | Sequence[UserContent] | None,
+        conversation_address: ChannelAddress,
+        thread_id: UUID7 | None,
+        source_thread_address: ChannelAddress | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
+        run_name: str | None = None,
+        output_type: None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: DeferredSuspender | None = None,
+        model: Model | KnownModelName | str | None = None,
+        effort: str | None = None,
+        conversation_id: UUID7 | None = None,
+        interactive: bool = True,
+        instructions: AgentInstructions[None] = None,
+        deps: None = None,
+        model_settings: AgentModelSettings[None] | None = None,
+        usage_limits: UsageLimits | None = None,
+        usage: RunUsage | None = None,
+        metadata: AgentMetadata[None] | None = None,
+        output_retries: int | None = None,
+        infer_name: bool = True,
+        toolsets: Sequence[AbstractToolset[None]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[None]] | None = None,
+        capabilities: Sequence[AgentCapability[None]] | None = None,
+        spec: AgentSpecInput | None = None,
+    ) -> AsyncGenerator[ReactStreamEvent[InklingOutput], None]: ...
+
+    @overload
+    def iter_graph_events(
+        self,
+        *,
+        user_prompt: str | Sequence[UserContent] | None,
+        conversation_address: ChannelAddress,
+        thread_id: UUID7 | None,
+        source_thread_address: ChannelAddress | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
+        run_name: str | None = None,
+        output_type: OutputSpec[RunOutputDataT] | None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: DeferredSuspender | None = None,
+        model: Model | KnownModelName | str | None = None,
+        effort: str | None = None,
+        conversation_id: UUID7 | None = None,
+        interactive: bool = True,
+        instructions: AgentInstructions[None] = None,
+        deps: None = None,
+        model_settings: AgentModelSettings[None] | None = None,
+        usage_limits: UsageLimits | None = None,
+        usage: RunUsage | None = None,
+        metadata: AgentMetadata[None] | None = None,
+        output_retries: int | None = None,
+        infer_name: bool = True,
+        toolsets: Sequence[AbstractToolset[None]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[None]] | None = None,
+        capabilities: Sequence[AgentCapability[None]] | None = None,
+        spec: AgentSpecInput | None = None,
+    ) -> AsyncGenerator[ReactStreamEvent[InklingOutput | RunOutputDataT], None]: ...
+
     async def iter_graph_events(
         self,
         *,
