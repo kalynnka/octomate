@@ -26,13 +26,16 @@ from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.trunkline import TrunklineTentacle
 from octomate.types.auth import ApiKeyScope
 from tests.support.agents import build_scripted_agent
+from tests.support.mcp import served_inkling_mcp
 from tests.support.nerve import settled
 
 PASSWORD = "Correct horse battery staple1!"
 
 
 @pytest.fixture
-async def app(in_memory_engine: AsyncEngine) -> Octomate:
+async def app(
+    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> AsyncGenerator[Octomate]:
     application = Octomate(
         config=OctomateConfig(
             auth=AuthConfig(
@@ -46,7 +49,12 @@ async def app(in_memory_engine: AsyncEngine) -> Octomate:
     assert agent.model is not None
     application.connect(
         InklingTentacle(
-            "inkling", application, agent=agent, models={"test": agent.model}
+            "inkling",
+            application,
+            auth=application.auth,
+            sandboxes=application.sandboxes,
+            agent=agent,
+            models={"test": agent.model},
         )
     )
     channel = application.connect(
@@ -57,7 +65,8 @@ async def app(in_memory_engine: AsyncEngine) -> Octomate:
         )
     )
     await channel.probe()
-    return application
+    async with served_inkling_mcp(application, monkeypatch):
+        yield application
 
 
 @pytest.fixture

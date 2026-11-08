@@ -6,7 +6,7 @@ from typing import Annotated, NotRequired, TypedDict
 
 from arcanus import BaseTransmuter
 from arcanus.base import Identity
-from pydantic import UUID7, AwareDatetime, ConfigDict, Field
+from pydantic import UUID7, AwareDatetime, BaseModel, ConfigDict, Field
 from pydantic_ai._utils import now_utc
 from uuid_utils.compat import uuid7
 
@@ -43,3 +43,30 @@ class TodoWrite(TypedDict):
     ref: NotRequired[str | None]
     parent_ref: NotRequired[str | None]
     depends_on: NotRequired[list[str]]
+
+
+class TodoItem(BaseModel):
+    """One todo in a `write_todos` call (the model rewrites the whole list)."""
+
+    content: str = Field(
+        description="Imperative task title, e.g. 'Fix the login bug'.",
+    )
+    status: TodoStatus = Field(
+        default="pending",
+        description="pending, in_progress, completed, or blocked.",
+    )
+    active_form: str = Field(
+        description="Present-continuous label, e.g. 'Fixing the login bug'.",
+    )
+    id: str | None = Field(
+        default=None,
+        description="Existing todo id to keep; omit to create a new one.",
+    )
+    parent_id: str | None = Field(
+        default=None,
+        description="Parent todo id when this is a subtask.",
+    )
+    depends_on: list[str] = Field(
+        default_factory=list,
+        description="Ids of todos that must complete before this one.",
+    )

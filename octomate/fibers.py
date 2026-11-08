@@ -1,4 +1,4 @@
-"""Buffered stream ends backed by memory or by a duplex stdio connection."""
+"""One-way buffered streams backed by memory or one end of a stdio pipe."""
 
 from __future__ import annotations
 
@@ -7,7 +7,12 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 
 import anyio
-from anyio.abc import AnyByteReceiveStream, AnyByteSendStream
+from anyio.abc import (
+    AnyByteReceiveStream,
+    AnyByteSendStream,
+    ObjectReceiveStream,
+    ObjectSendStream,
+)
 from anyio.streams.buffered import BufferedByteReceiveStream
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from pydantic import TypeAdapter, ValidationError
@@ -21,18 +26,37 @@ class FiberError(RuntimeError):
 
 
 @dataclass(eq=False)
-class Fiber[ItemT]:
-    """Buffered send and receive ends; each implementation owns their connection."""
+class Fiber[ItemT](ObjectSendStream[ItemT], ObjectReceiveStream[ItemT]):
+    """One stream from a producer to a consumer, with bounded optional buffering."""
 
-    send: MemoryObjectSendStream[ItemT]
-    receive: MemoryObjectReceiveStream[ItemT]
+    sender: MemoryObjectSendStream[ItemT]
+    receiver: MemoryObjectReceiveStream[ItemT]
     failure: FiberError | None = field(default=None, init=False)
     closed: bool = field(default=False, init=False)
 
+    async def send(self, item: ItemT) -> None:
+        await self.sender.send(item)
+
+    def send_nowait(self, item: ItemT) -> None:
+        self.sender.send_nowait(item)
+
+    async def receive(self) -> ItemT:
+        return await self.receiver.receive()
+
+    def receive_nowait(self) -> ItemT:
+        return self.receiver.receive_nowait()
+
+    def close_send(self) -> None:
+        """End production while allowing the consumer to drain queued items."""
+        self.sender.close()
+
     def close(self) -> None:
         self.closed = True
-        self.send.close()
-        self.receive.close()
+        self.sender.close()
+        self.receiver.close()
+
+    async def aclose(self) -> None:
+        self.close()
 
     def fail(self, error: FiberError) -> None:
         self.failure = error
@@ -50,40 +74,54 @@ class MemoryFiber[ItemT](Fiber[ItemT]):
         """End delivery while allowing the subscriber to drain its backlog."""
         self.failure = error
         self.closed = True
-        self.send.close()
+        self.close_send()
 
 
 class StdioFiber[ItemT](Fiber[ItemT]):
-    """Encode outgoing items and decode incoming items on independent stdio pipes.
+    """One local endpoint: receive from an input pipe or send to an output pipe."""
 
-    Framing and I/O belong here. The fiber has no knowledge of nerve topics,
-    subscribers or routing, and never loops its own outgoing items back locally.
-    """
-
-    input: BufferedByteReceiveStream
-    output: AnyByteSendStream
+    input: BufferedByteReceiveStream | None
+    output: AnyByteSendStream | None
     adapter: TypeAdapter[ItemT]
-    incoming: MemoryObjectSendStream[ItemT]
-    outgoing: MemoryObjectReceiveStream[ItemT]
     task: asyncio.Task[None] | None
 
     def __init__(
         self,
-        receive: AnyByteReceiveStream,
-        send: AnyByteSendStream,
         adapter: TypeAdapter[ItemT],
+        *,
+        input: AnyByteReceiveStream | None = None,
+        output: AnyByteSendStream | None = None,
     ) -> None:
-        outgoing_send, self.outgoing = anyio.create_memory_object_stream[ItemT](
-            FIBER_BUFFER
-        )
-        self.incoming, incoming_receive = anyio.create_memory_object_stream[ItemT](
-            FIBER_BUFFER
-        )
-        super().__init__(outgoing_send, incoming_receive)
-        self.input = BufferedByteReceiveStream(receive)
-        self.output = send
+        if (input is None) == (output is None):
+            raise ValueError(
+                "A stdio fiber requires exactly one input or output stream"
+            )
+        sender, receiver = anyio.create_memory_object_stream[ItemT](FIBER_BUFFER)
+        super().__init__(sender, receiver)
+        self.input = BufferedByteReceiveStream(input) if input is not None else None
+        self.output = output
         self.adapter = adapter
         self.task = None
+
+    async def send(self, item: ItemT) -> None:
+        if self.output is None:
+            raise FiberError("This stdio fiber has no local sending endpoint")
+        await super().send(item)
+
+    def send_nowait(self, item: ItemT) -> None:
+        if self.output is None:
+            raise FiberError("This stdio fiber has no local sending endpoint")
+        super().send_nowait(item)
+
+    async def receive(self) -> ItemT:
+        if self.input is None:
+            raise FiberError("This stdio fiber has no local receiving endpoint")
+        return await super().receive()
+
+    def receive_nowait(self) -> ItemT:
+        if self.input is None:
+            raise FiberError("This stdio fiber has no local receiving endpoint")
+        return super().receive_nowait()
 
     def start(self) -> asyncio.Task[None]:
         if self.task is not None or self.closed:
@@ -92,6 +130,8 @@ class StdioFiber[ItemT](Fiber[ItemT]):
         return self.task
 
     async def read(self) -> None:
+        if self.input is None:
+            raise FiberError("This stdio fiber has no input stream")
         while True:
             try:
                 line = await self.input.receive_until(b"\n", MAX_FRAME_BYTES + 1)
@@ -107,10 +147,12 @@ class StdioFiber[ItemT](Fiber[ItemT]):
                 item = self.adapter.validate_json(line)
             except ValidationError:
                 raise FiberError("Invalid stdio frame") from None
-            await self.incoming.send(item)
+            await self.sender.send(item)
 
     async def write(self) -> None:
-        async for item in self.outgoing:
+        if self.output is None:
+            raise FiberError("This stdio fiber has no output stream")
+        async for item in self.receiver:
             frame = self.adapter.dump_json(item, warnings=False)
             if len(frame) > MAX_FRAME_BYTES:
                 raise FiberError("Stdio frame exceeds the size limit")
@@ -118,22 +160,18 @@ class StdioFiber[ItemT](Fiber[ItemT]):
 
     async def run(self) -> None:
         try:
-            async with asyncio.TaskGroup() as tasks:
-                tasks.create_task(self.write())
-                try:
-                    await self.read()
-                finally:
-                    self.send.close()
-        except ExceptionGroup:
+            if self.input is not None:
+                await self.read()
+            else:
+                await self.write()
+        except Exception:
             self.failure = self.failure or FiberError("Stdio fiber connection failed")
         finally:
             await self.close_streams()
 
     def disconnect(self) -> None:
         self.closed = True
-        self.send.close()
-        self.outgoing.close()
-        self.incoming.close()
+        self.close_send()
 
     def close(self) -> None:
         self.disconnect()
@@ -142,8 +180,10 @@ class StdioFiber[ItemT](Fiber[ItemT]):
 
     async def close_streams(self) -> None:
         self.disconnect()
-        await self.output.aclose()
-        await self.input.aclose()
+        if self.output is not None:
+            await self.output.aclose()
+        if self.input is not None:
+            await self.input.aclose()
 
     async def wait_closed(self) -> None:
         if self.task is None:
@@ -162,4 +202,4 @@ class StdioFiber[ItemT](Fiber[ItemT]):
             with suppress(asyncio.CancelledError):
                 await self.task
         await self.close_streams()
-        self.receive.close()
+        self.receiver.close()

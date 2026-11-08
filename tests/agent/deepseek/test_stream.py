@@ -62,7 +62,12 @@ async def db(in_memory_engine: AsyncEngine) -> None:
 def stream_client() -> tuple[TestClient, DeepseekTentacle]:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
     tentacle = octomate.connect(
-        DeepseekTentacle("deepseek", octomate, config=DeepseekConfig())
+        DeepseekTentacle(
+            octomate,
+            auth=octomate.auth,
+            sandboxes=octomate.sandboxes,
+            config=DeepseekConfig(),
+        )
     )
 
     @asynccontextmanager
@@ -236,33 +241,27 @@ def test_a_session_already_used_by_the_sdk_streams_as_external() -> None:
             [state] = tentacle.session_tailer.sessions.values()
             assert state.conversation is not None
             assert state.conversation.id != sdk.id
-            assert state.conversation.agent_tentacle_id == "deepseek-native"
+            assert state.conversation.agent_tentacle_id == tentacle.id
+            uploaded_thread = client.portal.call(
+                tentacle.threads.get, state.conversation.thread_id
+            )
+            assert uploaded_thread is not None
+            assert uploaded_thread.kind == "native_thread"
+            assert uploaded_thread.active_agent_tentacle_id == tentacle.id
             websocket.send_text(StreamEof().model_dump_json())
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
 
 
-@pytest.mark.parametrize("other_tentacle", [False, True])
-async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
-    other_tentacle: bool,
-) -> None:
+async def test_driven_sessions_are_accepted_by_both_ingest_endpoints() -> None:
     client, tentacle = stream_client()
-    driver = (
-        tentacle.octomate.connect(
-            DeepseekTentacle(
-                "other-deepseek", tentacle.octomate, config=DeepseekConfig()
-            )
-        )
-        if other_tentacle
-        else tentacle
-    )
 
     async def native_threads() -> list[Thread]:
         async with async_session() as session:
             return list(await session.list(Thread, limit=None, order_bys=[]))
 
     with client:
-        async with driver.driving(SESSION_ID):
+        async with tentacle.driving(SESSION_ID):
             for event in ("UserPromptSubmit", "Stop"):
                 posted = client.post(
                     DEEPSEEK_HOOK_PATH,
@@ -283,7 +282,7 @@ async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
             assert client.portal is not None
             assert len(client.portal.call(native_threads)) == 1
 
-        assert driver.driven_sessions == {}
+        assert tentacle.driven_sessions == {}
         posted = client.post(
             DEEPSEEK_HOOK_PATH,
             json={"hook_event_name": "UserPromptSubmit", "session_id": SESSION_ID},

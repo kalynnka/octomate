@@ -28,9 +28,12 @@ async def test_inkling_deepseek_returns_segments(live_config: OctomateConfig) ->
     if model_config is None:
         pytest.skip("inkling has no configured DeepSeek model")
     model = ProviderRegistry(live_config.providers).build_model(model_config)
+    host = Octomate(config=live_config)
     inkling = InklingTentacle(
         "inkling",
-        Octomate(config=live_config),
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
         models={model_config.name: model},
         system_prompt=SYSTEM_PROMPT,
     )

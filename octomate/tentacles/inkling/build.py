@@ -1,9 +1,8 @@
 """Composing the configured inkling agent into its tentacle.
 
-The counterpart to `build_channel`, and it does more than dispatch because inkling is
-the one agent assembled rather than handed a config: its models come from the provider
-registry and its capability stack from its own config. That assembly is the thing
-worth having in one place — a launcher should ask for the tentacle, not know how one
+The counterpart to `build_channel`, and it does more than dispatch: inkling's models
+come from the provider registry and its capability stack from its own config. That
+assembly is worth having in one place — a launcher should ask for the tentacle, not know how one
 is made. The providers — Slack, Linear, a vendor's server — reach it per run, from
 the host's tentacles, not from here.
 
@@ -26,6 +25,8 @@ from octomate.tentacles.inkling.base import InklingTentacle
 
 if TYPE_CHECKING:
     from octomate import Octomate
+    from octomate.managers.auth import AuthManager
+    from octomate.managers.sandbox import SandboxManager
     from octomate.providers import ProviderRegistry
 
 
@@ -35,6 +36,8 @@ def build_inkling(
     octomate: Octomate,
     *,
     registry: ProviderRegistry,
+    auth: AuthManager | None,
+    sandboxes: SandboxManager,
 ) -> InklingTentacle:
     """The inkling tentacle, with its models and capability stack.
 
@@ -52,8 +55,6 @@ def build_inkling(
     from pydantic_ai_harness.warn_on_cache_busts import WarnOnCacheBusts
 
     from octomate.capabilities.ask import AskCapability
-    from octomate.capabilities.history import HistoryCapability
-    from octomate.capabilities.todos import TodoCapability
     from octomate.capabilities.tools import ToolFailureCapability
     from octomate.managers.spills import SpillStore
     from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
@@ -64,18 +65,6 @@ def build_inkling(
         WarnOnCacheBusts(),
         ToolFailureCapability(),
         AskCapability(),
-        TodoCapability(
-            id="todos",
-            description="Persisted task list for planning and tracking multi-step work.",
-            defer_loading=True,
-        ),
-        HistoryCapability(
-            octomate.threads,
-            id="history",
-            description="Search and page every thread the person you are answering "
-            "has spoken in, on any of their linked accounts.",
-            defer_loading=True,
-        ),
     ]
     # An MCP server answers with whatever it answers with, and a tool return persists
     # in history, so one oversized reply is re-sent on every later request for the rest
@@ -120,6 +109,9 @@ def build_inkling(
         id,
         octomate,
         models=models,
+        auth=auth,
+        sandboxes=sandboxes,
+        sandbox=config.sandbox,
         naming_model=(
             registry.build_model(config.naming_model)
             if config.naming_model is not None
@@ -129,6 +121,7 @@ def build_inkling(
         permission_mode=config.permission_mode,
         request_limit=config.request_limit,
         gateway=config.gateway,
+        config=config,
         capabilities=capabilities,
         system_prompt=SYSTEM_PROMPT,
     )

@@ -9,7 +9,8 @@ They speak to it in memory, which is how a driven Claude run reaches it too.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from contextlib import nullcontext
+from dataclasses import asdict, replace
 from inspect import cleandoc
 from unittest.mock import AsyncMock
 
@@ -17,10 +18,15 @@ import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 from octomate_protocol.gateway import gateway_tool
+from pydantic import JsonValue
+from pydantic_ai import RunContext
+from pydantic_ai.mcp import MCPToolset
+from pydantic_ai.models.test import TestModel
+from pydantic_ai.usage import RunUsage
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.gateway import GatewayCapability, gateway_instructions
 from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.capabilities.history import HistoryCapability
 from octomate.config.channels import TrunklineChannelConfig
@@ -28,7 +34,12 @@ from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
-from octomate.mcp.gateway import NATIVE_TELEPORT_STARTED, TELEPORT_RECORDED
+from octomate.mcp.gateway import (
+    HANDOFF_INSTRUCTION,
+    NATIVE_TELEPORT_STARTED,
+    TELEPORT_RECORDED,
+    gateway_instructions,
+)
 from octomate.mcp.server import octomate_mcp
 from octomate.nerve import Nerve, ThreadTopic
 from octomate.schemas.awakes import NativeGatewaySignal
@@ -44,10 +55,16 @@ from octomate.schemas.triage import (
     TeleportDecision,
 )
 from octomate.schemas.user import UserProfile
+from octomate.tentacles.claude.mcp import sdk_tool
 from octomate.tentacles.trunkline import TrunklineTentacle
-from octomate.types.threads import CLAUDE_NATIVE_ID
+from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
-from tests.support.managers import FakeThreadManager, fixed_session
+from tests.support.managers import (
+    FakeConversationManager,
+    FakeThreadManager,
+    fixed_session,
+)
+from tests.support.mcp import core_tool_server
 from tests.support.nerve import drawing, held
 from tests.support.users import a_user
 
@@ -92,6 +109,7 @@ def a_turn(
         fixed_session(session),
         threads,
         manager=McpManager(users=threads.users, cipher=None),
+        conversations=FakeConversationManager(),
     )
     return server, session, channel, threads
 
@@ -116,11 +134,11 @@ async def a_native_call(
     threads = FakeThreadManager()
     session = OctomateSession(
         channel_routes={"im": [CLAUDE_ROUTE]},
-        current_agent_id=CLAUDE_NATIVE_ID,
+        current_agent_id="coding",
         channels={"im": channel},
         nerve=channel.octomate.nerve,
         users=users,
-        user_profile=await users.native_profile(CLAUDE_NATIVE_ID, "luhui"),
+        user_profile=await users.native_profile("coding", "luhui"),
         native=True,
     )
 
@@ -132,14 +150,13 @@ async def a_native_call(
         threads,
         kick=kick,
         manager=McpManager(users=threads.users, cipher=None),
+        conversations=FakeConversationManager(),
     )
     return server, session, channel, threads, kicks
 
 
 async def test_the_server_offers_the_shared_spells() -> None:
-    # The accomplice spells are deliberately absent: external runtimes bring
-    # their own subagent systems.
-    server, session, _channel, _threads = a_turn()
+    server, _session, _channel, _threads = a_turn()
 
     tools = [
         tool
@@ -154,26 +171,104 @@ async def test_the_server_offers_the_shared_spells() -> None:
         "gateway_scheme",
         "gateway_send",
         "gateway_dismiss",
+        "gateway_commission",
+        "gateway_whisper",
         "history_search",
         "history_read_before",
         "history_read_after",
     ]
     assert "gateway_dispel" not in {tool.name for tool in tools}
-    capability = GatewayCapability(session=session)
-    assert capability.toolset is not None
-    assert "dismiss" in capability.toolset.tools
-    assert "dispel" not in capability.toolset.tools
+    assert "gateway_dismiss" in {tool.name for tool in tools}
+    assert "gateway_dispel" not in {tool.name for tool in tools}
 
 
-async def test_descriptions_are_the_inkling_contracts_verbatim() -> None:
+@pytest.mark.parametrize("projection", ["mcp", "claude"])
+@pytest.mark.parametrize("model", ["test", "opus"])
+async def test_accomplices_run_and_resume_without_harness_specific_metadata(
+    projection: str, model: str
+) -> None:
+    _, session, _, _ = a_turn()
+    conversations = FakeConversationManager()
+    thread_id = uuid7()
+    parent = await conversations.ensure(
+        thread_id, agent_tentacle_id=session.current_agent_id
+    )
+    agent = FakeAgent(id="research", models={model: "selected-model"})
+    agent.reception_output = "Three findings"
+    session = replace(
+        session,
+        agents={agent.id: agent},
+        channel_routes={
+            "im": [
+                AgentRoute(
+                    agent_id=agent.id,
+                    model=model,
+                    claim=Claim(ability="research", efforts=("high",)),
+                )
+            ]
+        },
+        thread_id=thread_id,
+        conversation_id=parent.id,
+    )
+    server = core_tool_server(session, conversations=conversations)
+    tools = {tool.name: tool for tool in await server.list_tools()}
+    calls: list[tuple[str, dict[str, JsonValue]]] = [
+        (
+            "gateway_commission",
+            {
+                "name": "audit",
+                "agent_id": agent.id,
+                "model": model,
+                "effort": "high",
+                "brief": "Audit the boundary",
+            },
+        ),
+        ("gateway_whisper", {"name": "audit", "message": "Check again"}),
+    ]
+    async with Client(server) if projection == "mcp" else nullcontext() as client:
+        for name, arguments in calls:
+            if client is not None:
+                result = await client.call_tool(name, arguments)
+                assert result.data == "Three findings"
+            else:
+                response = await sdk_tool(tools[name]).handler(arguments)
+                assert response == {
+                    "content": [{"type": "text", "text": "Three findings"}]
+                }
+
+    first, followup = agent.turns
+    assert first.prompt == "Audit the boundary"
+    assert first.model == "selected-model"
+    assert first.effort == "high"
+    assert first.interactive is False
+    assert followup.prompt == "Check again"
+    assert followup.conversation_id == first.conversation_id
+    [child] = await conversations.subagents(parent.id)
+    assert child.id == first.conversation_id
+    assert child.parent_conversation_id == parent.id
+    assert len(conversations.parent_links) == 2
+    assert all(link[1:] == (None, None) for link in conversations.parent_links)
+
+
+@pytest.mark.parametrize("name", ["gateway_commission", "gateway_whisper"])
+async def test_accomplices_are_listed_but_require_an_active_conversation(
+    name: str,
+) -> None:
+    server, _, _, _ = a_turn()
+    arguments = (
+        {"name": "audit", "agent_id": "claude", "model": "opus", "brief": "Work"}
+        if name == "gateway_commission"
+        else {"name": "audit", "message": "Continue"}
+    )
+    async with Client(server) as client:
+        assert name in {tool.name for tool in await client.list_tools()}
+        with pytest.raises(ToolError, match="require an active conversation"):
+            await client.call_tool(name, arguments)
+
+
+async def test_descriptions_are_shared_with_inkling_verbatim() -> None:
     server, _session, _channel, _threads = a_turn()
     contracts = {
-        "gateway_inspect": GatewayCapability.inspect,
-        "gateway_summon": GatewayCapability.summon,
-        "gateway_teleport": GatewayCapability.teleport,
-        "gateway_scheme": GatewayCapability.scheme,
-        "gateway_send": GatewayCapability.send,
-        "gateway_dismiss": GatewayCapability.dismiss,
         "history_search": HistoryCapability.search_thread_history,
         "history_read_after": HistoryCapability.read_thread_history_after,
     }
@@ -184,9 +279,16 @@ async def test_descriptions_are_the_inkling_contracts_verbatim() -> None:
         doc = spell.__doc__
         assert doc is not None
         assert tools[name].description == cleandoc(doc)
+    client = MCPToolset(Client(server))
+    ctx = RunContext(deps=None, model=TestModel(), usage=RunUsage())
+    async with client:
+        client_tools = await client.get_tools(ctx)
+    for name, tool in client_tools.items():
+        assert tool.tool_def.description == tools[name].description
     # And the contract is the model-facing one, not a paraphrase.
-    assert "copied exactly from an `inspect` route" in (
-        tools["gateway_summon"].description or ""
+    assert (
+        "copied exactly from an `inspect` route"
+        in (tools["gateway_summon"].parameters["properties"]["agent_id"]["description"])
     )
     assert "do NOT repeat it in your final reply" in (
         tools["gateway_send"].description or ""
@@ -194,8 +296,7 @@ async def test_descriptions_are_the_inkling_contracts_verbatim() -> None:
 
 
 def test_gateway_instructions_render_one_contract_under_each_naming() -> None:
-    session = OctomateSession(channel_routes={}, current_agent_id="inkling")
-    inkling = GatewayCapability(session=session).get_instructions()
+    inkling = gateway_instructions(lambda name: name) + HANDOFF_INSTRUCTION
     assert inkling.startswith(gateway_instructions(lambda name: name))
     # Inkling has no skill loader, so its handoff guidance rides here.
     assert "### Writing a brief" in inkling
@@ -208,10 +309,13 @@ def test_gateway_instructions_render_one_contract_under_each_naming() -> None:
         "scheme",
         "send",
         "dismiss",
+        "commission",
+        "whisper",
     ):
         assert f"`gateway_{name}`" in mcp
+        assert f"`{name}`" in inkling
+        assert f"`{name}`" not in mcp
     assert "{" not in mcp
-    assert "commission" not in mcp
     # The other runtimes bring their own handoff skills.
     assert "Writing a brief" not in mcp
 
@@ -370,6 +474,7 @@ async def test_send_here_reaches_the_console_watching_a_trunkline_thread() -> No
         fixed_session(session),
         threads,
         manager=McpManager(users=threads.users, cipher=None),
+        conversations=FakeConversationManager(),
     )
     async with octomate.nerve.subscribe(
         ThreadTopic(ThreadKey.from_address(address))
@@ -463,7 +568,7 @@ async def test_a_native_teleport_moves_the_session_it_names(
     Octomate's hook stamps in, Codex in every call's `_meta` — and the move goes
     ahead from that session's thread."""
     server, session, _channel, _threads, kicks = await a_native_call()
-    thread = ChannelAddress(CLAUDE_NATIVE_ID, "thread", "sess-1", "native")
+    thread = ChannelAddress("coding", "thread", "sess-1", "native")
     decision = TeleportDecision(
         agent_id="claude", hint="moving over", destination=thread
     )
@@ -489,7 +594,7 @@ async def test_a_native_teleport_moves_the_session_it_names(
     assert kicks == [
         NativeGatewaySignal(
             decision=decision,
-            agent_id=CLAUDE_NATIVE_ID,
+            agent_id="coding",
             user_profile=session.user_profile,
             source=thread,
         )
@@ -555,7 +660,7 @@ async def test_a_native_send_delivers_to_a_crossing(
     assert channel.opened_dms == ["alice"]
     [outbound] = threads.outbounds
     # The ledger row is attributed to the native runtime, never to a session.
-    assert outbound.agent_tentacle_id == CLAUDE_NATIVE_ID
+    assert outbound.agent_tentacle_id == "coding"
     assert kicks == []
 
 
@@ -591,7 +696,7 @@ async def test_a_native_scheme_kicks_its_handoff_at_once(
 
     assert result.data.startswith("Taking this to")
     [signal] = kicks
-    assert signal.agent_id == CLAUDE_NATIVE_ID
+    assert signal.agent_id == "coding"
     assert isinstance(signal.decision, SchemeDecision)
     assert signal.decision.brief == "The operator asked for a summary."
     assert signal.decision.destination.user_id == "alice"
@@ -633,6 +738,7 @@ async def a_turn_of_alices(in_memory_engine: AsyncEngine) -> FastMCP:
         fixed_session(session),
         threads,
         manager=McpManager(users=threads.users, cipher=None),
+        conversations=FakeConversationManager(),
     )
 
 
@@ -686,16 +792,17 @@ async def test_a_native_session_reads_its_users_history(
     )
     session = OctomateSession(
         channel_routes={"im": []},
-        current_agent_id=CLAUDE_NATIVE_ID,
+        current_agent_id="coding",
         channels={"im": FakeChannelTentacle()},
         users=users,
-        user_profile=await users.native_profile(CLAUDE_NATIVE_ID, "luhui"),
+        user_profile=await users.native_profile("coding", "luhui"),
         native=True,
     )
     server = octomate_mcp(
         fixed_session(session),
         threads,
         manager=McpManager(users=threads.users, cipher=None),
+        conversations=FakeConversationManager(),
     )
 
     async with Client(server) as client:

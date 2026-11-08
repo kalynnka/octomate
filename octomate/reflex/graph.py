@@ -8,9 +8,15 @@ callers.
 
 from __future__ import annotations
 
+import asyncio
+
 from pydantic_graph import Graph, GraphBuilder, TypeExpression
 
-from octomate.capabilities.harness.events import ReflexAsleepEvent, ReflexAwakeEvent
+from octomate.capabilities.harness.events import (
+    ReflexAsleepEvent,
+    ReflexAwakeEvent,
+    ReflexPhaseChangedEvent,
+)
 from octomate.nerve import Impulse
 from octomate.reflex.nodes import (
     Awake,
@@ -32,6 +38,8 @@ from octomate.reflex.state import (
     ResponseTarget,
 )
 from octomate.schemas.awakes import AwakeSignal
+from octomate.schemas.commands import CommandError
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 
 __all__ = [
@@ -98,18 +106,39 @@ reflex_graph = build_reflex_graph()
 
 
 async def run_reflex(
-    signal: AwakeSignal, *, state: ReflexState, deps: ReflexDeps
+    signal: AwakeSignal, *, origin: ChannelAddress, state: ReflexState, deps: ReflexDeps
 ) -> ReflexGraphResult:
     """Wake the reflex with `signal`, and say so on the nerve before anything
     else. A failure is reported where the kick came from, and the reflex falls
     asleep last whatever happened."""
-    await deps.impulses.send(Impulse(ReflexAwakeEvent()))
+    await deps.impulses.send(Impulse(ReflexAwakeEvent(), origin))
+    asleep = ReflexAsleepEvent(outcome="failed")
     try:
-        return await reflex_graph.run(
+        await deps.impulses.send(
+            Impulse(ReflexPhaseChangedEvent(phase="preparing"), origin)
+        )
+        result = await reflex_graph.run(
             inputs=Awake(signal=signal), state=state, deps=deps
         )
+        if isinstance(result, DeferredResult):
+            asleep.outcome = "deferred"
+        elif isinstance(result, ReflexResult):
+            asleep.outcome = result.outcome
+        elif not isinstance(result, CommandError):
+            asleep.outcome = "completed"
+        return result
+    except asyncio.CancelledError:
+        asleep.outcome = "cancelled"
+        raise
     except Exception as error:
         await deps.report(state, error)
         raise
     finally:
-        await deps.impulses.send(Impulse(ReflexAsleepEvent()))
+        await deps.impulses.send(
+            Impulse(
+                asleep,
+                state.target.address
+                if state.target and state.target.address
+                else origin,
+            )
+        )

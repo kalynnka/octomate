@@ -90,7 +90,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import DEEPSEEK_NATIVE_ID
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import agent_input_message_attributes, deepseek_logfire
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
@@ -127,8 +127,10 @@ from octomate.utils import drain_task
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
+    from octomate.managers.auth import AuthManager
     from octomate.managers.conversation import ConversationManager
     from octomate.managers.deferred import DeferredActionManager
+    from octomate.managers.sandbox import SandboxManager
     from octomate.managers.user import UserManager
     from octomate.managers.workspaces import WorkspaceManager
     from octomate.mcp.base import KnownBearers
@@ -180,6 +182,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     # TODO: Implement fork_session when DSH supports a destination cwd.
     # Until then, inherit the base rejection to keep teleport/fork blocked.
 
+    type: ClassVar[str] = "deepseek"
+    id: ClassVar[str] = type
     config: DeepseekConfig = field(init=False)
     default_provider: str | None = field(init=False)
     process: DeepseekProcess | None = field(default=None, init=False, repr=False)
@@ -197,7 +201,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     # the turn stays live. `pending` parks the card response futures.
     in_process: ClassVar[bool] = True
 
-    native_id: ClassVar[str] = DEEPSEEK_NATIVE_ID
+    default_model: str | None = field(default=None, init=False)
 
     @property
     def default_permission_mode(self) -> str | None:
@@ -212,24 +216,29 @@ class DeepseekTentacle(AgentTentacle[str, None]):
 
     # DeepSeek's own blue, so dsh's lines read as dsh's in a shared console.
     brand_color: ClassVar[Style | None] = Style(color="#4D6BFE", bold=True)
+    default_icon_url: ClassVar[str | None] = "/agent-icons/deepseek.svg"
 
     description: str = "WIP DeepSeek Harness coding agent for repository-aware software engineering tasks."
 
     def __init__(
         self,
-        id: str,
         octomate: Octomate,
         *,
         config: DeepseekConfig,
+        auth: AuthManager | None,
+        sandboxes: SandboxManager,
         description: str | None = None,
     ) -> None:
         super().__init__(
-            id=id,
+            id=self.id,
             octomate=octomate,
             commands=octomate.commands,
             projects=octomate.projects,
             threads=octomate.threads,
             files=octomate.files,
+            auth=auth,
+            sandboxes=sandboxes,
+            sandbox=config.sandbox,
         )
         self.config = config
         self.conversations = octomate.conversations
@@ -263,12 +272,21 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             self.threads,
             self.projects,
             self.session_locks,
+            agent_tentacle_id=self.id,
         )
         self.session_ingest = DeepseekHookIngest(
             self.octomate,
             self.session_tailer,
             self.session_locks,
         )
+
+    @property
+    def native_running_threads(self) -> set[ThreadKey]:
+        return {
+            ThreadKey.from_address(state.address)
+            for state in self.session_tailer.sessions.values()
+            if state.open_turn is not None and state.open_turn.native is not None
+        }
 
     def routers(self) -> tuple[APIRouter]:
         return (self.hook_router,)
@@ -284,8 +302,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         at the handshake, so a bad bearer is denied with the same 401 before
         any socket opens."""
         verifier = hook_guard(self.bearers)
-        resolve_sender = hook_sender(self.users, self.native_id, verifier)
-        router = APIRouter(tags=["deepseek"], dependencies=[Depends(verifier)])
+        resolve_sender = hook_sender(self.users, self.id, verifier)
+        router = APIRouter(tags=[self.type], dependencies=[Depends(verifier)])
 
         @router.post("/hooks/deepseek", summary="dsh native-session hook pipe")
         async def receive_hook(event: DeepseekHookInput) -> JSONResponse:
@@ -331,7 +349,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             )
             return
         address = ChannelAddress(
-            channel_tentacle_id=self.native_id,
+            channel_tentacle_id=self.id,
             chat_type="thread",
             chat_id=hello.session_id,
             user_id=sender.channel_user_id,
@@ -668,7 +686,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 permission_mode=conversation.permission_mode or context.permission_mode,
                 cwd=context.cwd,
                 external_id=conversation.external_id,
-                native_id=DEEPSEEK_NATIVE_ID,
                 native_turn_id=(
                     f"{conversation.external_id}:{accumulator.turn_number}"
                     if accumulator.turn_number is not None
@@ -1078,7 +1095,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         with deepseek_logfire.span(
             "DeepseekTentacle {agent_id} {run_name} [{conversation_address}]",
             agent_id=self.id,
-            run_name=run_name or "deepseek",
+            run_name=run_name or self.id,
             conversation_address=str(conversation_address),
             **agent_input_message_attributes(user_prompt),
         ):
@@ -1211,7 +1228,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     permission_mode=permission_mode,
                     cwd=Path(run_cwd),
                     external_id=session_id,
-                    native_id=DEEPSEEK_NATIVE_ID,
                     native_turn_id=(
                         f"{session_id}:{accumulator.turn_number}"
                         if accumulator.turn_number is not None

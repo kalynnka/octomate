@@ -11,9 +11,11 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from octomate.capabilities.gateway import GatewayCapability
+from fastmcp import Client
+
 from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.managers.gateway import OctomateSession
+from octomate.nerve import ChannelTopic, Nerve
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
     AtData,
@@ -29,7 +31,9 @@ from octomate.tentacles.feelers.output import (
 from octomate.tentacles.lark.chromo import LarkChromo
 from octomate.tentacles.napcat.chromo import NapcatChromo
 from octomate.tentacles.slack.chromo import SlackChromo
-from tests.support.channels import FakeChromo, RecordingInk
+from tests.support.channels import FakeChannelTentacle, FakeChromo, RecordingInk
+from tests.support.mcp import core_tool_server
+from tests.support.nerve import held
 
 
 def _key() -> ChannelAddress:
@@ -57,20 +61,32 @@ def test_split_reply_takes_first_reply_anywhere_and_strips_all() -> None:
 
 
 async def test_send_tool_accepts_reply_and_mention() -> None:
-    capability = GatewayCapability(
-        session=OctomateSession(channel_routes={}, current_agent_id="inkling")
+    session = OctomateSession(
+        channel_routes={},
+        current_agent_id="inkling",
+        channels={"im": FakeChannelTentacle()},
+        conversation_address=_key(),
+        nerve=Nerve(),
     )
-    assert capability.toolset is not None
-    send = capability.toolset.tools["send"].function
     segments = [
         ReplySegment(data={"id": "msg-3"}),
         AtSegment(data=AtData(user_id="U42")),
         MarkdownSegment(data={"text": "over to you"}),
     ]
 
-    result = await send(cast(Any, None), segments)
-
-    assert result.metadata == [MessageSentEvent(segments=segments)]
+    assert session.nerve is not None
+    async with (
+        session.nerve.subscribe(ChannelTopic("im")) as events,
+        Client(core_tool_server(session)) as client,
+    ):
+        await client.call_tool(
+            "gateway_send",
+            {"segments": [segment.model_dump(mode="json") for segment in segments]},
+        )
+        [sent] = [impulse.event for impulse in held(events)]
+    assert isinstance(sent, MessageSentEvent)
+    assert sent.segments == segments
+    assert sent.destination == _key()
 
 
 async def test_default_segments_feeler_keeps_thread_destination_with_reply() -> None:

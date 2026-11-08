@@ -2,6 +2,7 @@ import type { CSSProperties, ReactNode } from 'react'
 
 /** Lucide-style outline icons — the exact paths the design comp uses. */
 const PATHS: Record<string, ReactNode> = {
+  wrench: <path d="M16.7 4.3a5.5 5.5 0 0 0-7 7l-5 5a2.1 2.1 0 0 0 3 3l5-5a5.5 5.5 0 0 0 7-7l-3.5 3.5-3-3z" />,
   panelLeft: (
     <>
       <rect width="18" height="18" x="3" y="3" rx="1" />
@@ -87,6 +88,13 @@ const PATHS: Record<string, ReactNode> = {
       <polyline points="8 6 2 12 8 18" />
     </>
   ),
+  terminal: (
+    <>
+      <rect x="2" y="3" width="20" height="18" rx="2" />
+      <polyline points="7 8 11 12 7 16" />
+      <path d="M13 16h4" />
+    </>
+  ),
   search: (
     <>
       <circle cx="11" cy="11" r="8" />
@@ -128,6 +136,13 @@ const PATHS: Record<string, ReactNode> = {
     </>
   ),
   check: <path d="M20 6 9 17l-5-5" />,
+  close: <path d="m18 6-12 12M6 6l12 12" />,
+  copy: (
+    <>
+      <rect x="9" y="9" width="13" height="13" rx="1" />
+      <path d="M5 15H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h11a1 1 0 0 1 1 1v2" />
+    </>
+  ),
   circleDot: (
     <>
       <circle cx="12" cy="12" r="10" />

@@ -129,7 +129,7 @@ async def test_form_roundtrip_preserves_typed_answers(
     adapter_environment: dict[str, str],
 ) -> None:
     tentacle, sender, thread = agent
-    tentacle.provider.env.update(
+    tentacle.config.provider.env.update(
         {
             "ACP_TEST_CALLBACK": SecretStr("elicitation/create"),
             "ACP_TEST_FORM": SecretStr(
@@ -236,7 +236,7 @@ async def test_permission_returns_exact_selected_option(
             "kind": "allow_once",
         }
     )
-    tentacle.provider.env["ACP_TEST_OPTIONS"] = SecretStr(json.dumps(options))
+    tentacle.config.provider.env["ACP_TEST_OPTIONS"] = SecretStr(json.dumps(options))
     async with tentacle.run_stream_events(
         "hello",
         conversation_address=thread.key.address(sender.channel_user_id),
@@ -274,7 +274,7 @@ async def test_unanswered_callback_expires_and_removes_waiter(
     form: bool,
 ) -> None:
     tentacle, _, _ = agent
-    tentacle.approval_timeout = None if cancel else 0.01
+    tentacle.config.approval_timeout = None if cancel else 0.01
     updates = asyncio.Queue()
     task = asyncio.create_task(
         tentacle.elicit(
@@ -331,7 +331,7 @@ async def test_modes_reach_new_and_loaded_provider_sessions(
     adapter_environment: dict[str, str],
 ) -> None:
     tentacle, sender, thread = agent
-    tentacle.configured_permission_mode = "plan"
+    tentacle.config.permission_mode = "plan"
     address = thread.key.address(sender.channel_user_id)
     async with tentacle:
         assert tentacle.default_permission_mode == "plan"

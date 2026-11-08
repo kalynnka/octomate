@@ -47,6 +47,34 @@ class RolloutLine(BaseModel):
 rollout_line_adapter = TypeAdapter(RolloutLine)
 
 
+class ParsedCommand(BaseModel):
+    """Codex's classification of one command in a native execution item."""
+
+    type: Literal["read", "list_files", "search", "unknown"]
+    cmd: str | None = Field(
+        default=None, description="Command text classified by Codex."
+    )
+    name: str | None = Field(default=None, description="Display name of the read file.")
+    path: str | None = Field(
+        default=None, description="File or directory targeted by the command."
+    )
+    query: str | None = Field(
+        default=None, description="Search query recorded by Codex."
+    )
+
+
+class CompletedCommandItem(BaseModel):
+    """An executed command recorded separately from its outer tool call."""
+
+    type: Literal["CommandExecution"]
+    id: str
+    command: list[str]
+    cwd: str
+    parsed_cmd: list[ParsedCommand]
+    status: Literal["completed", "failed", "declined"]
+    aggregated_output: str
+
+
 class UserMessageContent(BaseModel):
     """A user-role content part; only input text is imported."""
 

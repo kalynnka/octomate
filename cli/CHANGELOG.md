@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.7](https://github.com/kalynnka/octomate/compare/octomate-cli-v0.0.6...octomate-cli-v0.0.7) (2026-11-07)
+
+
+### Features
+
+* **trunkline:** group agent activity and unify native session identity ([#168](https://github.com/kalynnka/octomate/issues/168)) ([6cba29b](https://github.com/kalynnka/octomate/commit/6cba29b0b18a049edabe4e8bfeacd14d73ab4e44))
+
 ## [0.0.6](https://github.com/kalynnka/octomate/compare/octomate-cli-v0.0.5...octomate-cli-v0.0.6) (2026-10-29)
 
 

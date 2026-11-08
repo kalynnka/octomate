@@ -40,14 +40,13 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.gateway import GatewayCapability
 from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.workspaces.base import ChatWorkspace, Workspace
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision, TeleportDecision
 from octomate.telemetry import TraceEnvironment
-from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import base as claude_base
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
@@ -142,11 +141,12 @@ def _tentacle(
     conversations: FakeConversationManager,
     *,
     config: ClaudeCodeConfig | None = None,
-) -> ClaudeCodeTentacle:
+) -> ClaudeTentacle:
     host = Octomate(conversations=conversations)
-    return ClaudeCodeTentacle(
-        "claude",
+    return ClaudeTentacle(
         host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
         config=config or ClaudeCodeConfig(),
         commands=host.commands,
         projects=host.projects,
@@ -279,7 +279,7 @@ async def test_prompt_hook_identity_is_retained_on_the_driven_run(
     )
     fake, _label, _messages = conversations.runs[0]
     [run] = fake.runs
-    assert run.native_id == "claude-native"
+    assert fake.agent_tentacle_id == "claude"
     assert run.native_session_id == "sess-xyz"
     assert run.native_turn_id == "native-prompt-id"
 
@@ -797,7 +797,7 @@ class GatedClaudeClient(FakeClaudeClient):
         )
 
 
-async def _drive(tentacle: ClaudeCodeTentacle, prompt: str) -> None:
+async def _drive(tentacle: ClaudeTentacle, prompt: str) -> None:
     async with tentacle.run_stream_events(
         prompt, conversation_address=KEY, thread_id=_THREAD
     ) as stream:
@@ -894,22 +894,29 @@ def test_missing_metadata_can_be_configured() -> None:
     assert ClaudeCodeConfig().claims == {}
 
 
-async def test_a_gateway_capability_mounts_the_in_process_server(
+async def test_a_registered_gateway_mounts_the_in_process_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
-    session = OctomateSession(channel_routes={}, current_agent_id="claude")
+    conversation = await tentacle.resolve_conversation(
+        _THREAD, conversation_address=KEY
+    )
+    session = OctomateSession(
+        channel_routes={}, current_agent_id="claude", conversation_id=conversation.id
+    )
 
-    async with tentacle.run_stream_events(
-        "fix it",
-        conversation_address=KEY,
-        thread_id=_THREAD,
-        run_name="react",
-        instructions="House rules.",
-        capabilities=[GatewayCapability(session=session, conversations=conversations)],
-    ) as stream:
+    async with (
+        tentacle.octomate.gateway.driving(session),
+        tentacle.run_stream_events(
+            "fix it",
+            conversation_address=KEY,
+            thread_id=_THREAD,
+            run_name="react",
+            instructions="House rules.",
+        ) as stream,
+    ):
         async for _ in stream:
             pass
 
@@ -1011,19 +1018,26 @@ async def test_a_teleport_mid_run_interrupts_the_turn_and_ends_it_as_a_deferral(
     BindingClaudeClient.instances = []
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
-    session = OctomateSession(channel_routes={}, current_agent_id="claude")
+    conversation = await tentacle.resolve_conversation(
+        _THREAD, conversation_address=KEY
+    )
+    session = OctomateSession(
+        channel_routes={}, current_agent_id="claude", conversation_id=conversation.id
+    )
     BindingClaudeClient.session = session
     suspender = RecordingSuspender(agent_tentacle_id="claude")
 
     events = []
-    async with tentacle.run_stream_events(
-        "work on inky",
-        conversation_address=KEY,
-        thread_id=_THREAD,
-        run_name="react",
-        capabilities=[GatewayCapability(session=session)],
-        deferred_suspender=suspender,
-    ) as stream:
+    async with (
+        tentacle.octomate.gateway.driving(session),
+        tentacle.run_stream_events(
+            "work on inky",
+            conversation_address=KEY,
+            thread_id=_THREAD,
+            run_name="react",
+            deferred_suspender=suspender,
+        ) as stream,
+    ):
         async for event in stream:
             events.append(event)
 

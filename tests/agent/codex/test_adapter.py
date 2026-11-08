@@ -16,6 +16,7 @@ from openai_codex.generated.v2_all import (
     McpToolCallProgressNotification,
     MessagePhase,
     PlanDeltaNotification,
+    ReasoningSummaryTextDeltaNotification,
     ReasoningTextDeltaNotification,
     ThreadItem,
     ThreadTokenUsage,
@@ -40,12 +41,15 @@ from pydantic_ai.messages import (
     PartStartEvent,
     TextPart,
     ThinkingPart,
+    ThinkingPartDelta,
     ToolReturnPart,
     UserPromptPart,
 )
 
+from octomate.capabilities.harness.events import RunActivityChangedEvent, StreamEvents
 from octomate.tentacles.codex.adapter import CodexRunAccumulator, map_usage
 from octomate.tentacles.feelers.output import render_stream_event_delta
+from octomate.types.json import JsonObject
 
 
 def notification(method: str, payload: NotificationPayload) -> Notification:
@@ -57,12 +61,13 @@ def command_item(
     status: CommandExecutionStatus,
     aggregated_output: str | None = None,
     exit_code: int | None = None,
+    command_actions: list[JsonObject] | None = None,
 ) -> ThreadItem:
     return ThreadItem.model_validate(
         {
             "id": "cmd-1",
             "command": "pytest",
-            "commandActions": [],
+            "commandActions": command_actions or [],
             "cwd": "/repo",
             "status": status.value,
             "aggregatedOutput": aggregated_output,
@@ -152,7 +157,10 @@ def token_breakdown(
     )
 
 
-def test_adapter_maps_prompt_and_text_delta_to_messages_and_events() -> None:
+@pytest.mark.parametrize("phase", [MessagePhase.commentary, MessagePhase.final_answer])
+def test_adapter_maps_prompt_and_text_delta_to_messages_and_events(
+    phase: MessagePhase,
+) -> None:
     acc = CodexRunAccumulator()
     acc.begin("fix the test")
 
@@ -191,7 +199,7 @@ def test_adapter_maps_prompt_and_text_delta_to_messages_and_events() -> None:
                     item=ThreadItem.model_validate(
                         {
                             "id": "msg-1",
-                            "phase": MessagePhase.final_answer.value,
+                            "phase": phase.value,
                             "text": "found it",
                             "type": "agentMessage",
                         }
@@ -262,7 +270,12 @@ def test_buffered_stream_start_does_not_repeat_the_first_delta(
     assert isinstance(first, PartDeltaEvent)
     assert isinstance(second, PartDeltaEvent)
     assert start.part.content == ""
-    assert acc.streaming_parts[payload.item_id].part.content == "I'll"
+    state = (
+        acc.reasoning_parts[payload.item_id, False]
+        if isinstance(payload, ReasoningTextDeltaNotification)
+        else acc.streaming_parts[payload.item_id]
+    )
+    assert state.part.content == "I'll"
     rendered = "".join(
         delta.text
         for event in events
@@ -320,6 +333,85 @@ def test_adapter_maps_reasoning_delta_to_thinking_part() -> None:
     thinking = response.parts[0]
     assert isinstance(thinking, ThinkingPart)
     assert thinking.content == "checking"
+    assert thinking.provider_details == {"reasoning_format": "reasoning"}
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_reasoning_summaries_stay_separate_from_raw_reasoning(streaming: bool) -> None:
+    acc = CodexRunAccumulator()
+    events: list[StreamEvents[str]] = []
+    if streaming:
+        deltas = [
+            ReasoningTextDeltaNotification(
+                content_index=0,
+                delta="Detailed reasoning",
+                item_id="r",
+                thread_id="t",
+                turn_id="turn",
+            ),
+            ReasoningSummaryTextDeltaNotification(
+                summary_index=0,
+                delta="**Checking**",
+                item_id="r",
+                thread_id="t",
+                turn_id="turn",
+            ),
+            ReasoningSummaryTextDeltaNotification(
+                summary_index=1,
+                delta="A summary",
+                item_id="r",
+                thread_id="t",
+                turn_id="turn",
+            ),
+        ]
+        for delta in deltas:
+            events.extend(acc.consume(notification("delta", delta)))
+    events.extend(
+        acc.consume(
+            notification(
+                "item/completed",
+                ItemCompletedNotification(
+                    completed_at_ms=1,
+                    thread_id="t",
+                    turn_id="turn",
+                    item=ThreadItem.model_validate(
+                        {
+                            "type": "reasoning",
+                            "id": "r",
+                            "content": ["Detailed reasoning"],
+                            "summary": ["**Checking**", "A summary"],
+                        }
+                    ),
+                ),
+            )
+        )
+    )
+    completed = [event.part for event in events if isinstance(event, PartEndEvent)]
+    assert len(completed) == 2
+    assert all(isinstance(part, ThinkingPart) for part in completed)
+    assert [part.content for part in completed if isinstance(part, ThinkingPart)] == [
+        "Detailed reasoning",
+        "**Checking**\n\nA summary",
+    ]
+    assert [
+        part.provider_details for part in completed if isinstance(part, ThinkingPart)
+    ] == [
+        {"reasoning_format": "reasoning"},
+        {"reasoning_format": "summary"},
+    ]
+    assert [
+        message.parts[0]
+        for message in acc.messages
+        if isinstance(message, ModelResponse)
+    ] == completed
+    if streaming:
+        summary_deltas = [
+            event.delta.content_delta
+            for event in events
+            if isinstance(event, PartDeltaEvent)
+            and isinstance(event.delta, ThinkingPartDelta)
+        ]
+        assert summary_deltas == ["Detailed reasoning", "**Checking**", "\n\nA summary"]
 
 
 def test_adapter_suppresses_empty_reasoning_item() -> None:
@@ -352,7 +444,23 @@ def test_adapter_suppresses_empty_reasoning_item() -> None:
     assert acc.messages == []
 
 
-def test_adapter_maps_command_item_to_native_tool_parts() -> None:
+@pytest.mark.parametrize(
+    "actions",
+    [
+        [],
+        [
+            {
+                "type": "read",
+                "command": "cat app.py",
+                "name": "app.py",
+                "path": "/repo/app.py",
+            }
+        ],
+    ],
+)
+def test_adapter_maps_command_item_to_native_tool_parts(
+    actions: list[JsonObject],
+) -> None:
     acc = CodexRunAccumulator()
 
     events = list(
@@ -360,7 +468,10 @@ def test_adapter_maps_command_item_to_native_tool_parts() -> None:
             notification(
                 "item/started",
                 ItemStartedNotification(
-                    item=command_item(status=CommandExecutionStatus.in_progress),
+                    item=command_item(
+                        status=CommandExecutionStatus.in_progress,
+                        command_actions=actions,
+                    ),
                     started_at_ms=1,
                     thread_id="thread-1",
                     turn_id="turn-1",
@@ -403,6 +514,9 @@ def test_adapter_maps_command_item_to_native_tool_parts() -> None:
         FunctionToolCallEvent,
         FunctionToolResultEvent,
     ]
+    call = events[0]
+    assert isinstance(call, FunctionToolCallEvent)
+    assert call.part.args_as_dict()["commandActions"] == actions
     result = events[1]
     assert isinstance(result, FunctionToolResultEvent)
     assert isinstance(result.part, ToolReturnPart)
@@ -418,6 +532,7 @@ def test_adapter_maps_command_item_to_native_tool_parts() -> None:
         "command": "pytest",
         "cwd": "/repo",
         "status": "inProgress",
+        "commandActions": actions,
     }
     assert isinstance(native_return, NativeToolReturnPart)
     assert native_return.content == "ok"
@@ -617,7 +732,7 @@ def test_adapter_maps_dynamic_tool_items_to_native_tools() -> None:
     assert dynamic_return.outcome == "success"
 
 
-def test_adapter_maps_plan_delta_to_thinking_part() -> None:
+def test_adapter_maps_plan_delta_to_text_part() -> None:
     acc = CodexRunAccumulator()
 
     events = list(
@@ -653,9 +768,9 @@ def test_adapter_maps_plan_delta_to_thinking_part() -> None:
         PartEndEvent,
     ]
     [response] = acc.messages
-    thinking = response.parts[0]
-    assert isinstance(thinking, ThinkingPart)
-    assert thinking.content == "1. inspect\n2. patch"
+    text = response.parts[0]
+    assert isinstance(text, TextPart)
+    assert text.content == "1. inspect\n2. patch"
 
 
 @pytest.mark.parametrize("initial", ["", "1. "])
@@ -927,3 +1042,34 @@ def test_map_usage_uses_last_usage_snapshot() -> None:
 
     assert usage.input_tokens == 2
     assert usage.output_tokens == 1
+
+
+def test_compaction_items_emit_activity_without_fabricating_tools() -> None:
+    acc = CodexRunAccumulator()
+    item = ThreadItem.model_validate({"id": "compact-1", "type": "contextCompaction"})
+    started = notification(
+        "item/started",
+        ItemStartedNotification(
+            item=item, started_at_ms=1, thread_id="thread-1", turn_id="turn-1"
+        ),
+    )
+    ended = notification(
+        "item/completed",
+        ItemCompletedNotification(
+            item=item, completed_at_ms=2, thread_id="thread-1", turn_id="turn-1"
+        ),
+    )
+
+    assert list(acc.consume(started)) == [
+        RunActivityChangedEvent(activity="compacting", display_text=None)
+    ]
+    assert list(acc.consume(ended)) == [
+        RunActivityChangedEvent(activity="working", display_text=None)
+    ]
+    assert acc.messages == []
+    assert acc.native_tools == {}
+    for event, method in zip(
+        acc.pending_events, ["item/started", "item/completed"], strict=True
+    ):
+        assert isinstance(event, dict)
+        assert event["method"] == method

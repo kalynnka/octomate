@@ -72,9 +72,12 @@ def _tentacle() -> tuple[InklingTentacle, FakeConversationManager]:
         bands=[Band(over=10_000, action=Spill(then=Truncate()))],
         store=SpillStore(retention=ToolOutputConfig().retention),
     )
+    host = Octomate(conversations=conversations)
     tentacle = InklingTentacle(
         "inkling",
-        Octomate(conversations=conversations),
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
         models={
             "test": FunctionModel(
                 stream_function=_call_then_answer, model_name="scripted"

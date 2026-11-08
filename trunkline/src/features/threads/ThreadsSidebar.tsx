@@ -4,40 +4,43 @@
  * "SIDEBAR: THREADS × CHANNELS" aside.
  */
 import { useEffect, useRef, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { Disclose, Fold } from '@/components/Fold'
 import { Icon } from '@/components/Icon'
+import { ThreadActivity } from '@/components/ThreadActivity'
+import { TextSwap } from '@/components/TextSwap'
 import { display, ellipsis, label, mono } from '@/components/text'
 import { useChannels, useThreads } from '@/lib/api/hooks'
 import type { ThreadSummary } from '@/lib/api/types'
 import { channelMeta } from '@/lib/api/live'
-import type { ThreadTone } from '@/lib/api/types'
 import { useRailDrag } from '@/lib/useRailDrag'
 import { useConsole } from '@/state/console'
+import { useActivity } from '@/state/activity'
 
 // How many of a channel's threads are rendered before the rail asks for more.
 const THREAD_PAGE = 12
 
-const toneColor: Record<ThreadTone, string> = {
-  active: 'var(--color-accent)',
-  idle: 'var(--fg-3)',
-  native: 'var(--color-teal)',
-}
-
 interface ThreadRow {
   /** the row's own id — unique, and what React keys on */
   id: string
+  threadKey?: string
   /** the short chip shown under the title */
   tag: string
   title: string
-  stColor: string
   agent: string
+  native: boolean
   on: boolean
+  running: boolean
   pick?: () => void
 }
 
 export function ThreadsSidebar() {
-  const connected = useChannels().data ?? []
-  const threadsByCh = useThreads().data ?? {}
+  const channelsQuery = useChannels()
+  const threadsQuery = useThreads()
+  const connected = channelsQuery.data ?? []
+  const threadsByCh = threadsQuery.data ?? {}
+  const loading = channelsQuery.isPending || threadsQuery.isPending
+  const failed = channelsQuery.isError || threadsQuery.isError
   // The rail mirrors the relay's connected channels; a channel that is gone
   // from config but still owns threads keeps a group for its history.
   const channels = [
@@ -51,6 +54,8 @@ export function ThreadsSidebar() {
   const focusId = useConsole((s) => s.channelFocusHistory.at(-1))
   const chPins = useConsole((s) => s.chPins)
   const selThreadId = useConsole((s) => s.selThreadId)
+  const currentRunning = useConsole((s) => s.running)
+  const activeKeys = new Set(useActivity(useShallow(state => Object.keys(state).filter(key => state[key] !== undefined))))
   const ntOn = useConsole((s) => s.ntOn)
   const ntStarted = useConsole((s) => s.ntStarted)
   const ntTitle = useConsole((s) => s.ntTitle)
@@ -95,7 +100,10 @@ export function ThreadsSidebar() {
     if (pa >= 0 || pb >= 0) return pa >= 0 ? -1 : 1
     return channels.indexOf(a) - channels.indexOf(b)
   })
-  const threadOrder = orderedCh.flatMap((c) => threadsByCh[c.id] ?? [])
+  const isRunning = (thread: ThreadSummary) => activeKeys.has(`id:${thread.id}`)
+    || (thread.channelId === 'trunkline' && thread.key !== '' && activeKeys.has(`key:${thread.key}`))
+    || (currentRunning && (thread.id === selThreadId || (thread.key !== '' && thread.key === selThreadId)))
+  const threadOrder = orderedCh.flatMap(c => [...(threadsByCh[c.id] ?? [])].sort((a, b) => Number(isRunning(b)) - Number(isRunning(a))))
   const currentThreadIndex = threadOrder.findIndex((t) => t.id === selThreadId || (t.key !== '' && t.key === selThreadId))
   const threadTotal = Object.values(threadsByCh).flat().length
 
@@ -166,7 +174,7 @@ export function ThreadsSidebar() {
       />
       {/* On a phone the folded rail is a 36px strip: any touch on it opens
           the drawer, whose own rail then answers the letters and the gear. */}
-      {sbFold && <span className="trk-rail-tap" onClick={toggleSidebar} />}
+      {sbFold && <button type="button" aria-label="Show channels" className="trk-rail-tap trk-nav-button" onClick={toggleSidebar} />}
       <div
         style={{
           display: 'flex',
@@ -201,10 +209,10 @@ export function ThreadsSidebar() {
               v0.4.1
             </span>
             <span style={{ flex: 1 }} />
-            <span
+            <button type="button" aria-label="Channels panel" aria-expanded={!sidebarFolded} aria-controls="trk-channel-list"
               onClick={toggleSidebar}
               title="Channels panel"
-              className="hov-ink-wash"
+              className="hov-ink-wash trk-nav-button"
               style={{
                 width: 'var(--trk-btn, 22px)',
                 height: 'var(--trk-btn, 22px)',
@@ -219,14 +227,14 @@ export function ThreadsSidebar() {
               }}
             >
               <Icon name="panelLeft" size={13} />
-            </span>
+            </button>
           </>
         )}
         {sidebarFolded && (
-          <span
+          <button type="button" aria-label="Show channels" aria-expanded="false" aria-controls="trk-channel-list"
             onClick={toggleSidebar}
             title="Show channels"
-            className="hov-ink-wash"
+            className="hov-ink-wash trk-nav-button"
             style={{
               width: 'var(--trk-btn, 22px)',
               height: 'var(--trk-btn, 22px)',
@@ -241,7 +249,7 @@ export function ThreadsSidebar() {
             }}
           >
             <Icon name="panelLeft" size={13} />
-          </span>
+          </button>
         )}
       </div>
       {!sidebarFolded && (
@@ -258,10 +266,10 @@ export function ThreadsSidebar() {
         />
       )}
       {!sidebarFolded && (
-        <span
+        <button type="button" aria-label="New trunkline thread"
           onClick={() => startNewThread()}
           title="New trunkline thread"
-          className="hov-accent-border-wash"
+          className="hov-accent-border-wash trk-nav-button"
           style={{
             display: 'grid',
             placeItems: 'center',
@@ -276,10 +284,12 @@ export function ThreadsSidebar() {
           }}
         >
           <span style={{ lineHeight: 1, paddingLeft: '.14em', paddingTop: 1 }}>+ new</span>
-        </span>
+        </button>
       )}
       <div
+        id="trk-channel-list"
         ref={channelList}
+        aria-busy={loading}
         className="trk-quiet-scroll"
         style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '4px 0 10px', position: 'relative' }}
       >
@@ -303,24 +313,29 @@ export function ThreadsSidebar() {
                 ? [
                     {
                       id: 'THR-NEW',
+                      threadKey: selThreadId,
                       tag: ntStarted ? selThreadId : 'THR-NEW',
                       title: ntTitle || 'untitled — new thread',
-                      stColor: 'var(--color-gold)',
                       agent: `${ntAgent} · ${ntModel}`,
+                      native: false,
                       on: true,
+                      running: currentRunning || activeKeys.has(`key:${selThreadId}`),
                     },
                   ]
                 : []),
               ...ths.map((t) => ({
                 id: t.id,
+                threadKey: c.id === 'trunkline' ? t.key : undefined,
                 tag: t.tag ?? t.id,
                 title: t.title,
-                stColor: toneColor[t.tone],
                 agent: t.agentLabel,
+                native: t.tone === 'native',
                 on: selected(t),
+                running: isRunning(t),
                 pick: () => selectThread(c.id, t.id, threadOrder.findIndex((row) => row.id === t.id) < currentThreadIndex ? 'up' : 'down'),
               })),
-            ]
+            ].sort((a, b) => Number(b.running) - Number(a.running))
+            const visibleCount = Math.max(shown[c.id] ?? THREAD_PAGE, rows.filter(row => row.running).length)
             return (
               <div
                 key={c.id}
@@ -399,14 +414,13 @@ export function ThreadsSidebar() {
                           flexShrink: 0,
                         }}
                       >
-                        {(threadsByCh[c.id] ?? []).length}
+                        <TextSwap>{(threadsByCh[c.id] ?? []).length}</TextSwap>
                       </span>
                     </span>
                   </button>
                 </div>
                 <div
                   data-channel-id={c.id}
-                  onClick={() => toggleChannel(c.id)}
                   className="hov-wash"
                   style={{
                     display: sidebarFolded ? 'none' : 'flex',
@@ -421,6 +435,10 @@ export function ThreadsSidebar() {
                     boxShadow: focused ? `inset 3px 0 0 ${c.brand}` : undefined,
                   }}
                 >
+                  <button type="button" className="trk-nav-button" aria-label={`${c.label} threads`}
+                    aria-expanded={!folded} aria-controls={`trk-channel-${c.id}`}
+                    onClick={() => toggleChannel(c.id)}
+                    style={{ display: 'flex', alignItems: 'center', gap: 7, flex: 1, minWidth: 0, height: '100%' }}>
                   <Disclose
                     open={!folded}
                     style={{ ...mono(8), color: 'var(--fg-3)', width: 9, flexShrink: 0 }}
@@ -429,16 +447,17 @@ export function ThreadsSidebar() {
                   <span style={{ flex: 1, borderTop: '1px solid var(--line-color)' }} />
                   {!railExpanded && (
                     <span style={{ ...mono(8), color: 'var(--fg-3)' }}>
-                      {folded ? `${ths.length} thr` : c.sub}
+                      <TextSwap>{folded ? `${ths.length} thr` : c.sub}</TextSwap>
                     </span>
                   )}
-                  <span
+                  </button>
+                  <button type="button" aria-label={`${pinned ? 'Unpin' : 'Pin'} ${c.label}`} aria-pressed={pinned}
                     onClick={(e) => {
                       e.stopPropagation()
                       toggleChannelPin(c.id)
                     }}
                     title={pinned ? 'Unpin' : 'Pin to top'}
-                    className="hov-op"
+                    className="hov-op trk-nav-button"
                     style={{
                       display: 'inline-flex',
                       alignItems: 'center',
@@ -450,10 +469,10 @@ export function ThreadsSidebar() {
                     }}
                   >
                     <Icon name="pin" size={10} />
-                  </span>
+                  </button>
                 </div>
                 {!sidebarFolded && (
-                  <div data-channel-threads={c.id} aria-hidden={folded || undefined} inert={folded} style={{ gridColumn: 2, minWidth: 0 }}>
+                  <div id={`trk-channel-${c.id}`} data-channel-threads={c.id} aria-hidden={folded || undefined} inert={folded} style={{ gridColumn: 2, minWidth: 0 }}>
                     <Fold open={!folded}>
                     {/* Each channel scrolls under its own header, so a channel with
                         a hundred threads still leaves the ones below it reachable —
@@ -467,12 +486,13 @@ export function ThreadsSidebar() {
                         reveal(c.id, rows.length)
                       }}
                     >
-                    {rows.slice(0, shown[c.id] ?? THREAD_PAGE).map((t) => (
+                    {rows.slice(0, visibleCount).map((t) => (
                       <div key={t.id} className={t.id === 'THR-NEW' ? 'trk-thread-enter' : undefined}>
                       <div style={{ overflow: 'hidden' }}>
-                      <div
+                      <button type="button" aria-current={t.on ? 'page' : undefined} disabled={!t.pick}
+                        data-thread-id={t.id} data-running={t.running ? '' : undefined}
                         onClick={t.pick}
-                        className="hov-wash"
+                        className="hov-wash trk-nav-button trk-thread-pick"
                         style={{ position: 'relative', padding: 'var(--trk-th-pad, 7px 14px)', cursor: 'pointer' }}
                       >
                         {t.on && (
@@ -501,16 +521,18 @@ export function ThreadsSidebar() {
                           style={{ display: 'flex', alignItems: 'center', gap: 7, position: 'relative' }}
                         >
                           <i
+                            className="trk-thread-dot"
                             style={{
                               width: 5,
                               height: 5,
                               borderRadius: 9999,
-                              background: t.stColor,
+                              background: 'var(--trk-thread-running)',
+                              visibility: t.running ? 'visible' : 'hidden',
                               flexShrink: 0,
                             }}
                           />
-                          <span style={{ fontSize: 12, color: 'var(--trk-thread-title-fg)', ...ellipsis, flex: 1 }}>
-                            {t.title}
+                          <span className="trk-thread-title" style={{ fontSize: 12, ...ellipsis, flex: 1 }}>
+                            <TextSwap style={{ ...ellipsis }}>{t.title}</TextSwap>
                           </span>
                         </div>
                         <div
@@ -524,24 +546,30 @@ export function ThreadsSidebar() {
                           }}
                         >
                           <span style={{ ...mono(8.5, 700), color: c.brand, whiteSpace: 'nowrap', flexShrink: 0 }}>
-                            {t.tag}
+                            <TextSwap>{t.tag}</TextSwap>
                           </span>
-                          <span style={{ ...mono(8.5), color: 'var(--fg-3)', ...ellipsis }}>
-                            {t.agent}
+                          <span
+                            data-thread-origin={t.native ? 'native' : 'driven'}
+                            aria-label={t.native ? 'Native thread' : 'Driven thread'}
+                            title={t.native ? 'Native thread · tailed from the agent' : 'Driven thread · run by Octomate'}
+                            style={{ ...mono(7.5, 700), color: t.native ? 'var(--info-strong)' : 'var(--fg-3)', border: '1px solid var(--line-color)', padding: '0 2px', lineHeight: '12px', flexShrink: 0 }}
+                          >
+                            {t.native ? 'N' : 'D'}
                           </span>
+                          <ThreadActivity id={t.id} threadKey={t.threadKey} enabled={!folded} fallback={t.agent} />
                         </div>
-                      </div>
+                      </button>
                       </div>
                       </div>
                     ))}
-                    {rows.length > (shown[c.id] ?? THREAD_PAGE) && (
-                      <div
+                    {rows.length > visibleCount && (
+                      <button type="button"
                         onClick={() => reveal(c.id, rows.length)}
-                        className="hov-wash"
+                        className="hov-wash trk-nav-button trk-thread-pick"
                         style={{ padding: '6px 14px 8px', ...label(7.5, '.14em'), color: 'var(--fg-3)', cursor: 'pointer' }}
                       >
-                        ↓ {rows.length - (shown[c.id] ?? THREAD_PAGE)} more
-                      </div>
+                        <TextSwap>{`↓ ${rows.length - visibleCount} more`}</TextSwap>
+                      </button>
                     )}
                     </div>
                     </Fold>
@@ -575,11 +603,11 @@ export function ThreadsSidebar() {
             whiteSpace: 'nowrap',
           }}
         >
-          {threadTotal} thr · {channels.length} ch
+          <TextSwap>{loading ? 'Loading threads…' : failed ? 'Could not load threads' : `${threadTotal} thr · ${channels.length} ch`}</TextSwap>
         </span>
         <span style={{ flex: 1 }} />
         <span style={{ ...mono(7.5), color: 'var(--fg-3)', ...ellipsis, minWidth: 0 }}>
-          {'// end of index'}
+          <TextSwap>{loading ? '// loading index' : failed ? '// index unavailable' : '// end of index'}</TextSwap>
         </span>
       </div>
       <button

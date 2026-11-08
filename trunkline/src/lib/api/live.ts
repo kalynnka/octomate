@@ -15,7 +15,7 @@ import type {
   ApiThreadMessage,
   ApiUsage,
 } from './events'
-import { batchFeelers, nativeQuestionAnswered, nativeQuestionReplies, promptText, replayRun, segmentText, type NativeQuestionReply, type ReplayChild } from './fold'
+import { batchFeelers, botLabel, nativeQuestionAnswered, nativeQuestionReplies, promptText, replayRun, segmentText, type NativeQuestionReply, type ReplayChild } from './fold'
 import type {
   ChannelMeta,
   LedgerItem,
@@ -37,13 +37,9 @@ const CHANNEL_DISPLAY: Record<string, Omit<ChannelMeta, 'id'>> = {
   slack: { label: 'Slack', sub: 'socket', brand: '#746576' },
   lark: { label: 'Lark', sub: 'webhook', brand: '#666D82' },
   napcat: { label: 'Napcat', sub: 'ws', brand: '#6A828B' },
-  // Keyed by the channel id the relay files a native session's thread under
-  // (CLAUDE_NATIVE_ID / CODEX_NATIVE_ID / DEEPSEEK_NATIVE_ID) — not the agent
-  // tentacle's own name. DeepSeek's tail reads the dsh gateway, not a file,
-  // hence its tagline.
-  'claude-native': { label: 'Claude', sub: 'hook · tail', native: true, brand: '#98796A' },
-  'codex-native': { label: 'Codex', sub: 'hook · tail', native: true, brand: '#677D73' },
-  'deepseek-native': { label: 'DeepSeek', sub: 'hook · gateway', native: true, brand: '#66709B' },
+  claude: { label: 'Claude', sub: 'hook · tail', brand: '#98796A' },
+  codex: { label: 'Codex', sub: 'hook · tail', brand: '#677D73' },
+  deepseek: { label: 'DeepSeek', sub: 'hook · gateway', brand: '#66709B' },
 }
 
 export function channelMeta(id: string): ChannelMeta {
@@ -81,11 +77,10 @@ const VSCODE_AGENTS = new Set(['claude', 'codex', 'deepseek'])
 /**
  * Whether VS Code can pick this thread up. A native session always can: its own
  * extension is what recorded the thread, and `sessionLink` reopens it. A console
- * thread can only when the agent driving it is one of those runtimes — which is
- * a handoff away, since nothing files a native thread under one.
+ * thread can only when the agent driving it is one of those runtimes.
  */
-function vscodeCanOpen(channel: string, agent: string | null): boolean {
-  return channelMeta(channel).native === true || VSCODE_AGENTS.has(agent ?? '')
+function vscodeCanOpen(thread: ApiThread, agent: string | null): boolean {
+  return thread.kind === 'native_thread' || VSCODE_AGENTS.has(agent ?? '')
 }
 
 /**
@@ -95,19 +90,18 @@ function vscodeCanOpen(channel: string, agent: string | null): boolean {
  * - Claude routes `/open` to `claude-vscode.primaryEditor.open(session, prompt)`.
  * - Codex routes any path into its webview, whose thread route is `/local/<id>`.
  *
- * Both are keyed by the session id the relay files the thread under, so a thread
- * on any other channel has no link — nothing on this machine to reopen. The dsh
- * extension registers no URI handler, so a deepseek-native thread gets the
+ * Both are keyed by the session id the relay files the native thread under. The dsh
+ * extension registers no URI handler, so a tailed DeepSeek thread gets the
  * folder open only; its session waits in the extension's own list, which reads
  * the same shared daemon.
  */
-function sessionLink(channel: string, chatId: string): string | undefined {
+function sessionLink(runtime: string, chatId: string): string | undefined {
   if (!chatId) return undefined
   const id = encodeURIComponent(chatId)
-  if (channel === 'claude-native') {
+  if (runtime === 'claude') {
     return `vscode://anthropic.claude-code/open?session=${id}`
   }
-  if (channel === 'codex-native') return `vscode://openai.chatgpt/local/${id}`
+  if (runtime === 'codex') return `vscode://openai.chatgpt/local/${id}`
   return undefined
 }
 
@@ -144,11 +138,11 @@ export function liveThreadSummary(t: ApiThread): ThreadSummary {
     channelId: t.channel_tentacle_id,
     key: t.channel_thread_id ?? '',
     title: threadLabel(t),
-    tone: channel.native ? 'native' : t.status === 'active' ? 'active' : 'idle',
+    tone: t.kind === 'native_thread' ? 'native' : t.status === 'active' ? 'active' : 'idle',
     // Nothing routed a native session — the runtime it ran in is its agent, and
     // "unrouted" would read as a routing decision that never happened.
     agentLabel:
-      agent === null && channel.native
+      agent === null && t.kind === 'native_thread'
         ? `${channel.label.toLowerCase()} · native`
         : routeLabel(agent, model),
     tag: threadTag(t.id),
@@ -289,12 +283,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
   const targets = new Map(messages.filter((message) => message.platform_message_id)
     .map((message) => [`${message.thread_id}:${message.platform_message_id}`, message]))
   const senderOf = (message: ApiThreadMessage): string | undefined => {
-    const name = message.sender?.name
-    const id = message.actor_kind === 'agent' ? message.agent_tentacle_id : null
-    const runtime = id ? channelMeta(id) : null
-    if (runtime?.native) return runtime.label
-    const agent = id ? id.charAt(0).toUpperCase() + id.slice(1) : undefined
-    return name && agent ? `${name} (${agent})` : name || agent
+    return message.actor_kind === 'agent' ? botLabel(message.agent_tentacle_id) : message.sender?.name
   }
   const textOf = (message: ApiThreadMessage): string => {
     if (!message.segments.some((segment) => segment.type === 'at')) return message.message_text ?? ''
@@ -362,8 +351,10 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
 
   // Inbound rows keep their own write order and words after binding to a request.
   // An agent's outbound row is already represented by its model response.
+  const boundArtifacts = new Set(modelMessages.flatMap(message => message.thread_messages
+    .filter(row => row.kind === 'artifact').map(row => row.id)))
   const said = [
-    ...unbound.map((message) => ({ key: message.id, message, session: undefined })),
+    ...unbound.filter(message => !boundArtifacts.has(message.id)).map((message) => ({ key: message.id, message, session: undefined })),
     ...modelMessages.flatMap((request) =>
       request.kind !== 'request'
         ? []
@@ -410,7 +401,8 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         item: {
           kind: 'agent',
           uid: message.id,
-          label: senderOf(message) ?? 'agent',
+          agentId: message.agent_tentacle_id ?? undefined,
+          label: botLabel(message.agent_tentacle_id),
           blocks: [{ type: 'p', text }],
           ...(reply && { reply }),
         },
@@ -425,7 +417,8 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         item: {
           kind: 'agent',
           uid: `${message.id}.outcome`,
-          label: 'relay',
+          agentId: message.agent_tentacle_id ?? undefined,
+          label: botLabel(message.agent_tentacle_id),
           blocks: feedback.map((text) => ({ type: 'p', text })),
         },
       })
@@ -458,12 +451,12 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
   for (const [runId, messages] of recorded) {
     const conversation = ranIn.get(runId)
     const agent = conversation?.agent_tentacle_id ?? 'agent'
-    const runtime = channelMeta(agent)
+    const native = conversation?.runs.find(run => run.id === runId)?.kind === 'external'
     const deliveries = new Map(messages.flatMap((message) => {
       const outbound = message.thread_messages.find((row) => row.direction === 'outbound' && row.kind !== 'artifact')
-      return outbound ? [[message.id, { label: senderOf(outbound), reply: replyOf(outbound) }] as const] : []
+      return outbound ? [[message.id, { label: botLabel(outbound.agent_tentacle_id ?? conversation?.agent_tentacle_id), reply: replyOf(outbound) }] as const] : []
     }))
-    for (const card of replayRun(messages, runtime.native ? runtime.label : agent, children, runtime.native === true)) {
+    for (const card of replayRun(messages, agent, children, native)) {
       if (card.item.kind === 'ask' && card.item.nativeCallId) {
         card.item = nativeQuestionAnswered(card.item, questionReplies)
       }
@@ -534,22 +527,6 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         ? lastCwd.slice(root.length + 1)
         : lastCwd
 
-  // What the thread cost, as the relay summed it over every response, and what
-  // its last turn was carrying — the newest response's own input, which is the
-  // context it ran with. Summing those would add every turn's context together,
-  // which is not a window.
-  const usage: ThreadUsage = {
-    input: spent.input_tokens ?? 0,
-    output: spent.output_tokens ?? 0,
-    cacheRead: spent.cache_read_tokens ?? 0,
-    cacheWrite: spent.cache_write_tokens ?? 0,
-    cacheRate: null,
-  }
-  const read = usage.input
-  usage.cacheRate = read > 0 ? usage.cacheRead / read : null
-  const latestRun = runs.at(-1)
-  const context = latestRun?.context_used ?? 0
-
   const { agent } = activeRoute(thread)
   return {
     key: thread.channel_thread_id || threadTag(thread.id),
@@ -561,13 +538,15 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         ? undefined
         : { name: project.name, path: project.root, cwd: drift },
     vscode:
-      openDir && vscodeCanOpen(thread.channel_tentacle_id, agent)
+      openDir && vscodeCanOpen(thread, agent)
       ? {
           dir: openDir,
           // `vscode://file/<path>` opens a folder as readily as a file, and
           // focuses the window already holding it rather than opening a second.
           folder: `vscode://file${openDir}`,
-          session: sessionLink(thread.channel_tentacle_id, thread.chat_id),
+          session: thread.kind === 'native_thread'
+            ? sessionLink(runs.findLast(run => run.kind === 'external')?.name ?? thread.channel_tentacle_id, thread.chat_id)
+            : undefined,
         }
       : undefined,
     // Directives only go to the console's own channel; anything else is a
@@ -581,10 +560,21 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     reads,
     sessions: liveSessions(thread.handoffs, own, anchors),
     ledger,
-    usage,
-    ctxK: Math.round(context / 1000),
-    contextWindow: latestRun?.context_window ?? null,
+    ...threadMetrics(conversations, spent),
   }
+}
+
+/** Usage totals and the context of the newest parent run, without reading message pages. */
+export function threadMetrics(conversations: ApiConversation[], spent: ApiUsage): Pick<ThreadDetail, 'usage' | 'ctxK' | 'contextWindow'> {
+  const usage: ThreadUsage = {
+    input: spent.input_tokens ?? 0, output: spent.output_tokens ?? 0,
+    cacheRead: spent.cache_read_tokens ?? 0, cacheWrite: spent.cache_write_tokens ?? 0,
+    cacheRate: null,
+  }
+  usage.cacheRate = usage.input > 0 ? usage.cacheRead / usage.input : null
+  const latest = conversations.filter(conversation => !conversation.subagent_id).flatMap(conversation => conversation.runs)
+    .sort((a, b) => (a.started_at ? Date.parse(a.started_at) : 0) - (b.started_at ? Date.parse(b.started_at) : 0)).at(-1)
+  return { usage, ctxK: Math.round((latest?.context_used ?? 0) / 1000), contextWindow: latest?.context_window ?? null }
 }
 
 /**

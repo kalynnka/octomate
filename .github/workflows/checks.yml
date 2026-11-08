@@ -77,14 +77,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.12", "3.13"]
+        python: ["3.12", "3.13", "3.14", "3.15"]
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.sha }}
       - uses: astral-sh/setup-uv@v10.0.1
         with:
-          version: "0.8.13"
+          version: "0.13.7"
           python-version: ${{ matrix.python }}
           enable-cache: true
           cache-suffix: checks
@@ -170,14 +170,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.12", "3.13"]
+        python: ["3.12", "3.13", "3.14", "3.15"]
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.sha }}
       - uses: astral-sh/setup-uv@v10.0.1
         with:
-          version: "0.8.13"
+          version: "0.13.7"
           python-version: ${{ matrix.python }}
           enable-cache: true
           cache-suffix: checks

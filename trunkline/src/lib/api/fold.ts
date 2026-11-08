@@ -10,13 +10,14 @@ import type {
   ApiUserProfile,
   CommandStreamEvent,
   ModelResponsePart,
+  ThinkingPart,
   ToolCallPart,
   WireDeferredApproval,
   WireDeferredQuestion,
   WireSegment,
   WireTodo,
 } from '@/lib/api/events'
-import type { AskAnswer, AskQuestion, LedgerItem, LedgerItemDraft } from '@/lib/api/types'
+import type { AskAnswer, AskQuestion, CommandActivity, LedgerItem, LedgerItemDraft } from '@/lib/api/types'
 
 /**
  * A batch's unanswered actions as feeler cards. Both sources reach this: the
@@ -263,11 +264,62 @@ function clip(text: string): string {
   return text.length > TRUNC ? `${text.slice(0, TRUNC)} …` : text
 }
 
-function toolIcon(name: string): 'search' | 'file-diff' | 'send' | 'file' {
-  if (/search|grep|find|history/i.test(name)) return 'search'
-  if (/edit|diff|write|apply/i.test(name)) return 'file-diff'
-  if (/send|relay|message/i.test(name)) return 'send'
-  return 'file'
+function toolIcon(name: string): Extract<LedgerItem, { kind: 'tool' }>['icon'] {
+  const tool = name.toLowerCase().split(/__|\./).at(-1)!
+  if (tool === 'exec') return 'code'
+  if (/^(bash|shell|shell_command|exec_command|codex_command_execution|write_stdin)$/.test(tool)) return 'terminal'
+  if (/search|grep|find|glob|history/.test(tool)) return 'search'
+  if (/edit|diff|write|apply|file_change/.test(tool)) return 'file-diff'
+  if (/send|relay|message/.test(tool)) return 'send'
+  if (/^(read|read_file|read_text_file|read_multiple_files)$/.test(tool)) return 'file'
+  return 'wrench'
+}
+
+function toolPresentation(name: string, args: ToolCallPart['args']): Pick<Extract<LedgerItem, { kind: 'tool' }>, 'icon' | 'activities' | 'action'> {
+  const tool = name.toLowerCase().split(/__|\./).at(-1)!
+  const presentation: ReturnType<typeof toolPresentation> = { icon: toolIcon(name) }
+  if (tool === 'exec') presentation.action = { kind: 'code', target: 'code' }
+  if (tool === 'apply_patch') presentation.action = { kind: 'edit', target: 'files' }
+  let payload: unknown
+  try { payload = typeof args === 'string' ? JSON.parse(args) : args } catch { return presentation }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return presentation
+  const fields = payload as Record<string, unknown>
+  const path = [fields.file_path, fields.path, fields.filePath].find((value): value is string => typeof value === 'string')
+  const query = [fields.query, fields.pattern].find((value): value is string => typeof value === 'string')
+  const command = [fields.command, fields.cmd].find((value): value is string => typeof value === 'string')
+  if (/^(read|read_file|read_text_file|read_multiple_files)$/.test(tool)) {
+    const paths = Array.isArray(fields.paths) ? fields.paths.filter((value): value is string => typeof value === 'string') : path ? [path] : []
+    presentation.action = { kind: 'read', target: paths.map(value => value.split(/[\\/]/).at(-1)).join(', ') || 'files' }
+  } else if (/^(bash|shell|shell_command|exec_command|codex_command_execution)$/.test(tool)) {
+    presentation.action = { kind: 'command', target: command || 'a command' }
+  } else if (/^(search|web_search|codex_web_search|grep|glob)$/.test(tool)) {
+    presentation.action = { kind: 'search', target: query || '' }
+  } else if (/^(edit|write|write_file|edit_file|apply_patch|codex_file_change)$/.test(tool)) {
+    presentation.action = { kind: 'edit', target: path?.split(/[\\/]/).at(-1) || 'files' }
+  } else if (/^(toolsearch|tool_search|tool_search_tool_regex|search_tools|list_tools|mcp_list_tools)$/.test(tool)) {
+    presentation.action = { kind: 'load', target: query ? `tools: ${query}` : 'tools' }
+  }
+  if (tool === 'codex_command_execution' && Array.isArray(fields.commandActions)) {
+    const actions = fields.commandActions.filter((value): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value))
+    const activities = new Set<CommandActivity>()
+    for (const action of actions) {
+      if (action.type === 'read') activities.add('read')
+      if (action.type === 'search') activities.add('search')
+      if (action.type === 'listFiles' || action.type === 'list_files') activities.add('list')
+      if (action.type === 'unknown') activities.add('command')
+    }
+    if (activities.size) presentation.activities = [...activities]
+    if (activities.size === 1) {
+      const kind = [...activities][0]
+      const targets = actions.map(action => kind === 'read' ? action.name ?? action.path : kind === 'search' ? action.query : kind === 'list' ? action.path : action.cmd)
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        .map(value => kind === 'read' ? value.split(/[\\/]/).at(-1)! : value)
+      presentation.action = { kind, target: [...new Set(targets)].join(kind === 'command' ? '; ' : ', ') || (kind === 'command' ? command || 'a command' : kind === 'search' ? '' : 'files') }
+      presentation.icon = kind === 'read' || kind === 'list' ? 'file' : kind === 'search' ? 'search' : 'terminal'
+    }
+  }
+  if (presentation.action) presentation.action.target = clip(presentation.action.target.replace(/\s+/g, ' ').trim())
+  return presentation
 }
 
 /** A child run reachable from a parent's spawn call, keyed by that call's id —
@@ -284,6 +336,16 @@ export interface ReplayCard {
   id: string
   message: string
   item: LedgerItemDraft
+}
+
+function thinkingFormat(part: ThinkingPart): 'reasoning' | 'summary' {
+  return part.provider_details?.reasoning_format ?? (part.provider_name === 'anthropic' ? 'summary' : 'reasoning')
+}
+
+export function botLabel(id?: string | null): string {
+  if (!id || id === 'agent' || id === 'relay') return 'Octomate'
+  const name = /^(deepseek|dsh)$/i.test(id) ? 'Dsh' : id.charAt(0).toUpperCase() + id.slice(1)
+  return `Octomate(${name})`
 }
 
 /**
@@ -340,7 +402,7 @@ export function replayRun(
       return {
         kind: 'tool',
         name,
-        icon: toolIcon(name),
+        ...toolPresentation(name, args),
         status: 'run',
         detail: { type: 'plain', args: clipped, res: '' },
       }
@@ -348,7 +410,7 @@ export function replayRun(
     return {
       kind: 'tool',
       name,
-      icon: toolIcon(name),
+      ...toolPresentation(name, args),
       status: 'done',
       badge: settled.failed ? { label: 'failed', tone: 'terra' } : undefined,
       detail: {
@@ -398,15 +460,16 @@ export function replayRun(
   for (const message of messages) {
     if (message.kind !== 'response') continue
     for (const [n, part] of message.parts.entries()) {
-      const push = (item: LedgerItemDraft) =>
+      const push = (item: LedgerItemDraft) => {
+        if (item.kind === 'agent' || item.kind === 'stream' || item.kind === 'think' || item.kind === 'tool') item.agentId = agent
         cards.push({ id: `${message.id}.${n}`, message: message.id, item })
+      }
       switch (part.part_kind) {
         case 'thinking':
           // No duration survives the row, and a made-up one would be a claim.
-          // `content` is routinely empty: a Claude transcript signs each thinking
-          // block and writes no text with it, so a replayed one has nothing to
-          // show and the card says so rather than opening on a blank quote.
-          push({ kind: 'think', dur: '', text: part.content, thinking: false })
+          // Signed or encrypted reasoning can arrive without readable text;
+          // keep its place in history and let the card explain its absence.
+          push({ kind: 'think', dur: '', text: part.content, thinking: false, format: thinkingFormat(part) })
           break
         case 'tool-call':
         case 'builtin-tool-call': {
@@ -427,8 +490,8 @@ export function replayRun(
           if (!part.content) break
           push(
             index < lastWork
-              ? { kind: 'stream', text: part.content, streaming: false }
-              : { kind: 'agent', label: agent, blocks: [{ type: 'p', text: part.content }] },
+              ? { kind: 'stream', text: part.content, streaming: false, label: botLabel(agent) }
+              : { kind: 'agent', label: botLabel(agent), blocks: [{ type: 'p', text: part.content }] },
           )
           break
         case 'file':
@@ -443,15 +506,16 @@ export function replayRun(
 export class TurnFold {
   private sink: FoldSink
   private streamUid: string | null = null
+  private streamIndex: number | null = null
   private streamText = ''
-  private thinkUid: string | null = null
-  private thinkText = ''
-  private thinkStarted = 0
+  private thinkIndex: number | null = null
+  private thinkParts = new Map<number, { uid: string; text: string; started: number | null }>()
   private toolUids = new Map<string, { uid: string; args: string }>()
   private planUid: string | null = null
   private todos = new Map<string, WireTodo>()
   private subUids = new Map<string, string>()
   private sawReply = false
+  resultEnd: { uid: string; usage: string } | undefined
   private ended = false
   private sender: ApiUserProfile | null = null
   private questions = new Map<string, Extract<LedgerItem, { kind: 'ask' }>>()
@@ -470,15 +534,17 @@ export class TurnFold {
     if (this.streamUid !== null) {
       this.sink.patch(this.streamUid, { streaming: false })
       this.streamUid = null
+      this.streamIndex = null
     }
   }
 
-  private closeThink() {
-    if (this.thinkUid !== null) {
-      const secs = Math.max(1, Math.round((Date.now() - this.thinkStarted) / 1000))
-      this.sink.patch(this.thinkUid, { dur: `${secs}s`, thinking: false })
-      this.thinkUid = null
-    }
+  private closeThink(index = this.thinkIndex) {
+    if (index === null) return
+    const part = this.thinkParts.get(index)
+    if (!part || this.thinkIndex !== index) return
+    const elapsed = part.started === null ? null : Date.now() - part.started
+    this.sink.patch(part.uid, { dur: elapsed === null ? '' : elapsed < 1000 ? '<1s' : `${Math.round(elapsed / 1000)}s`, thinking: false })
+    if (this.thinkIndex === index) this.thinkIndex = null
   }
 
   private appendReply(text: string) {
@@ -488,6 +554,8 @@ export class TurnFold {
       this.streamText = text
       this.streamUid = this.sink.push({
         kind: 'stream',
+        agentId: this.nativeAgent,
+        label: botLabel(this.nativeAgent),
         text,
         streaming: true,
       })
@@ -497,29 +565,34 @@ export class TurnFold {
     this.sink.patch(this.streamUid, { text: this.streamText })
   }
 
-  private openPart(part: ModelResponsePart) {
+  private openPart(part: ModelResponsePart, index: number) {
     switch (part.part_kind) {
       case 'text':
         this.closeThink()
+        this.closeStream()
+        this.streamIndex = index
         this.appendReply(part.content)
         break
-      case 'thinking':
+      case 'thinking': {
         this.closeStream()
         this.closeThink()
-        this.thinkText = part.content
-        this.thinkStarted = Date.now()
-        this.thinkUid = this.sink.push({
+        const uid = this.sink.push({
           kind: 'think',
+          agentId: this.nativeAgent,
           dur: '…',
           text: part.content,
           thinking: true,
+          format: thinkingFormat(part),
         })
+        this.thinkIndex = index
+        this.thinkParts.set(index, { uid, text: part.content, started: null })
         break
+      }
       case 'builtin-tool-call':
-        this.openTool(part.tool_call_id, part.tool_name, argsText(part.args))
+        this.openTool(part.tool_call_id, part.tool_name, part.args)
         break
       case 'builtin-tool-return':
-        this.settleTool(part.tool_call_id, contentText(part.content))
+        this.settleTool(part.tool_call_id, contentText(part.content), part.outcome !== undefined && part.outcome !== 'success')
         break
       case 'compaction':
         this.sink.push({ kind: 'divider', label: 'context compacted' })
@@ -530,7 +603,7 @@ export class TurnFold {
     }
   }
 
-  private openTool(callId: string, name: string, args: string) {
+  private openTool(callId: string, name: string, args: ToolCallPart['args']) {
     // Reply text after the tool belongs to a new block, not the pre-tool one.
     this.closeStream()
     const question = this.nativeAgent !== undefined ? nativeQuestion(callId, name, args, this.nativeAgent) : null
@@ -539,11 +612,12 @@ export class TurnFold {
       this.questions.set(callId, { ...question, uid })
       return
     }
-    const clipped = clip(args)
+    const clipped = clip(argsText(args))
     const uid = this.sink.push({
       kind: 'tool',
+      agentId: this.nativeAgent,
       name,
-      icon: toolIcon(name),
+      ...toolPresentation(name, args),
       status: 'run',
       detail: { type: 'plain', args: clipped, res: '' },
     })
@@ -599,10 +673,17 @@ export class TurnFold {
       case 'run_started':
         this.sender = event.sender ?? null
         break
-      case 'run_ended':
+      case 'run_ended': {
         this.closeThink()
         this.closeStream()
+        if (!event.outcome) break
+        const outcome = event.outcome === 'completed' ? 'complete' : event.outcome
+        const label = `run ${outcome}${this.resultEnd?.usage ?? ''}`
+        if (this.resultEnd) this.sink.patch(this.resultEnd.uid, { label })
+        else this.sink.push({ kind: 'end', label })
+        this.resultEnd = undefined
         break
+      }
       case 'enqueued_messages': {
         const requests = event.messages.filter(message => message.kind === 'request')
         const prompts = requests.flatMap(message => message.parts.filter(part => part.part_kind === 'user-prompt'))
@@ -627,30 +708,41 @@ export class TurnFold {
         break
       }
       case 'part_start':
-        this.openPart(event.part)
+        this.openPart(event.part, event.index)
         break
       case 'part_delta':
         switch (event.delta.part_delta_kind) {
           case 'text':
             this.appendReply(event.delta.content_delta)
             break
-          case 'thinking':
-            if (this.thinkUid !== null && event.delta.content_delta) {
-              this.thinkText += event.delta.content_delta
-              this.sink.patch(this.thinkUid, { text: this.thinkText })
+          case 'thinking': {
+            const part = this.thinkParts.get(event.index)
+            if (part && event.delta.content_delta) {
+              part.started ??= Date.now()
+              part.text += event.delta.content_delta
+              this.sink.patch(part.uid, { text: part.text, startedAt: part.started })
             }
             break
+          }
           case 'tool_call':
             break
         }
         break
       case 'part_end':
-        if (event.part.part_kind === 'thinking') this.closeThink()
+        if (event.part.part_kind === 'thinking') {
+          const part = this.thinkParts.get(event.index)
+          if (part) this.sink.patch(part.uid, { text: event.part.content, format: thinkingFormat(event.part) })
+          this.closeThink(event.index)
+          this.thinkParts.delete(event.index)
+        } else if (event.part.part_kind === 'text' && this.streamUid !== null && this.streamIndex === event.index) {
+          this.sink.patch(this.streamUid, { text: event.part.content })
+          this.closeStream()
+        }
         break
       case 'function_tool_call': {
         const part: ToolCallPart = event.part
         this.closeThink()
-        this.openTool(part.tool_call_id, part.tool_name, argsText(part.args))
+        this.openTool(part.tool_call_id, part.tool_name, part.args)
         break
       }
       case 'function_tool_result':
@@ -687,7 +779,8 @@ export class TurnFold {
         this.closeStream()
         this.sink.push({
           kind: 'agent',
-          label: 'relay',
+          agentId: this.nativeAgent,
+          label: botLabel(this.nativeAgent),
           blocks: event.segments.map((segment) => ({
             type: 'p',
             text: segmentText(segment),
@@ -747,12 +840,10 @@ export class TurnFold {
         }
         this.closeStream()
         const u = event.usage
-        this.sink.push({
-          kind: 'end',
-          label:
-            `run complete · ${u.requests} ${u.requests === 1 ? 'request' : 'requests'}` +
-            ` · ${u.input_tokens.toLocaleString('en-US')} tokens in · ${u.output_tokens.toLocaleString('en-US')} out`,
-        })
+        const usage = ` · ${u.requests} ${u.requests === 1 ? 'request' : 'requests'}` +
+          ` · ${u.input_tokens.toLocaleString('en-US')} tokens in · ${u.output_tokens.toLocaleString('en-US')} out`
+        const uid = this.sink.push({ kind: 'end', label: `run complete${usage}` })
+        this.resultEnd = { uid, usage }
         this.ended = true
         this.sink.done()
         break

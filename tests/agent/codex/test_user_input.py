@@ -35,8 +35,8 @@ async def test_mcp_consent_rides_the_turn_and_returns_the_selected_answer(
 ) -> None:
     octomate = Octomate()
     tentacle = CodexTentacle(
-        "codex",
         octomate,
+        sandboxes=octomate.sandboxes,
         config=CodexConfig(approval_timeout=0.01 if answer is None else 5),
         commands=octomate.commands,
         projects=octomate.projects,

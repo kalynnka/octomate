@@ -87,8 +87,8 @@ async def agent(
     client, _ = inspector
     host = Octomate()
     tentacle = CodexTentacle(
-        "codex",
         host,
+        sandboxes=host.sandboxes,
         config=CodexConfig(),
         commands=host.commands,
         projects=host.projects,
@@ -131,8 +131,8 @@ async def test_models_and_skills_share_client(
     ]
     host = Octomate()
     agent = CodexTentacle(
-        "codex",
         host,
+        sandboxes=host.sandboxes,
         config=CodexConfig(),
         commands=host.commands,
         projects=host.projects,
@@ -506,8 +506,8 @@ async def test_cancelled_startup_is_drained_before_close(
     client.start.side_effect = start
     host = Octomate()
     agent = CodexTentacle(
-        "codex",
         host,
+        sandboxes=host.sandboxes,
         config=CodexConfig(),
         commands=host.commands,
         projects=host.projects,

@@ -16,7 +16,6 @@ import uuid
 from collections.abc import AsyncGenerator, Generator, Sequence
 from contextvars import Context, copy_context
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
 from functools import cached_property, partial
 from io import BytesIO
 from itertools import chain
@@ -127,11 +126,11 @@ from octomate.schemas.deferred import (
     QuestionRequest,
 )
 from octomate.schemas.files import Jsonl
-from octomate.schemas.mcp import McpAppInvocation
+from octomate.schemas.mcp import McpAppInvocation, McpAppResultMeta
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
 from octomate.streaming.files import FileTransferError, FileTransferSlot
@@ -169,6 +168,7 @@ if TYPE_CHECKING:
     from octomate.managers.files import FileManager
     from octomate.managers.gateway import GatewayManager, OctomateSession
     from octomate.managers.project import ProjectManager
+    from octomate.managers.sandbox import SandboxManager
     from octomate.managers.thread import ThreadManager
     from octomate.managers.user import UserManager
     from octomate.managers.workspaces import WorkspaceManager
@@ -238,6 +238,8 @@ class CodexTentacle(AgentTentacle[str, None]):
     the agent from, and a resumed run opens from what the graph resolved it with.
     """
 
+    type: ClassVar[str] = "codex"
+    id: ClassVar[str] = type
     config: CodexConfig = field(init=False)
     provider: str = field(init=False)
     ink: CodexInk = field(init=False, repr=False)
@@ -252,10 +254,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         default_factory=dict, init=False
     )
     conversation_locks: SessionLocks = field(default_factory=SessionLocks, init=False)
-    api_keys: dict[uuid.UUID, IssuedApiKey] = field(
-        default_factory=dict, init=False, repr=False
-    )  # One MCP credential per user for this runtime.
-    api_key_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     bridge_contexts: dict[str, CodexBridgeContext] = field(
         default_factory=dict, init=False
     )
@@ -263,7 +261,7 @@ class CodexTentacle(AgentTentacle[str, None]):
     # Codex approvals/questions are answered in-process through SDK callbacks while
     # the turn stays live. `pending` parks the card response futures.
     in_process: ClassVar[bool] = True
-    native_id: ClassVar[str] = CODEX_NATIVE_ID
+    default_model: str | None = field(default=None, init=False)
 
     permission_modes: tuple[PermissionMode, ...] = (
         PermissionMode(
@@ -310,6 +308,7 @@ class CodexTentacle(AgentTentacle[str, None]):
     # OpenAI's own green, so Codex's lines read as Codex's in a console it shares
     # with every other tentacle.
     brand_color: ClassVar[Style | None] = Style(color="#10A37F", bold=True)
+    default_icon_url: ClassVar[str | None] = "/agent-icons/openai.svg"
 
     description: str = (
         "Codex coding agent for repository-aware software engineering tasks."
@@ -317,10 +316,10 @@ class CodexTentacle(AgentTentacle[str, None]):
 
     def __init__(
         self,
-        id: str,
         octomate: Octomate,
         *,
         config: CodexConfig,
+        sandboxes: SandboxManager,
         commands: CommandManager,
         projects: ProjectManager,
         threads: ThreadManager,
@@ -335,24 +334,24 @@ class CodexTentacle(AgentTentacle[str, None]):
         description: str | None = None,
     ) -> None:
         super().__init__(
-            id=id,
+            id=self.id,
             octomate=octomate,
             commands=commands,
             projects=projects,
             threads=threads,
             files=files,
+            auth=auth,
+            sandboxes=sandboxes,
+            sandbox=config.sandbox,
         )
         self.conversations = conversations
         self.deferred_actions = deferred_actions
         self.workspaces = workspaces
         self.users = users
         self.bearers = bearers
-        self.auth = auth
         self.gateway_manager = gateway_manager
         self.config = config
         self.description = description or self.description
-        self.api_keys = {}
-        self.api_key_lock = asyncio.Lock()
         self.live_turns = {}
         self.conversation_locks = SessionLocks()
         self.bridge_contexts = {}
@@ -367,6 +366,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             self.threads,
             self.files,
             self.session_locks,
+            agent_tentacle_id=self.id,
         )
         self.session_ingest = CodexHookIngest(
             self.session_tailer,
@@ -390,6 +390,14 @@ class CodexTentacle(AgentTentacle[str, None]):
             handler=self.handle_sdk_request,
         )
 
+    @property
+    def native_running_threads(self) -> set[ThreadKey]:
+        return {
+            ThreadKey.from_address(state.address)
+            for state in self.session_tailer.sessions.values()
+            if state.open_turn is not None and state.open_turn.native is not None
+        }
+
     def routers(self) -> tuple[APIRouter]:
         return (self.hook_router,)
 
@@ -404,8 +412,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         bearer's profile on both routes; only the stream uses it to attribute
         transcript messages."""
         verifier = hook_guard(self.bearers)
-        resolve_sender = hook_sender(self.users, self.native_id, verifier)
-        router = APIRouter(tags=["codex"], dependencies=[Depends(verifier)])
+        resolve_sender = hook_sender(self.users, self.id, verifier)
+        router = APIRouter(tags=[self.type], dependencies=[Depends(verifier)])
 
         @router.post(
             "/hooks/codex",
@@ -451,7 +459,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
             return
         address = ChannelAddress(
-            channel_tentacle_id=self.native_id,
+            channel_tentacle_id=self.id,
             chat_type="thread",
             chat_id=hello.session_id,
             user_id=sender.channel_user_id,
@@ -501,8 +509,9 @@ class CodexTentacle(AgentTentacle[str, None]):
             holder = self.projects.resolve(Path(hello.cwd))
             project = self.projects.get(holder) if holder is not None else None
         await self.threads.ensure(
-            ThreadKey(self.native_id, "thread", hello.session_id),
+            ThreadKey(self.id, "thread", hello.session_id),
             project=project,
+            native=True,
         )
         state, offsets = await self.session_tailer.attach_remote(
             hello.session_id,
@@ -632,8 +641,11 @@ class CodexTentacle(AgentTentacle[str, None]):
         self, source: Conversation, *, owner_id: UUID7
     ) -> tuple[bytes, ExternalAgentRun]:
         """Read uploaded history and select its latest fully uploaded terminal turn."""
-        if source.agent_tentacle_id != self.native_id or source.subagent_id:
+        if source.agent_tentacle_id != self.id or source.subagent_id:
             raise ValueError("Only root native Codex sessions can be forked here")
+        thread = await self.threads.get(source.thread_id, with_messages=False)
+        if thread is None or thread.kind != "native_thread":
+            raise ValueError("Transcript imports require a tailed thread")
         if source.transcript_file_id is None or source.external_id is None:
             raise ValueError("Native Codex history has not been uploaded")
         data = await self.files.read(source.transcript_file_id, owner_id=owner_id)
@@ -688,7 +700,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         async with conversations.lock(target.key):
             source = await conversations.get(source.id)
             target = await conversations.get(target.id)
-            if source.agent_tentacle_id != CODEX_NATIVE_ID:
+            if source.agent_tentacle_id != self.id:
                 raise ValueError("Transcript imports require a native Codex source")
             if target.agent_tentacle_id != self.id or source.id == target.id:
                 raise ValueError("Transcript imports require a separate Codex target")
@@ -1203,40 +1215,10 @@ class CodexTentacle(AgentTentacle[str, None]):
         )
 
     async def runtime_api_key(self, user_id: uuid.UUID | None) -> IssuedApiKey | None:
-        """Reuse one MCP key per user, replacing it when its lifetime expires."""
-        auth = self.auth
-        if user_id is None or auth is None:
-            return None
-        async with self.api_key_lock:
-            if not self.ink.running:
-                raise RuntimeError("Codex runtime is not running")
-            issued = self.api_keys.get(user_id)
-            if issued is not None and (
-                issued.key.expires_at is None
-                or issued.key.expires_at > datetime.now(UTC)
-            ):
-                return issued
-            with anyio.CancelScope(shield=True):
-                if issued is not None:
-                    await auth.revoke_api_key(user_id, issued.key.id)
-                issued = await auth.create_api_key(
-                    user_id,
-                    name=f"Codex {self.id}",
-                    scopes=["mcp"],
-                    expires_at=datetime.now(UTC) + auth.config.runtime_api_key_lifetime,
-                )
-                self.api_keys[user_id] = issued
-            return issued
-
-    async def revoke_runtime_keys(self) -> None:
-        """Revoke user credentials at tentacle shutdown."""
-        async with self.api_key_lock:
-            api_keys, self.api_keys = self.api_keys, {}
-            auth = self.auth
-            if auth is None:
-                return
-            for issued in api_keys.values():
-                await auth.revoke_api_key(issued.key.user_id, issued.key.id)
+        """Issue credentials only while the native runtime is available."""
+        if user_id is not None and self.auth is not None and not self.ink.running:
+            raise RuntimeError("Codex runtime is not running")
+        return await super().runtime_api_key(user_id)
 
     async def discover_models(self) -> None:
         catalog = await self.ink.models()
@@ -1786,7 +1768,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 codex_logfire.span(
                     "CodexTentacle {agent_id} {run_name} [{conversation_address}]",
                     agent_id=self.id,
-                    run_name=run_name or "codex",
+                    run_name=run_name or self.id,
                     conversation_address=str(conversation_address),
                     **agent_input_message_attributes(user_prompt),
                 )
@@ -1909,6 +1891,21 @@ class CodexTentacle(AgentTentacle[str, None]):
                     artifact_messages[payload.item.root.id] = [
                         event.message_id for event in artifacts
                     ]
+                if (
+                    isinstance(notification.payload, ItemCompletedNotification)
+                    and isinstance(
+                        item := notification.payload.item.root, McpToolCallThreadItem
+                    )
+                    and item.server == "octomate_driven"
+                    and item.result is not None
+                    and (
+                        reference := McpAppResultMeta.model_validate(
+                            item.result.field_meta or {}
+                        )
+                    ).artifact_message_id
+                    is not None
+                ):
+                    artifact_messages[item.id] = [reference.artifact_message_id]
                 for event in chain(accumulator.consume(notification), artifacts):
                     yield event
                 if (
@@ -1943,7 +1940,6 @@ class CodexTentacle(AgentTentacle[str, None]):
             permission_mode=permission_mode,
             cwd=Path(run_cwd),
             external_id=codex_thread_id,
-            native_id=CODEX_NATIVE_ID,
             native_turn_id=accumulator.turn_id,
         )
         if artifact_messages:

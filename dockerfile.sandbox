@@ -1,24 +1,31 @@
 FROM node:22.23.2-bookworm-slim@sha256:48e4b67d85f87bd551df43704e24d252f56cc5f8e9718841aace50f19948f0f9 AS node
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim@sha256:531f855bda2c73cd6ef67d56b733b357cea384185b3022bd09f05e002cd144ca
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim@sha256:531f855bda2c73cd6ef67d56b733b357cea384185b3022bd09f05e002cd144ca AS python
+
+FROM python AS dependencies
+WORKDIR /opt/octomate
+COPY pyproject.toml uv.lock ./
+COPY cli/pyproject.toml cli/pyproject.toml
+COPY protocol/pyproject.toml protocol/pyproject.toml
+RUN --mount=type=cache,target=/root/.cache/uv \
+    UV_HTTP_TIMEOUT=180 UV_CONCURRENT_DOWNLOADS=4 UV_LINK_MODE=copy \
+    uv sync --locked --only-group sandbox --no-editable
+
+FROM python
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git openssh-client ripgrep bubblewrap sudo \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
-RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+RUN --mount=type=cache,target=/root/.npm \
+    ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && npm install --prefix /opt/dsh --no-audit --no-fund \
         @deepseek-ai/dsh@0.2.1-rc.2 @deepseek-ai/dsh-llm@0.2.1-rc.2
 
 WORKDIR /opt/octomate
-COPY pyproject.toml uv.lock README.md LICENSE ./
-COPY cli/ cli/
-COPY protocol/ protocol/
-COPY octomate/ octomate/
-RUN --mount=type=cache,target=/root/.cache/uv \
-    UV_HTTP_TIMEOUT=180 UV_CONCURRENT_DOWNLOADS=4 uv sync --locked --no-default-groups --no-editable \
-    && .venv/bin/python -c 'from pathlib import Path; import claude_agent_sdk; from codex_cli_bin import bundled_codex_path; Path("/usr/local/bin/claude").symlink_to(Path(claude_agent_sdk.__file__).parent / "_bundled/claude"); Path("/usr/local/bin/codex").symlink_to(bundled_codex_path())' \
+COPY --from=dependencies /opt/octomate/.venv /opt/octomate/.venv
+RUN .venv/bin/python -c 'from pathlib import Path; import claude_agent_sdk; from codex_cli_bin import bundled_codex_path; Path("/usr/local/bin/claude").symlink_to(Path(claude_agent_sdk.__file__).parent / "_bundled/claude"); Path("/usr/local/bin/codex").symlink_to(bundled_codex_path())' \
     && .venv/bin/python -VV > /opt/octomate/python-version.txt \
     && uv pip freeze > /opt/octomate/python-packages.txt \
     && dpkg-query -W > /opt/octomate/system-packages.txt \
@@ -26,14 +33,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 RUN groupadd --gid 1000 agent \
     && useradd --create-home --uid 1000 --gid 1000 --shell /bin/bash agent \
-    && mkdir -p /home/agent/workspace /home/agent/.octomate/config \
+    && mkdir -p /home/agent/workspace /home/agent/.claude \
     && chown -R agent:agent /home/agent \
     && printf 'agent ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/agent \
     && chmod 0440 /etc/sudoers.d/agent
 ENV PATH="/opt/octomate/.venv/bin:/opt/dsh/node_modules/.bin:$PATH" \
-    HOME=/home/agent \
-    OCTOMATE_HOME=/home/agent/.octomate/config \
-    OCTOMATE_DB_URL=sqlite+aiosqlite:///:memory:
+    HOME=/home/agent
 USER agent
 WORKDIR /home/agent/workspace
-CMD ["python", "-m", "octomate.sandbox.entrypoint"]
+CMD ["/bin/bash"]

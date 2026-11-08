@@ -1,5 +1,6 @@
 """The runtime interface consumed by the sandbox manager."""
 
+from contextlib import AbstractAsyncContextManager
 from typing import Protocol
 
 from anyio.abc import ByteStream
@@ -16,13 +17,15 @@ class Sandbox(Protocol):
         ...
 
     async def prepare(self) -> None:
-        """Create or reuse the runtime, raising SandboxError on failure."""
+        """Create or reuse, start, and validate the runtime before returning."""
         ...
 
-    async def open(self) -> ByteStream:
-        """Start the agent and return its duplex stream, which the caller closes."""
+    def execute(
+        self, *command: str, workdir: str, env: dict[str, str] | None = None
+    ) -> AbstractAsyncContextManager[ByteStream]:
+        """Run a command with duplex stdio, closing and reaping it on exit."""
         ...
 
     async def stop(self) -> None:
-        """Stop the runtime and agent attachment, preserving persistent data."""
+        """Stop the runtime, preserving persistent data."""
         ...

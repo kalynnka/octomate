@@ -13,7 +13,8 @@ from pydantic import ValidationError
 
 from octomate import Octomate
 from octomate.config.agents import CodexConfig, DeepseekConfig
-from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.config.base import OctomateConfig
+from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
 from tests.agent.deepseek.test_tentacle import FakeDeepseekApi, patch_gateway
@@ -36,8 +37,12 @@ async def test_permission_discovery_keeps_custom_names_and_descriptions(
             ]
         }
     )
+    host = Octomate()
     tentacle = DeepseekTentacle(
-        "auditor", Octomate(), config=DeepseekConfig(permission_mode="audit-only")
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
+        config=DeepseekConfig(permission_mode="audit-only"),
     )
     async with tentacle:
         assert [mode.value for mode in tentacle.permission_modes] == [
@@ -48,7 +53,7 @@ async def test_permission_discovery_keeps_custom_names_and_descriptions(
         assert tentacle.info.permission_modes[0].description == "Read without editing."
         assert tentacle.info.default_permission_mode == "audit-only"
         tentacle.check_permission_mode("audit-only")
-        with pytest.raises(ValueError, match="not one of auditor's modes"):
+        with pytest.raises(ValueError, match="not one of deepseek's modes"):
             tentacle.check_permission_mode("bypassPermissions")
 
 
@@ -61,7 +66,13 @@ async def test_permission_discovery_rejects_an_unavailable_default(
     FakeDeepseekApi.results["permissionPresets/catalog"] = OkResult.model_validate(
         {"value": {"options": options}}
     )
-    tentacle = DeepseekTentacle("deepseek", Octomate(), config=DeepseekConfig())
+    host = Octomate()
+    tentacle = DeepseekTentacle(
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
+        config=DeepseekConfig(),
+    )
     with pytest.raises(ValueError, match="not one of deepseek's modes"):
         async with tentacle:
             pytest.fail("An unavailable default must fail startup")
@@ -75,16 +86,22 @@ async def test_permission_discovery_failure_is_not_replaced_with_a_fixed_catalog
     FakeDeepseekApi.results["permissionPresets/catalog"] = ErrResult(
         error=RpcError(code="unavailable", message="No permission service")
     )
-    tentacle = DeepseekTentacle("deepseek", Octomate(), config=DeepseekConfig())
+    host = Octomate()
+    tentacle = DeepseekTentacle(
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
+        config=DeepseekConfig(),
+    )
     with pytest.raises(RuntimeError, match="No permission service"):
         async with tentacle:
             pytest.fail("Discovery errors must fail startup")
 
 
 def test_claude_catalog_uses_the_sdk_permission_vocabulary() -> None:
-    assert tuple(
-        mode.value for mode in ClaudeCodeTentacle.permission_modes
-    ) == get_args(ClaudePermissionMode)
+    assert tuple(mode.value for mode in ClaudeTentacle.permission_modes) == get_args(
+        ClaudePermissionMode
+    )
 
 
 def test_codex_catalog_exposes_the_three_ui_presets() -> None:
@@ -109,5 +126,7 @@ def test_old_deny_all_config_requires_an_explicit_preset_choice() -> None:
 
 @pytest.mark.parametrize("sandbox", ["read_only", "workspace_write", "full_access"])
 def test_separate_sandbox_config_is_not_silently_ignored(sandbox: str) -> None:
-    with pytest.raises(ValidationError, match="sandbox is now part of permission_mode"):
-        CodexConfig.model_validate({"sandbox": sandbox})
+    with pytest.raises(ValidationError, match="unknown sandbox"):
+        OctomateConfig.model_validate(
+            {"tentacles": {"codex": {"type": "codex", "sandbox": sandbox}}}
+        )

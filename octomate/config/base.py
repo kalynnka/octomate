@@ -61,7 +61,7 @@ from octomate.config.oauth import OAuthConfig
 from octomate.config.observability import LogfireConfig, LoggingConfig
 from octomate.config.projects import ProjectsConfig
 from octomate.config.providers import ProvidersConfig
-from octomate.config.sandbox import NativeSandboxConfig, SandboxConfig
+from octomate.config.sandbox import SandboxConfig
 from octomate.config.tentacles import TentacleConfigVariant
 from octomate.config.workspaces import WorkspacesConfig
 from octomate.schemas.project import Project
@@ -106,7 +106,8 @@ class OctomateConfig(BaseSettings):
     tentacles: dict[str, TentacleConfigVariant] = Field(
         default_factory=dict,
         description="Tentacles keyed by deployment ID, with type selecting the implementation. "
-        "The ID is shared by routing, channel profiles, and MCP installation.",
+        "The ID is shared by routing, channel profiles, and MCP installation. "
+        "Claude, Codex, and DeepSeek must use their type as the ID.",
     )
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     logfire: LogfireConfig = Field(default_factory=LogfireConfig)
@@ -134,10 +135,24 @@ class OctomateConfig(BaseSettings):
         default_factory=WorkspacesConfig,
         description="When a thread's workspace is reclaimed.",
     )
-    sandbox: SandboxConfig = Field(
-        default_factory=NativeSandboxConfig,
-        description="Agent sandbox mode; sbx requires an immutable sandbox agent image.",
+    sandbox: list[SandboxConfig] = Field(
+        default_factory=list,
+        description="Named sandbox deployments available for agent assignment; only sbx is supported.",
     )
+
+    @model_validator(mode="after")
+    def validate_sandbox_assignments(self) -> Self:
+        ids = {sandbox.id for sandbox in self.sandbox}
+        if len(ids) != len(self.sandbox):
+            raise ValueError("Sandbox deployment IDs must be unique")
+        for id, tentacle in self.tentacles.items():
+            if not isinstance(tentacle, AgentConfig) or tentacle.sandbox is None:
+                continue
+            if tentacle.sandbox not in ids:
+                raise ValueError(
+                    f"Agent {id!r} references unknown sandbox {tentacle.sandbox!r}"
+                )
+        return self
 
     @field_validator("projects", mode="wrap")
     @classmethod
@@ -167,9 +182,18 @@ class OctomateConfig(BaseSettings):
     def validate_unique_agent_runtimes(
         cls, tentacles: dict[str, TentacleConfigVariant]
     ) -> dict[str, TentacleConfigVariant]:
-        """Runtimes with fixed routes are unique; outbound ACP harnesses repeat."""
+        """CLI harness IDs match their types; other fixed-route runtimes are unique."""
+        fixed_harnesses = {"claude", "codex", "deepseek"}
         runtimes: set[str] = set()
-        for tentacle in tentacles.values():
+        for tentacle_id, tentacle in tentacles.items():
+            if tentacle.type in fixed_harnesses and tentacle_id != tentacle.type:
+                raise ValueError(
+                    f"{tentacle.type!r} tentacle must use ID {tentacle.type!r}"
+                )
+            if tentacle_id in fixed_harnesses and tentacle.type != tentacle_id:
+                raise ValueError(
+                    f"tentacle ID {tentacle_id!r} is reserved for type {tentacle_id!r}"
+                )
             if isinstance(tentacle, AcpAgentConfig):
                 continue
             if isinstance(tentacle, AgentConfig | AcpChannelConfig):

@@ -10,7 +10,6 @@ from unittest.mock import Mock
 import pytest
 from alembic import command
 from alembic.config import Config
-from alembic.script import ScriptDirectory
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.usage import RequestUsage
 from sqlalchemy.engine import make_url
@@ -328,11 +327,10 @@ async def test_context_schema_and_backfill_preserve_history_on_a_copy(
     assert actual != source
     module_path = await asyncio.to_thread(Path(__file__).resolve)
     config = Config(str(module_path.parents[2] / "alembic.ini"))
-    assert ScriptDirectory.from_config(config).get_heads() == [REVISION]
     # Alembic's logging setup would disable pytest's existing loggers.
     monkeypatch.setattr("logging.config.fileConfig", Mock())
     await asyncio.to_thread(command.stamp, config, PREVIOUS)
-    await asyncio.to_thread(command.upgrade, config, "head")
+    await asyncio.to_thread(command.upgrade, config, REVISION)
     with sqlite3.connect(target) as copied:
         assert copied.execute(
             "SELECT context_used, context_window FROM agent_runs"

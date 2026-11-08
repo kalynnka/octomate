@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Brackets } from '@/components/Brackets'
 import { Disclose, Fold } from '@/components/Fold'
 import { Icon } from '@/components/Icon'
-import { cardKind } from '@/components/text'
+import { cardKind, statusNote } from '@/components/text'
 import { fetchArtifact, type ArtifactView } from './api'
 
 function ArtifactSkeleton() {
@@ -32,8 +32,8 @@ function ArtifactFrame({ view }: { view: ArtifactView }) {
   const loading = status === 'loading'
   return <div className="trk-artifact-stage" data-loading={loading ? '' : undefined} aria-busy={loading}>
     {loading && <ArtifactSkeleton />}
-    {status === 'error' && <p role="alert">{error}</p>}
-    {status === 'closed' && <p role="status">Artifact closed. Reload to reopen.</p>}
+    {status === 'error' && <p role="alert" style={statusNote}>{error}</p>}
+    {status === 'closed' && <p role="status" style={{ ...statusNote, color: 'var(--fg-3)' }}>Artifact closed. Reload to reopen.</p>}
     <dialog ref={container} open className="trk-artifact-frame" aria-label={view.artifact.title} inert={loading} aria-hidden={loading || undefined} />
   </div>
 }
@@ -87,7 +87,7 @@ export function ArtifactViewer({ artifactId, threadId, messageId }: {
       <Fold open={!folded}>
         <div className="trk-artifact-sheet">
           {view.isPending && <ArtifactSkeleton />}
-          {view.error && <p role="alert">{view.error.message}</p>}
+          {view.error && <p role="alert" style={statusNote}>{view.error.message}</p>}
           {view.data && <ArtifactFrame key={`${url}:${revision}`} view={view.data} />}
         </div>
       </Fold>

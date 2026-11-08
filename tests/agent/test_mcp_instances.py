@@ -5,12 +5,12 @@ from mcp.types import TextContent
 from pydantic import SecretStr, TypeAdapter
 from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ModelRetry
+from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.mcp import TentaclesToolset
 from octomate.config import OctomateConfig
 from octomate.managers.mcp import McpClientKey
 from octomate.mcp.gateway import CLIENT_HEADER
@@ -27,11 +27,11 @@ from octomate.schemas.mcp import McpServerSummary
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude.mcp import octomate_mcp_server
 from octomate.tentacles.mcp import BareMcpTentacle
-from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.agent.test_mcp import ENCRYPTION_KEY, a_turn, an_upstream, upstream_of
 from tests.agent.test_mcp_serving import over, served
 from tests.channels.slack.test_mcp import into
 from tests.managers.test_mcp import install_request
+from tests.support.agents import FakeAgent
 from tests.support.managers import fixed_session
 from tests.support.users import a_api_key, a_user, auth_config
 
@@ -45,6 +45,7 @@ async def test_served_endpoint_uses_authenticated_owner_and_sees_new_installs(
     host = Octomate(
         config=OctomateConfig(auth=auth_config()), oauth_encryption_key=ENCRYPTION_KEY
     )
+    host.connect(FakeAgent(id="claude"))
     host.connect(
         BareMcpTentacle(
             "research",
@@ -63,7 +64,7 @@ async def test_served_endpoint_uses_authenticated_owner_and_sees_new_installs(
                     host,
                     {
                         "Authorization": "Bearer alice-token",
-                        CLIENT_HEADER: CLAUDE_NATIVE_ID,
+                        CLIENT_HEADER: "claude",
                     },
                 ) as alice_client,
                 over(
@@ -71,7 +72,7 @@ async def test_served_endpoint_uses_authenticated_owner_and_sees_new_installs(
                     host,
                     {
                         "Authorization": "Bearer bob-token",
-                        CLIENT_HEADER: CLAUDE_NATIVE_ID,
+                        CLIENT_HEADER: "claude",
                     },
                 ) as bob_client,
             ):
@@ -138,12 +139,14 @@ async def test_inkling_and_claude_mount_personal_discovery_without_tentacles(
     scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
     await host.mcp.install(user.id, install_request())
     server = tentacles_mcp(fixed_session(scope), manager=host.mcp)
-    toolset = TentaclesToolset(server)
+    toolset = MCPToolset[None](server)
     context = RunContext(deps=None, model=TestModel(), usage=RunUsage())
     tools = await toolset.get_tools(context)
     listed = await toolset.call_tool(LIST_MCPS, {}, context, tools[LIST_MCPS])
     assert "Private research" in str(listed)
-    claude = await octomate_mcp_server(scope, host.threads, manager=host.mcp)
+    claude = await octomate_mcp_server(
+        scope, host.threads, manager=host.mcp, conversations=host.conversations
+    )
     assert claude["name"] == "octomate"
     assert "mcp_list_servers" in [tool.name for tool in await server.list_tools()]
 
@@ -156,7 +159,7 @@ async def test_upstream_tool_errors_are_retries_in_inkling(
     scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
     instance = await host.mcp.install(user.id, install_request())
     server = tentacles_mcp(fixed_session(scope), manager=host.mcp)
-    toolset = TentaclesToolset(server)
+    toolset = MCPToolset[None](server)
     context = RunContext(deps=None, model=TestModel(), usage=RunUsage())
     tools = await toolset.get_tools(context)
     upstream, _ = an_upstream("answer")

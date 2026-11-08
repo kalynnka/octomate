@@ -375,7 +375,9 @@ class Octomate(FastAPI):
                         impulses=impulses,
                     )
                     try:
-                        return await run_reflex(signal, state=ReflexState(), deps=deps)
+                        return await run_reflex(
+                            signal, origin=origin, state=ReflexState(), deps=deps
+                        )
                     finally:
                         # Nothing sent on the stream is heard before this task next
                         # yields: the thread is let go before the reflex is heard
@@ -410,11 +412,12 @@ class Octomate(FastAPI):
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI) -> AsyncGenerator[dict[str, Octomate]]:
-        if self.config.sandbox.mode == "sbx":
-            raise RuntimeError(
-                "sbx agent dispatch is not enabled in this build; "
-                "the sandbox manager supports bootstrap verification only"
-            )
+        for agent in self.agents.values():
+            if agent.sandbox is not None:
+                raise RuntimeError(
+                    f"Sandbox dispatch for agent {agent.id!r} is not enabled in this build; "
+                    "prepared sandbox invocations are not yet wired into React"
+                )
         with sqlalchemy_materia():
             # The project registry: reconciling here is what builds
             # the resolution index, so a declared project resolves before
@@ -511,6 +514,7 @@ class Octomate(FastAPI):
             kick=self.kick,
             bearers=self.bearers,
             manager=self.mcp,
+            conversations=self.conversations,
         )
         # Stateless: identity is per call, from the request, so there is nothing
         # for the transport to keep between calls. Mounted under the server's name

@@ -10,6 +10,7 @@ from time import monotonic
 
 import pytest
 import sh
+from anyio.streams.buffered import BufferedByteReceiveStream
 from pydantic import BaseModel
 from uuid_utils.compat import uuid7
 
@@ -23,7 +24,6 @@ from octomate.schemas.sandbox import InvocationScope
 class GuestMemory(BaseModel):
     total_mib: float
     available_mib: float
-    agent_rss_mib: float
 
 
 @dataclass
@@ -80,11 +80,11 @@ async def sample_load(sandbox: SbxSandbox, pids: set[int]) -> float:
 async def test_single_user_resource_cost(tmp_path: Path) -> None:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
-        pytest.fail("Set SBX_TEST_IMAGE to the immutable, built sandbox agent image")
-    config = SbxSandboxConfig(image=image)
-    manager = SandboxManager(config, Nerve())
-    scope = InvocationScope(user_id=uuid7(), mode="sbx", conversation_id=uuid7())
-    sandbox = manager.state(scope.user_id).sandbox
+        pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
+    config = SbxSandboxConfig(id="local", image=image)
+    manager = SandboxManager([config], Nerve())
+    scope = InvocationScope(user_id=uuid7(), sandbox="local", conversation_id=uuid7())
+    sandbox = manager.state(scope).sandbox
     assert isinstance(sandbox, SbxSandbox)
     assert (
         sandbox.name
@@ -95,6 +95,18 @@ async def test_single_user_resource_cost(tmp_path: Path) -> None:
     try:
         async with manager.acquire(scope, uuid7()):
             startup_seconds = monotonic() - started
+            invoked = monotonic()
+            async with sandbox.execute(
+                "/opt/octomate/.venv/bin/python",
+                "-c",
+                "import os,sys; print(os.getpid(), flush=True); sys.stdin.buffer.read()",
+                workdir="/home/agent/workspace",
+            ) as stream:
+                process_id = int(
+                    await BufferedByteReceiveStream(stream).receive_until(b"\n", 64)
+                )
+                await stream.send_eof()
+            invocation_seconds = monotonic() - invoked
             await asyncio.sleep(2)
             idle_start = await host_usage()
             pids = idle_start.keys() - before.keys()
@@ -119,22 +131,18 @@ async def test_single_user_resource_cost(tmp_path: Path) -> None:
                     sandbox.name,
                     "/opt/octomate/.venv/bin/python",
                     "-c",
-                    "import json; from pathlib import Path; "
+                    "import json,sys; from pathlib import Path; "
+                    "assert not Path('/proc', sys.argv[1]).exists(), 'Guest process survived disconnect'; "
                     "m={k:int(v.split()[0]) for k,v in "
                     "(line.split(':',1) for line in Path('/proc/meminfo').read_text().splitlines())}; "
-                    "rss=0\n"
-                    "for p in Path('/proc').glob('[0-9]*/cmdline'):\n"
-                    " if b'\\x00octomate.sandbox.entrypoint\\x00' in p.read_bytes():\n"
-                    "  rss+=next(int(line.split()[1]) for line in "
-                    "(p.parent/'status').read_text().splitlines() if line.startswith('VmRSS:'))\n"
                     "print(json.dumps(dict(total_mib=m['MemTotal']/1024, "
-                    "available_mib=m['MemAvailable']/1024, agent_rss_mib=rss/1024)))",
+                    "available_mib=m['MemAvailable']/1024)))",
+                    str(process_id),
                 )
             )
-            assert guest.agent_rss_mib > 0
             peak_rss_mib = await sample_load(sandbox, pids)
         stopped = monotonic()
-        await manager.stop(scope.user_id)
+        await manager.stop(manager.state(scope))
         stop_seconds = monotonic() - stopped
         resumed = monotonic()
         async with manager.acquire(scope, uuid7()):
@@ -146,6 +154,7 @@ async def test_single_user_resource_cost(tmp_path: Path) -> None:
             "configured_cpus": config.cpus,
             "configured_memory_mib": config.memory_mib,
             "startup_seconds": startup_seconds,
+            "process_roundtrip_seconds": invocation_seconds,
             "stop_seconds": stop_seconds,
             "resume_seconds": resume_seconds,
             "idle_processes": {pid: asdict(idle_end[pid]) for pid in pids},

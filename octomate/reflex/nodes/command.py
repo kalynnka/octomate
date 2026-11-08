@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 from pydantic_graph import BaseNode, End, GraphRunContext
 
+from octomate.capabilities.harness.events import ReflexPhaseChangedEvent
+from octomate.nerve import Impulse
 from octomate.reflex.nodes.scheme import Scheme
 from octomate.reflex.nodes.summon import Summon
 from octomate.reflex.nodes.teleport import Teleport
@@ -96,5 +98,11 @@ class Command(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 result = await runtime.drive(ctx, suspender, output)
                 return await runtime.finish(ctx, session, suspender, result)
         finally:
+            await ctx.deps.impulses.send(
+                Impulse(
+                    ReflexPhaseChangedEvent(phase="finalizing"),
+                    context.address,
+                )
+            )
             if state.thread is not None and state.user_profile is not None:
                 await ctx.deps.workspaces.save(state.thread)

@@ -12,7 +12,6 @@ from pydantic import JsonValue, TypeAdapter
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.gateway import GatewayCapability
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.managers.gateway import GatewayRefusal, OctomateSession
@@ -28,10 +27,10 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import ChannelSurfaces
 from octomate.tentacles.claude.mcp import sdk_tool
 from octomate.tentacles.trunkline import TrunklineTentacle
-from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import a_project, a_registry, fixed_session
+from tests.support.mcp import gateway_schemas
 from tests.support.nerve import awake_on, drawing, kick_and_wait
 from tests.support.users import a_user
 
@@ -73,6 +72,7 @@ async def summon_session(
     )
     caller = host.connect(FakeAgent(id="inkling"))
     receiver = host.connect(FakeAgent(id="claude", reception_output="Found the cause"))
+    host.connect(FakeAgent(id="coding"))
     await a_user("someone", profiles={"im": "alice"})
     profile = await host.users.profile("im", "alice")
     assert profile is not None
@@ -324,18 +324,19 @@ async def test_summon_is_exposed_with_the_same_schema_and_result(
     monkeypatch.setattr(session, "summon", summon)
     host = channel.octomate
     resolve_session = AsyncMock(return_value=session)
-    server = octomate_mcp(resolve_session, host.threads, manager=host.mcp)
-    tool = await server.get_tool("gateway_summon")
+    server = octomate_mcp(
+        resolve_session,
+        host.threads,
+        manager=host.mcp,
+        conversations=host.conversations,
+    )
+    tool = next(
+        tool for tool in await server.list_tools() if tool.name == "gateway_summon"
+    )
     assert tool is not None
     resolve_session.assert_not_awaited()
-    capability = GatewayCapability(session=session)
-    assert capability.toolset is not None
-    schema = capability.toolset.tools["summon"].tool_def.parameters_json_schema
-    assert tool.parameters["required"] == schema["required"]
-    for name, parameter in schema["properties"].items():
-        assert tool.parameters["properties"][name] == {
-            key: value for key, value in parameter.items() if key != "description"
-        }
+    schema = (await gateway_schemas(session))["summon"]
+    assert tool.parameters == schema
     if projection == "mcp":
         async with Client(server) as client:
             await client.list_tools()
@@ -373,8 +374,13 @@ async def test_native_summon_starts_work_without_a_source_thread(
 ) -> None:
     _session, channel, _caller, receiver = summon_session
     host = channel.octomate
-    session = await native_session(host, CLAUDE_NATIVE_ID, "someone")
-    server = octomate_mcp(fixed_session(session), host.threads, manager=host.mcp)
+    session = await native_session(host, "coding", "someone")
+    server = octomate_mcp(
+        fixed_session(session),
+        host.threads,
+        manager=host.mcp,
+        conversations=host.conversations,
+    )
     async with drawing(channel), Client(server) as client:
         assert "gateway_summon" in {tool.name for tool in await client.list_tools()}
         with pytest.raises(ToolError, match="A native session cannot be handed over"):
@@ -405,15 +411,13 @@ async def test_native_summon_starts_work_without_a_source_thread(
     assert thread is not None
     assert thread.active_agent_tentacle_id == "claude"
     [handoff] = thread.handoffs
-    assert handoff.source_agent_tentacle_id == CLAUDE_NATIVE_ID
+    assert handoff.source_agent_tentacle_id == "coding"
     assert handoff.source_conversation_id is None
     profile = await host.users.profile("im", "alice")
     assert profile is not None
     assert thread.messages[0].sender_id == profile.id
     assert receiver.turns[0].prompt == ARGUMENTS["brief"]
-    capability = GatewayCapability(session=session)
-    assert capability.toolset is not None
-    assert "summon" in capability.toolset.tools
+    assert "summon" in await gateway_schemas(session)
 
 
 @pytest.mark.parametrize("user_id", ["alice", "someone-else"])
@@ -425,7 +429,7 @@ async def test_native_summon_validates_linked_identity_before_opening(
     host = channel.octomate
     await a_user("unlinked")
     username = "unlinked" if user_id == "alice" else "someone"
-    session = await native_session(host, CLAUDE_NATIVE_ID, username)
+    session = await native_session(host, "coding", username)
     with pytest.raises(GatewayRefusal, match=r"Link your profile|does not belong"):
         await session.summon(
             **ARGUMENTS, destination=ChannelAddress("im", "dm", "", user_id)
@@ -442,7 +446,7 @@ async def test_native_summon_attributes_a_console_thread_to_its_owner(
         TrunklineTentacle("web", host, config=TrunklineChannelConfig(agents=["claude"]))
     )
     console.self_profile = await console.ink.inspect()
-    session = await native_session(host, CLAUDE_NATIVE_ID, "someone")
+    session = await native_session(host, "coding", "someone")
     assert session.user_profile is not None
     user_id = session.user_profile.user_id
     assert user_id is not None

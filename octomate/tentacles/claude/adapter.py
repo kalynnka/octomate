@@ -11,7 +11,7 @@ import base64
 import logging
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, TypeVar, cast
+from typing import Any, Literal, TypeVar, cast
 
 from anthropic.types import Message as AnthropicMessage
 from anthropic.types import TextBlock as AnthropicTextBlock
@@ -23,6 +23,7 @@ from claude_agent_sdk import (
     ServerToolResultBlock,
     ServerToolUseBlock,
     StreamEvent,
+    SystemMessage,
     TextBlock,
     ThinkingBlock,
     ToolResultBlock,
@@ -66,7 +67,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.usage import RequestUsage, RunUsage
 
-from octomate.capabilities.harness.events import StreamEvents
+from octomate.capabilities.harness.events import RunActivityChangedEvent, StreamEvents
 from octomate.tentacles.claude.transcript import (
     TranscriptAssistantLine,
     TranscriptUserLine,
@@ -97,6 +98,10 @@ FINISH_REASON_MAP: dict[str, FinishReason] = {
 
 usage_counts_adapter: TypeAdapter[dict[str, int]] = TypeAdapter(
     dict[str, OnErrorOmit[int]]
+)
+
+status_adapter: TypeAdapter[Literal["compacting", "requesting"] | None] = TypeAdapter(
+    Literal["compacting", "requesting"] | None
 )
 
 
@@ -316,6 +321,17 @@ class ClaudeRunAccumulator:
             yield from self._consume_assistant(message)
         elif isinstance(message, UserMessage):
             yield from self._consume_tool_results(message)
+        elif isinstance(message, SystemMessage):
+            # A direct command can compact without producing a model run.
+            if command and not self.usage.requests:
+                return
+            if message.subtype == "status":
+                status = status_adapter.validate_python(message.data["status"])
+                yield RunActivityChangedEvent(
+                    activity="compacting" if status == "compacting" else "working"
+                )
+            elif message.subtype == "compact_boundary":
+                yield RunActivityChangedEvent(activity="working")
         elif isinstance(message, ResultMessage):
             if message.session_id:
                 self.session_id = message.session_id
@@ -423,7 +439,11 @@ class ClaudeRunAccumulator:
             if block_type == "text":
                 part: TextPart | ThinkingPart = TextPart(content="")
             elif block_type == "thinking":
-                part = ThinkingPart(content="", provider_name=CLAUDE_PROVIDER_NAME)
+                part = ThinkingPart(
+                    content="",
+                    provider_name=CLAUDE_PROVIDER_NAME,
+                    provider_details={"reasoning_format": "summary"},
+                )
             else:
                 return
             self.streaming_active = True
@@ -496,6 +516,7 @@ class ClaudeRunAccumulator:
                     content=block.thinking,
                     signature=block.signature,
                     provider_name=CLAUDE_PROVIDER_NAME,
+                    provider_details={"reasoning_format": "summary"},
                 )
                 parts.append(thinking)
                 if not self.streaming_active:

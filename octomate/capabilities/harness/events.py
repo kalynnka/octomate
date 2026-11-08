@@ -15,8 +15,8 @@ One stream, with these event families:
   events (`TodoCreatedEvent`/`TodoUpdatedEvent`/`TodoStatusChangedEvent`/
   `TodoCompletedEvent`/`TodoDeletedEvent`), each carrying the affected `Todo`.
 - **Action batch** (`ActionBatchEvent`) — a persisted batch of deferred actions
-  (questions + approvals) presented as one unit; the run suspends until the user
-  replies. `batch_id` correlates the reply through the deferred-action machinery.
+  (questions + approvals). Its response mode and blocking flag distinguish a live
+  wait, a deferred continuation, and an asynchronous request.
 - **Thread metadata** (`ThreadEvent`) — committed titles, project bindings,
   handoffs, ledger entries and command outcomes published by the thread manager.
 - **Subagent lifecycle** (`SubagentStartedEvent`/`SubagentSettledEvent`) — an
@@ -76,6 +76,7 @@ from octomate.schemas.thread import Handoff
 from octomate.schemas.todos import Todo
 from octomate.schemas.triage import GatewayAction
 from octomate.schemas.user import UserProfile
+from octomate.types.deferred import DeferredResponseMode
 
 SubagentActivityKind = Literal["commission", "whisper"]
 SubagentActivityStatus = Literal["completed", "failed", "timed_out", "cancelled"]
@@ -113,6 +114,22 @@ class ReflexAsleepEvent(BaseModel):
     a console waits for before it reads the thread again."""
 
     event_kind: Literal["reflex_asleep"] = "reflex_asleep"
+    outcome: (
+        Literal["completed", "failed", "cancelled", "deferred", "handed_off"] | None
+    ) = Field(
+        default=None,
+        description="How the whole kick ended, after its runs and gateway operations. "
+        "Deferred means awaiting a later continuation; None means unreported.",
+    )
+
+
+class ReflexPhaseChangedEvent(BaseModel):
+    """The enclosing kick entered a phase, including work outside an agent run."""
+
+    event_kind: Literal["reflex_phase_changed"] = "reflex_phase_changed"
+    phase: Literal["preparing", "routing", "moving", "finalizing"] = Field(
+        description="The phase the reflex has actually entered."
+    )
 
 
 class ThreadTitleChangedEvent(BaseModel):
@@ -190,6 +207,24 @@ class RunStartedEvent(BaseModel):
     )
 
 
+class RunActivityChangedEvent(BaseModel):
+    """A harness reported activity within the enclosing run's existing brackets."""
+
+    event_kind: Literal["run_activity_changed"] = "run_activity_changed"
+    activity: Literal["working", "thinking", "using_tools", "writing", "compacting"] = (
+        Field(
+            description="Canonical run activity, supported by a real signal. Existing "
+            "part and tool events still describe their own activity."
+        )
+    )
+    display_text: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Optional harness label for this activity. None clears the "
+        "previous label and selects standard wording.",
+    )
+
+
 class RunEndedEvent(BaseModel):
     """An agent run over, finished or failed, after everything it streamed: the
     counterpart of `RunStartedEvent`."""
@@ -200,6 +235,12 @@ class RunEndedEvent(BaseModel):
         description="The ledger row of the run's reply, for the channel to mark "
         "with the platform id it renders the reply as; None for a run that left "
         "no reply.",
+    )
+    outcome: Literal["completed", "failed", "cancelled", "deferred"] | None = Field(
+        default=None,
+        description="How this invocation ended. Deferred returns requests to the "
+        "reflex; it does not decide whether the whole kick waits or moves. "
+        "None means unreported, and a completed run does not finish its reflex.",
     )
 
 
@@ -416,8 +457,8 @@ class LinkProfileAuthorizationEvent(DisplayEvent):
 
 
 class ActionBatchEvent(BaseModel):
-    """A persisted batch of deferred actions presented as one unit; the run
-    suspends until the user replies.
+    """A persisted batch of questions and approvals, which may block the run
+    or leave it working while the user responds.
 
     Carries the batch's `questions` and `approvals` (the persisted actions) so the
     consumer renders + marks them together, and `batch_id` to correlate the reply
@@ -426,13 +467,27 @@ class ActionBatchEvent(BaseModel):
 
     event_kind: Literal["action_batch"] = "action_batch"
     batch_id: str
+    response_mode: DeferredResponseMode | None = Field(
+        default=None,
+        description="The existing batch response mode: answer a live caller or open "
+        "a later continuation. None means unreported; resume alone does not imply waiting.",
+    )
+    blocks_run: bool | None = Field(
+        default=None,
+        description="Whether this batch blocks the run, as reported by the caller. "
+        "False leaves the run active; None means unreported, not blocked.",
+    )
     questions: list[DeferredQuestion] = Field(default_factory=list)
     approvals: list[DeferredApproval] = Field(default_factory=list)
 
     @classmethod
-    def from_batch(cls, batch: DeferredActionBatch) -> ActionBatchEvent:
+    def from_batch(
+        cls, batch: DeferredActionBatch, *, blocks_run: bool | None = None
+    ) -> ActionBatchEvent:
         return cls(
             batch_id=str(batch.id),
+            response_mode=batch.response_mode,
+            blocks_run=blocks_run,
             questions=list(batch.questions),
             approvals=list(batch.approvals),
         )
@@ -482,6 +537,7 @@ type StreamEvents[OutputT] = (
     | ActionBatchUpdatedEvent
     | SubagentStartedEvent
     | SubagentSettledEvent
+    | RunActivityChangedEvent
 )
 
 
@@ -518,8 +574,10 @@ type WireEvent = (
     | RunResultEvent
     | ReflexAwakeEvent
     | ReflexAsleepEvent
+    | ReflexPhaseChangedEvent
     | ThreadEvent
     | RunStartedEvent
+    | RunActivityChangedEvent
     | RunEndedEvent
     | RunErrorEvent
     | GatewayEvent

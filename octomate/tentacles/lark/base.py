@@ -52,6 +52,7 @@ from octomate.tentacles.lark.feelers.questions import (
     LarkAskQuestionFeeler,
     collect_answers,
 )
+from octomate.tentacles.lark.feelers.status import LarkStatusFeeler
 from octomate.tentacles.lark.ink import LarkInk, LarkWebSocketClient
 from octomate.tentacles.lark.oauth import LarkOAuthConnector
 from octomate.tentacles.lark.schema import (
@@ -146,6 +147,7 @@ class LarkTentacle(
         ask_questions = LarkAskQuestionFeeler(self.ink)
         oauth = LarkOAuthFeeler(self.ink)
         self.feelers = Feelers(
+            status=LarkStatusFeeler(self.ink),
             markdown=markdown_feeler,
             artifacts=LarkArtifactFeeler(
                 artifacts=self.octomate.artifacts,

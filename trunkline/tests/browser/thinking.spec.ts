@@ -1,0 +1,82 @@
+import { test, expect } from '@playwright/test'
+
+for (const width of [1280, 390]) {
+  test(`reasoning and summaries render Markdown and fold accessibly at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    page.on('console', message => { if (['error', 'warning'].includes(message.type())) errors.push(message.text()) })
+    await page.goto('/tests/browser/markdown.html')
+    await expect(page).toHaveTitle('Message rendering test')
+    await page.getByRole('button', { name: 'Reasoning', exact: true }).click()
+    const progress = page.locator('#pm-progress')
+    const reasoning = page.locator('#pm-reasoning')
+    const codex = page.locator('#pm-codex-summary')
+    const claude = page.locator('#pm-claude-summary')
+    const unavailable = page.locator('#pm-unavailable')
+    await expect(progress.locator('strong')).toHaveText('Checking macOS setup')
+    await expect(progress).toContainText('Octomate(Codex)')
+    await expect(page.locator('#pm-claude-reply')).toContainText('Octomate(Claude)')
+    await expect(page.locator('#pm-dsh-reply')).toContainText('Octomate(Dsh)')
+    await expect(progress.locator('.trk-thinking-toggle')).toHaveCount(0)
+    await expect(reasoning.locator('.trk-thinking-format')).toHaveCount(0)
+    await expect(reasoning.locator('strong')).toHaveText('Tracing the permission boundary')
+    await expect(reasoning.locator('code')).toHaveText('workspace')
+    await expect(reasoning.locator('li')).toHaveCount(2)
+    await expect(codex.locator('strong')).toHaveText('Awaiting macOS admin setup')
+    await expect(codex.locator('.trk-thinking-format')).toHaveText('(summary)')
+    await expect(claude.locator('.trk-thinking-format')).toHaveText('(summary)')
+    await expect(claude.getByRole('button')).toHaveAttribute('aria-expanded', 'false')
+    await claude.getByRole('button').focus()
+    await page.keyboard.press('Enter')
+    await expect(claude.locator('strong')).toBeVisible()
+    for (const summary of [codex, claude]) {
+      const paragraphs = summary.locator('.trk-thinking-content .trk-md > p')
+      await expect(paragraphs).toHaveCount(2)
+      await expect(paragraphs.first()).toHaveCSS('display', 'inline')
+      expect(await paragraphs.nth(1).evaluate(el => getComputedStyle(el, '::before').content)).toBe('" · "')
+      expect(await paragraphs.first().evaluate(el => getComputedStyle(el, '::before').content)).toBe('none')
+      const textStart = await paragraphs.evaluateAll(elements => elements.map(el => {
+        const range = document.createRange()
+        range.selectNodeContents(el)
+        const bounds = range.getClientRects()[0]
+        return { x: bounds.x, y: bounds.y }
+      }))
+      if (width === 1280) {
+        expect(textStart[1].y).toBeCloseTo(textStart[0].y, 0)
+        expect(textStart[1].x).toBeGreaterThan(textStart[0].x)
+      }
+    }
+    await expect(reasoning.locator('.trk-md > p').first()).toHaveCSS('display', 'block')
+    expect(await reasoning.locator('.trk-md > p').nth(1).evaluate(el => getComputedStyle(el, '::before').content)).toBe('none')
+    await expect(unavailable.getByRole('button').getByText('(unavailable)', { exact: true })).toHaveCount(1)
+    await expect(unavailable.getByRole('button')).toHaveAttribute('aria-expanded', 'false')
+    await expect(unavailable.locator('.trk-thinking-format')).toHaveText('(unavailable)')
+    await expect(unavailable.getByRole('button')).not.toContainText('(summary)')
+    await unavailable.getByRole('button').focus()
+    await page.keyboard.press('Enter')
+    await expect(unavailable.locator('.trk-thinking-content')).toBeVisible()
+    await expect(unavailable.locator('.trk-thinking-content')).toContainText('no readable reasoning text or summary')
+    await expect(page.locator('.trk-print-caret')).toHaveCount(2)
+    for (const theme of ['Light', 'Dark']) {
+      await page.getByRole('button', { name: theme, exact: true }).click()
+      await page.evaluate(async () => { await document.fonts.ready })
+      await expect(codex).not.toContainText('**')
+      const badge = codex.locator('.trk-thinking-format')
+      expect(await badge.evaluate(el => getComputedStyle(el).fontSize)).toBe(await badge.evaluate(el => getComputedStyle(el.parentElement!).fontSize))
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+      await expect(page.locator('vite-error-overlay')).toHaveCount(0)
+      await page.locator('section[aria-label="Reasoning cards"]').screenshot({ path: `/private/tmp/inky-thinking-${width}-${theme.toLowerCase()}.png` })
+    }
+    await codex.getByRole('button').focus()
+    await page.keyboard.press('Space')
+    await expect(codex.getByRole('button')).toHaveAttribute('aria-expanded', 'false')
+    await page.keyboard.press('Enter')
+    await expect(codex.getByRole('button')).toHaveAttribute('aria-expanded', 'true')
+    await page.getByRole('button', { name: 'Finish reasoning', exact: true }).click()
+    await expect(reasoning.getByRole('button')).toHaveAttribute('aria-expanded', 'false')
+    await expect(codex.getByRole('button')).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.locator('.trk-print-caret')).toHaveCount(0)
+    expect(errors).toEqual([])
+  })
+}

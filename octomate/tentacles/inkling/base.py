@@ -16,6 +16,8 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self, get_args, overload
 
+import anyio
+from httpx import URL
 from pydantic import UUID7, TypeAdapter
 from pydantic_ai import (
     AgentCapability,
@@ -49,7 +51,6 @@ from pydantic_graph import GraphRunContext
 from rich.style import Style
 
 from octomate.capabilities import UserScopedCapability
-from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.deferred import (
     DeclineResolver,
@@ -67,9 +68,10 @@ from octomate.capabilities.harness.react import (
     iter_react_graph_events,
     resolve_conversation,
 )
-from octomate.capabilities.mcp import tentacles_capability
-from octomate.config.agents import AgentRouteModelName
+from octomate.config.agents import AgentRouteModelName, InklingConfig
 from octomate.managers.conversation import ConversationManager
+from octomate.mcp.gateway import CONVERSATION_HEADER
+from octomate.mcp.server import OCTOMATE_MCP_PATH
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import Claim
@@ -79,12 +81,15 @@ from octomate.tentacles.agent import (
     AgentSpecInput,
     AgentTentacle,
 )
+from octomate.tentacles.inkling.mcp import OctomateTools
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from octomate.types.permissions import InklingPermissionMode, PermissionMode
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
+    from octomate.managers.auth import AuthManager
     from octomate.managers.mcp import McpManager
+    from octomate.managers.sandbox import SandboxManager
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +168,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     """Inkling agent wrapper with pydantic-ai-style run entrypoints."""
 
     brand_color: ClassVar[Style | None] = Style(color="#C29145", bold=True)
+    config: InklingConfig | None = None
 
     agent: Agent[None, InklingOutput] = field(init=False)
     mcp: McpManager = field(init=False)
@@ -175,8 +181,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     user_scoped_capabilities: list[UserScopedCapability[None]] = field(init=False)
     conversation_manager: ConversationManager = field(init=False)
     deferred_resolver: DeferredResolver | None = None
-    # The posture a conversation that declares none of its own runs under. Unlike
-    # claude and codex, inkling takes no config object, so its default arrives here.
+    # The posture a conversation that declares none of its own runs under.
     permission_mode: InklingPermissionMode = "default"
     request_limit: int = 256
     # Separate auxiliary model; None follows the model chosen for the turn.
@@ -186,6 +191,14 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         PermissionMode(value=mode, name=mode)
         for mode in get_args(InklingPermissionMode)
     )
+
+    def resolve_model(
+        self, model: AgentRouteModelName | None = None
+    ) -> AgentRouteModelName | None:
+        """Use the configured default when no model is selected."""
+        if not self.models:
+            raise ValueError(f"agent {self.id!r} has no available model catalog")
+        return self.default_model if model is None else super().resolve_model(model)
 
     @property
     def default_permission_mode(self) -> str | None:
@@ -211,7 +224,10 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         id: str,
         octomate: Octomate,
         *,
+        auth: AuthManager | None,
+        sandboxes: SandboxManager,
         agent: Agent[None, InklingOutput] | None = None,
+        sandbox: str | None = None,
         models: Mapping[AgentRouteModelName, Model | str] | None = None,
         naming_model: Model | str | None = None,
         name: str = "octomate-inkling",
@@ -225,6 +241,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         permission_mode: InklingPermissionMode = "default",
         request_limit: int = 256,
         gateway: bool = True,
+        config: InklingConfig | None = None,
     ) -> None:
         super().__init__(
             id=id,
@@ -233,7 +250,11 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             projects=octomate.projects,
             threads=octomate.threads,
             files=octomate.files,
+            auth=auth,
+            sandboxes=sandboxes,
+            sandbox=sandbox,
         )
+        self.config = config
         self.mcp = octomate.mcp
         self.workspaces = octomate.workspaces
         self.permission_mode = permission_mode
@@ -428,6 +449,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 pass
             self.warm_task = None
         await self._exit_stack.aclose()
+        with anyio.CancelScope(shield=True):
+            await self.revoke_runtime_keys()
 
     @overload
     async def run(
@@ -773,24 +796,42 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         )
 
         capabilities = list(capabilities or [])
-        # The MCP tentacles the host holds act as the person the turn is for, which
-        # is what the Octomate session carries; a run without one has nobody for
-        # them to act as.
-        octomate_session = next(
-            (
-                capability.session
-                for capability in capabilities
-                if isinstance(capability, GatewayCapability)
-            ),
-            None,
+        # The core owns the session; the agent receives only its MCP connection.
+        octomate_session = (
+            self.octomate.gateway.get(conversation_id)
+            if conversation_id is not None
+            else None
         )
-        if octomate_session is not None:
-            capabilities.append(
-                tentacles_capability(
-                    octomate_session,
-                    manager=self.mcp,
-                )
+        profile = (
+            octomate_session.user_profile if octomate_session is not None else None
+        )
+        if profile is not None and profile.user_id is not None:
+            key = await self.runtime_api_key(profile.user_id)
+            if key is None:
+                raise ValueError("Inkling MCP tools require configured authentication")
+            if octomate_session is None or octomate_session.conversation_id is None:
+                raise ValueError("Inkling MCP tools require a core-owned conversation")
+            deployment = self.octomate.config
+            client: MCPToolset[None] = MCPToolset(
+                str(
+                    URL(
+                        scheme="http",
+                        host="127.0.0.1"
+                        if deployment.host.is_unspecified
+                        else str(deployment.host),
+                        port=deployment.port,
+                        path=OCTOMATE_MCP_PATH,
+                    )
+                ),
+                id="octomate",
+                headers={
+                    "Authorization": f"Bearer {key.token.get_secret_value()}",
+                    CONVERSATION_HEADER: str(octomate_session.conversation_id),
+                },
+                process_tool_call=OctomateTools.call,
+                max_retries=2,
             )
+            capabilities.extend(OctomateTools.capabilities(client))
         # The react graph carries only the thread/agent identity; each node fetches
         # the live conversation (and its history) from the ConversationManager, the
         # single source of truth — no message-history copy is threaded here. A

@@ -1,6 +1,6 @@
 """The public ACP endpoint drives registered agents through the real reflex graph."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
 from uuid import UUID
 
@@ -32,17 +32,20 @@ from octomate.schemas.conversation import Conversation
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadMessage
 from octomate.tentacles.acp.channel import AcpChannelTentacle
-from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.inkling.base import InklingTentacle
 from tests.agent.claude.test_tentacle import FakeClaudeClient
 from tests.support.agents import ScriptedStream, ScriptedTurn
 from tests.support.managers import a_project, a_registry
+from tests.support.mcp import served_inkling_mcp
 from tests.support.users import a_user, auth_config
 
 
 @pytest.fixture
-async def client(in_memory_engine: AsyncEngine) -> TestClient:
+async def client(
+    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> AsyncGenerator[TestClient]:
     app = Octomate(config=OctomateConfig(auth=auth_config()))
     for name in ("first", "second"):
         model = FunctionModel(
@@ -50,6 +53,8 @@ async def client(in_memory_engine: AsyncEngine) -> TestClient:
         )
         app.connect(
             InklingTentacle(
+                auth=app.auth,
+                sandboxes=app.sandboxes,
                 id=name,
                 octomate=app,
                 models={
@@ -67,9 +72,11 @@ async def client(in_memory_engine: AsyncEngine) -> TestClient:
     user = await a_user("alice")
     assert app.auth is not None
     key = await app.auth.create_api_key(user.id, name="ACP client", scopes=["acp"])
-    return TestClient(
-        app, headers={"Authorization": f"Bearer {key.token.get_secret_value()}"}
-    )
+    async with served_inkling_mcp(app, monkeypatch, lifespan=False):
+        with TestClient(
+            app, headers={"Authorization": f"Bearer {key.token.get_secret_value()}"}
+        ) as client:
+            yield client
 
 
 def rpc(
@@ -413,6 +420,8 @@ async def test_questions_resume_or_cancel_through_reflex(
     )
     app.connect(
         InklingTentacle(
+            auth=app.auth,
+            sandboxes=app.sandboxes,
             id="questions",
             octomate=app,
             models={"test": model},
@@ -499,6 +508,8 @@ async def test_agent_permissions_and_cancellation(
     model = FunctionModel(stream_function=reply)
     app.connect(
         InklingTentacle(
+            auth=app.auth,
+            sandboxes=app.sandboxes,
             id="tools",
             octomate=app,
             models={"test": model},
@@ -528,6 +539,7 @@ async def test_agent_permissions_and_cancellation(
             frame = socket.receive_json()
             assert frame.get("id") != "prompt", frame
             if frame.get("method") == "session/request_permission":
+                assert frame["params"]["toolCall"]["status"] == "pending"
                 break
         if decision != "disconnect":
             # Configuration remains usable while a request waits for human input.
@@ -672,9 +684,10 @@ async def test_native_live_approval_returns_to_existing_run(
     assert isinstance(app, Octomate)
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ApprovingClaudeClient)
     agent = app.connect(
-        ClaudeCodeTentacle(
-            "native",
+        ClaudeTentacle(
             app,
+            auth=app.auth,
+            sandboxes=app.sandboxes,
             config=ClaudeCodeConfig(gateway=False),
             commands=app.commands,
             projects=app.projects,
@@ -698,7 +711,7 @@ async def test_native_live_approval_returns_to_existing_run(
             {
                 "sessionId": session_id,
                 "configId": "model",
-                "value": "native:anthropic:sonnet",
+                "value": "claude:anthropic:sonnet",
             },
         )
         socket.send_json(
@@ -716,6 +729,7 @@ async def test_native_live_approval_returns_to_existing_run(
             frame = socket.receive_json()
             assert frame.get("id") != "prompt", frame
             if frame.get("method") == "session/request_permission":
+                assert frame["params"]["toolCall"]["status"] == "pending"
                 break
         socket.send_json(
             {

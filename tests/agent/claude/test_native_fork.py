@@ -19,9 +19,9 @@ from octomate import Octomate
 from octomate.config import ClaudeCodeConfig, OctomateConfig
 from octomate.nerve import Impulse
 from octomate.schemas.conversation import Conversation
-from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.claude import ClaudeCodeTentacle
+from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.claude.transcript import transcripts_dir
 from tests.agent.claude.test_stream import AUTH, CLIENT_PATH, frames, hello_json
@@ -43,12 +43,13 @@ async def db(in_memory_engine: AsyncEngine) -> None:
     return
 
 
-async def a_native_session() -> tuple[Octomate, ClaudeCodeTentacle, UserProfile]:
+async def a_native_session() -> tuple[Octomate, ClaudeTentacle, UserProfile]:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
     tentacle = octomate.connect(
-        ClaudeCodeTentacle(
-            "claude",
+        ClaudeTentacle(
             octomate,
+            auth=octomate.auth,
+            sandboxes=octomate.sandboxes,
             config=ClaudeCodeConfig(),
             commands=octomate.commands,
             projects=octomate.projects,
@@ -138,7 +139,7 @@ def test_lines_over_the_socket_are_kept_for_their_owner() -> None:
         async def kept() -> bytes:
             octomate = tentacle.octomate
             thread = await octomate.threads.get(SESSION_KEY, with_messages=False)
-            owner = await octomate.users.native_profile(CLAUDE_NATIVE_ID, "lu")
+            owner = await octomate.users.native_profile("claude", "lu")
             assert thread is not None
             assert owner is not None
             assert owner.user_id is not None
@@ -242,9 +243,9 @@ async def test_a_session_on_a_model_this_server_does_not_offer_cannot_fork(
 
 async def test_a_native_session_with_nothing_kept_cannot_fork() -> None:
     octomate, tentacle, sender = await a_native_session()
-    thread = await octomate.threads.ensure(SESSION_KEY)
+    thread = await octomate.threads.ensure(SESSION_KEY, native=True)
     source = await octomate.conversations.ensure(
-        thread.id, agent_tentacle_id=tentacle.native_id
+        thread.id, agent_tentacle_id=tentacle.id
     )
 
     with pytest.raises(ValueError, match="has not been uploaded"):

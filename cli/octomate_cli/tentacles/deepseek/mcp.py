@@ -17,7 +17,6 @@ from octomate_cli.tentacles.deepseek.config import (
 )
 from octomate_cli.tentacles.mcp import (
     CLIENT_HEADER,
-    DEEPSEEK_NATIVE_CLIENT,
     OCTOMATE_SERVER_KEY,
     octomate_secret,
     octomate_url,
@@ -66,7 +65,7 @@ def mcp_patch_block(url: str, secret: str) -> str:
         f"        url: {json.dumps(url)}\n"
         f"        headers:\n"
         f"          Authorization: {json.dumps(f'Bearer {secret}')}\n"
-        f"          {CLIENT_HEADER}: {DEEPSEEK_NATIVE_CLIENT}\n"
+        f"          {CLIENT_HEADER}: deepseek\n"
         f"{MCP_MARK_END}\n"
     )
 
@@ -86,7 +85,7 @@ def mcp_install(
 
     Writes a marker-delimited row in $DSH_HOME/cordis.patch.yml mounting
     `@deepseek-ai/dsh-mcp-client` on the served MCP server, the credential and the
-    runtime attribution embedded — resolved once, now: the file holds the
+    agent attribution embedded — resolved once, now: the file holds the
     literal credential, and rotating it means re-running install. Re-running
     replaces the row in place; restart dsh processes for the change to take.
     """
@@ -106,7 +105,7 @@ def mcp_install(
     )
     typer.echo(f"Installed the Octomate MCP row → {target}")
     typer.echo(f"  patch:  {patch} (row id {MCP_ROW_ID!r})")
-    typer.echo(f"  client: {DEEPSEEK_NATIVE_CLIENT}")
+    typer.echo("  client: deepseek")
     typer.echo(
         "  auth:   embedded — the file holds the literal credential; rotation "
         "means re-running install"

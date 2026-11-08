@@ -1,0 +1,7 @@
+schemaVersion: "2"
+kind: mixin
+name: octomate-offline
+permissions:
+  network:
+    deny:
+      - "**"

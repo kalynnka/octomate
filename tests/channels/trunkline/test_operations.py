@@ -22,7 +22,7 @@ from octomate.nerve import ThreadTopic
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import CODEX_NATIVE_ID, Thread, ThreadKey
+from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.discord.base import DiscordTentacle
@@ -399,12 +399,21 @@ async def test_a_teleport_with_a_prompt_sends_it_where_it_lands(
     # the console can follow it there.
     assert [event["event_kind"] for event in events] == [
         "reflex_awake",
+        "reflex_phase_changed",
+        "reflex_phase_changed",
         "gateway",
         "run_started",
+        "run_activity_changed",
         "run_result",
         "run_ended",
+        "reflex_phase_changed",
     ]
-    moved, started = events[1], events[2]
+    assert [
+        event["phase"]
+        for event in events
+        if event["event_kind"] == "reflex_phase_changed"
+    ] == ["preparing", "moving", "finalizing"]
+    moved, started = events[3], events[4]
     assert moved["action"] == "teleport"
     assert moved["announcement"] == "Continuing this conversation here."
     landed_at, started_at = moved["destination"], started["address"]
@@ -699,12 +708,14 @@ async def test_native_teleport_requires_a_transcript_fork_agent(
     case: Case, client: httpx.AsyncClient
 ) -> None:
     thread = await case.app.threads.ensure(
-        ThreadKey(CODEX_NATIVE_ID, "thread", str(case.owner.id), uuid7().hex)
+        ThreadKey("codex", "thread", str(case.owner.id), uuid7().hex), native=True
     )
-    await case.app.conversations.ensure(thread.id, agent_tentacle_id=CODEX_NATIVE_ID)
+    await case.app.conversations.ensure(
+        thread.id, agent_tentacle_id="codex", native=True
+    )
     await case.app.threads.record_outbound(
         thread,
-        agent_tentacle_id=CODEX_NATIVE_ID,
+        agent_tentacle_id="codex",
         sender=UserProfile(channel_user_id=str(case.owner.id), user_id=case.owner.id),
         segments=[TextSegment(data={"text": "native"})],
     )

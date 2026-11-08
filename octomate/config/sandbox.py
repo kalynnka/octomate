@@ -1,25 +1,28 @@
 """Agent sandbox selection and the local sbx resource budget."""
 
-from typing import Annotated, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-
-
-class NativeSandboxConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    mode: Literal["native"] = "native"
 
 
 class SbxSandboxConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    id: str = Field(
+        pattern=r"^[a-z0-9][a-z0-9_-]*$",
+        description="Deployment ID referenced by agent tentacles; scopes each user's sandbox.",
+    )
     mode: Literal["sbx"] = "sbx"
     executable: str = Field(default="sbx", min_length=1)
     version: Literal["0.48.0"] = "0.48.0"
     image: str = Field(
         pattern=r"^[^\s]+@sha256:[0-9a-f]{64}$",
         description="Immutable sandbox agent image reference, matching the host architecture.",
+    )
+    internet_access: bool = Field(
+        default=True,
+        strict=True,
+        description="Allow outbound TCP through the sbx proxy, subject to host and organization policy; false explicitly denies outbound TCP. Set when creating the sandbox.",
     )
     cpus: int = Field(
         default=2, ge=1, strict=True, description="Virtual CPU count per sandbox."
@@ -38,6 +41,4 @@ class SbxSandboxConfig(BaseModel):
     )
 
 
-type SandboxConfig = Annotated[
-    NativeSandboxConfig | SbxSandboxConfig, Field(discriminator="mode")
-]
+type SandboxConfig = SbxSandboxConfig

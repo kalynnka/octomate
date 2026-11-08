@@ -21,10 +21,9 @@ from octomate.schemas.awakes import NativeGatewaySignal
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import CODEX_NATIVE_ID, Thread, ThreadKey
+from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import User, UserProfile
-from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.trunkline import TrunklineTentacle
 from tests.agent.codex.test_transcript_fork import ForkCase
 from tests.agent.codex.test_transcript_fork import case as case
@@ -53,7 +52,7 @@ async def client(case: ForkCase) -> AsyncGenerator[httpx.AsyncClient]:
     assert thread is not None
     await app.threads.record_outbound(
         thread,
-        agent_tentacle_id=CODEX_NATIVE_ID,
+        agent_tentacle_id=case.tentacle.id,
         segments=[TextSegment(data={"text": "Native source history"})],
         sender=UserProfile(
             channel_user_id=owner.username, user_id=owner.id, name=owner.name
@@ -298,7 +297,7 @@ async def test_thread_access_does_not_grant_transcript_ownership(
     assert source is not None
     await app.threads.record_outbound(
         source,
-        agent_tentacle_id=CODEX_NATIVE_ID,
+        agent_tentacle_id=case.tentacle.id,
         segments=[TextSegment(data={"text": "Shared thread access"})],
         sender=UserProfile(
             channel_user_id=other.username, user_id=other.id, name=other.name
@@ -341,24 +340,6 @@ async def test_native_teleport_imports_completed_history_before_resuming(
     """The console's teleport of a native thread and the native session's own
     enter at the same thread and carry the same history."""
     app = case.tentacle.octomate
-    app.connect(
-        CodexTentacle(
-            "other-codex",
-            app,
-            config=case.tentacle.config,
-            commands=app.commands,
-            projects=app.projects,
-            threads=app.threads,
-            files=app.files,
-            conversations=app.conversations,
-            deferred_actions=app.deferred_actions,
-            workspaces=app.workspaces,
-            users=app.users,
-            bearers=app.bearers,
-            auth=app.auth,
-            gateway_manager=app.gateway,
-        )
-    )
     if destination == "far":
         far = app.connect(
             FakeChannelTentacle(
@@ -395,7 +376,7 @@ async def test_native_teleport_imports_completed_history_before_resuming(
         async with async_session() as session:
             user = await session.get(User, case.owner_id)
         assert user is not None
-        owner = await app.users.native_profile(CODEX_NATIVE_ID, user.username)
+        owner = await app.users.native_profile(case.tentacle.id, user.username)
         source = await app.threads.get(case.source.thread_id)
         assert owner is not None
         assert source is not None
@@ -407,7 +388,7 @@ async def test_native_teleport_imports_completed_history_before_resuming(
                     hint="Continue here",
                     destination=ChannelAddress(**address),
                 ),
-                agent_id=CODEX_NATIVE_ID,
+                agent_id=case.tentacle.id,
                 user_profile=owner,
                 source=source.key.address(owner.channel_user_id),
             ),
@@ -455,7 +436,7 @@ async def test_a_native_session_that_asks_to_carry_on_runs_where_it_lands(
     async with async_session() as session:
         user = await session.get(User, case.owner_id)
     assert user is not None
-    owner = await app.users.native_profile(CODEX_NATIVE_ID, user.username)
+    owner = await app.users.native_profile(case.tentacle.id, user.username)
     source = await app.threads.get(case.source.thread_id)
     assert owner is not None
     assert source is not None
@@ -469,7 +450,7 @@ async def test_a_native_session_that_asks_to_carry_on_runs_where_it_lands(
                 destination=ChannelAddress(**address),
                 resume=True,
             ),
-            agent_id=CODEX_NATIVE_ID,
+            agent_id=case.tentacle.id,
             user_profile=owner,
             source=source.key.address(owner.channel_user_id),
         ),

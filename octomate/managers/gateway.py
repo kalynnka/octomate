@@ -2,17 +2,15 @@
 
 `OctomateSession` is one turn's gateway — the route and destination resolution, the
 validation of what a spell names, and the typed decision it records for the reflex
-graph to act on after the turn. It speaks no pydantic-ai: the Inkling capability
-translates its refusals into `ModelRetry` and its teleport into a deferral, and any
-other runtime's adapter translates them into its own tool errors, so every runtime
-meets the same policy through its own tool mechanism. `GatewayManager` is the
-in-process registry an external runtime's tool call resolves its driving turn's
-session from.
+graph to act on after the turn. MCP exposes the spells and translates refusals
+into tool errors for every runtime. `GatewayManager` is the in-process registry
+an external runtime's tool call resolves its driving turn's session from.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+import asyncio
+from collections.abc import AsyncGenerator, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, overload
@@ -20,6 +18,8 @@ from typing import TYPE_CHECKING, Literal, overload
 from anyio.abc import ObjectSendStream
 from octomate_protocol.gateway import GatewayTool
 from pydantic import UUID7
+from pydantic_ai.models import Model
+from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.harness.events import WireEvent
 from octomate.managers.base import Manager
@@ -30,7 +30,7 @@ from octomate.schemas.awakes import (
     NativeGatewaySignal,
     SummonSignal,
 )
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.operations import (
     OperationAvailability,
     ThreadOperations,
@@ -55,10 +55,21 @@ from octomate.tentacles.agent import AgentTentacle
 from octomate.types.threads import NATIVE_CHANNEL_USER_ID
 
 if TYPE_CHECKING:
+    from octomate.managers.conversation import ConversationManager
     from octomate.managers.thread import ThreadManager
     from octomate.managers.user import UserManager
     from octomate.managers.workspaces import WorkspaceManager
     from octomate.tentacles.channel import ChannelTentacle
+
+COMMISSION_TIMEOUT = 900.0
+
+ACCOMPLICE_INSTRUCTION = """\
+You are an accomplice: another agent commissioned you, and your reply is
+your report back to it. There is no user here to ask, and anything that needs a
+human approval is declined immediately — work from the brief you were given within
+what you can do unaided; if something is under-specified or unapprovable, state the
+assumption or the blocker in your report and proceed.
+"""
 
 # Why `scheme` has nowhere to land, and the sentence each reason refuses with.
 PrivateBlocker = Literal["no_surface", "already_private", "no_user"]
@@ -74,9 +85,8 @@ PRIVATE_REFUSALS: dict[PrivateBlocker, str] = {
 
 class GatewayRefusal(Exception):
     """A spell that cannot proceed as named, with the sentence that teaches the
-    caller what to name instead. Neutral on purpose: the Inkling capability
-    re-raises it as `ModelRetry`, and an MCP surface returns it as a tool error
-    the model corrects from — one refusal, worded once, for every runtime."""
+    caller what to name instead. MCP returns it as a tool error the model can
+    correct from — one refusal, worded once, for every runtime."""
 
 
 @dataclass
@@ -153,6 +163,87 @@ class OctomateSession:
         self.other_routes = [
             route for route in here if route.agent_id != self.current_agent_id
         ]
+
+    def commission_deps(
+        self,
+    ) -> tuple[dict[str, AgentTentacle], UUID7, ChannelAddress]:
+        """Require the core dependencies for running an accomplice."""
+        if (
+            self.agents is None
+            or self.thread_id is None
+            or self.conversation_address is None
+        ):
+            raise RuntimeError(
+                "the accomplice spells need agents, conversations, a thread and an address"
+            )
+        return (
+            self.agents,
+            self.thread_id,
+            self.conversation_address,
+        )
+
+    async def run_accomplice(
+        self,
+        *,
+        conversations: ConversationManager,
+        commission_timeout: float = COMMISSION_TIMEOUT,
+        parent_run_id: str | None,
+        parent_tool_call_id: str | None,
+        child: Conversation,
+        run_name: str,
+        prompt: str,
+        model: Model | str | None,
+        effort: str | None,
+    ) -> str:
+        agents, thread_id, conversation_address = self.commission_deps()
+        agent = agents[child.agent_tentacle_id]
+        try:
+            # The subagent contract (non-interactive, no capabilities,
+            # addressed at the pre-ensured child conversation) lives on
+            # `subagent_run`; the accomplice framing is this spawner's and is
+            # passed here. An accomplice that defers anyway ends its run with
+            # DeferredToolRequests, surfaced loudly below instead of parking a
+            # batch nothing resumes.
+            result = await asyncio.wait_for(
+                agent.subagent_run(
+                    prompt,
+                    conversation_address=conversation_address,
+                    thread_id=thread_id,
+                    conversation_id=child.id,
+                    run_name=run_name,
+                    model=model,
+                    effort=effort,
+                    instructions=ACCOMPLICE_INSTRUCTION,
+                ),
+                timeout=commission_timeout,
+            )
+        except TimeoutError:
+            raise GatewayRefusal(
+                f"The accomplice {child.subagent_id!r} exceeded "
+                f"{commission_timeout:.0f}s and was stopped. What it "
+                f"recorded is kept — `{GatewayTool.WHISPER}` to continue "
+                "it, or break the work into smaller briefs."
+            ) from None
+        # The runner recorded its turn without knowing its place;
+        # the spawner stamps the run tree after the fact.
+        await conversations.link_parent_run(
+            result.run_id,
+            parent_run_id=parent_run_id,
+            parent_tool_call_id=parent_tool_call_id,
+        )
+        output = result.output
+        if isinstance(output, DeferredToolRequests):
+            raise GatewayRefusal(
+                f"The accomplice {child.subagent_id!r} tried to ask the "
+                "user or defer — an accomplice has no user. Write a "
+                "self-contained brief that needs no clarification, then "
+                "commission another."
+            )
+        if isinstance(output, str):
+            return output
+        if isinstance(output, Iterable):
+            return "\n\n".join(str(part) for part in output)
+        return str(output)
 
     async def publish(
         self, address: ChannelAddress, event: WireEvent, *, private: bool = False
@@ -358,7 +449,7 @@ class OctomateSession:
         agent = self.agents.get(agent_id) if self.agents is not None else None
         return (
             agent is not None
-            and agent.native_id == self.current_agent_id
+            and self.current_agent_id == agent.id
             and type(agent).fork_transcript is not AgentTentacle.fork_transcript
         )
 
@@ -497,6 +588,108 @@ class OctomateSession:
             )
         return route
 
+    async def projects(self) -> list[ProjectSummary]:
+        """The projects this deployment can work on — a registered user's to see,
+        being theirs to bind; a visitor is refused rather than shown nothing."""
+        if (
+            self.users is None
+            or self.user_profile is None
+            or await self.users.owner(self.user_profile) is None
+        ):
+            raise GatewayRefusal(
+                "This session speaks for no registered user, and the projects are a "
+                "registered user's to see."
+            )
+        if self.workspaces is None:
+            raise RuntimeError("the project facet needs the workspace manager")
+        return [
+            ProjectSummary(name=project.name, description=project.description)
+            for project in self.workspaces.projects.list()
+            if project.enabled
+        ]
+
+    async def resolve_send(self, destination: SendTarget) -> ChannelAddress | None:
+        """The address a send delivers to, or None for this conversation itself.
+
+        Being in their direct messages already stops a `scheme` — nowhere to move
+        the conversation to — but never a send: that *is* where it was asked to go,
+        so it lands here rather than being refused."""
+        if isinstance(destination, HereTarget):
+            return None
+        source = self.conversation_address
+        local = destination.channel is None or (
+            source is not None and destination.channel == source.channel_tentacle_id
+        )
+        if local and self.private_blocked_by == "already_private":
+            return None
+        return await self.direct_destination(destination)
+
+    async def attach_native_thread(self, session_id: str) -> None:
+        """Bind a native call to the thread its own session is filed under, as
+        Trunkline's thread operations bind theirs, so a spell it casts acts on that
+        history. Only a thread the caller has written to is found: naming another
+        session, theirs or anyone's, finds nothing."""
+        profile = self.user_profile
+        if not self.native or self.threads is None or profile is None:
+            raise RuntimeError("only a native session with a ledger binds a thread")
+        thread = await self.threads.get(
+            ThreadKey(self.current_agent_id, "thread", session_id),
+            with_messages=False,
+            user_id=profile.user_id,
+        )
+        if thread is None or thread.kind != "native_thread":
+            raise GatewayRefusal(
+                "Octomate holds no uploaded history for this session yet. Finish a "
+                "turn with Octomate's hooks installed, then teleport again."
+            )
+        self.thread_id = thread.id
+        if thread.active_agent_tentacle_id is not None:
+            self.current_agent_id = thread.active_agent_tentacle_id
+        self.conversation_address = thread.key.address(profile.channel_user_id)
+
+    def thread_operation(self) -> DrivenGatewaySignal:
+        """Package a validated user action for the graph's existing-thread entry."""
+        if (
+            self.thread_id is None
+            or self.conversation_address is None
+            or self.user_profile is None
+            or not isinstance(self.decision, SummonDecision | TeleportDecision)
+        ):
+            raise ValueError(
+                "A thread operation requires a thread, user and validated decision."
+            )
+        return DrivenGatewaySignal(
+            thread_id=self.thread_id,
+            source=self.conversation_address,
+            agent_id=self.current_agent_id,
+            user_profile=self.user_profile,
+            decision=self.decision,
+        )
+
+    def native_handoff(self) -> NativeGatewaySignal:
+        """This native session's recorded decision, packaged to be kicked as its
+        own turn. Only a native spell leaves one, so anything else asking is a
+        wiring bug, not a refusal a model could correct from."""
+        decision = self.decision
+        if not self.native or not isinstance(
+            decision, SchemeDecision | TeleportDecision
+        ):
+            raise RuntimeError("only a native teleport or scheme kicks a handoff")
+        return NativeGatewaySignal(
+            decision=decision,
+            agent_id=self.current_agent_id,
+            user_profile=self.user_profile,
+            # A teleport carries the thread it attached; the rest come from nowhere.
+            source=self.conversation_address
+            if isinstance(decision, TeleportDecision)
+            else ChannelAddress(
+                channel_tentacle_id=self.current_agent_id,
+                chat_type="dm",
+                chat_id="",
+                user_id=NATIVE_CHANNEL_USER_ID,
+            ),
+        )
+
     @overload
     async def inspect(
         self,
@@ -562,26 +755,6 @@ class OctomateSession:
                 return await self.destinations()
             case "projects":
                 return await self.projects()
-
-    async def projects(self) -> list[ProjectSummary]:
-        """The projects this deployment can work on — a registered user's to see,
-        being theirs to bind; a visitor is refused rather than shown nothing."""
-        if (
-            self.users is None
-            or self.user_profile is None
-            or await self.users.owner(self.user_profile) is None
-        ):
-            raise GatewayRefusal(
-                "This session speaks for no registered user, and the projects are a "
-                "registered user's to see."
-            )
-        if self.workspaces is None:
-            raise RuntimeError("the project facet needs the workspace manager")
-        return [
-            ProjectSummary(name=project.name, description=project.description)
-            for project in self.workspaces.projects.list()
-            if project.enabled
-        ]
 
     async def summon(
         self,
@@ -879,84 +1052,99 @@ class OctomateSession:
         self.decision = SchemeDecision(hint=hint, brief=brief, destination=address)
         return f"Taking this to your direct messages on {address.channel_tentacle_id}."
 
-    async def resolve_send(self, destination: SendTarget) -> ChannelAddress | None:
-        """The address a send delivers to, or None for this conversation itself.
-
-        Being in their direct messages already stops a `scheme` — nowhere to move
-        the conversation to — but never a send: that *is* where it was asked to go,
-        so it lands here rather than being refused."""
-        if isinstance(destination, HereTarget):
-            return None
-        source = self.conversation_address
-        local = destination.channel is None or (
-            source is not None and destination.channel == source.channel_tentacle_id
-        )
-        if local and self.private_blocked_by == "already_private":
-            return None
-        return await self.direct_destination(destination)
-
-    async def attach_native_thread(self, session_id: str) -> None:
-        """Bind a native call to the thread its own session is filed under, as
-        Trunkline's thread operations bind theirs, so a spell it casts acts on that
-        history. Only a thread the caller has written to is found: naming another
-        session, theirs or anyone's, finds nothing."""
-        profile = self.user_profile
-        if not self.native or self.threads is None or profile is None:
-            raise RuntimeError("only a native session with a ledger binds a thread")
-        thread = await self.threads.get(
-            ThreadKey(self.current_agent_id, "thread", session_id),
-            with_messages=False,
-            user_id=profile.user_id,
-        )
-        if thread is None:
+    async def commission(
+        self,
+        *,
+        conversations: ConversationManager,
+        commission_timeout: float = COMMISSION_TIMEOUT,
+        parent_id: UUID7,
+        parent_run_id: str | None,
+        parent_tool_call_id: str | None,
+        name: str,
+        agent_id: str,
+        model: str,
+        brief: str,
+        effort: str | None = None,
+    ) -> str:
+        agents, thread_id, _ = self.commission_deps()
+        if not name.strip():
+            raise GatewayRefusal("Give the accomplice a short, mnemonic name.")
+        if agent_id == self.current_agent_id:
             raise GatewayRefusal(
-                "Octomate holds no uploaded history for this session yet. Finish a "
-                "turn with Octomate's hooks installed, then teleport again."
+                f"Cannot commission yourself {self.current_agent_id!r}. "
+                f'Call `{GatewayTool.INSPECT}` with `reveal="routes"` to choose a valid route.'
             )
-        self.thread_id = thread.id
-        self.conversation_address = thread.key.address(profile.channel_user_id)
-
-    def thread_operation(self) -> DrivenGatewaySignal:
-        """Package a validated user action for the graph's existing-thread entry."""
-        if (
-            self.thread_id is None
-            or self.conversation_address is None
-            or self.user_profile is None
-            or not isinstance(self.decision, SummonDecision | TeleportDecision)
-        ):
-            raise ValueError(
-                "A thread operation requires a thread, user and validated decision."
+        route = self.claimed_route(agent_id, model, effort, spell="commission")
+        run_model = agents[agent_id].models.get(route.model)
+        if run_model is None:
+            raise GatewayRefusal(
+                f"Agent {agent_id!r} does not serve model {model!r}. "
+                f'Call `{GatewayTool.INSPECT}` with `reveal="routes"` and copy a route exactly.'
             )
-        return DrivenGatewaySignal(
-            thread_id=self.thread_id,
-            source=self.conversation_address,
-            agent_id=self.current_agent_id,
-            user_profile=self.user_profile,
-            decision=self.decision,
+        child = await conversations.ensure(
+            thread_id,
+            agent_tentacle_id=agent_id,
+            subagent_id=name,
+            parent_conversation_id=parent_id,
+        )
+        if child.parent_conversation_id != parent_id or child.runs:
+            raise GatewayRefusal(
+                f"{name!r} is already at work — `{GatewayTool.WHISPER}` "
+                "to it, or pick a new name."
+            )
+        return await self.run_accomplice(
+            conversations=conversations,
+            commission_timeout=commission_timeout,
+            parent_run_id=parent_run_id,
+            parent_tool_call_id=parent_tool_call_id,
+            child=child,
+            run_name="commission",
+            prompt=brief,
+            model=run_model,
+            effort=effort,
         )
 
-    def native_handoff(self) -> NativeGatewaySignal:
-        """This native session's recorded decision, packaged to be kicked as its
-        own turn. Only a native spell leaves one, so anything else asking is a
-        wiring bug, not a refusal a model could correct from."""
-        decision = self.decision
-        if not self.native or not isinstance(
-            decision, SchemeDecision | TeleportDecision
-        ):
-            raise RuntimeError("only a native teleport or scheme kicks a handoff")
-        return NativeGatewaySignal(
-            decision=decision,
-            agent_id=self.current_agent_id,
-            user_profile=self.user_profile,
-            # A teleport carries the thread it attached; the rest come from nowhere.
-            source=self.conversation_address
-            if isinstance(decision, TeleportDecision)
-            else ChannelAddress(
-                channel_tentacle_id=self.current_agent_id,
-                chat_type="dm",
-                chat_id="",
-                user_id=NATIVE_CHANNEL_USER_ID,
-            ),
+    async def whisper(
+        self,
+        *,
+        conversations: ConversationManager,
+        commission_timeout: float = COMMISSION_TIMEOUT,
+        parent_id: UUID7,
+        parent_run_id: str | None,
+        parent_tool_call_id: str | None,
+        name: str,
+        message: str,
+    ) -> str:
+        _, thread_id, _ = self.commission_deps()
+        hands = await conversations.subagents(parent_id)
+        stored = next((hand for hand in hands if hand.subagent_id == name), None)
+        if stored is None:
+            live = ", ".join(sorted(hand.subagent_id for hand in hands))
+            raise GatewayRefusal(
+                f"No accomplice named {name!r}. "
+                + (
+                    f"Accomplices at work: {live}."
+                    if live
+                    else "No accomplices are at work."
+                )
+                + f" `{GatewayTool.COMMISSION}` one to start."
+            )
+        child = await conversations.ensure(
+            thread_id,
+            agent_tentacle_id=stored.agent_tentacle_id,
+            subagent_id=name,
+            parent_conversation_id=parent_id,
+        )
+        return await self.run_accomplice(
+            conversations=conversations,
+            commission_timeout=commission_timeout,
+            parent_run_id=parent_run_id,
+            parent_tool_call_id=parent_tool_call_id,
+            child=child,
+            run_name="whisper",
+            prompt=message,
+            model=None,
+            effort=None,
         )
 
 

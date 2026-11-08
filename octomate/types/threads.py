@@ -1,5 +1,4 @@
-"""Thread literals and the native pseudo-tentacle ids, shared by the ORM model and
-the schema."""
+"""Thread literals shared by the ORM model and schema."""
 
 from __future__ import annotations
 
@@ -14,16 +13,6 @@ ThreadStatus = Literal["active", "closed"]
 # ingested rather than driven by a channel.
 ThreadKind = Literal["dm", "group", "thread", "native_thread"]
 
-# Synthetic ids a native client's thread and conversation are filed under; no channel
-# and no agent is registered as either. Here rather than in `schemas.thread` — which
-# still re-exports them — so `types.permissions` can name them without importing a
-# schema that imports it back.
-CLAUDE_NATIVE_ID = "claude-native"
-CODEX_NATIVE_ID = "codex-native"
-DEEPSEEK_NATIVE_ID = "deepseek-native"
-NATIVE_TENTACLE_IDS: frozenset[str] = frozenset(
-    {CLAUDE_NATIVE_ID, CODEX_NATIVE_ID, DEEPSEEK_NATIVE_ID}
-)
 # The user_id a native handoff's *source* address carries — runtime attribution
 # for "where this came from". Never a person: a native session's ledger rows are
 # attributed to the verified bearer's own profile (`channel_user_id` = username).

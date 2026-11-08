@@ -56,6 +56,7 @@ from octomate.tentacles.feelers.output import (
     DefaultTimelineFeeler,
     IMMessageID,
 )
+from octomate.tentacles.feelers.status import PlainTextStatusFeeler
 from octomate.tentacles.siphon import Siphon
 from octomate.utils import guess_image_ext
 
@@ -274,6 +275,7 @@ class ChannelTentacle(
         )
 
         self.feelers = Feelers(
+            status=PlainTextStatusFeeler(segments_feeler),
             markdown=markdown_feeler,
             timeline=DefaultTimelineFeeler[RawT, MessageT](
                 ink=self.ink,

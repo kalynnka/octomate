@@ -194,6 +194,7 @@ class FakeConversationManager(ConversationManager):
         subagent_id: str = "",
         parent_conversation_id: UUID7 | None = None,
         with_history: bool = True,
+        native: bool = False,
     ) -> Conversation:
         self.ensured.append((thread_id, agent_tentacle_id))
         store_key = (thread_id, agent_tentacle_id, subagent_id)
@@ -230,7 +231,7 @@ class FakeConversationManager(ConversationManager):
         self,
         run_id: str,
         *,
-        parent_run_id: str,
+        parent_run_id: str | None,
         parent_tool_call_id: str | None,
     ) -> None:
         self.parent_links.append((run_id, parent_run_id, parent_tool_call_id))
@@ -262,7 +263,6 @@ class FakeConversationManager(ConversationManager):
         permission_mode: AgentPermissionMode | None = None,
         cwd: Path | None = None,
         external_id: str | None = None,
-        native_id: str | None = None,
         native_turn_id: str | None = None,
         parent_run_id: str | None = None,
         parent_tool_call_id: str | None = None,
@@ -279,7 +279,6 @@ class FakeConversationManager(ConversationManager):
                 context_window=context_window,
                 context_used=context_used,
                 permission_mode=permission_mode,
-                native_id=native_id,
                 native_session_id=external_id,
                 native_turn_id=native_turn_id,
             )
@@ -339,6 +338,7 @@ class FakeThreadManager(ThreadManager):
         *,
         project: Project | None = None,
         title: str | None = None,
+        native: bool = False,
     ) -> Thread:
         key = (
             ThreadKey.from_address(address_or_key)
@@ -353,7 +353,7 @@ class FakeThreadManager(ThreadManager):
                 chat_type=key.chat_type,
                 chat_id=key.chat_id,
                 channel_thread_id=key.channel_thread_id,
-                kind=key.kind,
+                kind="native_thread" if native else key.chat_type,
                 # As the real manager does: a thread being created takes the
                 # project, one that already exists keeps what it started with.
                 project_id=project.id if project is not None else None,
@@ -372,7 +372,7 @@ class FakeThreadManager(ThreadManager):
             chat_type=key.chat_type,
             chat_id=key.chat_id,
             channel_thread_id=key.channel_thread_id,
-            kind=key.kind,
+            kind=key.chat_type,
             parent_thread_id=parent.id,
             project=Relation(None),
         )

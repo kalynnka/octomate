@@ -1,7 +1,7 @@
 """The nerve: what a thread does, as it happens, for whoever is watching.
 
 Publish and subscribe, keyed by channel, thread, user or sandbox topics. The
-nerve carries wire events and typed sandbox signals. Local publishers and
+nerve carries wire events, including sandbox lifecycle observations. Local publishers and
 subscribers use memory fibers by default; supplied fibers use the same lifecycle.
 Wire events are the run's stream as a wire consumer sees it, and what the graph says around a
 run — its start and end, a move, a failure, the reflex waking and falling
@@ -35,20 +35,15 @@ from collections import defaultdict
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, replace
-from typing import Annotated, Generic, Literal, overload
+from typing import Generic
 
 import anyio
 from anyio.abc import ObjectReceiveStream, ObjectSendStream
 from pydantic import (
     UUID7,
-    BaseModel,
     ConfigDict,
-    Discriminator,
-    Field,
-    PlainSerializer,
-    Tag,
     TypeAdapter,
-    ValidateAs,
+    with_config,
 )
 from typing_extensions import TypeVar
 
@@ -56,17 +51,23 @@ from octomate.capabilities.harness.events import WireEvent
 from octomate.fibers import FIBER_BUFFER as FIBER_BUFFER
 from octomate.fibers import Fiber, FiberError, MemoryFiber
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.sandbox import SandboxAgentSignal, SandboxSignal
 from octomate.schemas.thread import ThreadKey
-from octomate.types.json import JsonValue
 
 EventT = TypeVar("EventT", default=WireEvent, covariant=True)
+NerveEventT = TypeVar("NerveEventT", default=WireEvent)
 
 
 # Python 3.12 needs typing_extensions for a type parameter with a default.
+@with_config(
+    ConfigDict(
+        extra="forbid",
+        ser_json_bytes="base64",
+        val_json_bytes="base64",
+    )
+)
 @dataclass(frozen=True)
 class Impulse(Generic[EventT]):
-    """One event or signal with an optional address and the routing metadata
+    """One event with an optional address and the routing metadata
     used by `Nerve.publish`. Direct topic publication carries it unchanged."""
 
     event: EventT
@@ -76,7 +77,6 @@ class Impulse(Generic[EventT]):
     # The thread Nerve.publish stamps on the event: the asking thread
     # for a kick, the native thread for a tail, or None when neither names a thread.
     origin: ThreadKey | None = None
-    invocation_id: UUID7 | None = None  # Correlates sandbox signals and run events.
 
 
 @dataclass(frozen=True)
@@ -84,7 +84,6 @@ class ChannelTopic:
     """Every impulse at one channel's addresses, each once."""
 
     channel_tentacle_id: str
-    kind: Literal["channel"] = "channel"
 
 
 @dataclass(frozen=True)
@@ -92,7 +91,6 @@ class ThreadTopic:
     """The impulses published to one thread."""
 
     key: ThreadKey
-    kind: Literal["thread"] = "thread"
 
 
 @dataclass(frozen=True)
@@ -100,101 +98,30 @@ class UserTopic:
     """Notifications explicitly published to one registered user."""
 
     user_id: UUID7
-    kind: Literal["user"] = "user"
 
 
 @dataclass(frozen=True)
 class SandboxTopic:
-    """Internal signals exchanged with one user's sandbox, separate from UI topics."""
+    """A user's sandbox lifecycle observations."""
 
     user_id: UUID7
-    kind: Literal["sandbox"] = "sandbox"
 
 
 type EventTopic = ChannelTopic | ThreadTopic | UserTopic
-type Topic = Annotated[EventTopic | SandboxTopic, Field(discriminator="kind")]
+type Topic = EventTopic | SandboxTopic
 
 
-def nerve_event_family(
-    value: WireEvent | SandboxSignal | dict[str, JsonValue],
-) -> Literal["event", "signal"] | None:
-    """Keep malformed signals from matching events with default-valued fields."""
-    if isinstance(value, dict):
-        if "event_kind" in value:
-            return "event"
-        return "signal" if "kind" in value else None
-    return "signal" if isinstance(value, SandboxAgentSignal) else "event"
+impulse_adapter: TypeAdapter[Impulse[WireEvent]] = TypeAdapter(Impulse[WireEvent])
 
 
-type NerveEvent = Annotated[
-    Annotated[WireEvent, Tag("event")] | Annotated[SandboxSignal, Tag("signal")],
-    Discriminator(nerve_event_family),
-]
-
-
-class Publication(BaseModel):
-    """One topic delivery crossing a nerve connection."""
-
-    model_config = ConfigDict(
-        extra="forbid", ser_json_bytes="base64", val_json_bytes="base64"
-    )
-
-    version: Literal[1] = 1
-    topic: Topic
-    impulse: Impulse[NerveEvent]
-
-    @staticmethod
-    def adapter(topic: Topic) -> TypeAdapter[Impulse[NerveEvent]]:
-        """Bind wire publications to a core-authorized topic at the transport boundary."""
-
-        def unpack(publication: Publication) -> Impulse[NerveEvent]:
-            if publication.topic != topic:
-                raise ValueError("Publication targets an unauthorized topic")
-            return publication.impulse
-
-        def pack(impulse: Impulse[NerveEvent]) -> Publication:
-            return Publication(topic=topic, impulse=impulse)
-
-        return TypeAdapter(
-            Annotated[
-                Impulse[NerveEvent],
-                ValidateAs(Publication, unpack),
-                PlainSerializer(pack, return_type=Publication),
-            ]
-        )
-
-
-publication_adapter = TypeAdapter(Publication)
-
-
-class Nerve:
+class Nerve(Generic[NerveEventT]):
     """Route impulses through publishers and subscribers backed by any fiber."""
 
     def __init__(self) -> None:
         # Each subscriber's fiber, by the topic it hears.
-        self.subscribers: defaultdict[Topic, set[Fiber[Impulse[NerveEvent]]]] = (
+        self.subscribers: defaultdict[Topic, set[Fiber[Impulse[NerveEventT]]]] = (
             defaultdict(set)
         )
-
-    @overload
-    @asynccontextmanager
-    def subscribe(
-        self,
-        topic: EventTopic,
-        *,
-        backlog: float = math.inf,
-        fiber: Fiber[Impulse[NerveEvent]] | None = None,
-    ) -> AsyncGenerator[ObjectReceiveStream[Impulse]]: ...
-
-    @overload
-    @asynccontextmanager
-    def subscribe(
-        self,
-        topic: Topic,
-        *,
-        backlog: float = math.inf,
-        fiber: Fiber[Impulse[NerveEvent]] | None = None,
-    ) -> AsyncGenerator[ObjectReceiveStream[Impulse[NerveEvent]]]: ...
 
     @asynccontextmanager
     async def subscribe(
@@ -202,8 +129,8 @@ class Nerve:
         topic: Topic,
         *,
         backlog: float = math.inf,
-        fiber: Fiber[Impulse[NerveEvent]] | None = None,
-    ) -> AsyncGenerator[ObjectReceiveStream[Impulse[NerveEvent]]]:
+        fiber: Fiber[Impulse[NerveEventT]] | None = None,
+    ) -> AsyncGenerator[ObjectReceiveStream[Impulse[NerveEventT]]]:
         """The receive end of a stream of the topic's impulses, from now until
         the block ends. Nothing is dropped: a reader that falls more than
         `backlog` impulses behind reads what was held for it, and then its
@@ -211,7 +138,7 @@ class Nerve:
 
         `ChannelTopic` names a channel's addresses, `ThreadTopic` wraps one
         `ThreadKey`, `UserTopic` wraps a registered user's UUID, and `SandboxTopic`
-        names the internal connection to that user's sandbox.
+        names the sandbox lifecycle. Receivers select the events they handle.
         Publishers choose authorized topics before publishing; the nerve does
         not filter subscribers within a topic.
 
@@ -219,13 +146,14 @@ class Nerve:
         Its caller owns its buffering and closure; leaving only unsubscribes it.
         """
         subscriber = (
-            fiber if fiber is not None else MemoryFiber[Impulse[NerveEvent]](backlog)
+            fiber if fiber is not None else MemoryFiber[Impulse[NerveEventT]](backlog)
         )
-        if subscriber.closed or subscriber in self.subscribers.get(topic, set()):
+        recipients = self.subscribers.get(topic, set())
+        if subscriber.closed or subscriber in recipients:
             raise ValueError("Fiber is already subscribed or closed")
         self.subscribers[topic].add(subscriber)
         try:
-            yield subscriber.receive
+            yield subscriber
         finally:
             self.subscribers[topic].discard(subscriber)
             if not self.subscribers[topic]:
@@ -233,31 +161,13 @@ class Nerve:
             if fiber is None:
                 subscriber.close()
 
-    @overload
-    @asynccontextmanager
-    def publish(
-        self,
-        origin: ChannelAddress | None,
-        *,
-        fiber: Fiber[Impulse[NerveEvent]] | None = None,
-    ) -> AsyncGenerator[ObjectSendStream[Impulse]]: ...
-
-    @overload
-    @asynccontextmanager
-    def publish(
-        self,
-        origin: Topic,
-        *,
-        fiber: Fiber[Impulse[NerveEvent]] | None = None,
-    ) -> AsyncGenerator[ObjectSendStream[Impulse[NerveEvent]]]: ...
-
     @asynccontextmanager
     async def publish(
         self,
         origin: ChannelAddress | Topic | None,
         *,
-        fiber: Fiber[Impulse[NerveEvent]] | None = None,
-    ) -> AsyncGenerator[ObjectSendStream[Impulse[NerveEvent]]]:
+        fiber: Fiber[Impulse[NerveEventT]] | None = None,
+    ) -> AsyncGenerator[ObjectSendStream[Impulse[NerveEventT]]]:
         """A buffered publisher for kicks and native tails, open for the block.
 
         A kick names the thread it was asked on as `origin`; a native tail names
@@ -271,9 +181,9 @@ class Nerve:
 
         A topic publishes impulses unchanged to that topic. A supplied fiber is
         read for the block's lifetime and remains owned by its caller. Its incoming
-        impulses are never echoed back to the same fiber's subscription.
+        impulses are delivered to subscribers on the core-bound topic.
         """
-        publisher = fiber if fiber is not None else MemoryFiber[Impulse[NerveEvent]]()
+        publisher = fiber if fiber is not None else MemoryFiber[Impulse[NerveEventT]]()
         if publisher.closed:
             raise ValueError("Publisher fiber is closed")
         asked = (
@@ -289,9 +199,9 @@ class Nerve:
 
         async def pump() -> None:
             try:
-                async for sent in publisher.receive:
+                async for sent in publisher:
                     if topic is not None:
-                        self.deliver(topic, sent, source=publisher)
+                        self.deliver(topic, sent)
                         continue
                     impulse = replace(sent, origin=asked)
                     topics: set[Topic] = set()
@@ -301,29 +211,24 @@ class Nerve:
                     if not impulse.private and asked is not None:
                         topics.add(ThreadTopic(asked))
                     for destination in topics:
-                        self.deliver(destination, impulse, source=publisher)
-            except ValueError:
-                if fiber is None:
-                    raise
-                publisher.fail(
-                    FiberError("Publication violates nerve topic permissions")
-                )
+                        self.deliver(destination, impulse)
             except (anyio.BrokenResourceError, anyio.ClosedResourceError):
                 pass  # The owner closed the supplied fiber while its pump was waiting.
             finally:
                 if fiber is None:
-                    publisher.receive.close()
+                    publisher.close()
 
         pumping = asyncio.create_task(pump())
         try:
-            yield publisher.send
+            yield publisher
         finally:
             if fiber is not None:
-                pumping.cancel()
+                if not publisher.closed or publisher.failure is not None:
+                    pumping.cancel()
                 with suppress(asyncio.CancelledError):
                     await pumping
             else:
-                publisher.send.close()
+                publisher.close_send()
                 try:
                     await pumping
                 finally:
@@ -332,25 +237,20 @@ class Nerve:
     def deliver(
         self,
         topic: Topic,
-        impulse: Impulse[NerveEvent],
-        *,
-        source: Fiber[Impulse[NerveEvent]] | None = None,
+        impulse: Impulse[NerveEventT],
     ) -> None:
-        """Fan out to a topic's subscribers, excluding the publishing fiber.
+        """Fan out to every subscriber of one topic.
 
         A slow local subscriber is cut off at its backlog. A full or broken peer
         fiber is disconnected independently; other subscribers keep receiving.
-        Signals may only travel on internal sandbox topics.
+        Message handling belongs to receivers; unobserved publications are dropped.
         """
-        if isinstance(impulse.event, SandboxAgentSignal) and not isinstance(
-            topic, SandboxTopic
-        ):
-            raise ValueError("Sandbox signals require an internal sandbox topic")
-        for fiber in self.subscribers.get(topic, set()):
-            if fiber is source or fiber.closed:
+        recipients = self.subscribers.get(topic, set())
+        for fiber in recipients:
+            if fiber.closed:
                 continue
             try:
-                fiber.send.send_nowait(impulse)
+                fiber.send_nowait(impulse)
             except (
                 anyio.WouldBlock,
                 anyio.BrokenResourceError,

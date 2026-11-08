@@ -1,12 +1,15 @@
 """Codex-owned apps reuse artifact storage, replay and channel delivery."""
 
+from io import BytesIO
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from fastapi import UploadFile
 from openai_codex.generated.v2_all import ItemCompletedNotification, ThreadItem
 from pydantic import AnyHttpUrl, BaseModel
 from sqlalchemy.ext.asyncio import AsyncEngine
+from starlette.datastructures import Headers
 
 from octomate import Octomate
 from octomate.auth import current_user
@@ -19,6 +22,7 @@ from octomate.schemas.artifacts import CapturedMcpAppSource, McpAppArtifact, Mcp
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.files import Html
+from octomate.schemas.mcp import McpAppInvocation
 from octomate.schemas.messages import ModelResponse
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import MessageBinding
@@ -39,7 +43,7 @@ from tests.support.channels import FakeChannelTentacle
 from tests.support.users import a_user, auth_config
 
 
-@pytest.mark.parametrize("server", ["apps", "octomate_driven"])
+@pytest.mark.parametrize("server", ["apps", "octomate_driven", "proxy"])
 async def test_driven_app_survives_its_session_and_reuses_the_owned_viewer(
     monkeypatch: pytest.MonkeyPatch, in_memory_engine: AsyncEngine, server: str
 ) -> None:
@@ -83,8 +87,8 @@ async def test_driven_app_survives_its_session_and_reuses_the_owned_viewer(
         )
     )
     tentacle = CodexTentacle(
-        "codex",
         host,
+        sandboxes=host.sandboxes,
         config=CodexConfig(permission_mode="auto_review"),
         commands=host.commands,
         projects=host.projects,
@@ -106,6 +110,42 @@ async def test_driven_app_survives_its_session_and_reuses_the_owned_viewer(
     html = "<html><body>Chart ✓</body></html>"
     ui = {"csp": {"connectDomains": ["https://api.example"]}}
 
+    proxy = None
+    if server == "proxy":
+        with BytesIO(html.encode()) as source:
+            stored = await host.files.write(
+                UploadFile(
+                    source,
+                    filename="chart.html",
+                    headers=Headers({"content-type": "text/html"}),
+                ),
+                owner_id=owner.id,
+            )
+        proxy = await host.threads.record_artifact(
+            thread.id,
+            McpAppArtifact(
+                owner_id=owner.id,
+                title="show_chart",
+                source=CapturedMcpAppSource.model_validate(
+                    {"file_id": stored.id, "ui": ui}
+                ),
+                invocation=McpAppInvocation.model_validate(
+                    {
+                        "provider_name": "apps",
+                        "resource_uri": "ui://chart/app.html",
+                        "arguments": {"city": "上海"},
+                        "result": result,
+                    }
+                ),
+            ),
+            sender=channel.self_profile,
+            agent_tentacle_id="codex",
+        )
+        result["_meta"] = {
+            "uiOnly": {"revision": 2},
+            "octomate/artifactMessageId": str(proxy.id),
+        }
+
     def app_turn(thread_id: str) -> None:
         completed = notification(
             "item/completed",
@@ -117,7 +157,7 @@ async def test_driven_app_survives_its_session_and_reuses_the_owned_viewer(
                     {
                         "id": "app-call",
                         "type": "mcpToolCall",
-                        "server": server,
+                        "server": "octomate_driven" if proxy else server,
                         "tool": "show_chart",
                         "arguments": {"city": "上海"},
                         "status": "completed",
@@ -173,17 +213,28 @@ async def test_driven_app_survives_its_session_and_reuses_the_owned_viewer(
         assert available == []
         assert reads == []
         return
-    [event] = available
+    if proxy:
+        assert available == []
+        assert reads == []
+        event = ArtifactAvailableEvent(
+            message_id=proxy.id, artifact_id=proxy.artifact_id
+        )
+    else:
+        [event] = available
     assert FakeCodex.closed == 1
-    assert reads == [
-        {
-            "threadId": "thread-new",
-            "server": "apps",
-            "uri": "ui://chart/app.html",
-            "originCallId": "app-call",
-            "target": {"connectorId": "weather", "linkId": "account-a"},
-        }
-    ]
+    assert reads == (
+        []
+        if proxy
+        else [
+            {
+                "threadId": "thread-new",
+                "server": "apps",
+                "uri": "ui://chart/app.html",
+                "originCallId": "app-call",
+                "target": {"connectorId": "weather", "linkId": "account-a"},
+            }
+        ]
+    )
     async with async_session() as session:
         artifact = await session.get(McpAppArtifact, event.artifact_id)
         binding = await session.one_or_none(
@@ -194,6 +245,8 @@ async def test_driven_app_survives_its_session_and_reuses_the_owned_viewer(
         response = await session.get(ModelResponse, binding.model_message_id)
         assert response is not None
         assert response.provider_response_id == "app-call"
+    unbound = await host.threads.messages_page(thread.id, unbound=True, limit=100)
+    assert all(row.id != event.message_id for row in unbound.items)
     assert artifact is not None
     assert isinstance(artifact.source, CapturedMcpAppSource)
     stored = await host.files.get(artifact.source.file_id, owner_id=owner.id)
@@ -202,7 +255,7 @@ async def test_driven_app_survives_its_session_and_reuses_the_owned_viewer(
     assert artifact.invocation.tool is None
     assert artifact.invocation.arguments == {"city": "上海"}
     assert artifact.invocation.result.structured_content == result["structuredContent"]
-    assert artifact.invocation.result.meta == result["_meta"]
+    assert artifact.invocation.result.meta == {"uiOnly": {"revision": 2}}
     assert "<html>" not in artifact.model_dump_json()
     await channel.feelers.artifacts.present(address, event)
     assert channel.sent[-1][2][0]["text"] == (

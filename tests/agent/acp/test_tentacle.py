@@ -21,7 +21,7 @@ from octomate.capabilities.harness.events import (
     RunEndedEvent,
     RunStartedEvent,
 )
-from octomate.config import OctomateConfig
+from octomate.config import AcpAgentConfig, OctomateConfig
 from octomate.database import async_session
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.nerve import ThreadTopic
@@ -77,7 +77,14 @@ async def test_catalog_discovery_closes_its_temporary_session_when_supported(
             },
         }
     )
-    agent = AcpAgentTentacle("custom", Octomate(), provider=provider)
+    host = Octomate()
+    agent = AcpAgentTentacle(
+        "custom",
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
+        config=AcpAgentConfig(provider=provider),
+    )
     async with agent:
         assert set(agent.models) == {"fast", "careful"}
         messages = [
@@ -109,7 +116,15 @@ async def test_custom_harness_discovers_selects_and_reopens(
         }
     )
     app = Octomate(config=OctomateConfig(auth=auth_config()))
-    agent = app.connect(AcpAgentTentacle("custom", app, provider=provider))
+    agent = app.connect(
+        AcpAgentTentacle(
+            "custom",
+            app,
+            auth=app.auth,
+            sandboxes=app.sandboxes,
+            config=AcpAgentConfig(provider=provider),
+        )
+    )
     user = await a_user("alice")
     sender = await app.users.native_profile(agent.id, user.username)
     assert sender is not None
@@ -145,7 +160,7 @@ async def test_custom_harness_discovers_selects_and_reopens(
         assert [run.model_name for run in runs] == (
             [None, None] if catalog == "none" else ["careful", "fast"]
         )
-        assert all(run.native_id == agent.id for run in runs)
+        assert conversation.agent_tentacle_id == agent.id
         for run in runs:
             assert run.context_used == 32000
             assert run.context_window == 128000
@@ -183,7 +198,15 @@ async def test_harness_efforts_follow_model_and_reach_new_and_loaded_sessions(
         }
     )
     app = Octomate(config=OctomateConfig(auth=auth_config()))
-    agent = app.connect(AcpAgentTentacle("custom", app, provider=provider))
+    agent = app.connect(
+        AcpAgentTentacle(
+            "custom",
+            app,
+            auth=app.auth,
+            sandboxes=app.sandboxes,
+            config=AcpAgentConfig(provider=provider),
+        )
+    )
     user = await a_user("alice")
     sender = await app.users.native_profile(agent.id, user.username)
     assert sender is not None
@@ -254,7 +277,15 @@ async def test_public_endpoint_drives_custom_harness(
     in_memory_engine: AsyncEngine,
 ) -> None:
     app = Octomate(config=OctomateConfig(auth=auth_config()))
-    agent = app.connect(AcpAgentTentacle("custom", app, provider=custom_provider))
+    agent = app.connect(
+        AcpAgentTentacle(
+            "custom",
+            app,
+            auth=app.auth,
+            sandboxes=app.sandboxes,
+            config=AcpAgentConfig(provider=custom_provider),
+        )
+    )
     app.connect(AcpChannelTentacle("entry", app))
     user = await a_user("alice")
     assert app.auth is not None
@@ -326,7 +357,13 @@ async def test_harness_without_http_mcp(
     )
     app = Octomate(config=OctomateConfig(auth=auth_config()))
     agent = app.connect(
-        AcpAgentTentacle("custom", app, provider=provider, gateway=gateway)
+        AcpAgentTentacle(
+            "custom",
+            app,
+            auth=app.auth,
+            sandboxes=app.sandboxes,
+            config=AcpAgentConfig(provider=provider, gateway=gateway),
+        )
     )
     user = await a_user("alice")
     sender = await app.users.native_profile(agent.id, user.username)
@@ -375,7 +412,15 @@ async def agent(
     (root / "README.md").write_text("ACP test workspace\n")
     app = Octomate(config=OctomateConfig(auth=auth_config()))
     app.workspaces.projects = await a_registry(a_project(root, name="project"))
-    tentacle = app.connect(AcpAgentTentacle(id="acp", octomate=app, provider=provider))
+    tentacle = app.connect(
+        AcpAgentTentacle(
+            auth=app.auth,
+            sandboxes=app.sandboxes,
+            id="acp",
+            octomate=app,
+            config=AcpAgentConfig(provider=provider),
+        )
+    )
     user = await a_user("alice")
     sender = await app.users.native_profile(tentacle.id, user.username)
     assert sender is not None
@@ -594,7 +639,7 @@ async def test_provider_failure_preserves_partial_run_and_revokes_key(
     tmp_path: Path,
 ) -> None:
     tentacle, sender, thread = agent
-    executable = AsyncPath(tmp_path / tentacle.provider.command)
+    executable = AsyncPath(tmp_path / tentacle.config.provider.command)
     source = await executable.read_text()
     await executable.write_text(
         source.replace(

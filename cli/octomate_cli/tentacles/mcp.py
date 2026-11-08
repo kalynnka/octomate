@@ -1,10 +1,10 @@
 """Octomate's static MCP client config — the three facts every `octomate
 <runtime> mcp install` writes: where the server is, the credential, and which
-runtime the calls are from.
+agent the calls are from.
 
 Owned here so the runtimes' installers cannot drift apart. The server holds the
-same literals (`octomate.mcp.server`, `octomate.mcp.gateway`,
-`octomate.types.threads`); the CLI cannot import that half, so the tests are what
+same literals (`octomate.mcp.server`, `octomate.mcp.gateway`);
+the CLI cannot import that half, so the tests are what
 hold the two together. Unlike the hook commands — whose scripts resolve the
 address and credential from the environment when each hook fires — a static MCP
 entry is read by the runtime itself, so both are resolved once, at install time,
@@ -29,13 +29,10 @@ OCTOMATE_MCP_PATH = "/octomate/mcp"
 # `serverName` — so each runtime names the tools `mcp__octomate__<tool>`.
 OCTOMATE_SERVER_KEY = "octomate"
 
-# The header a native session's calls attribute their runtime with, and the
-# value each runtime's install writes. Attribution within the bearer's trust
+# The header a session's calls attribute their configured agent with.
+# Attribution within the bearer's trust
 # domain, not authentication: the bearer is what authenticates.
 CLIENT_HEADER = "X-Octomate-Client"
-CLAUDE_NATIVE_CLIENT = "claude-native"
-CODEX_NATIVE_CLIENT = "codex-native"
-DEEPSEEK_NATIVE_CLIENT = "deepseek-native"
 
 
 def octomate_url(url: str | None) -> str:

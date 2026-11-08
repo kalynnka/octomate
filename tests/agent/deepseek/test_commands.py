@@ -42,7 +42,12 @@ def client(payload: JsonObject) -> AsyncMock:
 @pytest.fixture
 async def agent(client: AsyncMock) -> AsyncGenerator[DeepseekTentacle]:
     host = Octomate()
-    agent = DeepseekTentacle("deepseek", host, config=DeepseekConfig())
+    agent = DeepseekTentacle(
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
+        config=DeepseekConfig(),
+    )
     await agent.ink.client.http_client.aclose()
     agent.ink.client = client
 
@@ -213,7 +218,13 @@ async def test_connection_startup_replaces_unavailable_catalog_and_shutdown_expi
     patch_gateway(monkeypatch)
     FakeDeepseekApi.reset()
     FakeDeepseekApi.results["commands/list"] = OkResult(value=[])
-    agent = DeepseekTentacle("deepseek", Octomate(), config=DeepseekConfig())
+    host = Octomate()
+    agent = DeepseekTentacle(
+        host,
+        auth=host.auth,
+        sandboxes=host.sandboxes,
+        config=DeepseekConfig(),
+    )
     assert (await agent.discover_commands(context)).status == "unavailable"
     async with agent:
         assert (await agent.discover_commands(context)).status == "ready"

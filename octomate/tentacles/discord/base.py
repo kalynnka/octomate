@@ -42,6 +42,7 @@ from octomate.tentacles.discord.feelers.questions import (
     DiscordQuestionNavButton,
     DiscordQuestionPicksSelect,
 )
+from octomate.tentacles.discord.feelers.status import DiscordStatusFeeler
 from octomate.tentacles.discord.ink import DiscordInk
 from octomate.tentacles.discord.oauth import DiscordOAuthConnector, DiscordTokenExchange
 from octomate.tentacles.discord.schema import DiscordOutboundMessage
@@ -98,6 +99,7 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
         ask_questions = DiscordAskQuestionFeeler(self.ink)
         oauth = DiscordOAuthFeeler(self.ink)
         self.feelers = Feelers(
+            status=DiscordStatusFeeler(self.ink),
             markdown=self.feelers.markdown,
             artifacts=DiscordArtifactFeeler(
                 artifacts=self.octomate.artifacts,

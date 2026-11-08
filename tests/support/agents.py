@@ -13,8 +13,6 @@ import json
 from collections.abc import (
     AsyncGenerator,
     AsyncIterator,
-    Awaitable,
-    Callable,
     Sequence,
 )
 from dataclasses import asdict, dataclass, field
@@ -50,9 +48,6 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
 from octomate import Octomate
 from octomate.capabilities.ask import AskCapability
-from octomate.capabilities.gateway import (
-    GatewayCapability,
-)
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
@@ -60,6 +55,7 @@ from octomate.config.agents import (
     AgentRouteModelName,
 )
 from octomate.managers.conversation import ConversationManager
+from octomate.managers.gateway import OctomateSession
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.triage import (
     DIRECT_TARGET,
@@ -127,37 +123,13 @@ def _teleport_requests(
     )
 
 
-def _gate_tool(
-    capabilities: Sequence[AgentCapability[None]] | None,
-    tool_name: str,
-) -> Callable[..., Awaitable[str]]:
-    gate = next(
-        (
-            capability
-            for capability in capabilities or []
-            if isinstance(capability, GatewayCapability)
-        ),
-        None,
-    )
-    if gate is None or gate.toolset is None:
-        raise AssertionError("a gate decision requires a mounted gate toolset")
-    return gate.toolset.tools[tool_name].function
-
-
-def scheme_target(
-    decision: SchemeDecision, capabilities: Sequence[AgentCapability[None]] | None
-) -> SchemeTarget:
+def scheme_target(decision: SchemeDecision, session: OctomateSession) -> SchemeTarget:
     """What a model would have named to produce `decision`'s destination.
 
     Their direct messages on the channel the run is already on, or the channel it
     names for anywhere else — the same conversion the gate runs forwards.
     """
-    gate = next(
-        capability
-        for capability in capabilities or []
-        if isinstance(capability, GatewayCapability)
-    )
-    here = gate.session.conversation_address
+    here = session.conversation_address
     far = decision.destination.channel_tentacle_id
     if here is not None and far == here.channel_tentacle_id:
         return DIRECT_TARGET
@@ -180,6 +152,7 @@ class RecordedRun:
     interactive: bool = True
     instructions: str | None = None
     capabilities: list[AgentCapability[None]] = field(default_factory=list)
+    session: OctomateSession | None = None
 
 
 @dataclass
@@ -249,6 +222,14 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     # Every `relocate` the graph asked for: the conversation's id and where to.
     relocated: list[tuple[UUID7, Path]] = field(default_factory=list)
 
+    def resolve_model(
+        self, model: AgentRouteModelName | None = None
+    ) -> AgentRouteModelName | None:
+        """Use the configured default, as Inkling does."""
+        if not self.models:
+            raise ValueError(f"agent {self.id!r} has no available model catalog")
+        return self.default_model if model is None else super().resolve_model(model)
+
     async def fork_session(
         self, conversation: Conversation, *, cwd: Path
     ) -> str | None:
@@ -278,6 +259,11 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         instructions: str | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AgentRunResult[FakeRunOutput]:
+        session = (
+            self.octomate.gateway.get(conversation_id)
+            if self.octomate is not None and conversation_id is not None
+            else None
+        )
         self.turns.append(
             RecordedRun(
                 prompt=user_prompt,
@@ -294,6 +280,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 interactive=interactive,
                 instructions=instructions,
                 capabilities=list(capabilities or []),
+                session=session,
             )
         )
         results = [
@@ -302,7 +289,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 conversation_address,
                 deferred_tool_results=deferred_tool_results,
                 deferred_suspender=deferred_suspender,
-                capabilities=capabilities,
+                session=session,
             )
             if isinstance(event, AgentRunResultEvent)
         ]
@@ -325,6 +312,11 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         deferred_suspender: DeferredSuspender | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> ReactEventStream[ChannelOutput]:
+        session = (
+            self.octomate.gateway.get(conversation_id)
+            if self.octomate is not None and conversation_id is not None
+            else None
+        )
         self.turns.append(
             RecordedRun(
                 prompt=user_prompt,
@@ -339,6 +331,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 effort=effort,
                 conversation_id=conversation_id,
                 capabilities=list(capabilities or []),
+                session=session,
             )
         )
         return ReactEventStream(
@@ -346,7 +339,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 conversation_address,
                 deferred_tool_results=deferred_tool_results,
                 deferred_suspender=deferred_suspender,
-                capabilities=capabilities,
+                session=session,
             )
         )
 
@@ -356,24 +349,17 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         *,
         deferred_tool_results: DeferredToolResults | None,
         deferred_suspender: DeferredSuspender | None,
-        capabilities: Sequence[AgentCapability[None]] | None,
+        session: OctomateSession | None,
     ) -> AsyncGenerator[ReactStreamEvent[ChannelOutput]]:
         """The scripted turn as it streams, ending on its result."""
         hint = self.reception_recorded_teleport
         if hint is not None and deferred_tool_results is None:
             # Consumed on first use, or the resumed run would teleport forever.
             self.reception_recorded_teleport = None
-            gateway = next(
-                (
-                    capability
-                    for capability in capabilities or []
-                    if isinstance(capability, GatewayCapability)
-                ),
-                None,
+            assert session is not None, (
+                "a recorded teleport requires a registered gateway"
             )
-            if gateway is None:
-                raise AssertionError("a recorded teleport requires a mounted gateway")
-            decision = await gateway.session.teleport(
+            decision = await session.teleport(
                 hint=hint, resume=self.reception_teleport_resume
             )
             deferral = decision.deferral("call_teleport")
@@ -382,17 +368,18 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
             yield AgentRunResultEvent(AgentRunResult(deferral))
             return
         if self.reception_dismiss:
-            await _gate_tool(capabilities, GatewayTool.DISMISS)(FAKE_CONTEXT)
+            assert session is not None
+            await session.dismiss()
         scheme_decision = self.reception_scheme
         if scheme_decision is not None:
             # Cast once, like a model would: the receiving run in the DM must not
             # re-cast it, where the gate would (rightly) refuse.
             self.reception_scheme = None
-            await _gate_tool(capabilities, GatewayTool.SCHEME)(
-                FAKE_CONTEXT,
+            assert session is not None
+            await session.scheme(
                 hint=scheme_decision.hint,
                 brief=scheme_decision.brief,
-                destination=scheme_target(scheme_decision, capabilities),
+                destination=scheme_target(scheme_decision, session),
             )
             # And a closing line, like a model does: `scheme` is an ordinary tool
             # call, so the run carries on and writes a reply after it. Set
@@ -401,8 +388,9 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
             return
         summon_decision = self.reception_summon
         if summon_decision is not None:
-            await _gate_tool(capabilities, GatewayTool.SUMMON)(
-                FAKE_CONTEXT,
+            assert session is not None
+            assert summon_decision.model is not None
+            await session.summon(
                 agent_id=summon_decision.agent_id,
                 model=summon_decision.model,
                 reason=summon_decision.reason,

@@ -3,8 +3,8 @@
 A driven Claude run mounts the served server — the gateway's spells, the history
 tools, and lazy provider discovery and calls with the linking pair — in process,
 with the turn's `OctomateSession` closed over — identity by closure, so nothing on
-the wire names a session, and the stdio control protocol carries the calls over
-an SSH transport unchanged. The server is the same one `/octomate/mcp` serves;
+the wire names a session, and the stdio control protocol carries the calls.
+The server is the same one `/octomate/mcp` serves;
 this module only walks its tools into the SDK's own tool shape and translates
 their results back. The SDK's server carries no instructions of its own, so the
 tentacle appends the server's to the system prompt instead — under the served
@@ -20,6 +20,7 @@ from fastmcp.exceptions import ValidationError as McpValidationError
 from fastmcp.tools import Tool
 from pydantic import JsonValue, ValidationError
 
+from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpManager
 from octomate.managers.thread import ThreadManager
@@ -64,13 +65,16 @@ async def octomate_mcp_server(
     thread_manager: ThreadManager,
     *,
     manager: McpManager,
+    conversations: ConversationManager,
 ) -> McpSdkServerConfig:
     """Mount the gateway, history, and the user's MCP tools in process for this turn."""
 
     async def fixed() -> OctomateSession:
         return session
 
-    server = octomate_mcp(fixed, thread_manager, manager=manager)
+    server = octomate_mcp(
+        fixed, thread_manager, manager=manager, conversations=conversations
+    )
     return create_sdk_mcp_server(
         OCTOMATE_SERVER_NAME,
         tools=[sdk_tool(tool) for tool in await server.list_tools()],
