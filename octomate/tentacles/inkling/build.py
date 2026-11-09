@@ -50,11 +50,11 @@ def build_inkling(
     )
     from pydantic_ai_harness.warn_on_cache_busts import WarnOnCacheBusts
 
-    from octomate.capabilities.ask import AskCapability
     from octomate.capabilities.history import HistoryCapability
-    from octomate.capabilities.todos import TodoCapability
-    from octomate.capabilities.tools import ToolFailureCapability
     from octomate.managers.spills import SpillStore
+    from octomate.tentacles.inkling.capabilities.ask import AskCapability
+    from octomate.tentacles.inkling.capabilities.todos import TodoCapability
+    from octomate.tentacles.inkling.capabilities.tools import ToolFailureCapability
     from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 
     capabilities: list[AgentCapability[None]] = [

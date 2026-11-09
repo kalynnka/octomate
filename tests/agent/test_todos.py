@@ -19,18 +19,18 @@ from pydantic_ai.models.test import TestModel
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     TodoCompletedEvent,
     TodoCreatedEvent,
     TodoDeletedEvent,
     TodoStatusChangedEvent,
 )
-from octomate.capabilities.todos import TodoCapability, update_events
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.todos import TodoManager
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.todos import Todo
+from octomate.tentacles.inkling.agent import Agent
+from octomate.tentacles.inkling.capabilities.todos import TodoCapability, update_events
 from tests.support.managers import a_thread
 
 

@@ -21,7 +21,7 @@ from anyio.abc import ObjectSendStream
 from octomate_protocol.gateway import GatewayTool
 from pydantic import UUID7
 
-from octomate.capabilities.harness.events import WireEvent
+from octomate.events import WireEvent
 from octomate.managers.base import Manager
 from octomate.managers.workspaces.mirrors import run_git
 from octomate.nerve import ChannelTopic, Impulse, Nerve, ThreadTopic

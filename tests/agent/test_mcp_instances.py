@@ -10,7 +10,6 @@ from pydantic_ai.usage import RunUsage
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.mcp import TentaclesToolset
 from octomate.config import OctomateConfig
 from octomate.managers.mcp import McpClientKey
 from octomate.mcp.gateway import CLIENT_HEADER
@@ -26,6 +25,7 @@ from octomate.mcp.server import (
 from octomate.schemas.mcp import McpServerSummary
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude.mcp import octomate_mcp_server
+from octomate.tentacles.inkling.capabilities.mcp import TentaclesToolset
 from octomate.tentacles.mcp import BareMcpTentacle
 from tests.agent.test_mcp import ENCRYPTION_KEY, a_turn, an_upstream, upstream_of
 from tests.agent.test_mcp_serving import over, served

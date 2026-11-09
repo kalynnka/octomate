@@ -9,7 +9,7 @@ from anyio.streams.memory import MemoryObjectSendStream
 from pydantic_ai.messages import PartDeltaEvent, TextPartDelta
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.events import MessageSentEvent
+from octomate.events import MessageSentEvent
 from octomate.nerve import ChannelTopic, Impulse, Nerve, ThreadTopic, UserTopic
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey

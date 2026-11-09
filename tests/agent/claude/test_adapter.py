@@ -43,7 +43,7 @@ from pydantic_ai.messages import (
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.events import RunActivityChangedEvent
+from octomate.events import RunActivityChangedEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.tentacles.claude.adapter import (
     ClaudeRunAccumulator,

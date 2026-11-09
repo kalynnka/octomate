@@ -80,14 +80,12 @@ from starlette.datastructures import Headers
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.capabilities.harness.deferred import DeferredSuspender, Interjections
-from octomate.capabilities.harness.events import (
+from octomate.config.agents import Claim, ClaudeCodeConfig
+from octomate.config.channels import TrunklineChannelConfig
+from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
 )
-from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import Claim, ClaudeCodeConfig
-from octomate.config.channels import TrunklineChannelConfig
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
 from octomate.nerve import Impulse
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -137,8 +135,10 @@ from octomate.tentacles.claude.transcript import (
     relocate_session,
     transcripts_dir,
 )
+from octomate.tentacles.deferred import DeferredSuspender, Interjections
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
+from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from octomate.types.json import JsonObject
 from octomate.types.permissions import (
     ClaudePermissionMode,

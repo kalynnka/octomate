@@ -29,13 +29,13 @@ from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.agent import Agent
 from octomate.config.agents import ClaudeCodeConfig, CodexConfig, DeepseekConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.inkling import InklingTentacle
+from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.base import InklingOutput
 from octomate.types.json import JsonObject
 from tests.integration.native_sandbox.matrix import NativeCall, ToolOutcome

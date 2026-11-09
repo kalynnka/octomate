@@ -22,8 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import RunEndedEvent
 from octomate.database import async_session
+from octomate.events import RunEndedEvent
 from octomate.nerve import Impulse, Nerve, ThreadTopic
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelResponse

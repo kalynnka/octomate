@@ -24,23 +24,8 @@ from pydantic_graph import End, Graph, GraphRunContext
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.ask import AskCapability
-from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.deferred import DeferredResolver
-from octomate.capabilities.harness.events import ActionBatchEvent
-from octomate.capabilities.harness.react import (
-    ReactDeps,
-    ReactGraphInput,
-    ReactState,
-    ReactStreamEvent,
-    ResolveDeferred,
-    ResumeTurn,
-    RunAgent,
-    StartTurn,
-    build_react_graph,
-    iter_react_graph_events,
-)
 from octomate.database import async_session
+from octomate.events import ActionBatchEvent
 from octomate.managers import ConversationManager, ThreadManager, UserManager
 from octomate.nerve import Nerve
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -48,7 +33,22 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest as OctomateModelRequest
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import MessageBinding, ThreadMessage
+from octomate.tentacles.inkling.agent import Agent
+from octomate.tentacles.inkling.capabilities.ask import AskCapability
+from octomate.tentacles.inkling.deferred import DeferredResolver
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.inkling.react import (
+    ReactDeps,
+    ReactGraphInput,
+    ReactState,
+    ResolveDeferred,
+    ResumeTurn,
+    RunAgent,
+    StartTurn,
+    build_react_graph,
+    iter_react_graph_events,
+)
+from octomate.tentacles.stream import ReactStreamEvent
 from tests.support.agents import (
     ScriptedOutput,
     ScriptedTurn,

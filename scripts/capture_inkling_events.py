@@ -42,12 +42,9 @@ sys.modules.setdefault("octomate", octomate_package)
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.base import Octomate
-from octomate.capabilities.ask import ASK_QUESTIONS_TOOL_NAME, AskCapability
 from octomate.capabilities.gateway import (
     GatewayCapability,
 )
-from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.todos import TodoCapability
 from octomate.config import OctomateConfig, SlackChannelConfig
 from octomate.config.agents import AgentRouteModelName
 from octomate.config.agents.inkling import InklingConfig
@@ -64,12 +61,16 @@ from octomate.schemas.triage import (
 )
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.channel import ChannelTentacle
+from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.base import (
     InklingOutput,
     InklingTentacle,
 )
+from octomate.tentacles.inkling.capabilities.ask import AskCapability
+from octomate.tentacles.inkling.capabilities.todos import TodoCapability
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.slack.base import SlackTentacle
+from octomate.types.deferred import ASK_QUESTIONS_TOOL_NAME
 from octomate.types.json import JsonObject
 
 DEFAULT_PROMPT = (

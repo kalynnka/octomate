@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-from octomate.capabilities.harness.events import ArtifactAvailableEvent
+from octomate.events import ArtifactAvailableEvent
 from octomate.schemas.artifacts import ArtifactOverview
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import TextSegment

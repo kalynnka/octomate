@@ -54,7 +54,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     MessageSentEvent,
     SubagentActivityStatus,
     SubagentSettledEvent,

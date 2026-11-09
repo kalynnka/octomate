@@ -17,9 +17,13 @@ from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.ask import AskCapability
-from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.events import (
+from octomate.config import (
+    ChannelConfig,
+    ChannelStreamConfig,
+)
+from octomate.config.channels import ChatRecapConfig
+from octomate.database import async_session
+from octomate.events import (
     ActionBatchEvent,
     ReflexAsleepEvent,
     ReflexAwakeEvent,
@@ -29,12 +33,6 @@ from octomate.capabilities.harness.events import (
     RunErrorEvent,
     RunStartedEvent,
 )
-from octomate.config import (
-    ChannelConfig,
-    ChannelStreamConfig,
-)
-from octomate.config.channels import ChatRecapConfig
-from octomate.database import async_session
 from octomate.nerve import ChannelTopic, ThreadTopic
 from octomate.prompts import untagged
 from octomate.reflex.state import RECAP_HEADER, ReflexDeps, ReflexRuntime
@@ -54,7 +52,9 @@ from octomate.schemas.triage import (
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.inkling import InklingTentacle
+from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.base import InklingOutput
+from octomate.tentacles.inkling.capabilities.ask import AskCapability
 from tests.support.agents import FakeAgent
 from tests.support.channels import (
     FakeChannelTentacle,

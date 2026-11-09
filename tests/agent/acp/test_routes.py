@@ -18,15 +18,14 @@ from starlette.testclient import WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
 
 from octomate import Octomate
-from octomate.capabilities.ask import AskCapability
-from octomate.capabilities.harness.events import (
+from octomate.config import OctomateConfig
+from octomate.config.agents import ClaudeCodeConfig
+from octomate.database import async_session
+from octomate.events import (
     ReflexAsleepEvent,
     RunEndedEvent,
     RunStartedEvent,
 )
-from octomate.config import OctomateConfig
-from octomate.config.agents import ClaudeCodeConfig
-from octomate.database import async_session
 from octomate.nerve import ThreadTopic
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.runs import AgentRun
@@ -35,6 +34,7 @@ from octomate.tentacles.acp.channel import AcpChannelTentacle
 from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.inkling.base import InklingTentacle
+from octomate.tentacles.inkling.capabilities.ask import AskCapability
 from tests.agent.claude.test_tentacle import FakeClaudeClient
 from tests.support.agents import ScriptedStream, ScriptedTurn
 from tests.support.managers import a_project, a_registry

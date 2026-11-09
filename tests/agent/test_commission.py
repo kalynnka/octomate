@@ -32,7 +32,7 @@ from octomate.capabilities.gateway import (
     Accomplices,
     GatewayCapability,
 )
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     SubagentSettledEvent,
     SubagentStartedEvent,
 )

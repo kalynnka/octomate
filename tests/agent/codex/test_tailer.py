@@ -28,12 +28,12 @@ from pydantic_ai.messages import (
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import (
+from octomate.database import async_session
+from octomate.events import (
     RunEndedEvent,
     RunStartedEvent,
     StreamEvents,
 )
-from octomate.database import async_session
 from octomate.nerve import ThreadTopic
 from octomate.schemas.compactions import ExternalCompaction
 from octomate.schemas.runs import ExternalAgentRun

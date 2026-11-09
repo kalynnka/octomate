@@ -94,15 +94,13 @@ from rich.style import Style
 from starlette.datastructures import Headers
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.deferred import DeferredSuspender, Interjections
-from octomate.capabilities.harness.events import (
+from octomate.config.agents import Claim, CodexConfig
+from octomate.config.channels import TrunklineChannelConfig
+from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
     ArtifactAvailableEvent,
 )
-from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import Claim, CodexConfig
-from octomate.config.channels import TrunklineChannelConfig
 from octomate.mcp.server import OCTOMATE_MCP_PATH
 from octomate.nerve import Impulse
 from octomate.schemas.artifacts import (
@@ -156,8 +154,10 @@ from octomate.tentacles.codex.ink import CodexInk
 from octomate.tentacles.codex.schemas import CodexCommandDescriptor
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer
 from octomate.tentacles.codex.transcript import RolloutLine, rollout_line_adapter
+from octomate.tentacles.deferred import DeferredSuspender, Interjections
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
+from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from octomate.types.compactions import CompactionTrigger
 from octomate.types.json import JsonObject
 from octomate.types.permissions import PermissionMode

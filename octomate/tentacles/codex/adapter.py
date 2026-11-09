@@ -77,7 +77,7 @@ from pydantic_ai.messages import ModelRequest as PydanticModelRequest
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.usage import RequestUsage, RunUsage
 
-from octomate.capabilities.harness.events import RunActivityChangedEvent, StreamEvents
+from octomate.events import RunActivityChangedEvent, StreamEvents
 from octomate.tentacles.codex.html import visualization_text
 from octomate.types.json import JsonObject, JsonValue
 

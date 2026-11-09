@@ -13,7 +13,7 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import RunEndedEvent
+from octomate.events import RunEndedEvent
 from octomate.nerve import Impulse, Nerve, ThreadTopic
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import ThreadKey

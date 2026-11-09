@@ -8,13 +8,13 @@ from pydantic import AnyHttpUrl
 from pydantic_ai.messages import PartStartEvent, TextPart
 from pydantic_ai.usage import RunUsage
 
-from octomate.capabilities.harness.events import (
+from octomate.database import async_session
+from octomate.events import (
     ArtifactAvailableEvent,
     RunEndedEvent,
     RunResultEvent,
     RunStartedEvent,
 )
-from octomate.database import async_session
 from octomate.managers.artifacts import ArtifactUnavailable
 from octomate.nerve import ChannelTopic, Impulse
 from octomate.schemas.artifacts import McpAppArtifact

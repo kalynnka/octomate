@@ -26,8 +26,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ActionBatchEvent,
     ReflexAsleepEvent,
     ReflexAwakeEvent,
@@ -48,6 +47,7 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.tentacles.acp.adapter import AcpTranslator
+from octomate.tentacles.inkling.agent import Agent
 
 
 @pytest.mark.parametrize("segments", [False, True])

@@ -32,7 +32,7 @@ from octomate_protocol.gateway import GatewayTool
 from pydantic import Field, TypeAdapter
 
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.capabilities.harness.events import MessageSentEvent
+from octomate.events import MessageSentEvent
 from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.mcp.base import capability_contract

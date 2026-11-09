@@ -17,12 +17,12 @@ from pydantic import UUID7, AnyHttpUrl, SecretStr, TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import (
+from octomate.config import ArtifactConfig, OAuthConfig, OctomateConfig
+from octomate.database import async_session
+from octomate.events import (
     OAuthAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,
 )
-from octomate.config import ArtifactConfig, OAuthConfig, OctomateConfig
-from octomate.database import async_session
 from octomate.managers.artifacts import ArtifactManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.files import FileManager

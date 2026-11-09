@@ -34,7 +34,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_core import to_json
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ResultSegmentEvent,
     ResultTextDeltaEvent,
     RunResultEvent,

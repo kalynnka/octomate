@@ -23,15 +23,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.capabilities.harness.events import (
+from octomate.config import ChannelConfig, ChannelStreamConfig
+from octomate.config.mirrors import MirrorsConfig
+from octomate.events import (
     GatewayEvent,
     MessageSentEvent,
     ResultSegmentEvent,
     RunErrorEvent,
 )
-from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config import ChannelConfig, ChannelStreamConfig
-from octomate.config.mirrors import MirrorsConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager
@@ -83,6 +82,7 @@ from octomate.schemas.triage import (
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.channel import ChannelOutput, ChannelSurfaces
+from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from tests.support.agents import FakeAgent, RecordedRun
 from tests.support.channels import FakeChannelTentacle, FakeOctomate, RecordingInk
 from tests.support.managers import (

@@ -9,11 +9,11 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from octomate.capabilities.harness.events import (
+from octomate.config import ChannelStreamConfig
+from octomate.events import (
     SubagentActivityStatus,
     SubagentStartedEvent,
 )
-from octomate.config import ChannelStreamConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
     AtSegment,

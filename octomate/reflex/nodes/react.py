@@ -11,8 +11,7 @@ from pydantic_ai.messages import UserContent
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_graph import BaseNode, End, GraphRunContext
 
-from octomate.capabilities.harness.events import ReflexPhaseChangedEvent
-from octomate.capabilities.harness.react import ReactStreamEvent
+from octomate.events import ReflexPhaseChangedEvent
 from octomate.nerve import Impulse
 from octomate.reflex.state import (
     ReflexDeps,
@@ -22,6 +21,7 @@ from octomate.reflex.state import (
 from octomate.schemas.triage import SummonDecision
 from octomate.telemetry import reflex_logfire
 from octomate.tentacles.channel import ChannelOutput
+from octomate.tentacles.stream import ReactStreamEvent
 
 
 @dataclass

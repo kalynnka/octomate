@@ -19,12 +19,9 @@ from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.events import MessageSentEvent
-from octomate.capabilities.todos import TodoCapability
 from octomate.config import ChannelConfig
+from octomate.events import MessageSentEvent
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.user import UserManager
 from octomate.schemas.conversation import ChannelAddress, ChatType
@@ -36,7 +33,10 @@ from octomate.schemas.triage import (
 )
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import ChannelSurfaces
+from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.base import InklingOutput
+from octomate.tentacles.inkling.capabilities.ask import AskCapability
+from octomate.tentacles.inkling.capabilities.todos import TodoCapability
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from tests.support.agents import ScriptedStream, ScriptedTurn
 from tests.support.channels import FakeChannelTentacle

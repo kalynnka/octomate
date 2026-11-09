@@ -13,7 +13,7 @@ from anyio.abc import ObjectReceiveStream
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ReflexAsleepEvent,
     wire_event_adapter,
 )

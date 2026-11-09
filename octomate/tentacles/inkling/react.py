@@ -4,7 +4,6 @@ import logging
 from collections.abc import AsyncGenerator, AsyncIterable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from types import TracebackType
 from typing import Any
 
 import anyio
@@ -55,25 +54,19 @@ from pydantic_graph import (
     TypeExpression,
 )
 
-from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.deferred import DeferredSuspender, ResolverChoice
-from octomate.capabilities.harness.events import StreamEvents
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.runs import AgentRun as PersistedAgentRun
 from octomate.telemetry import react_logfire
+from octomate.tentacles.deferred import DeferredSuspender
+from octomate.tentacles.inkling.agent import Agent
+from octomate.tentacles.inkling.deferred import ResolverChoice
+from octomate.tentacles.stream import ReactStreamEvent
 from octomate.types.permissions import AgentPermissionMode
 
 logger = logging.getLogger(__name__)
-
-# The events a react run streams: the normalized `StreamEvents` union (Pydantic AI
-# passthrough + output/display events + a suspended run's deferred-action batch)
-# plus the terminal result.
-type ReactStreamEvent[ReactOutputT] = (
-    StreamEvents[ReactOutputT] | AgentRunResultEvent[ReactOutputT]
-)
 
 
 @dataclass
@@ -652,29 +645,3 @@ async def iter_react_graph_events[ReactOutputT, ReactDepsT](
                 yield event
     for error in captured:
         raise error
-
-
-class ReactEventStream[ReactOutputCoT]:
-    """Deterministic-cleanup handle over a react event stream: entering the
-    context yields the underlying generator, exiting closes it. Mirrors
-    pydantic-ai's ``AgentEventStream``, but typed over ``ReactStreamEvent`` — a
-    react run also streams octomate output/display/action-batch events."""
-
-    # Private so the covariant type parameter has no mutable public surface.
-    def __init__(
-        self, generator: AsyncGenerator[ReactStreamEvent[ReactOutputCoT], None]
-    ) -> None:
-        self._generator = generator
-
-    async def __aenter__(
-        self,
-    ) -> AsyncGenerator[ReactStreamEvent[ReactOutputCoT], None]:
-        return self._generator
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
-        await self._generator.aclose()

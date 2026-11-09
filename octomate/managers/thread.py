@@ -13,7 +13,9 @@ from pydantic import UUID7
 from pydantic_ai.messages import FilePart
 from sqlalchemy import ColumnElement, and_, or_, select
 
-from octomate.capabilities.harness.events import (
+from octomate.config.agents import AgentRouteModelName
+from octomate.database import async_session
+from octomate.events import (
     ThreadCommandOutcomeRecordedEvent,
     ThreadEvent,
     ThreadHandoffRecordedEvent,
@@ -21,8 +23,6 @@ from octomate.capabilities.harness.events import (
     ThreadProjectBoundEvent,
     ThreadTitleChangedEvent,
 )
-from octomate.config.agents import AgentRouteModelName
-from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.conversation import own_runs
 from octomate.managers.user import UserManager

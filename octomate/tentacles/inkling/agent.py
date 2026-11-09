@@ -63,7 +63,7 @@ from pydantic_ai.tools import AgentDepsT, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 from pydantic_graph import End
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ResultSegmentEvent,
     ResultTextDeltaEvent,
     RunActivityChangedEvent,

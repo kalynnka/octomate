@@ -21,9 +21,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.capabilities.gateway import GatewayCapability, gateway_instructions
-from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.capabilities.history import HistoryCapability
 from octomate.config.channels import TrunklineChannelConfig
+from octomate.events import MessageSentEvent
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpManager
 from octomate.managers.thread import ThreadManager

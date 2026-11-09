@@ -19,8 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import OAuthDeviceAuthorizationEvent
 from octomate.config import DiscordChannelConfig, OctomateConfig
+from octomate.events import OAuthDeviceAuthorizationEvent
 from octomate.schemas.artifacts import ArtifactOverview
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress

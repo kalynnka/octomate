@@ -32,10 +32,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import ActionBatchEvent
-from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config.agents import DeepseekConfig
 from octomate.database import async_session
+from octomate.events import ActionBatchEvent
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.workspaces.base import ChatWorkspace
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -56,6 +55,7 @@ from octomate.tentacles.deepseek.wire import (
     SessionEventFrame,
     StreamErrorFrame,
 )
+from octomate.tentacles.stream import ReactStreamEvent
 from octomate.types.json import JsonObject, JsonValue
 from tests.support.managers import (
     FakeConversation,

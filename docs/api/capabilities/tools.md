@@ -2,12 +2,12 @@
 
 ::: octomate.capabilities.gateway
 
-::: octomate.capabilities.ask
+::: octomate.tentacles.inkling.capabilities.ask
 
 ::: octomate.capabilities.history
 
-::: octomate.capabilities.todos
+::: octomate.tentacles.inkling.capabilities.todos
 
-::: octomate.capabilities.mcp
+::: octomate.tentacles.inkling.capabilities.mcp
 
-::: octomate.capabilities.tools
+::: octomate.tentacles.inkling.capabilities.tools

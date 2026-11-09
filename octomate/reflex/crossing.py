@@ -6,7 +6,7 @@ import logging
 
 from pydantic_graph import GraphRunContext
 
-from octomate.capabilities.harness.events import GatewayEvent
+from octomate.events import GatewayEvent
 from octomate.nerve import Impulse
 from octomate.reflex.state import ReflexDeps, ReflexState
 from octomate.schemas.conversation import ChannelAddress

@@ -34,9 +34,8 @@ from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import ActionBatchEvent
-from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config.agents import ClaudeCodeConfig
+from octomate.events import ActionBatchEvent
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
@@ -48,6 +47,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
+from octomate.tentacles.stream import ReactStreamEvent
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,

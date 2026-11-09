@@ -9,14 +9,14 @@ from pydantic_ai.usage import RunUsage
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import (
+from octomate.config import DiscordChannelConfig
+from octomate.database import async_session
+from octomate.events import (
     ArtifactAvailableEvent,
     RunEndedEvent,
     RunResultEvent,
     RunStartedEvent,
 )
-from octomate.config import DiscordChannelConfig
-from octomate.database import async_session
 from octomate.nerve import ChannelTopic, Impulse
 from octomate.schemas.artifacts import ArtifactOverview, McpAppArtifact
 from octomate.schemas.conversation import ChannelAddress

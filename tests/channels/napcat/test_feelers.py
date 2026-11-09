@@ -19,13 +19,13 @@ from pydantic_ai.models.function import (
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import (
+from octomate.config import NapcatChannelConfig
+from octomate.events import (
     MessageSentEvent,
     ResultSegmentEvent,
     ResultTextDeltaEvent,
     TodoCreatedEvent,
 )
-from octomate.config import NapcatChannelConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
     AtData,

@@ -48,26 +48,7 @@ from pydantic_ai_harness.step_persistence.naming import generate_name
 from pydantic_graph import GraphRunContext
 from rich.style import Style
 
-from octomate.capabilities import UserScopedCapability
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.deferred import (
-    DeclineResolver,
-    DeferredResolver,
-    DeferredSuspender,
-    PostureResolver,
-)
-from octomate.capabilities.harness.react import (
-    ReactDeps,
-    ReactEventStream,
-    ReactState,
-    ReactStreamEvent,
-    ResumeTurn,
-    StartTurn,
-    iter_react_graph_events,
-    resolve_conversation,
-)
-from octomate.capabilities.mcp import tentacles_capability
 from octomate.config.agents import AgentRouteModelName, InklingConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -79,7 +60,25 @@ from octomate.tentacles.agent import (
     AgentSpecInput,
     AgentTentacle,
 )
+from octomate.tentacles.deferred import DeferredSuspender
+from octomate.tentacles.inkling.agent import Agent
+from octomate.tentacles.inkling.capabilities import UserScopedCapability
+from octomate.tentacles.inkling.capabilities.mcp import tentacles_capability
+from octomate.tentacles.inkling.deferred import (
+    DeclineResolver,
+    DeferredResolver,
+    PostureResolver,
+)
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.inkling.react import (
+    ReactDeps,
+    ReactState,
+    ResumeTurn,
+    StartTurn,
+    iter_react_graph_events,
+    resolve_conversation,
+)
+from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from octomate.types.permissions import InklingPermissionMode, PermissionMode
 
 if TYPE_CHECKING:

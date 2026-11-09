@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 
 from pydantic_graph import BaseNode, GraphRunContext
 
-from octomate.capabilities.harness.events import GatewayEvent, ReflexPhaseChangedEvent
+from octomate.events import GatewayEvent, ReflexPhaseChangedEvent
 from octomate.nerve import Impulse
 from octomate.reflex.nodes.react import React
 from octomate.reflex.state import (

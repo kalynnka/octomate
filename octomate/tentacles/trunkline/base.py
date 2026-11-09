@@ -32,11 +32,11 @@ from starlette.responses import Response
 from starlette.types import Scope
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.events import (
+from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
+from octomate.events import (
     WireEvent,
     wire_event_adapter,
 )
-from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
 from octomate.nerve import Topic
 from octomate.schemas.awakes import StillAwake, UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress

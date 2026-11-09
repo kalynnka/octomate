@@ -64,14 +64,12 @@ from pydantic_ai.toolsets import AbstractToolset
 from rich.style import Style
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.deferred import DeferredSuspender
-from octomate.capabilities.harness.events import (
+from octomate.config.agents import Claim, DeepseekConfig
+from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
     MessageSentEvent,
 )
-from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import Claim, DeepseekConfig
 from octomate.nerve import Impulse
 from octomate.prompts import tagged
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -121,8 +119,10 @@ from octomate.tentacles.deepseek.wire import (
     text_of,
     user_message_of,
 )
+from octomate.tentacles.deferred import DeferredSuspender
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
+from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from octomate.types.json import JsonObject, JsonValue
 from octomate.utils import drain_task
 

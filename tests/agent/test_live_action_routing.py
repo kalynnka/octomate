@@ -11,9 +11,8 @@ from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.harness.deferred import Interjections
-from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.config.agents import ClaudeCodeConfig, CodexConfig, DeepseekConfig
+from octomate.events import ActionBatchEvent
 from octomate.reflex.graph import reflex_graph
 from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -23,6 +22,7 @@ from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex.base import CodexBridgeContext
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.deepseek.base import DeepseekBridgeContext
+from octomate.tentacles.deferred import Interjections
 from octomate.types.deferred import DeferredResponseMode
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import a_thread

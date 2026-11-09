@@ -43,14 +43,12 @@ from pydantic_ai.toolsets import AbstractToolset
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.capabilities.harness.deferred import DeferredSuspender
-from octomate.capabilities.harness.events import (
+from octomate.config.acp import AcpAgentConfig
+from octomate.config.agents import Claim
+from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
 )
-from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.acp import AcpAgentConfig
-from octomate.config.agents import Claim
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -63,6 +61,8 @@ from octomate.tentacles.acp.client import NativeAcpClient, NativeAcpSession
 from octomate.tentacles.acp.elicitation import AcpForm, AcpFormValidationError
 from octomate.tentacles.acp.history import AcpHistory
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
+from octomate.tentacles.deferred import DeferredSuspender
+from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from octomate.utils import drain_task
 
 if TYPE_CHECKING:

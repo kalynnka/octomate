@@ -47,10 +47,10 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.auth import current_user
-from octomate.capabilities.harness.events import ArtifactAvailableEvent, RunEndedEvent
 from octomate.config import OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.database import async_session
+from octomate.events import ArtifactAvailableEvent, RunEndedEvent
 from octomate.managers.files import FileManager
 from octomate.nerve import Impulse, ThreadTopic
 from octomate.schemas.artifacts import HtmlArtifact, HtmlView

@@ -67,7 +67,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.usage import RequestUsage, RunUsage
 
-from octomate.capabilities.harness.events import RunActivityChangedEvent, StreamEvents
+from octomate.events import RunActivityChangedEvent, StreamEvents
 from octomate.tentacles.claude.transcript import (
     TranscriptAssistantLine,
     TranscriptUserLine,

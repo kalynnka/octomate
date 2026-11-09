@@ -40,7 +40,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.messages import ModelRequest as PydanticModelRequest
 from pydantic_ai.usage import RequestUsage, RunUsage
 
-from octomate.capabilities.harness.events import StreamEvents
+from octomate.events import StreamEvents
 from octomate.tentacles.deepseek.wire import (
     AssistantStreamChunk,
     ChunkEnvelope,

@@ -12,8 +12,8 @@ from pydantic import UUID7
 from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.events import ActionBatchUpdatedEvent
 from octomate.database import async_session
+from octomate.events import ActionBatchUpdatedEvent
 from octomate.managers.base import Manager
 from octomate.nerve import Impulse, Nerve
 from octomate.schemas.awakes import DeferredActionBatchResponse

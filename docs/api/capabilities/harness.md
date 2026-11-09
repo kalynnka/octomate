@@ -1,9 +1,13 @@
 # Harness
 
-::: octomate.capabilities.harness.agent
+::: octomate.tentacles.inkling.agent
 
-::: octomate.capabilities.harness.events
+::: octomate.events
 
-::: octomate.capabilities.harness.react
+::: octomate.tentacles.inkling.react
 
-::: octomate.capabilities.harness.deferred
+::: octomate.tentacles.inkling.deferred
+
+::: octomate.tentacles.deferred
+
+::: octomate.tentacles.stream

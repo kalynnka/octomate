@@ -41,7 +41,7 @@ from anyio.abc import ObjectReceiveStream, ObjectSendStream
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from pydantic import UUID7
 
-from octomate.capabilities.harness.events import WireEvent
+from octomate.events import WireEvent
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
 

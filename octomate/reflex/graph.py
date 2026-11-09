@@ -12,7 +12,7 @@ import asyncio
 
 from pydantic_graph import Graph, GraphBuilder, TypeExpression
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ReflexAsleepEvent,
     ReflexAwakeEvent,
     ReflexPhaseChangedEvent,

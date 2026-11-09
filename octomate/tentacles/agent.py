@@ -38,7 +38,6 @@ from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
-from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import AgentConfig, AgentRouteModelName
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -56,19 +55,20 @@ from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import AgentRoute, Claim
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.base import Tentacle
+from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from octomate.types.json import JsonObject
 from octomate.types.permissions import PermissionMode
 from octomate.utils import drain_task
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
-    from octomate.capabilities.harness.deferred import DeferredSuspender
     from octomate.managers.commands import CommandManager
     from octomate.managers.conversation import ConversationManager
     from octomate.managers.files import FileManager
     from octomate.managers.project import ProjectManager
     from octomate.managers.thread import ThreadManager
     from octomate.managers.workspaces import WorkspaceManager
+    from octomate.tentacles.deferred import DeferredSuspender
 
 # The tentacle's output type is whatever its builder's agent produces (a deferring
 # agent includes DeferredToolRequests in it); run-level output_type overrides are

@@ -52,8 +52,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_core import to_json
 
-from octomate.capabilities.ask import ASK_QUESTIONS_TOOL_NAME
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
     ActionBatchUpdatedEvent,
@@ -83,6 +82,7 @@ from octomate.schemas.segments import (
 )
 from octomate.schemas.todos import Todo
 from octomate.telemetry import channel_logfire
+from octomate.types.deferred import ASK_QUESTIONS_TOOL_NAME
 from octomate.types.todos import STATUS_MARKERS
 
 if TYPE_CHECKING:

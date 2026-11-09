@@ -31,19 +31,8 @@ from pydantic_graph import GraphRunContext
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.ask import ASK_DEFERR_KIND, AskCapability
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.deferred import DeclineResolver, PostureResolver
-from octomate.capabilities.harness.events import ActionBatchEvent
-from octomate.capabilities.harness.react import (
-    ReactDeps,
-    ReactState,
-    ReactStreamEvent,
-    ResolveDeferred,
-    RunAgent,
-)
-from octomate.capabilities.todos import TodoCapability
+from octomate.events import ActionBatchEvent
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
@@ -55,8 +44,20 @@ from octomate.schemas.triage import TELEPORT_DEFER_KIND
 from octomate.tentacles.inkling import (
     InklingTentacle,
 )
+from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.base import InklingDeferrals, InklingOutput
+from octomate.tentacles.inkling.capabilities.ask import AskCapability
+from octomate.tentacles.inkling.capabilities.todos import TodoCapability
+from octomate.tentacles.inkling.deferred import DeclineResolver, PostureResolver
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.inkling.react import (
+    ReactDeps,
+    ReactState,
+    ResolveDeferred,
+    RunAgent,
+)
+from octomate.tentacles.stream import ReactStreamEvent
+from octomate.types.deferred import ASK_DEFERR_KIND
 from octomate.types.permissions import AgentPermissionMode, InklingPermissionMode
 from tests.support.agents import (
     ScriptedOutput,

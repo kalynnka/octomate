@@ -41,7 +41,7 @@ from pydantic_ai.usage import RequestUsage
 from starlette.datastructures import Headers
 from uuid_utils import UUID
 
-from octomate.capabilities.harness.events import ArtifactAvailableEvent
+from octomate.events import ArtifactAvailableEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.files import FileManager
 from octomate.managers.thread import ThreadManager

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pydantic import UUID7
 from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.capabilities.harness.events import ActionBatchEvent
+from octomate.events import ActionBatchEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress

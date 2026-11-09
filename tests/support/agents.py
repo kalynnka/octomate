@@ -49,13 +49,9 @@ from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
 from octomate import Octomate
-from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.gateway import (
     GatewayCapability,
 )
-from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.deferred import DeferredSuspender
-from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import (
     AgentRouteModelName,
 )
@@ -72,7 +68,11 @@ from octomate.schemas.triage import (
 )
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.channel import ChannelOutput
+from octomate.tentacles.deferred import DeferredSuspender
+from octomate.tentacles.inkling.agent import Agent
+from octomate.tentacles.inkling.capabilities.ask import AskCapability
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from octomate.types.json import JsonObject
 
 FakeRunOutput = ChannelOutput

@@ -18,7 +18,7 @@ tentacles that deployment mounted.
 | [`octomate.reflex`](reflex.md) | The graph, its state and dependencies, the nodes, and the suspender |
 | [`octomate.managers`](managers.md) | Everything that touches the database: threads, conversations, actions, users, auth, projects, workspaces, MCP, OAuth |
 | [`octomate.schemas`](schemas.md) | The domain types, and the literal types they are built from |
-| [`octomate.capabilities`](capabilities.md) | The tools an agent is given, and the harness they run in |
+| [Capabilities and harness](capabilities.md) | Shared gateway/history contracts and events, and Inkling's capabilities and execution loop |
 | [`octomate.mcp`](mcp.md) | The served MCP server, and the OAuth flows behind connectors |
 | [`octomate_cli`](cli.md) | The operator CLI, the hook clients and the transcript tails |
 | [`octomate_protocol`](protocol.md) | The contract the server and the client share |

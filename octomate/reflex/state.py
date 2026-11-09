@@ -24,7 +24,9 @@ from pydantic_ai.tools import DeferredToolRequests
 from pydantic_graph import BaseNode, End, GraphRunContext
 
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.capabilities.harness.events import (
+from octomate.config.agents import AgentRouteModelName
+from octomate.config.channels import AgentModelConfig
+from octomate.events import (
     MessageSentEvent,
     RunActivityChangedEvent,
     RunEndedEvent,
@@ -32,9 +34,6 @@ from octomate.capabilities.harness.events import (
     RunStartedEvent,
     to_wire,
 )
-from octomate.capabilities.harness.react import ReactStreamEvent
-from octomate.config.agents import AgentRouteModelName
-from octomate.config.channels import AgentModelConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager, OctomateSession
@@ -64,6 +63,7 @@ from octomate.tentacles.channel import (
     ThreadStrategy,
 )
 from octomate.tentacles.feelers.output import split_reply
+from octomate.tentacles.stream import ReactStreamEvent
 
 if TYPE_CHECKING:
     from octomate.reflex.nodes.scheme import Scheme

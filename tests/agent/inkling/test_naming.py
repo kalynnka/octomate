@@ -18,10 +18,10 @@ from pydantic_ai_harness.step_persistence.conversations import conversation_text
 from pydantic_ai_harness.step_persistence.naming import NamingResult
 
 from octomate import Octomate
-from octomate.capabilities.ask import AskCapability
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling import base as inkling_base
+from octomate.tentacles.inkling.capabilities.ask import AskCapability
 
 pytestmark = pytest.mark.usefixtures("in_memory_engine")
 
