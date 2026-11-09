@@ -99,7 +99,7 @@ async def inkling_runner(
             "inkling",
             octomate,
             auth=octomate.auth,
-            sandboxes=octomate.sandboxes,
+            habitats=octomate.habitats,
             agent=agent,
             permission_mode="bypassPermissions",
         )
@@ -146,7 +146,7 @@ async def codex_runner(
         )
         tentacle = CodexTentacle(
             octomate,
-            sandboxes=octomate.sandboxes,
+            habitats=octomate.habitats,
             config=CodexConfig(runtime=runtime),
             commands=octomate.commands,
             projects=octomate.projects,
@@ -206,7 +206,7 @@ async def claude_runner(
         tentacle = ClaudeTentacle(
             octomate,
             auth=octomate.auth,
-            sandboxes=octomate.sandboxes,
+            habitats=octomate.habitats,
             config=ClaudeCodeConfig(permission_mode="bypassPermissions"),
             commands=octomate.commands,
             projects=octomate.projects,
@@ -309,7 +309,7 @@ async def deepseek_runner(
     tentacle = DeepseekTentacle(
         octomate,
         auth=octomate.auth,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=DeepseekConfig(
             executable=executable,
             port=port,

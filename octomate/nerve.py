@@ -1,7 +1,7 @@
 """The nerve: what a thread does, as it happens, for whoever is watching.
 
-Publish and subscribe, keyed by channel, thread, user or sandbox topics. The
-nerve carries wire events, including sandbox lifecycle observations. Local publishers and
+Publish and subscribe, keyed by channel, thread, user or habitat topics. The
+nerve carries wire events, including habitat lifecycle observations. Local publishers and
 subscribers use memory fibers by default; supplied fibers use the same lifecycle.
 Wire events are the run's stream as a wire consumer sees it, and what the graph says around a
 run — its start and end, a move, a failure, the reflex waking and falling
@@ -101,14 +101,14 @@ class UserTopic:
 
 
 @dataclass(frozen=True)
-class SandboxTopic:
-    """A user's sandbox lifecycle observations."""
+class HabitatTopic:
+    """A user's habitat lifecycle observations."""
 
     user_id: UUID7
 
 
 type EventTopic = ChannelTopic | ThreadTopic | UserTopic
-type Topic = EventTopic | SandboxTopic
+type Topic = EventTopic | HabitatTopic
 
 
 impulse_adapter: TypeAdapter[Impulse[WireEvent]] = TypeAdapter(Impulse[WireEvent])
@@ -137,8 +137,8 @@ class Nerve(Generic[NerveEventT]):
         stream ends.
 
         `ChannelTopic` names a channel's addresses, `ThreadTopic` wraps one
-        `ThreadKey`, `UserTopic` wraps a registered user's UUID, and `SandboxTopic`
-        names the sandbox lifecycle. Receivers select the events they handle.
+        `ThreadKey`, `UserTopic` wraps a registered user's UUID, and `HabitatTopic`
+        names the habitat lifecycle. Receivers select the events they handle.
         Publishers choose authorized topics before publishing; the nerve does
         not filter subscribers within a topic.
 
@@ -193,7 +193,7 @@ class Nerve(Generic[NerveEventT]):
         )
         topic = (
             origin
-            if isinstance(origin, ChannelTopic | ThreadTopic | UserTopic | SandboxTopic)
+            if isinstance(origin, ChannelTopic | ThreadTopic | UserTopic | HabitatTopic)
             else None
         )
 

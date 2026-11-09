@@ -18,13 +18,13 @@ from pydantic import TypeAdapter
 from pydantic_ai.messages import PartDeltaEvent
 from uuid_utils.compat import uuid7
 
-from octomate.config.sandbox import SbxSandboxConfig
-from octomate.managers.sandbox import SandboxManager
+from octomate.config.habitat import SbxHabitatConfig
+from octomate.habitat.sbx import SbxHabitat
+from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
-from octomate.sandbox.sbx import SbxSandbox
-from octomate.schemas.sandbox import InvocationScope
+from octomate.schemas.habitat import InvocationScope
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
-from octomate.tentacles.claude.transport import SandboxTransport
+from octomate.tentacles.claude.transport import HabitatTransport
 from octomate.types.json import JsonObject
 
 pytestmark = [
@@ -37,20 +37,20 @@ pytestmark = [
 
 
 @pytest.fixture
-async def guest() -> AsyncGenerator[tuple[SandboxManager, InvocationScope, SbxSandbox]]:
+async def guest() -> AsyncGenerator[tuple[HabitatManager, InvocationScope, SbxHabitat]]:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
-    manager = SandboxManager([SbxSandboxConfig(id="local", image=image)], Nerve())
-    scope = InvocationScope(user_id=uuid7(), sandbox="local", conversation_id=uuid7())
-    sandbox = manager.state(scope).sandbox
-    assert isinstance(sandbox, SbxSandbox)
+    manager = HabitatManager(SbxHabitatConfig(image=image), Nerve())
+    scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
+    sandbox = manager.residence(scope).habitat
+    assert isinstance(sandbox, SbxHabitat)
     assert (
         sandbox.name
         not in (await sandbox.command("ls", quiet=True)).decode().splitlines()
     )
     try:
-        async with manager.acquire(scope, uuid7()):
+        async with manager.enter(scope, uuid7()):
             await sandbox.command(
                 "exec",
                 sandbox.name,
@@ -90,7 +90,7 @@ async def turn(client: ClaudeSDKClient, prompt: str) -> ClaudeRunAccumulator:
     return accumulator
 
 
-async def cli_pids(sandbox: SbxSandbox) -> list[int]:
+async def cli_pids(sandbox: SbxHabitat) -> list[int]:
     return TypeAdapter(list[int]).validate_json(
         await sandbox.command(
             "exec",
@@ -106,7 +106,7 @@ async def cli_pids(sandbox: SbxSandbox) -> list[int]:
 
 
 async def test_model_tools_resume_interrupt_and_cancel(
-    guest: tuple[SandboxManager, InvocationScope, SbxSandbox],
+    guest: tuple[HabitatManager, InvocationScope, SbxHabitat],
 ) -> None:
     manager, scope, sandbox = guest
     token = uuid7().hex
@@ -144,7 +144,7 @@ async def test_model_tools_resume_interrupt_and_cancel(
         session_id=str(uuid7()),
     )
     prompt = f"Use Bash to run exactly: {command}\nThen reply with the token you wrote."
-    async with SandboxTransport.client(manager, scope, options) as client:
+    async with HabitatTransport.client(manager, scope, options) as client:
         async with asyncio.TaskGroup() as tasks:
             response = tasks.create_task(turn(client, prompt))
             async with asyncio.timeout(120):
@@ -173,11 +173,11 @@ async def test_model_tools_resume_interrupt_and_cancel(
             )
             == token.encode()
         )
-    assert not manager.state(scope).invocations
+    assert not manager.residence(scope).invocations
     assert await cli_pids(sandbox) == []
 
     resumed = replace(options, session_id=None, resume=options.session_id, tools=[])
-    async with SandboxTransport.client(manager, scope, resumed) as client:
+    async with HabitatTransport.client(manager, scope, resumed) as client:
         result = await turn(
             client,
             "What token did you write in the previous turn? Reply with only that token; do not use tools.",
@@ -188,7 +188,7 @@ async def test_model_tools_resume_interrupt_and_cancel(
     interrupt = asyncio.Event()
 
     async def pending(fresh: ClaudeAgentOptions) -> None:
-        async with SandboxTransport.client(manager, scope, fresh) as client:
+        async with HabitatTransport.client(manager, scope, fresh) as client:
             await client.query(prompt)
             await interrupt.wait()
             await client.interrupt()
@@ -215,5 +215,5 @@ async def test_model_tools_resume_interrupt_and_cancel(
             else:
                 interrupt.set()
         assert pending_turn.cancelled() is cancel
-        assert not manager.state(scope).invocations
+        assert not manager.residence(scope).invocations
         assert await cli_pids(sandbox) == []

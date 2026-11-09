@@ -115,7 +115,7 @@ async def _register(
             "inkling",
             octomate,
             auth=octomate.auth,
-            sandboxes=octomate.sandboxes,
+            habitats=octomate.habitats,
             agent=agent,
             models={RECEPTION_MODEL: agent.model},
             permission_mode=permission_mode,
@@ -516,7 +516,7 @@ async def test_activity_refresh_restores_a_native_turn_without_another_event() -
     await _register(octomate, scripted)
     agent = CodexTentacle(
         octomate,
-        sandboxes=octomate.sandboxes,
+        habitats=octomate.habitats,
         config=CodexConfig(),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -796,7 +796,7 @@ async def _register_routes(
                 agent_id,
                 octomate,
                 auth=octomate.auth,
-                sandboxes=octomate.sandboxes,
+                habitats=octomate.habitats,
                 agent=agent,
                 models={RECEPTION_MODEL: agent.model},
             )
@@ -1082,7 +1082,7 @@ async def test_an_agent_that_did_not_start_leaves_the_others_listed(
         DeepseekTentacle(
             octomate,
             auth=octomate.auth,
-            sandboxes=octomate.sandboxes,
+            habitats=octomate.habitats,
             config=DeepseekConfig(),
         )
     )

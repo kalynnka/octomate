@@ -7,12 +7,12 @@ from claude_agent_sdk import ClaudeAgentOptions
 from pydantic import TypeAdapter
 from uuid_utils.compat import uuid7
 
-from octomate.config.sandbox import SbxSandboxConfig
-from octomate.managers.sandbox import SandboxManager
+from octomate.config.habitat import SbxHabitatConfig
+from octomate.habitat.sbx import SbxHabitat
+from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
-from octomate.sandbox.sbx import SbxSandbox
-from octomate.schemas.sandbox import InvocationScope
-from octomate.tentacles.claude.transport import SandboxTransport
+from octomate.schemas.habitat import InvocationScope
+from octomate.tentacles.claude.transport import HabitatTransport
 
 
 @pytest.mark.timeout(600)
@@ -20,11 +20,11 @@ async def test_guest_cli_controls_and_process_cleanup() -> None:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
-    manager = SandboxManager([SbxSandboxConfig(id="local", image=image)], Nerve())
-    scope = InvocationScope(user_id=uuid7(), sandbox="local", conversation_id=uuid7())
-    state = manager.state(scope)
-    sandbox = state.sandbox
-    assert isinstance(sandbox, SbxSandbox)
+    manager = HabitatManager(SbxHabitatConfig(image=image), Nerve())
+    scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
+    state = manager.residence(scope)
+    sandbox = state.habitat
+    assert isinstance(sandbox, SbxHabitat)
     assert (
         sandbox.name
         not in (await sandbox.command("ls", quiet=True)).decode().splitlines()
@@ -35,7 +35,7 @@ async def test_guest_cli_controls_and_process_cleanup() -> None:
         setting_sources=[],
     )
     try:
-        async with SandboxTransport.client(manager, scope, options) as client:
+        async with HabitatTransport.client(manager, scope, options) as client:
             assert len(state.invocations) == 1
             assert await client.get_server_info() is not None
             await client.set_permission_mode("default")
@@ -54,7 +54,7 @@ async def test_guest_cli_controls_and_process_cleanup() -> None:
             )
             assert pids, "No guest CLI process found"
         assert not state.invocations
-        assert state.snapshot.phase == "ready"
+        assert state.status.phase == "ready"
         await sandbox.command(
             "exec",
             sandbox.name,

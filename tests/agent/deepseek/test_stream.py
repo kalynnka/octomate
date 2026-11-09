@@ -65,7 +65,7 @@ def stream_client() -> tuple[TestClient, DeepseekTentacle]:
         DeepseekTentacle(
             octomate,
             auth=octomate.auth,
-            sandboxes=octomate.sandboxes,
+            habitats=octomate.habitats,
             config=DeepseekConfig(),
         )
     )

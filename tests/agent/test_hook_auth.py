@@ -46,7 +46,7 @@ def client_for(path: str) -> TestClient:
         tentacle = ClaudeTentacle(
             octomate,
             auth=octomate.auth,
-            sandboxes=octomate.sandboxes,
+            habitats=octomate.habitats,
             config=ClaudeCodeConfig(),
             commands=octomate.commands,
             projects=octomate.projects,
@@ -62,7 +62,7 @@ def client_for(path: str) -> TestClient:
     elif path == CODEX_HOOK_PATH:
         tentacle = CodexTentacle(
             octomate,
-            sandboxes=octomate.sandboxes,
+            habitats=octomate.habitats,
             config=CodexConfig(permission_mode="auto_review"),
             commands=octomate.commands,
             projects=octomate.projects,
@@ -80,7 +80,7 @@ def client_for(path: str) -> TestClient:
         tentacle = DeepseekTentacle(
             octomate,
             auth=octomate.auth,
-            sandboxes=octomate.sandboxes,
+            habitats=octomate.habitats,
             config=DeepseekConfig(),
         )
 
@@ -130,7 +130,7 @@ def test_a_hook_router_mounts_before_any_user_registers() -> None:
     tentacle = ClaudeTentacle(
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         config=ClaudeCodeConfig(),
         commands=host.commands,
         projects=host.projects,
@@ -153,7 +153,7 @@ async def test_stream_authentication_has_its_own_database_context(token: str) ->
         ClaudeTentacle(
             app,
             auth=app.auth,
-            sandboxes=app.sandboxes,
+            habitats=app.habitats,
             config=ClaudeCodeConfig(),
             commands=app.commands,
             projects=app.projects,

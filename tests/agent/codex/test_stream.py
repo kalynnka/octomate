@@ -406,7 +406,7 @@ def stream_client(*, storage: Path | None = None) -> tuple[TestClient, CodexTent
     tentacle = octomate.connect(
         CodexTentacle(
             octomate,
-            sandboxes=octomate.sandboxes,
+            habitats=octomate.habitats,
             config=CodexConfig(permission_mode="auto_review"),
             commands=octomate.commands,
             projects=octomate.projects,

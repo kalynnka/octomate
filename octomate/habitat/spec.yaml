@@ -2,8 +2,6 @@ schemaVersion: "2"
 kind: sandbox
 name: octomate
 args:
-  id:
-    required: true
   user_id:
     required: true
   image:
@@ -23,12 +21,11 @@ sandbox:
     memory: "${{ kit.args.memory_mib }}m"
 environment:
   variables:
-    OCTOMATE_SANDBOX_ID: "${{ kit.args.id }}"
-    OCTOMATE_SANDBOX_USER_ID: "${{ kit.args.user_id }}"
-    OCTOMATE_SANDBOX_IMAGE: "${{ kit.args.image }}"
-    OCTOMATE_SANDBOX_CPUS: "${{ kit.args.cpus }}"
-    OCTOMATE_SANDBOX_MEMORY_MIB: "${{ kit.args.memory_mib }}"
-    OCTOMATE_SANDBOX_INTERNET_ACCESS: "${{ kit.args.internet_access }}"
+    OCTOMATE_HABITAT_USER_ID: "${{ kit.args.user_id }}"
+    OCTOMATE_HABITAT_IMAGE: "${{ kit.args.image }}"
+    OCTOMATE_HABITAT_CPUS: "${{ kit.args.cpus }}"
+    OCTOMATE_HABITAT_MEMORY_MIB: "${{ kit.args.memory_mib }}"
+    OCTOMATE_HABITAT_INTERNET_ACCESS: "${{ kit.args.internet_access }}"
 permissions:
   network:
     allow:

@@ -22,16 +22,16 @@ from octomate.fibers import (
 )
 from octomate.nerve import (
     ChannelTopic,
+    HabitatTopic,
     Impulse,
     Nerve,
-    SandboxTopic,
     ThreadTopic,
     Topic,
     UserTopic,
     impulse_adapter,
 )
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.sandbox import SandboxFailed
+from octomate.schemas.habitat import HabitatFailed
 from octomate.schemas.thread import ThreadKey
 from tests.support.nerve import held
 
@@ -147,7 +147,7 @@ async def test_stdio_fiber_rejects_the_opposite_local_endpoint() -> None:
 
 async def test_events_flow_from_stdio_to_core() -> None:
     core = Nerve()
-    topic = SandboxTopic(uuid7())
+    topic = HabitatTopic(uuid7())
     sent: list[Impulse] = [
         Impulse(RunStartedEvent(address=THERE)),
         Impulse(EVENT, THERE, private=True),
@@ -168,7 +168,7 @@ async def test_events_flow_from_stdio_to_core() -> None:
 
 async def test_one_core_mixes_local_subscribers_and_two_user_stdio_fibers() -> None:
     core = Nerve()
-    alice, bob = SandboxTopic(uuid7()), SandboxTopic(uuid7())
+    alice, bob = HabitatTopic(uuid7()), HabitatTopic(uuid7())
     sent = Impulse(RunStartedEvent(address=THERE))
     reply = Impulse(EVENT)
     ui = UserTopic(alice.user_id)
@@ -248,7 +248,7 @@ async def test_publish_keeps_channel_thread_origin_and_private_routing(
 
 async def test_remote_publications_keep_local_backlog_limit_and_no_replay() -> None:
     core = Nerve()
-    topic = SandboxTopic(uuid7())
+    topic = HabitatTopic(uuid7())
     async with connected(core, topic) as (_, guest):
         async with (
             core.subscribe(topic, backlog=1) as behind,
@@ -276,12 +276,12 @@ async def test_remote_publications_keep_local_backlog_limit_and_no_replay() -> N
 )
 async def test_bad_peer_disconnects_only_its_fiber(fault: str) -> None:
     nerve = Nerve()
-    topic = SandboxTopic(uuid7())
+    topic = HabitatTopic(uuid7())
     sending, incoming = anyio.create_memory_object_stream[bytes](2)
     fiber = StdioFiber(impulse_adapter, input=incoming)
     frame = Impulse(
-        SandboxFailed(
-            user_id=topic.user_id, sandbox="local", sequence=1, message="failed"
+        HabitatFailed(
+            user_id=topic.user_id, habitat="local", sequence=1, message="failed"
         )
     )
     payload = json.loads(impulse_adapter.dump_json(frame))
@@ -320,22 +320,22 @@ async def test_bad_peer_disconnects_only_its_fiber(fault: str) -> None:
     assert not nerve.subscribers
 
 
-async def test_sandbox_topics_do_not_implicitly_forward_to_ui_topics() -> None:
+async def test_habitat_topics_do_not_implicitly_forward_to_ui_topics() -> None:
     nerve = Nerve()
     topic = UserTopic(uuid7())
     async with nerve.subscribe(topic) as ui:
         nerve.deliver(
-            SandboxTopic(topic.user_id),
+            HabitatTopic(topic.user_id),
             Impulse(EVENT),
         )
         assert held(ui) == []
 
 
-async def test_sandbox_transport_routes_only_to_the_core_bound_topic() -> None:
+async def test_habitat_transport_routes_only_to_the_core_bound_topic() -> None:
     nerve = Nerve()
     owner = uuid7()
-    topic = SandboxTopic(owner)
-    other = SandboxTopic(uuid7())
+    topic = HabitatTopic(owner)
+    other = HabitatTopic(uuid7())
     impulse = Impulse(
         EVENT,
         HERE,
@@ -361,7 +361,7 @@ async def test_sandbox_transport_routes_only_to_the_core_bound_topic() -> None:
 
 async def test_eof_leaves_local_subscriptions_open() -> None:
     core = Nerve()
-    topic = SandboxTopic(uuid7())
+    topic = HabitatTopic(uuid7())
     async with connected(core, topic) as (core_fiber, guest):
         async with core.subscribe(topic) as local:
             await guest.aclose()
@@ -373,12 +373,12 @@ async def test_eof_leaves_local_subscriptions_open() -> None:
 async def test_clean_eof_drains_events_before_detaching_publisher() -> None:
     sending, incoming = anyio.create_memory_object_stream[bytes](0)
     nerve = Nerve()
-    topic = SandboxTopic(uuid7())
+    topic = HabitatTopic(uuid7())
     fiber = StdioFiber(impulse_adapter, input=incoming)
     impulses = [
         Impulse(
-            SandboxFailed(
-                user_id=topic.user_id, sandbox="local", sequence=i, message="failed"
+            HabitatFailed(
+                user_id=topic.user_id, habitat="local", sequence=i, message="failed"
             )
         )
         for i in range(3)
@@ -396,7 +396,7 @@ async def test_clean_eof_drains_events_before_detaching_publisher() -> None:
 
 async def test_cancelling_a_waiter_does_not_cancel_the_fiber() -> None:
     core = Nerve()
-    topic = SandboxTopic(uuid7())
+    topic = HabitatTopic(uuid7())
     async with connected(core, topic) as (core_fiber, guest):
         waiting = asyncio.create_task(core_fiber.wait_closed())
         await asyncio.sleep(0)
@@ -433,7 +433,7 @@ async def test_overflow_disconnects_peer_without_interrupting_local_publisher() 
 async def test_immediate_close_releases_stdio_before_reader_task_starts() -> None:
     sending, incoming = anyio.create_memory_object_stream[bytes](0)
     nerve = Nerve()
-    topic = SandboxTopic(uuid7())
+    topic = HabitatTopic(uuid7())
     fiber = StdioFiber(impulse_adapter, input=incoming)
     async with sending, nerve.publish(topic, fiber=fiber):
         connection = fiber.start()

@@ -1,17 +1,23 @@
-"""Agent sandbox selection and the local sbx resource budget."""
+"""The service's habitat mode and the local sbx resource budget."""
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class SbxSandboxConfig(BaseModel):
+class NativeHabitatConfig(BaseModel):
+    """Each harness runs directly on the host, inside its own sandbox."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    id: str = Field(
-        pattern=r"^[a-z0-9][a-z0-9_-]*$",
-        description="Deployment ID referenced by agent tentacles; scopes each user's sandbox.",
-    )
+    mode: Literal["native"] = "native"
+
+
+class SbxHabitatConfig(BaseModel):
+    """Each registered user's agents run in one persistent sbx VM."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
     mode: Literal["sbx"] = "sbx"
     executable: str = Field(default="sbx", min_length=1)
     version: Literal["0.48.0"] = "0.48.0"
@@ -41,4 +47,6 @@ class SbxSandboxConfig(BaseModel):
     )
 
 
-type SandboxConfig = SbxSandboxConfig
+type HabitatConfig = Annotated[
+    NativeHabitatConfig | SbxHabitatConfig, Field(discriminator="mode")
+]

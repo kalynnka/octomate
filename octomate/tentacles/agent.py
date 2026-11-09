@@ -69,8 +69,8 @@ if TYPE_CHECKING:
     from octomate.managers.commands import CommandManager
     from octomate.managers.conversation import ConversationManager
     from octomate.managers.files import FileManager
+    from octomate.managers.habitat import HabitatManager
     from octomate.managers.project import ProjectManager
-    from octomate.managers.sandbox import SandboxManager
     from octomate.managers.thread import ThreadManager
     from octomate.managers.workspaces import WorkspaceManager
 
@@ -94,8 +94,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     auth: AuthManager | None
     api_keys: dict[UUID7, IssuedApiKey]  # One MCP credential per user for this agent.
     api_key_lock: asyncio.Lock
-    sandboxes: SandboxManager
-    sandbox: str | None = None  # Selected provider ID; None runs natively.
+    habitats: HabitatManager
     # Programmatically assembled agents may have no deployment config.
     config: AgentConfig | None = None
 
@@ -109,8 +108,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         threads: ThreadManager,
         files: FileManager,
         auth: AuthManager | None,
-        sandboxes: SandboxManager,
-        sandbox: str | None = None,
+        habitats: HabitatManager,
     ) -> None:
         super().__init__(id=id, octomate=octomate)
         self.commands = commands
@@ -120,8 +118,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         self.auth = auth
         self.api_keys = {}
         self.api_key_lock = asyncio.Lock()
-        self.sandboxes = sandboxes
-        self.sandbox = sandbox
+        self.habitats = habitats
 
     async def runtime_api_key(self, user_id: UUID7 | None) -> IssuedApiKey | None:
         """Reuse the user's MCP credential, replacing it when its lifetime expires."""

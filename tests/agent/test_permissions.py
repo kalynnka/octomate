@@ -41,7 +41,7 @@ async def test_permission_discovery_keeps_custom_names_and_descriptions(
     tentacle = DeepseekTentacle(
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         config=DeepseekConfig(permission_mode="audit-only"),
     )
     async with tentacle:
@@ -70,7 +70,7 @@ async def test_permission_discovery_rejects_an_unavailable_default(
     tentacle = DeepseekTentacle(
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         config=DeepseekConfig(),
     )
     with pytest.raises(ValueError, match="not one of deepseek's modes"):
@@ -90,7 +90,7 @@ async def test_permission_discovery_failure_is_not_replaced_with_a_fixed_catalog
     tentacle = DeepseekTentacle(
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         config=DeepseekConfig(),
     )
     with pytest.raises(RuntimeError, match="No permission service"):
@@ -126,7 +126,7 @@ def test_old_deny_all_config_requires_an_explicit_preset_choice() -> None:
 
 @pytest.mark.parametrize("sandbox", ["read_only", "workspace_write", "full_access"])
 def test_separate_sandbox_config_is_not_silently_ignored(sandbox: str) -> None:
-    with pytest.raises(ValidationError, match="unknown sandbox"):
+    with pytest.raises(ValidationError, match=r"habitat\.mode"):
         OctomateConfig.model_validate(
             {"tentacles": {"codex": {"type": "codex", "sandbox": sandbox}}}
         )

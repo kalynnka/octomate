@@ -15,14 +15,14 @@ from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.fibers import MemoryFiber
 from octomate.nerve import (
     ChannelTopic,
+    HabitatTopic,
     Impulse,
     Nerve,
-    SandboxTopic,
     ThreadTopic,
     UserTopic,
 )
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.sandbox import SandboxFailed, SandboxProgress
+from octomate.schemas.habitat import HabitatFailed, HabitatProgress
 from octomate.schemas.thread import ThreadKey
 from tests.support.nerve import held
 
@@ -224,7 +224,7 @@ async def test_publisher_buffers_1024_and_drains_without_waiting_for_readers() -
 
 async def test_topic_publisher_preserves_impulses_and_drains_on_exit() -> None:
     nerve = Nerve()
-    topic = SandboxTopic(uuid7())
+    topic = HabitatTopic(uuid7())
     sent = Impulse(
         EVENT,
         HERE,
@@ -242,18 +242,18 @@ async def test_topic_publisher_preserves_impulses_and_drains_on_exit() -> None:
     assert not nerve.subscribers
 
 
-async def test_sandbox_lifecycle_events_share_the_same_subscribers() -> None:
+async def test_habitat_lifecycle_events_share_the_same_subscribers() -> None:
     nerve = Nerve()
-    topic = SandboxTopic(uuid7())
+    topic = HabitatTopic(uuid7())
     sent: list[Impulse] = [
         Impulse(
-            SandboxProgress(
-                user_id=topic.user_id, sandbox="local", sequence=1, phase="preparing"
+            HabitatProgress(
+                user_id=topic.user_id, habitat="local", sequence=1, phase="preparing"
             )
         ),
         Impulse(
-            SandboxFailed(
-                user_id=topic.user_id, sandbox="local", sequence=2, message="failed"
+            HabitatFailed(
+                user_id=topic.user_id, habitat="local", sequence=2, message="failed"
             )
         ),
     ]
@@ -276,9 +276,9 @@ async def test_sandbox_lifecycle_events_share_the_same_subscribers() -> None:
         await publisher.send(sent[0])
 
 
-async def test_sandbox_overflow_disconnects_only_the_slow_subscriber() -> None:
+async def test_habitat_overflow_disconnects_only_the_slow_subscriber() -> None:
     nerve = Nerve()
-    topic = SandboxTopic(uuid7())
+    topic = HabitatTopic(uuid7())
     sent = [Impulse(EVENT), Impulse(EVENT)]
     async with (
         nerve.subscribe(topic, backlog=1) as behind,

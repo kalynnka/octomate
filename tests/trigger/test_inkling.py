@@ -33,7 +33,7 @@ async def test_inkling_deepseek_returns_segments(live_config: OctomateConfig) ->
         "inkling",
         host,
         auth=host.auth,
-        sandboxes=host.sandboxes,
+        habitats=host.habitats,
         models={model_config.name: model},
         system_prompt=SYSTEM_PROMPT,
     )

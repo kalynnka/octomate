@@ -6,11 +6,11 @@ import pytest
 from pydantic import TypeAdapter
 from uuid_utils.compat import uuid7
 
-from octomate.config.sandbox import SbxSandboxConfig
-from octomate.managers.sandbox import SandboxManager
+from octomate.config.habitat import SbxHabitatConfig
+from octomate.habitat.sbx import SbxHabitat
+from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
-from octomate.sandbox.sbx import SbxSandbox
-from octomate.schemas.sandbox import InvocationScope
+from octomate.schemas.habitat import InvocationScope
 from octomate.types.json import JsonObject
 
 
@@ -20,27 +20,24 @@ async def test_internet_access_is_applied_at_creation(internet_access: bool) -> 
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
-    manager = SandboxManager(
-        [
-            SbxSandboxConfig(
-                id="local",
-                image=image,
-                cpus=1,
-                memory_mib=1024,
-                internet_access=internet_access,
-            )
-        ],
+    manager = HabitatManager(
+        SbxHabitatConfig(
+            image=image,
+            cpus=1,
+            memory_mib=1024,
+            internet_access=internet_access,
+        ),
         Nerve(),
     )
-    scope = InvocationScope(user_id=uuid7(), sandbox="local", conversation_id=uuid7())
-    sandbox = manager.state(scope).sandbox
-    assert isinstance(sandbox, SbxSandbox)
+    scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
+    sandbox = manager.residence(scope).habitat
+    assert isinstance(sandbox, SbxHabitat)
     assert (
         sandbox.name
         not in (await sandbox.command("ls", quiet=True)).decode().splitlines()
     )
     try:
-        async with manager.acquire(scope, uuid7()):
+        async with manager.enter(scope, uuid7()):
             await sandbox.command(
                 "exec",
                 sandbox.name,
