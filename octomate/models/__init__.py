@@ -55,6 +55,7 @@ from octomate.models.thread import (
 )
 from octomate.models.todos import Todo
 from octomate.models.user import User, UserProfile
+from octomate.models.volumes import CacheVolume, MemoryVolume, TreeVolume, Volume
 
 __all__ = [
     "AgentRun",
@@ -62,6 +63,7 @@ __all__ = [
     "Base",
     "BearerMcp",
     "Binary",
+    "CacheVolume",
     "Conversation",
     "ConversationRun",
     "DeferredAction",
@@ -82,6 +84,7 @@ __all__ = [
     "Markdown",
     "Mcp",
     "McpAppArtifact",
+    "MemoryVolume",
     "MessageBinding",
     "ModelMessage",
     "ModelRequest",
@@ -100,9 +103,11 @@ __all__ = [
     "ThreadMessage",
     "Todo",
     "ToolOutputSpill",
+    "TreeVolume",
     "User",
     "UserApiKey",
     "UserInvitation",
     "UserProfile",
     "UserSession",
+    "Volume",
 ]
