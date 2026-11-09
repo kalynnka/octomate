@@ -24,7 +24,7 @@ class AgentRun(BaseTransmuter):
     run replayed from an external transcript is the `ExternalAgentRun` variant.
     """
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     id: Annotated[str, Identity]
     # The polymorphic discriminator: a distinct Literal per variant is what lets the
@@ -32,8 +32,23 @@ class AgentRun(BaseTransmuter):
     # its type — mirroring pydantic-ai's own `ModelRequest | ModelResponse`. The
     # `external` variant narrows it; the override warns but is intended.
     kind: Literal["octomate"] = "octomate"
-    conversation_id: UUID7
     name: str | None = None
+    agent_name: str | None = Field(
+        default=None,
+        description="Harness agent identity, distinct from the run's display name.",
+    )
+    registration_id: str | None = Field(
+        default=None,
+        description="Durable registration invocation that claimed this run.",
+    )
+    started_at: AwareDatetime | None = None
+
+    conversation_id: UUID7
+    # The parent link of a subagent's turn, on the base so both variants carry it:
+    # the run whose tool call spawned this one, and which ToolCallPart it answers.
+    parent_run_id: str | None = None
+    parent_tool_call_id: str | None = None
+
     model_name: str | None = None
     context_window: int | None = Field(
         default=None,
@@ -54,16 +69,18 @@ class AgentRun(BaseTransmuter):
             "when the source reported none, which is never a guess."
         ),
     )
-    # The parent link of a subagent's turn, on the base so both variants carry it:
-    # the run whose tool call spawned this one, and which ToolCallPart it answers.
-    parent_run_id: str | None = None
-    parent_tool_call_id: str | None = None
-    started_at: AwareDatetime | None = None
+
+    native_session_id: str | None = None
     native_turn_id: str | None = Field(
         default=None,
         description="The native ingest turn key used to recognize a replayed driven run.",
     )
-    native_session_id: str | None = None
+
+    metadata: dict[str, str] | None = Field(
+        default=None,
+        alias="meta",
+        description="Harness registration metadata; None means unregistered, while an empty dictionary is a valid registration.",
+    )
 
     messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()
 

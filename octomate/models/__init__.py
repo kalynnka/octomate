@@ -53,6 +53,13 @@ from octomate.models.oauth import OAuthConnection, OAuthOperation
 from octomate.models.project import Project
 from octomate.models.runs import AgentRun, ExternalAgentRun
 from octomate.models.spills import ToolOutputSpill
+from octomate.models.steps import (
+    Snapshot,
+    SnapshotMembership,
+    SnapshotMessage,
+    StepEvent,
+    ToolEffect,
+)
 from octomate.models.thread import (
     Handoff,
     MessageBinding,
@@ -105,6 +112,10 @@ __all__ = [
     "OAuthOperation",
     "Png",
     "Project",
+    "Snapshot",
+    "SnapshotMembership",
+    "SnapshotMessage",
+    "StepEvent",
     "Text",
     "Thread",
     "ThreadArtifact",
@@ -112,6 +123,7 @@ __all__ = [
     "ThreadLedger",
     "ThreadMessage",
     "Todo",
+    "ToolEffect",
     "ToolOutputSpill",
     "User",
     "UserApiKey",

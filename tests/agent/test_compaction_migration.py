@@ -32,7 +32,6 @@ from octomate.schemas.user import UserProfile
 from tests.support.managers import a_thread
 
 PREVIOUS = "792e14ef4f19"
-REVISION = "096de1d1ec5f"
 
 
 async def test_compaction_migration_preserves_history_on_a_copy(
@@ -87,20 +86,6 @@ async def test_compaction_migration_preserves_history_on_a_copy(
             "thread_messages",
             "message_binding",
         )
-        columns = {
-            table: ", ".join(
-                f'"{row[1]}"'
-                for row in copied.execute(f'PRAGMA table_info("{table}")')
-                if row[1] != "compaction_id"
-            )
-            for table in tables
-        }
-        before = {
-            table: copied.execute(
-                f'SELECT {columns[table]} FROM "{table}" ORDER BY rowid'
-            ).fetchall()
-            for table in tables
-        }
 
     monkeypatch.setattr(database_settings, "db_url", f"sqlite+aiosqlite:///{target}")
     assert await asyncio.to_thread(
@@ -127,16 +112,32 @@ async def test_compaction_migration_preserves_history_on_a_copy(
             engine.dispose()
         command.stamp(config, PREVIOUS, purge=True)
 
-    await asyncio.to_thread(command.stamp, config, REVISION)
+    await asyncio.to_thread(command.stamp, config, "head")
     await asyncio.to_thread(remove_compaction_storage)
-    with sqlite3.connect(target) as copied:
+    with (
+        sqlite3.connect(source.as_uri() + "?mode=ro", uri=True) as original,
+        sqlite3.connect(target) as copied,
+    ):
+        # Compare the historical columns, even when today's model has newer ones.
+        columns = {
+            table: ", ".join(
+                f'"{row[1]}"' for row in copied.execute(f'PRAGMA table_info("{table}")')
+            )
+            for table in tables
+        }
+        before = {
+            table: original.execute(
+                f'SELECT {columns[table]} FROM "{table}" ORDER BY rowid'
+            ).fetchall()
+            for table in tables
+        }
         assert {
             table: copied.execute(
                 f'SELECT {columns[table]} FROM "{table}" ORDER BY rowid'
             ).fetchall()
             for table in tables
         } == before
-    await asyncio.to_thread(command.upgrade, config, REVISION)
+    await asyncio.to_thread(command.upgrade, config, "head")
     await asyncio.to_thread(command.check, config)
     with sqlite3.connect(target) as copied:
         assert copied.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -186,7 +187,7 @@ async def test_compaction_migration_preserves_history_on_a_copy(
                 await session.commit()
         with pytest.raises(RuntimeError, match="compaction-owned messages exist"):
             await asyncio.to_thread(remove_compaction_storage)
-        await asyncio.to_thread(command.upgrade, config, REVISION)
+        await asyncio.to_thread(command.upgrade, config, "head")
         async with maker() as session:
             preserved = await session.list(
                 Compaction,

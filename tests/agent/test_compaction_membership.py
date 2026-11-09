@@ -322,9 +322,9 @@ async def test_membership_migration_backfills_only_known_provenance_on_a_copy(
     module_path = await asyncio.to_thread(Path(__file__).resolve)
     config = Config(str(module_path.parents[2] / "alembic.ini"))
     monkeypatch.setattr("logging.config.fileConfig", Mock())
-    await asyncio.to_thread(command.stamp, config, "096de1d1ec5f")
+    await asyncio.to_thread(command.stamp, config, "head")
     await asyncio.to_thread(command.downgrade, config, "1f46faa4d027")
-    await asyncio.to_thread(command.upgrade, config, "096de1d1ec5f")
+    await asyncio.to_thread(command.upgrade, config, "head")
     await asyncio.to_thread(command.check, config)
     with sqlite3.connect(target) as copied:
         assert copied.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -361,6 +361,7 @@ async def test_membership_migration_backfills_only_known_provenance_on_a_copy(
             RuntimeError, match="context or inherited history is recorded"
         ):
             await asyncio.to_thread(command.downgrade, config, "1f46faa4d027")
+        await asyncio.to_thread(command.upgrade, config, "head")
         await asyncio.to_thread(command.check, config)
         async with maker() as session:
             assert await session.count(CompactionMembership) == 1
