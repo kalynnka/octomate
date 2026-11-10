@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Literal
 from unittest.mock import Mock, patch
 
 import pytest
@@ -105,6 +107,133 @@ async def test_registration_refuses_to_overwrite_an_existing_run(
     with pytest.raises(IntegrityError):
         await store.register_run(replace(run, metadata={"replaced": "no"}))
     assert await store.get_run(run_id=run.run_id) == run
+
+
+@pytest.mark.parametrize("metadata", [{}, {"purpose": "archive"}])
+async def test_archive_completes_a_registered_run(
+    conversation: Conversation,
+    metadata: dict[str, str],
+    in_memory_engine: AsyncEngine,
+) -> None:
+    record = RunRecord(
+        run_id=str(uuid7()),
+        conversation_id=str(conversation.id),
+        parent_run_id=str(uuid7()),
+        agent_name="inkling",
+        metadata=metadata,
+        registration_id=str(uuid7()),
+        started_at=NOW,
+    )
+    store = StepStore()
+    await store.register_run(record)
+    manager = ConversationManager()
+    assert await manager.record_agent_run(conversation, record.run_id, []) is None
+    messages = [
+        ModelRequest(parts=[UserPromptPart("question")]),
+        ModelResponse(parts=[TextPart("answer")]),
+    ]
+    queries = Mock()
+    event.listen(in_memory_engine.sync_engine, "before_cursor_execute", queries)
+    try:
+        archived = await manager.record_agent_run(
+            conversation,
+            record.run_id,
+            messages,
+            name="react",
+            model_name="test-model",
+            context_window=100_000,
+            context_used=42,
+            permission_mode="default",
+            cwd=Path("/workspace"),
+        )
+    finally:
+        event.remove(in_memory_engine.sync_engine, "before_cursor_execute", queries)
+    selects = [
+        call.args[2]
+        for call in queries.call_args_list
+        if call.args[2].startswith("SELECT")
+    ]
+    assert len(selects) == 2
+    assert all("model_messages.parts" not in query for query in selects)
+    assert archived is not None
+    assert await store.get_run(run_id=record.run_id) == record
+    async with async_session() as session:
+        assert await session.count(AgentRun) == 1
+        assert await session.count(ConversationRun) == 1
+        assert await session.count(ArchiveMessage) == 2
+        stored = await session.get(AgentRun, record.run_id)
+        assert stored is not None
+        assert stored.name == "react"
+        assert stored.model_name == "test-model"
+        assert stored.context_window == 100_000
+        assert stored.context_used == 42
+        assert stored.permission_mode == "default"
+        assert stored.cwd == Path("/workspace")
+        assert [message.id for message in stored.messages] == [
+            message.id for message in archived.messages
+        ]
+        assert [message.parts for message in stored.messages] == [
+            message.parts for message in messages
+        ]
+        assert all(message.run_id == record.run_id for message in stored.messages)
+    with pytest.raises(IntegrityError):
+        await manager.record_agent_run(conversation, record.run_id, messages)
+    assert await store.get_run(run_id=record.run_id) == record
+    async with async_session() as session:
+        assert await session.count(ArchiveMessage) == 2
+
+
+@pytest.mark.parametrize("ownership", ["conversation", "parent"])
+async def test_archive_cannot_reassign_a_registered_run(
+    run: RunRecord,
+    conversation: Conversation,
+    ownership: Literal["conversation", "parent"],
+) -> None:
+    manager = ConversationManager()
+    target = conversation
+    if ownership == "conversation":
+        target = await manager.ensure(
+            await a_thread("other"), agent_tentacle_id="inkling"
+        )
+        await manager.fork(conversation, target)
+    with pytest.raises(ValueError, match=ownership):
+        await manager.record_agent_run(
+            target,
+            run.run_id,
+            [ModelResponse(parts=[TextPart("wrong owner")])],
+            parent_run_id=str(uuid7()) if ownership == "parent" else None,
+        )
+    assert await StepStore().get_run(run_id=run.run_id) == run
+    async with async_session() as session:
+        assert await session.count(ArchiveMessage) == 0
+
+
+@pytest.mark.parametrize("registered", [False, True])
+@pytest.mark.parametrize(("context_window", "context_used"), [(0, None), (None, -1)])
+async def test_archive_validates_run_updates_before_persisting(
+    run: RunRecord,
+    conversation: Conversation,
+    registered: bool,
+    context_window: int | None,
+    context_used: int | None,
+) -> None:
+    with pytest.raises(ValidationError):
+        await ConversationManager().record_agent_run(
+            conversation,
+            run.run_id if registered else str(uuid7()),
+            [ModelResponse(parts=[TextPart("invalid context usage")])],
+            name="must not be saved",
+            context_window=context_window,
+            context_used=context_used,
+        )
+    async with async_session() as session:
+        assert await session.count(AgentRun) == 1
+        assert await session.count(ArchiveMessage) == 0
+        stored = await session.get(AgentRun, run.run_id)
+        assert stored is not None
+        assert stored.name is None
+        assert stored.context_window is None
+        assert stored.context_used is None
 
 
 @pytest.mark.parametrize("conversation_id", [None, "not-a-conversation"])
@@ -518,6 +647,8 @@ async def test_upstream_step_persistence_uses_the_store_across_runs(
         TestModel(), tools=[lookup], capabilities=[StepPersistence(store=store)]
     )
     first = await agent.run("look it up", conversation_id=str(conversation.id))
+    manager = ConversationManager()
+    await manager.record_agent_run(conversation, first.run_id, first.new_messages())
     first_snapshot = await store.latest_snapshot(run_id=first.run_id)
     assert first_snapshot is not None
     assert first_snapshot.messages == first.all_messages()
@@ -526,6 +657,7 @@ async def test_upstream_step_persistence_uses_the_store_across_runs(
         conversation_id=str(conversation.id),
         message_history=first_snapshot.messages,
     )
+    await manager.record_agent_run(conversation, second.run_id, second.new_messages())
     records = await store.list_runs(conversation_id=str(conversation.id))
     assert [record.run_id for record in records] == [first.run_id, second.run_id]
     assert await store.latest_snapshot(run_id=first.run_id) == first_snapshot
@@ -540,3 +672,9 @@ async def test_upstream_step_persistence_uses_the_store_across_runs(
     assert effect is not None
     assert effect.status == "completed"
     assert await store.list_unresolved_tool_effects(run_id=first.run_id) == []
+    async with async_session() as session:
+        assert await session.count(AgentRun) == 2
+        assert await session.count(ConversationRun) == 2
+        assert await session.count(ArchiveMessage) == len(first.new_messages()) + len(
+            second.new_messages()
+        )

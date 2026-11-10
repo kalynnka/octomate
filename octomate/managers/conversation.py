@@ -748,7 +748,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         parent_run_id: str | None = None,
         parent_tool_call_id: str | None = None,
     ) -> AgentRun | None:
-        """Persist a fresh agent run.
+        """Persist an agent run's archive, completing its registration if present.
         `cwd` is the directory the run happened in, None when its caller has none.
         `external_id`, when given, updates the conversation's resumable agent
         session handle in the same commit (external-runtime agents own their own
@@ -756,28 +756,39 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         call spawned it, and which call it answers."""
         if not messages:
             return None
-        run = AgentRun(
-            id=run_id,
-            conversation_id=conversation.id,
-            native_session_id=external_id,
-            native_turn_id=native_turn_id,
-            name=name,
-            model_name=model_name,
-            context_window=context_window,
-            context_used=context_used,
-            permission_mode=permission_mode,
-            cwd=cwd,
-            parent_run_id=parent_run_id,
-            parent_tool_call_id=parent_tool_call_id,
-            started_at=messages[0].timestamp,
-            # Shallow `vars(m)` dicts, so pydantic routes each through the blessed
-            # `ModelRequest | ModelResponse` union at construction — the raw pydantic-ai
-            # dataclass is rejected, not being an instance of our blessed subclass.
-            messages=[vars(m) for m in messages],  # pyright: ignore[reportArgumentType]
-        )
-        return await self.persist_run(
-            run, conversation_id=conversation.id, external_id=external_id
-        )
+        async with async_session() as session:
+            run = await session.one_or_none(
+                AgentRun,
+                expressions=[
+                    AgentRun["id"] == run_id,
+                    AgentRun["metadata"].is_not(None),
+                    ~AgentRun["messages"].any(),
+                ],
+                options=[noload(AgentRun["messages"])],
+            )
+        if run is None:
+            run = AgentRun(
+                id=run_id,
+                conversation_id=conversation.id,
+                parent_run_id=parent_run_id,
+                started_at=messages[0].timestamp,
+            )
+        elif run.conversation_id != conversation.id:
+            raise ValueError("Run is registered to a different conversation")
+        elif parent_run_id not in (None, run.parent_run_id):
+            raise ValueError("Run is registered with a different parent")
+        run.name = name
+        run.model_name = model_name
+        run.context_window = context_window
+        run.context_used = context_used
+        run.permission_mode = permission_mode
+        run.cwd = cwd
+        run.native_session_id = external_id
+        run.native_turn_id = native_turn_id
+        run.parent_tool_call_id = parent_tool_call_id
+        run.revalidate()
+        run.messages.extend(run.messages.bless([vars(m) for m in messages]))
+        return await self.persist_run(run)
 
     async def driven_run(
         self, agent_tentacle_id: str, session_id: str, turn_id: str
@@ -897,22 +908,15 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                     owner.external_id = native_session_id
                 await session.commit()
                 return run
-        return await self.persist_run(
-            run, conversation_id=conversation.id, external_id=native_session_id
-        )
+        return await self.persist_run(run)
 
-    async def persist_run(
-        self,
-        run: RunT,
-        *,
-        conversation_id: UUID7,
-        external_id: str | None,
-    ) -> RunT:
-        """Persist a freshly built run, in the history of the conversation it ran
-        in. `external_id`, when given, updates the resumable agent-session handle in
-        the same commit.
+    async def persist_run(self, run: RunT) -> RunT:
+        """Persist the supplied run and its messages in one transaction.
+        Registered runs already have a conversation link.
+        The run's native session ID updates the conversation's resumable handle
+        in the same commit.
 
-        Only the new run and its messages are added, never the caller's whole
+        Only the supplied run and its messages are added, never the caller's whole
         conversation graph: re-merging it (prior runs and their message
         collections) can make SQLAlchemy believe a message was dropped from a
         stale run collection and null its NOT NULL `run_id`, raising an
@@ -922,15 +926,16 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
             session.add(run)
             reloaded = await session.one_or_none(
                 Conversation,
-                expressions=[Conversation["id"] == conversation_id],
+                expressions=[Conversation["id"] == run.conversation_id],
                 options=[
                     noload(Conversation["runs"]),
                     noload(Conversation["messages"]),
                 ],
             )
             if reloaded is not None:
-                reloaded.runs.append(run)
-                reloaded.external_id = external_id
+                if run.metadata is None:
+                    reloaded.runs.append(run)
+                reloaded.external_id = run.native_session_id
             returned_calls = {
                 part.tool_call_id
                 for message in await run.messages
@@ -948,7 +953,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                         AgentRun["conversation_id"].in_(
                             select(Conversation["id"]).where(
                                 Conversation["parent_conversation_id"]
-                                == conversation_id
+                                == run.conversation_id
                             )
                         ),
                     ],
