@@ -1,17 +1,16 @@
-"""Thread workspaces: the forks of a project mirror a run happens in, and their
-lifecycle from open to save to release."""
+"""Thread workspaces: the trees a run happens in, kept as volumes in each user's
+root, and their lifecycle from open to save to release."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import shutil
 import tempfile
-import time
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import TracebackType
 from typing import Self, overload
@@ -20,6 +19,7 @@ from pydantic import UUID7
 
 from octomate.config.mirrors import GitIdentity
 from octomate.config.workspaces import WorkspacesConfig
+from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.project import ProjectManager
 from octomate.managers.workspaces.dependencies import install
@@ -30,6 +30,7 @@ from octomate.managers.workspaces.mirrors import (
 )
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
+from octomate.schemas.volumes import CacheVolume, MemoryVolume, TreeVolume
 from octomate.telemetry import workspace_logfire
 
 logger = logging.getLogger(__name__)
@@ -52,21 +53,26 @@ SAVED_REF = "refs/octomate/saved"
 SNAPSHOT_PREFIX = "octomate: "
 
 
-def thread_ref(thread_id: UUID7) -> str:
-    """Where a thread's work is kept in its project's mirror.
+def tree_ref(volume_id: UUID7) -> str:
+    """Where a tree's saved work is kept in its project's mirror.
 
-    Outside `refs/heads/`, so the mirror does not grow a branch per thread and
-    `git branch` in a fresh workspace shows the project's branches rather than
-    everyone's threads. That a fork holds none of them at all is
-    `discard_octomate_refs`' doing and not this namespace's — a copied fork brings
-    across whatever the mirror has.
+    Outside `refs/heads/`, so the mirror does not grow a branch per tree. Keyed by
+    the tree's volume rather than its thread, so two users working in one shared
+    thread never save over each other. That a fork holds none of these refs is
+    `discard_octomate_refs`' doing — a copied fork brings across whatever the
+    mirror has.
     """
-    return f"refs/octomate/threads/{thread_id}"
+    return f"refs/octomate/trees/{volume_id}"
 
 
 def thread_branch(thread_id: uuid.UUID) -> str:
     """The branch a thread's first fork starts on, its own."""
     return f"octomate/thread-{thread_id}"
+
+
+class UnregisteredProjectError(PermissionError):
+    """An unregistered sender asked to work in a project. A project's tree lives in
+    a registered user's root, so an unregistered sender may only chat."""
 
 
 class CopyError(RuntimeError):
@@ -101,18 +107,12 @@ async def copy(source: Path, target: Path, flag: str) -> None:
 
 @dataclass
 class Workspace(ABC):
-    """The tree one run happens in, and what becomes of it when the run ends.
+    """The directory one run happens in, and what becomes of it when the run ends.
 
     Handed out by `WorkspaceManager.open` and entered by the run that was given it.
-    Knowing where it is costs nothing — the path is the thread's — so a caller has
-    it before anything is forked, which is what lets a runtime be configured with
-    its own working directory before the process that will run there exists.
-
-    Two variants, and they differ in exactly three things: where the tree lives,
-    which mirror it is forked from, and whether leaving it keeps or throws away
-    what the run did. Everything else — the fork itself, the branch it lands on,
-    the lock that stops two turns forking it twice — is one mechanism on the
-    manager, and both go through it.
+    Its path is settled when it is opened, before anything is made on disk, which
+    is what lets a runtime be configured with its own working directory before the
+    process that will run there exists.
     """
 
     workspaces: WorkspaceManager
@@ -127,7 +127,7 @@ class Workspace(ABC):
 
     @abstractmethod
     async def prepare(self) -> Path:
-        """The tree, forked and ready for a run to happen in."""
+        """The directory, made and ready for a run to happen in."""
 
     async def __aenter__(self) -> Self:
         await self.prepare()
@@ -140,40 +140,49 @@ class Workspace(ABC):
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        """End the run's claim on the tree, however the run ended."""
+        """End the run's claim on the directory, however the run ended."""
 
 
 @dataclass
-class ProjectWorkspace(Workspace):
-    """This thread's own checkout of its project, at ``workspaces_dir/<thread_id>``.
+class TreeWorkspace(Workspace, ABC):
+    """A tree volume in a registered user's root: a fork of a mirror, checked out
+    on the thread's own branch.
 
-    A thread runs here rather than in `project.root`, so two threads on one project
-    cannot walk over each other's uncommitted work — and the root stays the
-    person's, untouched by anything an agent does.
+    The volume's row outlives its folder. Releasing a tree deletes the folder and
+    keeps the row, so the next fork lands at the same path — which is what lets a
+    harness resume a session it keyed by its working directory.
+    """
+
+    volume: TreeVolume
+
+    @property
+    def path(self) -> Path:
+        return self.workspaces.path(self.volume)
+
+
+@dataclass
+class ProjectWorkspace(TreeWorkspace):
+    """This user's own checkout of the thread's project.
+
+    A thread runs here rather than in `project.root`, so two threads on one
+    project, or two users in one thread, cannot walk over each other's uncommitted
+    work — and the root stays the person's, untouched by anything an agent does.
     """
 
     project: Project
 
-    @property
-    def path(self) -> Path:
-        return self.workspaces.path(self.thread_id)
+    async def prepare(self) -> Path:
+        """This checkout, resumed as it stands or forked when it is gone.
 
-    async def prepare(self, ref: str | None = None) -> Path:
-        """This thread's checkout, resumed as it stands or forked when it is gone.
-
-        Only a thread's first turn does any of that. A workspace that exists is
-        resumed into as it stands, and its mirror is not synced for it either: a
-        workspace is not re-made from the mirror once it is there, so a fetch would
-        buy the turn nothing and would couple continuing a thread to the upstream
-        being reachable. `materialize` answers an existing workspace anyway; the
-        check is here to keep the sync in front of it from running — and to stamp
-        the workspace, which is what tells the sweep this thread is still running.
+        Only a tree's first turn, or the first after a release, does any of that. A
+        tree that exists is resumed into as it stands, and its mirror is not synced
+        for it either: a fetch would buy the turn nothing and would couple
+        continuing a thread to the upstream being reachable.
         """
-        workspace = self.workspaces.existing(self.thread_id)
-        if workspace is not None:
-            return workspace
+        if self.path.is_dir():
+            return self.path
         mirror = await self.workspaces.mirrors.sync(self.project)
-        return await self.workspaces.materialize(self, mirror, ref)
+        return await self.workspaces.materialize(self, mirror)
 
     async def __aexit__(
         self,
@@ -181,51 +190,39 @@ class ProjectWorkspace(Workspace):
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        """Nothing. A project's workspace outlives the run that used it — that is
-        what makes the next turn a resume — and what the turn owes is a `save`,
-        which the graph does once for the turn rather than once per agent that
-        ran in it."""
+        """Nothing. A project's tree outlives the run that used it — that is what
+        makes the next turn a resume — and what the turn owes is a `save`, which
+        the graph does once for the turn rather than once per agent that ran in
+        it."""
 
 
 @dataclass
-class ChatWorkspace(Workspace):
-    """The tree a thread in no project runs in: a fork of the empty repository, at
-    ``workspaces_dir/chat/<thread_id>``, gone when the run ends.
+class ChatWorkspace(TreeWorkspace):
+    """The tree a registered user's run in no project happens in: a fork of the
+    empty repository, its folder gone when the run ends.
 
-    A workspace rather than a bare directory, so a run in no project is a run like
-    any other — it may write, unpack, and script inside its own tree, bounded by
-    the same directory every run is bounded by. Forking nothing is what makes that
-    affordable: an empty repository costs a `git init`'s worth of disk, and binding
-    to a project stops meaning "you may write now" and starts meaning "your work is
-    kept now".
+    A tree rather than a bare directory, so a run in no project is a run like any
+    other — it may write, unpack and script inside its own tree. Forking nothing is
+    what makes that affordable: an empty repository costs a `git init`'s worth of
+    disk, and binding to a project stops meaning "you may write now" and starts
+    meaning "your work is kept now".
 
-    Under `chat/` rather than among the project workspaces, because up there the
-    directory's existence is the answer to "is this thread's workspace already
-    forked": a chat fork left at `path(thread_id)` would be resumed into by the same
-    thread's first project turn, which would then run in an empty repository instead
-    of the project's code.
-
-    The path is the thread's and does not change between turns, even though what is
-    in it does. Both runtimes key a resumable session by the directory it ran in —
-    Claude's `--resume` answers "no conversation found" from anywhere else — so a
-    tree named after the run rather than the thread would be a run that cannot
-    continue the conversation it belongs to.
+    Its row is a tree with no project, kept like any other, so the path is the same
+    on every turn even though the folder is not: both runtimes key a resumable
+    session by the directory it ran in.
     """
 
     @property
-    def path(self) -> Path:
-        return (self.workspaces.workspaces_dir / "chat" / str(self.thread_id)).resolve()
+    def key(self) -> UUID7:
+        """What overlapping runs in this folder are counted by."""
+        return self.volume.id
 
     async def prepare(self) -> Path:
         """An empty tree of this run's own, forked from the blank mirror.
 
-        Claimed first, which is what throws away whatever a killed run left at this
-        path: nothing resumes a chat workspace, so anything there when nobody is in
-        it belongs to a run that is over.
-
-        Nothing here is ever saved. The blank mirror would otherwise grow a ref per
-        conversation for work nobody intends to keep, which is the opposite of what
-        a mirror is for.
+        Claimed first, which throws away whatever a killed run left at this path:
+        nothing resumes a chat tree, so anything there when nobody is in it belongs
+        to a run that is over. Nothing here is ever saved.
         """
         await self.workspaces.claim(self)
         # The mirror of no project, which is what this thread is in.
@@ -238,16 +235,52 @@ class ChatWorkspace(Workspace):
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        """Throw the tree away. In `__aexit__` rather than after the run's last
-        event, so a turn that raised does not leave its files behind — they are
-        exactly the files nothing will ever ask for again."""
+        """Throw the folder away and keep the row. In `__aexit__` rather than after
+        the run's last event, so a turn that raised does not leave its files
+        behind."""
+        await self.workspaces.discard(self)
+
+
+@dataclass
+class UnregisteredWorkspace(Workspace):
+    """Where an unregistered sender's run happens: an empty temporary directory,
+    with no git and no volume, gone when the run ends.
+
+    An unregistered sender has no root to hold a volume, so they may only chat.
+    The path is the thread's, so a runtime that keys its session by working
+    directory can still resume the conversation.
+    """
+
+    @property
+    def key(self) -> UUID7:
+        """What overlapping runs in this directory are counted by."""
+        return self.thread_id
+
+    @property
+    def path(self) -> Path:
+        return (
+            Path(tempfile.gettempdir()) / "octomate-unregistered" / str(self.thread_id)
+        ).resolve()
+
+    async def prepare(self) -> Path:
+        await self.workspaces.claim(self)
+        self.path.mkdir(parents=True, exist_ok=True)
+        return self.path
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         await self.workspaces.discard(self)
 
 
 class WorkspaceManager(Manager, Locks[UUID7]):
-    """Every project-bound thread's workspace: a fork of the project's mirror at
-    ``workspaces_dir/<thread_id>``, checked out on the thread's own branch and
-    released when the disk is wanted back.
+    """Every run's workspace. A registered user's run gets a tree volume in that
+    user's root, ``volumes_dir/<owner>/tree/<volume>``, recorded by a row and
+    checked out on the thread's own branch; an unregistered sender's run gets an
+    empty temporary directory.
 
     A fork is a complete, independent repository — its own `.git`, its own object
     store — made by cloning the mirror's extents where the filesystem does
@@ -255,25 +288,23 @@ class WorkspaceManager(Manager, Locks[UUID7]):
     whose `.git` is a file pointing back at the mirror: commits in one write
     outside the workspace, which an agent's write sandbox refuses.
 
-    A workspace is a cache rather than the only copy: each turn's tree is
-    snapshotted and pushed to the mirror as the thread's own ref, so releasing one
-    is a disk decision and resuming lays that ref back over a fresh fork. What the
-    agent did with git in there is the agent's — nothing here commits.
+    A project's tree is a cache rather than the only copy: each turn's tree is
+    snapshotted and pushed to the mirror under the tree's own ref, so releasing
+    one is a disk decision and resuming lays that ref back over a fresh fork.
+    Releasing deletes the folder and keeps the row. What the agent did with git in
+    there is the agent's — nothing here commits.
 
-    A thread in no project gets one too, at ``workspaces_dir/chat/<thread_id>``,
-    forked from the blank mirror and thrown away when the run that made it ends.
-    Same mechanism, opposite ending: there is no project to keep it for, so binding
-    to one is what turns a run's tree into work that outlives the run.
+    A registered user's thread in no project gets a tree too, forked from the blank
+    mirror and thrown away when the run that made it ends. Same mechanism, opposite
+    ending: there is no project to keep it for.
 
     The whole lifecycle is here. A turn asks `open` for the workspace its thread
     runs in and enters it, which is what forks the tree and what ends it; the turn
     itself owes one more thing, `save`, which the graph does after the run — or
-    `dismiss`, once the agent has said the thread's work is done. Those
-    need the registry to say which project a thread is in and the mirrors to say
-    where that project's is, which is why this holds both — which fork a thread gets
-    is exactly what the registry says about it, so knowing what binds one is not a
-    dependency it is reaching for. The layer below stays free of it: every method
-    that touches git takes a mirror path and answers for a directory.
+    `dismiss`, once the agent has said the thread's work is done. Those need the
+    registry to say which project a thread is in and the mirrors to say where that
+    project's is, which is why this holds both. Every git call stays behind this
+    manager's own methods, so where git runs on a tree can change in one place.
     """
 
     def __init__(
@@ -282,7 +313,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         projects: ProjectManager | None = None,
         mirrors: MirrorManager | None = None,
         config: WorkspacesConfig | None = None,
-        workspaces_dir: Path = Path(".octomate/workspaces"),
+        volumes_dir: Path = Path(".octomate/volumes"),
     ) -> None:
         # A workspace is a project-bound thread's, so the registry that says which
         # project and the mirrors that say where are what this works through. Its
@@ -293,16 +324,16 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         self.projects = projects if projects is not None else ProjectManager()
         self.mirrors = mirrors if mirrors is not None else MirrorManager()
         self.config = config if config is not None else WorkspacesConfig()
-        # Resolved once, here: a workspace path leaves this manager to become a
+        # Resolved once, here: a volume path leaves this manager to become a
         # subprocess's cwd and a `GIT_INDEX_FILE` beside it, and the default is
-        # relative to wherever Octomate was started. Pinning it at construction
-        # also stops the root moving if anything ever chdirs underneath.
-        self.workspaces_dir = workspaces_dir.resolve()
+        # relative to wherever Octomate was started.
+        self.volumes_dir = volumes_dir.resolve()
         self.reflink: str | None = None
         self.probed = False
-        # How many runs are in each thread's chat workspace right now. The tree
-        # is the run's, and two overlapping runs of one conversation share it —
-        # this is what stops the first to finish taking it from the second.
+        # How many runs are in each throwaway directory right now, keyed by the
+        # chat tree's volume or the unregistered thread. Two overlapping runs of
+        # one conversation share it — this is what stops the first to finish
+        # taking it from the second.
         self.chatting: dict[UUID7, int] = {}
 
     @property
@@ -312,102 +343,159 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         carry one name and cannot drift into two."""
         return self.mirrors.config.identity
 
-    def path(self, thread_id: UUID7) -> Path:
-        """Where this thread's workspace lives. Absolute, because it becomes the
-        working directory of a process Octomate did not start in its own."""
-        return (self.workspaces_dir / str(thread_id)).resolve()
+    def path(self, volume: TreeVolume | MemoryVolume | CacheVolume) -> Path:
+        """Where this volume's folder lives in its owner's root. Derived from the
+        row's identity, never stored, so the store can change without a
+        migration."""
+        return self.volumes_dir / str(volume.owner_id) / volume.kind / str(volume.id)
 
-    def existing(self, thread_id: UUID7) -> Path | None:
-        """This thread's workspace if it is already forked, else None — what saves a
-        resumed turn the fork and the sync in front of it.
+    async def find(
+        self, owner_id: UUID7, thread_id: UUID7, project_id: UUID7 | None
+    ) -> TreeVolume | None:
+        """This owner's tree for this thread and project, if one was ever opened."""
+        async with async_session() as session:
+            return await session.one_or_none(
+                TreeVolume,
+                expressions=[
+                    TreeVolume["owner_id"] == owner_id,
+                    TreeVolume["thread_id"] == thread_id,
+                    TreeVolume["project_id"].is_(None)
+                    if project_id is None
+                    else TreeVolume["project_id"] == project_id,
+                ],
+            )
 
-        Finding one stamps it as used, so the sweep measures idleness from the turn
-        that just asked rather than from the last one that wrote something.
+    async def tree(
+        self,
+        owner_id: UUID7,
+        thread_id: UUID7,
+        project_id: UUID7 | None,
+        ref: str | None = None,
+    ) -> TreeVolume:
+        """This owner's tree for this thread and project, its row written now when
+        there is none, and stamped as used either way.
+
+        The row comes first and the folder later, when the run enters the
+        workspace. `ref` is where a first fork starts, kept on the row; a tree that
+        already has a row keeps the ref it was opened with.
         """
-        path = self.path(thread_id)
-        if not path.is_dir():
-            return None
-        os.utime(path)
-        return path
+        async with self.lock(thread_id):
+            volume = await self.find(owner_id, thread_id, project_id)
+            async with async_session() as session:
+                if volume is None:
+                    volume = TreeVolume(
+                        owner_id=owner_id,
+                        thread_id=thread_id,
+                        project_id=project_id,
+                        base_ref=ref,
+                    )
+                else:
+                    volume.last_used_at = datetime.now(UTC)
+                session.add(volume)
+                await session.commit()
+            return volume
 
     @overload
-    def open(self, thread_id: UUID7, project: Project) -> ProjectWorkspace: ...
+    async def open(
+        self,
+        thread_id: UUID7,
+        project: Project,
+        owner_id: UUID7,
+        ref: str | None = None,
+    ) -> ProjectWorkspace: ...
 
     @overload
-    def open(self, thread_id: UUID7, project: None) -> ChatWorkspace: ...
+    async def open(
+        self,
+        thread_id: UUID7,
+        project: None,
+        owner_id: UUID7,
+        ref: None = None,
+    ) -> ChatWorkspace: ...
 
     @overload
-    def open(self, thread_id: UUID7, project: Project | None) -> Workspace: ...
+    async def open(
+        self,
+        thread_id: UUID7,
+        project: Project | None,
+        owner_id: UUID7 | None,
+        ref: str | None = None,
+    ) -> Workspace: ...
 
-    def open(self, thread_id: UUID7, project: Project | None) -> Workspace:
+    async def open(
+        self,
+        thread_id: UUID7,
+        project: Project | None,
+        owner_id: UUID7 | None,
+        ref: str | None = None,
+    ) -> Workspace:
         """The workspace a run in this thread happens in, ready to be entered.
 
-        Which one it is, is the whole of what a project decides about a run: a
-        thread in one gets a checkout of it that outlives the turn, and a thread in
-        none gets an empty tree that does not. Nothing else about the two runs
-        differs — both may write where they are, and both are bounded by it.
+        A registered owner gets a tree in their own root: a checkout of the project
+        that outlives the turn, or an empty tree that does not. An unregistered
+        sender may only chat, in a temporary directory, and asking for a project
+        raises `UnregisteredProjectError` so the caller can say so.
 
         `project` is passed rather than looked up because the caller has already
-        asked, and the answer decides more than the directory. No disk is touched
-        here: the path is settled, so a runtime can be told where it will run before
-        anything is forked, and the fork happens when the run enters it.
-
-        A thread in no project used to run in the agent's configured `cwd`, which
-        defaults to `"."`: on a server, Octomate's own install directory.
+        asked. Only the row is written here; the folder is made when the run
+        enters the workspace, so a runtime can be told where it will run first.
         """
+        if owner_id is None:
+            if project is not None:
+                raise UnregisteredProjectError(
+                    f"project {project.name!r} needs a registered user"
+                )
+            return UnregisteredWorkspace(self, thread_id)
         if project is None:
-            return ChatWorkspace(self, thread_id)
-        return ProjectWorkspace(self, thread_id, project)
+            return ChatWorkspace(
+                self, thread_id, await self.tree(owner_id, thread_id, None)
+            )
+        volume = await self.tree(owner_id, thread_id, project.id, ref)
+        return ProjectWorkspace(self, thread_id, volume, project)
 
-    async def claim(self, workspace: ChatWorkspace) -> None:
-        """Count this run into `workspace`, and clear whatever the last one left.
+    async def claim(self, workspace: ChatWorkspace | UnregisteredWorkspace) -> None:
+        """Count this run into a throwaway directory, and clear whatever the last
+        one left.
 
         Counted, because a mid-run follow-up starts its turn before the turn it
-        supersedes has finished losing its own: both runs are in this tree, and the
-        first to leave must not take the floor out from under the second. They share
-        it while they overlap, which is what two runs of one conversation are
-        entitled to.
+        supersedes has finished losing its own: both runs are in this directory,
+        and the first to leave must not take the floor out from under the second.
 
-        A tree nobody is in belongs to a run that is over — one that was killed
-        before it could discard — so it goes, and this run forks its own. That is
-        also why a chat workspace needs no staging directory to be forked through:
-        nothing ever resumes into one, so a fork that died half-made is thrown away
-        here rather than mistaken for a tree.
+        A directory nobody is in belongs to a run that is over — one that was
+        killed before it could discard — so it goes, and this run makes its own.
         """
         # `holders` is the count after this run joined, and the number to read a
-        # chat workspace's life by: it is what a `discard` has to bring back to
-        # zero, so a tree still on disk long after its run is one whose claim and
-        # discard did not pair.
-        with workspace_logfire.span(
-            "workspace.claim", thread_id=str(workspace.thread_id)
-        ) as span:
-            async with self.lock(workspace.thread_id):
-                holders = self.chatting.get(workspace.thread_id, 0)
+        # throwaway directory's life by: it is what a `discard` has to bring back
+        # to zero.
+        key = workspace.key
+        with workspace_logfire.span("workspace.claim", key=str(key)) as span:
+            async with self.lock(key):
+                holders = self.chatting.get(key, 0)
                 if holders == 0 and workspace.path.exists():
                     # What a run killed before it could discard left behind.
                     span.set_attribute("abandoned_tree", True)
                     await asyncio.to_thread(shutil.rmtree, workspace.path)
-                self.chatting[workspace.thread_id] = holders + 1
+                self.chatting[key] = holders + 1
                 span.set_attribute("holders", holders + 1)
 
-    async def discard(self, workspace: ChatWorkspace) -> None:
-        """Give this tree back to the disk, once no run is still in it."""
-        with workspace_logfire.span(
-            "workspace.discard", thread_id=str(workspace.thread_id)
-        ) as span:
-            async with self.lock(workspace.thread_id):
-                holders = self.chatting.get(workspace.thread_id, 0) - 1
+    async def discard(self, workspace: ChatWorkspace | UnregisteredWorkspace) -> None:
+        """Give this throwaway directory back to the disk, once no run is still in
+        it."""
+        key, path = workspace.key, workspace.path
+        with workspace_logfire.span("workspace.discard", key=str(key)) as span:
+            async with self.lock(key):
+                holders = self.chatting.get(key, 0) - 1
                 span.set_attribute("holders", max(holders, 0))
                 if holders > 0:
                     # An overlapping run of the same conversation is still in this
-                    # tree, so the tree stays and its life is that run's to end.
+                    # directory, so it stays and its life is that run's to end.
                     span.set_attribute("removed", False)
-                    self.chatting[workspace.thread_id] = holders
+                    self.chatting[key] = holders
                     return
-                self.chatting.pop(workspace.thread_id, None)
-                span.set_attribute("removed", workspace.path.is_dir())
-                if workspace.path.is_dir():
-                    await asyncio.to_thread(shutil.rmtree, workspace.path)
+                self.chatting.pop(key, None)
+                span.set_attribute("removed", path.is_dir())
+                if path.is_dir():
+                    await asyncio.to_thread(shutil.rmtree, path)
 
     async def detect(self) -> str | None:
         """The `cp` flag that forks without copying bytes on this host, or None
@@ -420,8 +508,8 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         """
         if self.probed:
             return self.reflink
-        self.workspaces_dir.mkdir(parents=True, exist_ok=True)
-        probe = Path(tempfile.mkdtemp(dir=self.workspaces_dir))
+        self.volumes_dir.mkdir(parents=True, exist_ok=True)
+        probe = Path(tempfile.mkdtemp(dir=self.volumes_dir))
         try:
             source = probe / "source"
             source.write_bytes(b"probe")
@@ -441,12 +529,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         )
         return self.reflink
 
-    async def materialize(
-        self,
-        workspace: Workspace,
-        mirror: Path,
-        ref: str | None = None,
-    ) -> Path:
+    async def materialize(self, workspace: TreeWorkspace, mirror: Path) -> Path:
         """Fork `mirror` into `workspace`, and answer the tree.
 
         The one place a workspace is made, whichever kind it is: a project's
@@ -467,7 +550,8 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         later turn reads as this thread's own. That is what makes "the directory is
         there" mean "the workspace is there", here and for a caller that asks the
         same question. A fork that merely fails is removed the same way, before the
-        error travels on.
+        error travels on. Serialized per tree, so two users forking into one
+        thread do not wait on each other.
 
         It is installed before it is moved into place, so a workspace is ready to
         run the moment it exists. A copy inherits the mirror's installed trees and
@@ -481,10 +565,11 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         with workspace_logfire.span(
             "workspace.materialize",
             thread_id=str(workspace.thread_id),
+            volume_id=str(workspace.volume.id),
             kind=type(workspace).__name__,
             path=str(path),
         ) as span:
-            async with self.lock(workspace.thread_id):
+            async with self.lock(workspace.volume.id):
                 if path.is_dir():
                     # Where every turn after a thread's first arrives. Saying so is
                     # what leaves the forks findable among them.
@@ -496,10 +581,10 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                 # The one thing about a fork that another host would do differently,
                 # so a trace of one says it before anything else.
                 span.set_attribute("mechanism", f"cp -a {flag}" if flag else "clone")
-                # Hidden, and named after the thread, so it is never mistaken for a
-                # workspace and the next fork of this thread reclaims whatever a
-                # killed one left — the case the cleanup below cannot reach.
-                staging = path.with_name(f".{workspace.thread_id}.forking")
+                # Hidden, and named after the volume, so it is never mistaken for a
+                # tree and the next fork of this volume reclaims whatever a killed
+                # one left — the case the cleanup below cannot reach.
+                staging = path.with_name(f".{workspace.volume.id}.forking")
                 if staging.exists():
                     shutil.rmtree(staging)
                 try:
@@ -509,14 +594,9 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                         await run_git("clone", str(mirror), str(staging))
                     await self.inherit_remotes(mirror, staging)
                     await self.discard_octomate_refs(staging)
-                    await self.checkout(workspace.thread_id, mirror, staging, ref)
+                    await self.checkout(workspace.volume, mirror, staging)
                     await install(staging)
                     staging.rename(path)
-                    # `cp -a` preserves the mirror's timestamps and a rename does not
-                    # refresh them, so without this a fork inherits an mtime that can
-                    # already be past the idle window — a workspace made seconds ago,
-                    # born ready for the sweep.
-                    os.utime(path)
                 except BaseException:
                     shutil.rmtree(staging, ignore_errors=True)
                     raise
@@ -571,14 +651,8 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         for ref in listing.split():
             await run_git("update-ref", "-d", ref, cwd=workspace)
 
-    async def checkout(
-        self,
-        thread_id: UUID7,
-        mirror: Path,
-        workspace: Path,
-        ref: str | None = None,
-    ) -> None:
-        """Put a freshly forked `workspace` back the way this thread's last turn left
+    async def checkout(self, volume: TreeVolume, mirror: Path, workspace: Path) -> None:
+        """Put a freshly forked `workspace` back the way this tree's last turn left
         it, when `mirror` is keeping a snapshot of it.
 
         A thread whose workspace was pruned resumes here, and resumes into the
@@ -589,21 +663,26 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         reads as uncommitted rather than as staged.
 
         A thread forking for the first time starts on its own branch, where the
-        mirror's branch is — or where `ref` names, when the bind asked for one.
+        mirror's branch is — or where the volume's `base_ref` names, when the bind
+        asked for one.
         The default branch is the wrong answer often enough: continuing someone's
         feature branch, reproducing against a tag, working from a PR head.
 
-        `ref` is only consulted by a first fork. A thread whose workspace was
-        pruned resumes into its own snapshot, which is where its work is, and no
-        starting point competes with that.
+        The ref is only consulted by a first fork. A tree that was released resumes
+        into its own snapshot, which is where its work is, and no starting point
+        competes with that.
         """
-        saved = thread_ref(thread_id)
+        thread_id, ref = volume.thread_id, volume.base_ref
+        saved = tree_ref(volume.id)
         # The fork's two endings, and the only place that knows which this is: a
         # thread starting, or one coming back to work a sweep reclaimed the tree
         # of. `resumed` is what separates them in a trace, and the snapshot it
         # came back from is what makes the tree it landed on checkable.
         with workspace_logfire.span(
-            "workspace.checkout", thread_id=str(thread_id), ref=ref
+            "workspace.checkout",
+            thread_id=str(thread_id),
+            volume_id=str(volume.id),
+            ref=ref,
         ) as span:
             if not await run_git("ls-remote", str(mirror), saved):
                 span.set_attribute("resumed", False)
@@ -681,62 +760,62 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         )
         return commit.strip()
 
-    async def save(self, thread: Thread) -> None:
-        """Leave this thread's finished turn where losing its workspace cannot cost
-        it: a snapshot of the whole tree, pushed to the project's mirror as the
-        thread's own ref.
+    async def save(self, thread: Thread, owner_id: UUID7) -> None:
+        """Leave this owner's finished turn where losing their tree cannot cost it:
+        a snapshot of the whole tree, pushed to the project's mirror as the tree's
+        own ref.
 
-        Snapshot *and* push. A fork owns its objects outright — nothing in a
-        workspace survives its removal — so without the push the workspace is the
-        only copy of what the turn did, and reclaiming it would be losing work
-        rather than evicting a cache. That is the whole of what makes a workspace
-        disposable, and why the sweep is a disk decision.
+        Snapshot *and* push. A fork owns its objects outright — nothing in a tree
+        survives its removal — so without the push the tree is the only copy of
+        what the turn did, and releasing it would be losing work rather than
+        evicting a cache. That is what makes a tree disposable, and why the sweep
+        is a disk decision.
 
-        A thread with no workspace — in no project, or one whose turn never forked
-        one — has nothing to leave. Nothing the agent asks for or is told about
-        either: it knows the directory it was given, not that the directory is a
-        fork, and not that the sweep will take it back.
+        A thread with no tree for this owner — in no project, or one whose turn
+        never forked one — has nothing to leave.
 
-        Forced, because the ref records what the workspace holds rather than a
-        history to protect: an amend or a reset inside the workspace moves the ref
-        with it. The mirror is the only place this ever pushes; nothing here
-        reaches the upstream, which sees a thread's work when a person asks for a
-        pull request and not before.
+        Forced, because the ref records what the tree holds rather than a history
+        to protect. The mirror is the only place this ever pushes; nothing here
+        reaches the upstream.
 
         A failure is logged rather than raised. The turn has already happened and
         already answered; failing it now would report a delivered answer as an
         error, and the next turn saves the same work again.
         """
-        # The turn's work leaving the workspace. Until this succeeds the fork is
-        # the only copy, so `saved` — which is what the sweep reads — is the
-        # attribute to look at when a workspace nobody can reclaim turns up.
+        # The turn's work leaving the tree. Until this succeeds the fork is the
+        # only copy, so `saved` — which is what the sweep reads — is the attribute
+        # to look at when a tree nobody can release turns up.
         with workspace_logfire.span(
             "workspace.save", thread_id=str(thread.id), saved=False
         ) as span:
             project = await self.projects.of(thread)
-            path = self.path(thread.id)
             span.set_attribute("project", project.name if project else None)
-            if project is None or not path.is_dir():
+            if project is None:
                 return
+            volume = await self.find(owner_id, thread.id, project.id)
+            if volume is None or not self.path(volume).is_dir():
+                return
+            path = self.path(volume)
+            span.set_attribute("volume_id", str(volume.id))
             try:
-                async with self.lock(thread.id):
+                async with self.lock(volume.id):
                     snapshot = await self.snapshot(path)
                     await run_git(
                         "push",
                         "--force",
                         str(self.mirrors.path(project)),
-                        f"{snapshot}:{thread_ref(thread.id)}",
+                        f"{snapshot}:{tree_ref(volume.id)}",
                         cwd=path,
                     )
                     # Only now, and only here: this is what tells the sweep that
-                    # letting this workspace go costs a resume rather than the work.
+                    # releasing this tree costs a resume rather than the work.
                     await run_git("update-ref", SAVED_REF, snapshot, cwd=path)
                 span.set_attribute("snapshot", snapshot)
                 span.set_attribute("saved", True)
             except (GitCommandError, OSError):
                 logger.exception(
-                    "the workspace for thread %s could not be saved; its work is only "
-                    "in %s until a later turn saves it",
+                    "the tree for thread %s could not be saved; its work is only in "
+                    "%s until a later turn saves it",
                     thread.id,
                     path,
                 )
@@ -763,55 +842,82 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         )
 
     async def prune(self, idle: float) -> list[UUID7]:
-        """Release every workspace nothing has used for `idle` seconds, and answer
-        with the threads that lost theirs.
+        """Release every project tree nothing has used for `idle` seconds, and
+        answer with the volumes that lost their folder.
 
         Eviction, not a decision about whether a thread is over: abandonment is
-        unobservable — a thread parked on a question and one silently dropped look
-        identical — so rather than guessing, being wrong here costs the next turn a
-        fork instead of costing anyone their work.
+        unobservable, so rather than guessing, being wrong here costs the next turn
+        a fork instead of costing anyone their work. Which is only true of a tree
+        the mirror already has, so one holding anything unsaved is kept and said
+        out loud. Idleness is read from the row's `last_used_at`, which every
+        `open` stamps.
 
-        Which is only true of a workspace the mirror already has, so one holding
-        anything unsaved is kept and said out loud. That covers a turn still
-        running, too: it has changed something since its last turn was saved,
-        almost by definition.
+        A folder in a user's root that no row owns is reported and never deleted:
+        the row is written before the folder, so such a folder is something this
+        manager did not make.
         """
         released: list[UUID7] = []
-        # Three counts, because "why is that workspace still there" has three
-        # answers and the disk cannot tell them apart: nothing has been idle long
-        # enough, or something is idle and holding work the mirror never got.
+        # Three counts, because "why is that tree still there" has three answers
+        # and the disk cannot tell them apart.
         kept_busy = kept_unsaved = 0
+        cutoff = datetime.now(UTC) - timedelta(seconds=idle)
         with workspace_logfire.span("workspace.prune", idle=idle) as span:
-            if not self.workspaces_dir.is_dir():
-                return released
-            for path in sorted(self.workspaces_dir.iterdir()):
-                try:
-                    thread_id = uuid.UUID(path.name)
-                except ValueError:
-                    # A staging directory, a probe, or `chat/`: none of them is a
-                    # workspace this may reclaim. A chat workspace is its run's to
-                    # throw away, and is not kept anywhere the sweep could restore it
-                    # from.
+            async with async_session() as session:
+                # Chat trees are their run's to throw away, and are never saved
+                # anywhere a resume could restore them from.
+                trees = await session.list(
+                    TreeVolume,
+                    limit=None,
+                    expressions=[TreeVolume["project_id"].is_not(None)],
+                )
+            for volume in trees:
+                path = self.path(volume)
+                if not path.is_dir():
                     continue
-                if time.time() - path.stat().st_mtime < idle:
+                if volume.last_used_at > cutoff:
                     kept_busy += 1
                     continue
                 if not await self.saved(path):
                     kept_unsaved += 1
                     logger.warning(
-                        "the workspace for thread %s is idle but holds work the "
-                        "mirror does not have; keeping it",
-                        thread_id,
+                        "the tree %s for thread %s is idle but holds work the mirror "
+                        "does not have; keeping it",
+                        volume.id,
+                        volume.thread_id,
                     )
                     continue
-                await self.release(thread_id)
-                released.append(thread_id)
+                await self.release(volume)
+                released.append(volume.id)
             span.set_attribute("released", len(released))
             span.set_attribute("kept_busy", kept_busy)
             span.set_attribute("kept_unsaved", kept_unsaved)
+            span.set_attribute("unowned", await self.report_unowned())
             if released:
-                logger.info("released %d idle workspace(s)", len(released))
+                logger.info("released %d idle tree(s)", len(released))
             return released
+
+    async def report_unowned(self) -> int:
+        """Warn about every tree folder no row owns, and answer how many there
+        are. Hidden folders are forks in progress, and are skipped."""
+        named: dict[uuid.UUID, Path] = {}
+        unowned: list[Path] = []
+        for path in self.volumes_dir.glob("*/tree/[!.]*"):
+            try:
+                named[uuid.UUID(path.name)] = path
+            except ValueError:
+                unowned.append(path)
+        if named:
+            async with async_session() as session:
+                owned = await session.list(
+                    TreeVolume,
+                    limit=None,
+                    expressions=[TreeVolume["id"].in_(list(named))],
+                )
+            owned_ids = {volume.id for volume in owned}
+            unowned += [path for key, path in named.items() if key not in owned_ids]
+        for path in unowned:
+            logger.warning("%s has no volume row; leaving it", path)
+        return len(unowned)
 
     async def sweep(self) -> None:
         """Prune on the interval, for as long as the host runs.
@@ -827,17 +933,17 @@ class WorkspaceManager(Manager, Locks[UUID7]):
             except Exception:
                 logger.exception("the workspace sweep failed")
 
-    async def carry(self, source: Thread, thread: Thread) -> None:
-        """Give `thread`, landed in `source`'s project, a workspace holding the work
-        as `source` left it — what a conversation moving to another thread takes of
-        its work — and fork it.
+    async def carry(self, source: Thread, thread: Thread, owner_id: UUID7) -> None:
+        """Give `thread`, landed in `source`'s project, a tree holding this owner's
+        work as `source` left it — what a conversation moving to another thread
+        takes of its work — and fork it.
 
         Saved first: the source's last turn may not have been, and what it left
-        uncommitted has to travel as uncommitted. The snapshot is filed under
-        `thread` too, so its first fork resumes into it the way a pruned workspace
-        does; on a branch of its own when the source was on its own, since two
-        threads pushing one branch would overwrite each other. A source that never
-        forked a workspace has no snapshot, and `thread` forks the project fresh.
+        uncommitted has to travel as uncommitted. The snapshot is filed under the
+        new tree's ref too, so its first fork resumes into it the way a released
+        tree does; on a branch of its own when the source was on its own, since
+        two trees pushing one branch would overwrite each other. A source with no
+        snapshot leaves `thread` to fork the project fresh.
 
         Ignored files are copied across, an `.env` among them, since a snapshot
         never holds them. Ignored directories are not: they are dependencies and
@@ -846,10 +952,14 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         project = await self.projects.of(source)
         if project is None:
             return
-        await self.save(source)
+        await self.save(source, owner_id)
+        origin = await self.find(owner_id, source.id, project.id)
+        landing = await self.open(thread.id, project, owner_id)
         mirror = self.mirrors.path(project)
-        saved = thread_ref(source.id)
-        if await run_git("ls-remote", str(mirror), saved):
+        if origin is not None and await run_git(
+            "ls-remote", str(mirror), tree_ref(origin.id)
+        ):
+            saved = tree_ref(origin.id)
             subject = await run_git("show", "-s", "--format=%s", saved, cwd=mirror)
             filed = saved
             if subject.strip() == f"{SNAPSHOT_PREFIX}{thread_branch(source.id)}":
@@ -864,12 +974,12 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                     cwd=mirror,
                 )
             await run_git(
-                "update-ref", thread_ref(thread.id), filed.strip(), cwd=mirror
+                "update-ref", tree_ref(landing.volume.id), filed.strip(), cwd=mirror
             )
-        landed = await self.open(thread.id, project).prepare()
-        origin = self.existing(source.id)
-        if origin is None:
+        landed = await landing.prepare()
+        if origin is None or not self.path(origin).is_dir():
             return
+        source_path = self.path(origin)
         ignored = await run_git(
             "ls-files",
             "--others",
@@ -877,63 +987,67 @@ class WorkspaceManager(Manager, Locks[UUID7]):
             "--exclude-standard",
             "--directory",
             "-z",
-            cwd=origin,
+            cwd=source_path,
         )
         for name in ignored.split("\0"):
             if not name or name.endswith("/") or (landed / name).exists():
                 continue
             (landed / name).parent.mkdir(parents=True, exist_ok=True)
             await asyncio.to_thread(
-                shutil.copy2, origin / name, landed / name, follow_symlinks=False
+                shutil.copy2, source_path / name, landed / name, follow_symlinks=False
             )
 
-    async def dismiss(self, thread: Thread) -> bool:
-        """Release this thread's workspace on its agent's word that the work in it
-        is done — the one release that is asked for rather than swept up — and
-        answer whether it went.
+    async def dismiss(self, thread: Thread, owner_id: UUID7) -> bool:
+        """Release this owner's tree on their agent's word that the work in it is
+        done — the one release that is asked for rather than swept up — and answer
+        whether it went.
 
         Saved first, and released only when the save took: the sweep's rule, that
-        a workspace holding work the mirror has not seen is never thrown away,
-        does not bend for being asked. So what this costs is what a prune costs,
-        a fork on the thread's next turn with the ref laid back over it.
+        a tree holding work the mirror has not seen is never thrown away, does not
+        bend for being asked. So what this costs is what a prune costs, a fork on
+        the thread's next turn with the ref laid back over it.
         """
         with workspace_logfire.span(
             "workspace.dismiss", thread_id=str(thread.id), released=False
         ) as span:
-            await self.save(thread)
-            path = self.path(thread.id)
-            if not path.is_dir():
+            await self.save(thread, owner_id)
+            project = await self.projects.of(thread)
+            if project is None:
                 return False
-            if not await self.saved(path):
+            volume = await self.find(owner_id, thread.id, project.id)
+            if volume is None or not self.path(volume).is_dir():
+                return False
+            if not await self.saved(self.path(volume)):
                 logger.warning(
-                    "the workspace for thread %s was dismissed but holds work the "
+                    "the tree %s for thread %s was dismissed but holds work the "
                     "mirror does not have; keeping it",
+                    volume.id,
                     thread.id,
                 )
                 return False
-            await self.release(thread.id)
+            await self.release(volume)
             span.set_attribute("released", True)
             return True
 
-    async def release(self, thread_id: UUID7) -> None:
-        """Give this thread's workspace back to the disk, or nothing when it is
-        already gone — pruning and releasing a thread that never had one both
-        arrive here, and a workspace is a cache either way.
+    async def release(self, volume: TreeVolume) -> None:
+        """Give this tree's folder back to the disk, or nothing when it is already
+        gone. The row stays, so the next fork lands at the same path.
 
         The mirror is untouched: a copied fork owns its objects outright, and a
-        cloned one holds hard links, where unlinking a link leaves the file. In
-        a thread, off the loop: a released tree is as big as the project.
+        cloned one holds hard links, where unlinking a link leaves the file. In a
+        thread, off the loop: a released tree is as big as the project.
         """
-        path = self.path(thread_id)
-        # The end of a tree, and the span a resume is read against: a `materialize`
-        # with `resumed` true is this one's other half, however long after.
+        path = self.path(volume)
+        # The end of a tree, and the span a resume is read against: a
+        # `materialize` that forks the same volume is this one's other half.
         with workspace_logfire.span(
-            "workspace.release", thread_id=str(thread_id)
+            "workspace.release",
+            thread_id=str(volume.thread_id),
+            volume_id=str(volume.id),
         ) as span:
-            async with self.lock(thread_id):
-                # False where a thread never had one, or a sweep and a caller both
-                # reached for the same tree — neither is a failure, and both would
-                # otherwise read as one released workspace too many.
+            async with self.lock(volume.id):
+                # False where the folder is already gone, or a sweep and a caller
+                # both reached for the same tree.
                 span.set_attribute("removed", path.is_dir())
                 if path.is_dir():
                     await asyncio.to_thread(shutil.rmtree, path)
