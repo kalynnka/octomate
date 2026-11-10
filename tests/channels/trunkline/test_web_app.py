@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -73,6 +73,7 @@ from octomate.types.permissions import InklingPermissionMode, PermissionMode
 from tests.managers.test_oauth import FakeDeviceFlow
 from tests.support.agents import FakeAgent, build_non_stream_agent, build_scripted_agent
 from tests.support.managers import a_loaded_thread, a_project, a_registry
+from tests.support.mcp import served_inkling_mcp
 from tests.support.nerve import awake_on, settled
 from tests.support.users import auth_config
 
@@ -92,6 +93,15 @@ async def registered_console_user(in_memory_engine: AsyncEngine) -> None:
         await session.commit()
 
 
+@pytest.fixture
+async def octomate(
+    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> AsyncGenerator[Octomate]:
+    host = Octomate(config=OctomateConfig(auth=auth_config()))
+    async with served_inkling_mcp(host, monkeypatch):
+        yield host
+
+
 async def _register(
     octomate: Octomate,
     agent: Agent[None, InklingOutput],
@@ -104,6 +114,8 @@ async def _register(
         InklingTentacle(
             "inkling",
             octomate,
+            auth=octomate.auth,
+            habitats=octomate.habitats,
             agent=agent,
             models={RECEPTION_MODEL: agent.model},
             permission_mode=permission_mode,
@@ -132,7 +144,7 @@ async def _post(
     project: str | None = None,
 ) -> list[JsonObject]:
     key = ThreadKey.from_address(_console_address(thread_id))
-    with channel.octomate.nerve.subscribe(ThreadTopic(key)) as live:
+    async with channel.octomate.nerve.subscribe(ThreadTopic(key)) as live:
         await channel.handle_directive(
             TrunklineDirective(
                 user=console_user(),
@@ -154,7 +166,7 @@ async def _send(
     """Post a directive over HTTP and wait for its turn to settle, as the console
     does on the thread's socket."""
     key = ThreadKey.from_address(_console_address(thread_key))
-    with octomate.nerve.subscribe(ThreadTopic(key)) as live:
+    async with octomate.nerve.subscribe(ThreadTopic(key)) as live:
         response = await client.post(
             f"/api/trunkline/threads/{thread_key}/messages", json=body
         )
@@ -370,7 +382,7 @@ async def test_activity_socket_multiplexes_without_streaming_content(
             assert json.loads(received["text"])["event"]["activity"] == "writing"
         async with asyncio.timeout(1):
             while any(  # noqa: ASYNC110
-                fiber.receive.statistics().current_buffer_used
+                fiber.receiver.statistics().current_buffer_used
                 for fibers in octomate.nerve.subscribers.values()
                 for fiber in fibers
             ):
@@ -504,6 +516,7 @@ async def test_activity_refresh_restores_a_native_turn_without_another_event() -
     await _register(octomate, scripted)
     agent = CodexTentacle(
         octomate,
+        habitats=octomate.habitats,
         config=CodexConfig(),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -566,13 +579,12 @@ async def test_activity_refresh_restores_a_native_turn_without_another_event() -
 
 
 async def test_a_console_watches_a_thread_over_its_live_socket(
-    in_memory_engine: AsyncEngine,
+    octomate: Octomate,
 ) -> None:
     """The console's whole live path: the socket opens on the key a thread will
     have, the directive is answered at once, and the run's events arrive on the
     socket until the reflex falls asleep. The thread is then watched by its row
     id, as any channel's thread is."""
-    octomate = Octomate()
     agent, _ = build_scripted_agent(["all done!", "and again"])
     await _register(octomate, agent)
 
@@ -705,9 +717,8 @@ async def test_a_live_socket_names_one_thread(in_memory_engine: AsyncEngine) -> 
 
 
 async def test_directive_streams_native_events(
-    in_memory_engine: AsyncEngine,
+    octomate: Octomate,
 ) -> None:
-    octomate = Octomate()
     agent, _ = build_scripted_agent(["all done!"])
     channel = await _register(octomate, agent)
 
@@ -728,7 +739,7 @@ async def test_directive_streams_native_events(
 
 
 async def test_directive_streams_every_text_delta(
-    in_memory_engine: AsyncEngine,
+    octomate: Octomate,
 ) -> None:
     """A token-streaming reply must reach the console in full — not just the
     first token before the model's FinalResultEvent."""
@@ -746,7 +757,7 @@ async def test_directive_streams_every_text_delta(
         output_type=[str, list[MessageSegment], DeferredToolRequests],
         system_prompt=SYSTEM_PROMPT,
     )
-    channel = await _register(Octomate(), agent)
+    channel = await _register(octomate, agent)
 
     payload = await _post(channel, "write a poem")
 
@@ -754,11 +765,10 @@ async def test_directive_streams_every_text_delta(
 
 
 async def test_directive_records_chat_ledger(
-    in_memory_engine: AsyncEngine,
+    octomate: Octomate,
 ) -> None:
     """The console follows the channel pattern: the inbound directive and the
     agent reply land in the shared thread ledger, not a separate history path."""
-    octomate = Octomate()
     agent, _ = build_scripted_agent(["all done!"])
     channel = await _register(octomate, agent)
 
@@ -783,7 +793,12 @@ async def _register_routes(
         assert agent.model is not None
         octomate.connect(
             InklingTentacle(
-                agent_id, octomate, agent=agent, models={RECEPTION_MODEL: agent.model}
+                agent_id,
+                octomate,
+                auth=octomate.auth,
+                habitats=octomate.habitats,
+                agent=agent,
+                models={RECEPTION_MODEL: agent.model},
             )
         )
         receptions.append(agent_id)
@@ -798,9 +813,8 @@ async def _register_routes(
 
 
 async def test_selected_route_routes_to_and_owns_the_chosen_agent(
-    in_memory_engine: AsyncEngine,
+    octomate: Octomate,
 ) -> None:
-    octomate = Octomate()
     inkling, _ = build_scripted_agent(["from inkling"])
     claude, _ = build_scripted_agent(["from claude"])
     channel = await _register_routes(octomate, {"inkling": inkling, "claude": claude})
@@ -849,9 +863,8 @@ async def test_route_change_after_first_directive_is_refused(
 
 
 async def test_routes_offer_and_run_all_registered_agents(
-    in_memory_engine: AsyncEngine,
+    octomate: Octomate,
 ) -> None:
-    octomate = Octomate()
     inkling, _ = build_scripted_agent(["from inkling"])
     claude, _ = build_scripted_agent(["from claude"])
     channel = await _register_routes(
@@ -1065,7 +1078,14 @@ async def test_an_agent_that_did_not_start_leaves_the_others_listed(
     octomate = Octomate()
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)
-    octomate.connect(DeepseekTentacle(octomate, config=DeepseekConfig()))
+    octomate.connect(
+        DeepseekTentacle(
+            octomate,
+            auth=octomate.auth,
+            habitats=octomate.habitats,
+            config=DeepseekConfig(),
+        )
+    )
 
     transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
@@ -1180,7 +1200,7 @@ async def test_a_posture_from_another_providers_vocabulary_is_refused(
 
 @pytest.mark.parametrize("effort", [None, "high", "invalid"])
 async def test_first_directive_applies_effort_to_its_first_run(
-    in_memory_engine: AsyncEngine, effort: str | None
+    octomate: Octomate, effort: str | None
 ) -> None:
     seen: list[ThinkingLevel | None] = []
 
@@ -1200,7 +1220,6 @@ async def test_first_directive_applies_effort_to_its_first_run(
         output_type=[str, DeferredToolRequests],
         system_prompt=SYSTEM_PROMPT,
     )
-    octomate = Octomate()
     await _register(octomate, agent)
     inkling = octomate.agents["inkling"]
     inkling.claims = {RECEPTION_MODEL: Claim("Test", efforts=("high",))}
@@ -1567,9 +1586,8 @@ async def test_the_projects_endpoint_offers_only_enabled_ones(
 
 
 async def test_threads_and_detail_endpoints(
-    in_memory_engine: AsyncEngine,
+    octomate: Octomate,
 ) -> None:
-    octomate = Octomate()
     agent, _ = build_scripted_agent(["all done!"])
     channel = await _register(octomate, agent)
     await _post(channel, "triage the failing checks", thread_id="thread-9")
@@ -1876,11 +1894,10 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
 
 
 async def test_a_thread_no_project_claims_reads_back_without_one(
-    in_memory_engine: AsyncEngine,
+    octomate: Octomate,
 ) -> None:
     """A directive on the console's own channel is not work in a project — and
     a run that reported no directory says so rather than guessing one."""
-    octomate = Octomate()
     agent, _ = build_scripted_agent(["done"])
     channel = await _register(octomate, agent)
     await _post(channel, "what changed?", thread_id="thread-8")
@@ -1970,7 +1987,7 @@ async def test_batch_resolve_resolves_and_streams(
         assert busy.json()["detail"] == "A turn is still running in this thread."
         assert (await octomate.deferred_actions.get_batch(batch.id)).status == "pending"
 
-        with octomate.nerve.subscribe(ThreadTopic(thread.key)) as live:
+        async with octomate.nerve.subscribe(ThreadTopic(thread.key)) as live:
             response = await client.post(
                 f"/api/trunkline/batches/{batch.id}/resolve",
                 json={"approvals": {str(approval_id): True}},

@@ -1,93 +1,116 @@
-"""An SDK transport that runs the Claude CLI on a remote host over SSH. Parked:
-nothing constructs it while remote runs are off — see `ClaudeCodeConfig.ssh`."""
+"""Claude's native control protocol over a process inside a habitat."""
 
-from __future__ import annotations
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field, replace
 
-import shlex
-from collections.abc import AsyncIterable
-from dataclasses import replace
-from typing import Any
-
-from claude_agent_sdk import ClaudeAgentOptions
+import anyio
+from anyio.abc import ByteStream
+from anyio.streams.buffered import BufferedByteReceiveStream
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, Transport
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 from claude_agent_sdk._version import __version__ as SDK_VERSION
+from claude_agent_sdk.types import _configure_can_use_tool
+from pydantic import TypeAdapter, ValidationError
+from uuid_utils.compat import uuid7
 
-from octomate.config.agents import ClaudeSSHConfig
+from octomate.fibers import MAX_FRAME_BYTES, FiberError
+from octomate.managers.habitat import HabitatManager
+from octomate.schemas.habitat import InvocationScope
+from octomate.types.json import JsonObject
+
+message_adapter = TypeAdapter(JsonObject)
 
 
-class SSHTransport(SubprocessCLITransport):
-    """Run the Claude CLI on a remote host over SSH.
+@dataclass
+class HabitatTransport(Transport):
+    """A duplex SDK connection; the caller owns the guest process and VM lease."""
 
-    Subclasses the SDK's subprocess transport so the full option->flag mapping
-    (`--model`, `--resume`, `--permission-mode`, `--allowedTools`, `--max-turns`,
-    ...) and the stream-json control protocol are reused verbatim; only the
-    *locus* of execution changes. `_build_command` wraps the SDK's own command in
-    an `ssh` invocation of the remote `claude` binary; the local version probe is
-    skipped (the CLI lives on the remote); and the local cwd is cleared so `ssh`
-    is not launched inside a path that only exists on the remote.
+    stream: ByteStream
+    max_frame_bytes: int = MAX_FRAME_BYTES
+    reader: BufferedByteReceiveStream = field(init=False)
+    ready: bool = field(default=False, init=False)
+    input_ended: bool = field(default=False, init=False)
+    writing: anyio.Lock = field(default_factory=anyio.Lock, init=False)
 
-    Couples to the SDK-private `SubprocessCLITransport` — pinned to `0.1.80`; an
-    SDK bump touches only this file.
-    """
+    def __post_init__(self) -> None:
+        self.reader = BufferedByteReceiveStream(self.stream)
 
-    ssh: ClaudeSSHConfig
-    remote_cwd: str | None
+    async def connect(self) -> None:
+        self.ready = True
 
-    def __init__(
-        self,
-        prompt: str | AsyncIterable[dict[str, Any]],
+    def is_ready(self) -> bool:
+        return self.ready
+
+    async def write(self, data: str) -> None:
+        async with self.writing:
+            await self.stream.send(data.encode())
+
+    async def end_input(self) -> None:
+        async with self.writing:
+            await self.stream.send_eof()
+            self.input_ended = True
+
+    async def read_messages(self) -> AsyncIterator[JsonObject]:
+        while True:
+            try:
+                frame = await self.reader.receive_until(b"\n", self.max_frame_bytes + 1)
+            except anyio.IncompleteRead:
+                if self.reader.buffer:
+                    raise FiberError("Incomplete Claude protocol frame") from None
+                if not self.input_ended:
+                    raise FiberError("Claude protocol stream closed") from None
+                return
+            except anyio.DelimiterNotFound:
+                raise FiberError(
+                    "Claude protocol frame exceeds the size limit"
+                ) from None
+            if len(frame) > self.max_frame_bytes:
+                raise FiberError("Claude protocol frame exceeds the size limit")
+            try:
+                yield message_adapter.validate_json(frame)
+            except ValidationError:
+                raise FiberError("Invalid Claude protocol frame") from None
+
+    async def close(self) -> None:
+        self.ready = False
+        with anyio.fail_after(5):
+            await self.stream.aclose()
+
+    @classmethod
+    @asynccontextmanager
+    async def client(
+        cls,
+        habitats: HabitatManager,
+        scope: InvocationScope,
         options: ClaudeAgentOptions,
-        *,
-        ssh: ClaudeSSHConfig,
-    ) -> None:
-        # A `can_use_tool` callback routes permissions through the stdio control
-        # protocol, which the CLI only enables with `--permission-prompt-tool
-        # stdio`. The client applies this to its own transport but not to a
-        # pre-constructed one (client.py `_connect_inner`), so apply it here.
-        if options.can_use_tool and not options.permission_prompt_tool_name:
-            options = replace(options, permission_prompt_tool_name="stdio")
-        super().__init__(prompt, options)
-        self.ssh = ssh
-        # The CLI runs on the remote: use the remote binary as argv[0] (skips the
-        # local `_find_cli`), and keep `options.cwd` only for the remote `cd` — the
-        # ssh process itself must not chdir into a remote-only path.
-        self._cli_path = ssh.claude_bin
-        self.remote_cwd = self._cwd
-        self._cwd = None
-
-    async def _check_claude_version(self) -> None:
-        # The CLI lives on the remote host; there is nothing local to version-check.
-        return None
-
-    def _build_command(self) -> list[str]:
-        remote_argv = super()._build_command()  # [claude_bin, --output-format, ...]
-        env = {
-            "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
-            "CLAUDE_AGENT_SDK_VERSION": SDK_VERSION,
-            **self._options.env,
-        }
-        exports = " ".join(f"{key}={shlex.quote(value)}" for key, value in env.items())
-        cwd = self.remote_cwd or "."
-        # Expand a leading ~ on the remote (shlex.quote would wrap it and defeat
-        # the shell's tilde expansion).
-        cwd_expr = (
-            '"$HOME"' + shlex.quote(cwd[1:])
-            if cwd.startswith("~")
-            else shlex.quote(cwd)
+    ) -> AsyncGenerator[ClaudeSDKClient]:
+        """Acquire, run and release using options whose paths refer to the guest."""
+        if options.cwd is None:
+            raise ValueError("Habitat Claude runs require a guest workspace")
+        command_options = replace(
+            _configure_can_use_tool(options),
+            cli_path=options.cli_path or "claude",
         )
-        remote = f"cd {cwd_expr} && export {exports} && " + " ".join(
-            shlex.quote(arg) for arg in remote_argv
-        )
-        ssh_argv = [
-            "ssh",
-            "-T",  # no TTY allocation — essential for piped stream-json
-            "-o",
-            "ServerAliveInterval=15",
-            "-o",
-            "ServerAliveCountMax=3",
-        ]
-        if self.ssh.identity_file:
-            ssh_argv += ["-i", self.ssh.identity_file]
-        ssh_argv += self.ssh.ssh_options
-        ssh_argv += [self.ssh.host, remote]
-        return ssh_argv
+        # Reuse the pinned SDK's flag mapping for its native control protocol.
+        command = SubprocessCLITransport("", command_options)._build_command()
+        async with (
+            habitats.enter(scope, uuid7()) as residence,
+            residence.habitat.execute(
+                *command,
+                workdir=str(options.cwd),
+                env={
+                    "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
+                    "CLAUDE_AGENT_SDK_VERSION": SDK_VERSION,
+                    **options.env,
+                },
+            ) as stream,
+            ClaudeSDKClient(
+                options=options,
+                transport=cls(
+                    stream,
+                    max_frame_bytes=options.max_buffer_size or MAX_FRAME_BYTES,
+                ),
+            ) as client,
+        ):
+            yield client

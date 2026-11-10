@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.0](https://github.com/kalynnka/octomate/compare/octomate-v0.0.6...octomate-v0.1.0) (2026-11-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **trunkline:** group agent activity and unify native session identity ([#168](https://github.com/kalynnka/octomate/issues/168))
+
+### Features
+
+* **status:** unify run activity across channels and Trunkline ([#167](https://github.com/kalynnka/octomate/issues/167)) ([1325aa9](https://github.com/kalynnka/octomate/commit/1325aa9fea3aa88c58fbf3b06111ff284f2a31b6))
+* **trunkline:** group agent activity and unify native session identity ([#168](https://github.com/kalynnka/octomate/issues/168)) ([6cba29b](https://github.com/kalynnka/octomate/commit/6cba29b0b18a049edabe4e8bfeacd14d73ab4e44))
+* **trunkline:** improve rendering, navigation, and live updates ([#163](https://github.com/kalynnka/octomate/issues/163)) ([45054f8](https://github.com/kalynnka/octomate/commit/45054f8bca73004c3fdc732d03407da54a8c6fe1))
+
 ## [0.0.6](https://github.com/kalynnka/octomate/compare/octomate-v0.0.5...octomate-v0.0.6) (2026-10-29)
 
 

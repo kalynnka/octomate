@@ -210,6 +210,8 @@ async def execution(
     agent = app.connect(
         ClaudeTentacle(
             app,
+            auth=app.auth,
+            habitats=app.habitats,
             config=ClaudeCodeConfig(),
             commands=app.commands,
             projects=app.projects,

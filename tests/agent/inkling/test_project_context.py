@@ -92,7 +92,13 @@ async def a_thread(octomate: Octomate, chat_id: str, project: str = "") -> Threa
 
 async def inkling_run(octomate: Octomate, thread: Thread, scripted: Scripted) -> None:
     """Drive one inkling run through the real react graph."""
-    tentacle = InklingTentacle("inkling", octomate, agent=scripted.agent())
+    tentacle = InklingTentacle(
+        "inkling",
+        octomate,
+        auth=octomate.auth,
+        habitats=octomate.habitats,
+        agent=scripted.agent(),
+    )
     await tentacle.run(
         "what is this repo?",
         conversation_address=ADDRESS,
@@ -174,7 +180,13 @@ async def test_project_file_calls_defer_for_user_approval(tmp_path: Path) -> Non
         output_type=STR_OUTPUT,
         system_prompt=SYSTEM_PROMPT,
     )
-    tentacle = InklingTentacle("inkling", octomate, agent=agent)
+    tentacle = InklingTentacle(
+        "inkling",
+        octomate,
+        auth=octomate.auth,
+        habitats=octomate.habitats,
+        agent=agent,
+    )
 
     result = await tentacle.run(
         "read the instructions",
@@ -205,7 +217,14 @@ def test_every_capability_is_rooted_at_the_workspace(tmp_path: Path) -> None:
     # workspace — the project's own checkout included, and `extra_roots` would be a
     # second place to write.
     workspace = tmp_path / "workspaces" / "t1"
-    tentacle = InklingTentacle("inkling", Octomate(), agent=Scripted().agent())
+    host = Octomate()
+    tentacle = InklingTentacle(
+        "inkling",
+        host,
+        auth=host.auth,
+        habitats=host.habitats,
+        agent=Scripted().agent(),
+    )
 
     local_workspace, repo_context, files, shell = tentacle.workspace_capabilities(
         workspace

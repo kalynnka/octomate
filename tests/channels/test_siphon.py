@@ -5,7 +5,10 @@ with the platform id it was rendered as."""
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 
+import pytest
+from anyio.abc import ObjectReceiveStream
 from pydantic_ai.usage import RunUsage
 
 from octomate.config import ChannelConfig, ChannelStreamConfig
@@ -73,6 +76,58 @@ def texts(channel: FakeChannelTentacle) -> list[str]:
     return [
         message["text"] for _, _, messages, *_ in channel.sent for message in messages
     ]
+
+
+@pytest.mark.parametrize("failed", [False, True])
+async def test_context_owns_subscription_and_reader(failed: bool) -> None:
+    channel, _ = a_channel(stream=False)
+    topic = ChannelTopic(channel.id)
+    with pytest.raises(RuntimeError, match="body failed") if failed else nullcontext():
+        async with channel.siphon as siphon:
+            assert siphon is channel.siphon
+            reading = siphon.reading
+            assert reading is not None
+            assert topic in channel.octomate.nerve.subscribers
+            if failed:
+                raise RuntimeError("body failed")
+    assert reading.done()
+    assert topic not in channel.octomate.nerve.subscribers
+
+
+async def test_reader_failure_still_closes_the_subscription(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    channel, _ = a_channel(stream=False)
+    started = asyncio.Event()
+
+    async def read(impulses: ObjectReceiveStream[Impulse]) -> None:
+        started.set()
+        raise RuntimeError("reader failed")
+
+    monkeypatch.setattr(channel.siphon, "read", read)
+    with pytest.raises(RuntimeError, match="reader failed"):
+        async with channel.siphon:
+            await started.wait()
+    assert not channel.octomate.nerve.subscribers
+
+
+async def test_cancelled_context_closes_subscription_and_reader() -> None:
+    channel, _ = a_channel(stream=False)
+    entered = asyncio.Event()
+
+    async def run() -> None:
+        async with channel.siphon:
+            entered.set()
+            await asyncio.Future[None]()
+
+    task = asyncio.create_task(run())
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert channel.siphon.reading is not None
+    assert channel.siphon.reading.done()
+    assert not channel.octomate.nerve.subscribers
 
 
 async def test_a_streaming_channel_draws_a_run_on_its_timeline_and_marks_it() -> None:

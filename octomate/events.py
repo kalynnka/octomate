@@ -70,6 +70,7 @@ from octomate.schemas.deferred import (
     DeferredQuestion,
     QuestionAnswer,
 )
+from octomate.schemas.habitat import HabitatFailed, HabitatProgress
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.thread import Handoff
 from octomate.schemas.todos import Todo
@@ -580,6 +581,8 @@ type WireEvent = (
     | RunEndedEvent
     | RunErrorEvent
     | GatewayEvent
+    | HabitatProgress
+    | HabitatFailed
 )
 
 # Serialization-only: wire consumers never validate events back in, so the

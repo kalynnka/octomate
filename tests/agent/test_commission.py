@@ -9,14 +9,11 @@ import asyncio
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from types import SimpleNamespace
-from typing import cast
+from typing import TypedDict, cast
 
 import pytest
-from octomate_protocol.gateway import GatewayTool
 from pydantic import UUID7
-from pydantic_ai import AgentStreamEvent, RunContext
-from pydantic_ai.exceptions import ModelRetry
+from pydantic_ai import AgentStreamEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -27,22 +24,22 @@ from pydantic_ai.messages import (
 from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.gateway import (
-    ACCOMPLICE_INSTRUCTION,
-    Accomplices,
-    GatewayCapability,
-)
 from octomate.events import (
     SubagentSettledEvent,
     SubagentStartedEvent,
 )
-from octomate.managers.gateway import OctomateSession
+from octomate.managers.gateway import (
+    ACCOMPLICE_INSTRUCTION,
+    GatewayRefusal,
+    OctomateSession,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
     AgentRoute,
     Claim,
 )
 from octomate.tentacles.agent import AgentTentacle
+from octomate.tentacles.inkling.mcp import Accomplices
 from tests.support.agents import FakeAgent
 from tests.support.managers import FakeConversationManager
 
@@ -61,21 +58,12 @@ CLAUDE_ROUTE = AgentRoute(
 )
 
 
-def _ctx(
-    parent_id: UUID7,
-    run_id: str = "run-parent",
-    tool_call_id: str = "call-1",
-) -> RunContext[None]:
-    # What a live run's RunContext carries: the run id, the tool call, and the
-    # calling run's own conversation id.
-    return cast(
-        RunContext[None],
-        SimpleNamespace(
-            run_id=run_id,
-            tool_call_id=tool_call_id,
-            conversation_id=str(parent_id),
-        ),
-    )
+class ParentCall(TypedDict):
+    parent_id: UUID7
+    parent_run_id: str | None
+    parent_tool_call_id: str | None
+    conversations: FakeConversationManager
+    commission_timeout: float
 
 
 async def _gate(
@@ -84,34 +72,36 @@ async def _gate(
     conversations: FakeConversationManager | None = None,
     commission_timeout: float = 5.0,
 ) -> tuple[
-    GatewayCapability,
+    OctomateSession,
     dict[str, AgentTentacle],
     FakeConversationManager,
-    RunContext[None],
+    ParentCall,
 ]:
     agents = agents or {
         "inkling": cast(AgentTentacle, FakeAgent(id="inkling")),
         "claude": cast(AgentTentacle, FakeAgent(id="claude")),
     }
     conversations = conversations or FakeConversationManager()
-    gate = GatewayCapability(
-        session=OctomateSession(
-            channel_routes={"im": [CLAUDE_ROUTE]},
-            current_agent_id="inkling",
-            agents=agents,
-            thread_id=THREAD,
-            conversation_address=ADDRESS,
-        ),
-        conversations=conversations,
-        commission_timeout=commission_timeout,
+    gate = OctomateSession(
+        channel_routes={"im": [CLAUDE_ROUTE]},
+        current_agent_id="inkling",
+        agents=agents,
+        thread_id=THREAD,
+        conversation_address=ADDRESS,
     )
     parent = await conversations.ensure(THREAD, agent_tentacle_id="inkling")
-    return gate, agents, conversations, _ctx(parent.id)
-
-
-def _tool(gate: GatewayCapability, name: str):
-    assert gate.toolset is not None
-    return gate.toolset.tools[name].function
+    return (
+        gate,
+        agents,
+        conversations,
+        ParentCall(
+            parent_id=parent.id,
+            parent_run_id="run-parent",
+            parent_tool_call_id="call-1",
+            conversations=conversations,
+            commission_timeout=commission_timeout,
+        ),
+    )
 
 
 async def test_commission_runs_the_accomplice_and_returns_its_report() -> None:
@@ -119,8 +109,8 @@ async def test_commission_runs_the_accomplice_and_returns_its_report() -> None:
     claude = cast(FakeAgent, agents["claude"])
     claude.reception_output = "audit: three findings"
 
-    report = await _tool(gate, GatewayTool.COMMISSION)(
-        ctx,
+    report = await gate.commission(
+        **ctx,
         name="repo-audit",
         agent_id="claude",
         model="opus",
@@ -150,8 +140,8 @@ async def test_an_accomplice_carries_no_gate_and_is_told_it_has_no_user() -> Non
     # it it is an accomplice with no user.
     gate, agents, _, ctx = await _gate()
     claude = cast(FakeAgent, agents["claude"])
-    await _tool(gate, GatewayTool.COMMISSION)(
-        ctx, name="hand", agent_id="claude", model="opus", brief="Work."
+    await gate.commission(
+        **ctx, name="hand", agent_id="claude", model="opus", brief="Work."
     )
 
     turn = claude.turns[0]
@@ -162,31 +152,30 @@ async def test_an_accomplice_carries_no_gate_and_is_told_it_has_no_user() -> Non
 
 async def test_commissioning_a_live_name_again_is_refused() -> None:
     gate, _, conversations, ctx = await _gate()
-    commission = _tool(gate, GatewayTool.COMMISSION)
+    commission = gate.commission
     await commission(
-        ctx, name="repo-audit", agent_id="claude", model="opus", brief="Go."
+        **ctx, name="repo-audit", agent_id="claude", model="opus", brief="Go."
     )
     child = await conversations.ensure(
         THREAD, agent_tentacle_id="claude", subagent_id="repo-audit"
     )
     await conversations.record_agent_run(child, str(uuid7()), [])
 
-    with pytest.raises(ModelRetry, match="already at work"):
+    with pytest.raises(GatewayRefusal, match="already at work"):
         await commission(
-            ctx, name="repo-audit", agent_id="claude", model="opus", brief="Again."
+            **ctx, name="repo-audit", agent_id="claude", model="opus", brief="Again."
         )
 
 
 async def test_whisper_continues_the_same_accomplice_in_a_later_parent_turn() -> None:
     gate, agents, conversations, ctx = await _gate()
     claude = cast(FakeAgent, agents["claude"])
-    await _tool(gate, GatewayTool.COMMISSION)(
-        ctx, name="repo-audit", agent_id="claude", model="opus", brief="Audit."
+    await gate.commission(
+        **ctx, name="repo-audit", agent_id="claude", model="opus", brief="Audit."
     )
 
-    parent = conversations.store[(THREAD, "inkling", "")]
-    report = await _tool(gate, GatewayTool.WHISPER)(
-        _ctx(parent.id, run_id="run-parent-2", tool_call_id="call-2"),
+    report = await gate.whisper(
+        **{**ctx, "parent_run_id": "run-parent-2", "parent_tool_call_id": "call-2"},
         name="repo-audit",
         message="Now fix finding two.",
     )
@@ -205,25 +194,27 @@ async def test_whisper_continues_the_same_accomplice_in_a_later_parent_turn() ->
 
 async def test_whisper_with_an_unknown_name_lists_the_live_accomplices() -> None:
     gate, _, _, ctx = await _gate()
-    await _tool(gate, GatewayTool.COMMISSION)(
-        ctx, name="repo-audit", agent_id="claude", model="opus", brief="Audit."
+    await gate.commission(
+        **ctx, name="repo-audit", agent_id="claude", model="opus", brief="Audit."
     )
 
-    with pytest.raises(ModelRetry, match="repo-audit"):
-        await _tool(gate, GatewayTool.WHISPER)(ctx, name="wrong-name", message="hello?")
+    with pytest.raises(GatewayRefusal, match="repo-audit"):
+        await gate.whisper(**ctx, name="wrong-name", message="hello?")
 
 
 async def test_commission_refuses_self_bad_routes_and_unclaimed_effort() -> None:
     gate, _, _, ctx = await _gate()
-    commission = _tool(gate, GatewayTool.COMMISSION)
+    commission = gate.commission
 
-    with pytest.raises(ModelRetry, match="Cannot commission yourself"):
-        await commission(ctx, name="me", agent_id="inkling", model="opus", brief="Hi.")
-    with pytest.raises(ModelRetry, match="Invalid commission route"):
-        await commission(ctx, name="x", agent_id="claude", model="haiku", brief="Hi.")
-    with pytest.raises(ModelRetry, match="does not accept effort"):
+    with pytest.raises(GatewayRefusal, match="Cannot commission yourself"):
         await commission(
-            ctx,
+            **ctx, name="me", agent_id="inkling", model="opus", brief="Hi."
+        )
+    with pytest.raises(GatewayRefusal, match="Invalid commission route"):
+        await commission(**ctx, name="x", agent_id="claude", model="haiku", brief="Hi.")
+    with pytest.raises(GatewayRefusal, match="does not accept effort"):
+        await commission(
+            **ctx,
             name="x",
             agent_id="claude",
             model="opus",
@@ -245,9 +236,9 @@ async def test_a_deferring_accomplice_fails_loudly_instead_of_parking() -> None:
         ]
     )
 
-    with pytest.raises(ModelRetry, match="has no user"):
-        await _tool(gate, GatewayTool.COMMISSION)(
-            ctx, name="asker", agent_id="claude", model="opus", brief="Go."
+    with pytest.raises(GatewayRefusal, match="has no user"):
+        await gate.commission(
+            **ctx, name="asker", agent_id="claude", model="opus", brief="Go."
         )
 
 
@@ -270,9 +261,9 @@ async def test_an_overrunning_accomplice_fails_the_tool_not_the_turn() -> None:
     }
     gate, _, _, ctx = await _gate(agents=agents, commission_timeout=0.05)
 
-    with pytest.raises(ModelRetry, match="exceeded"):
-        await _tool(gate, GatewayTool.COMMISSION)(
-            ctx, name="slow", agent_id="claude", model="opus", brief="Take ages."
+    with pytest.raises(GatewayRefusal, match="exceeded"):
+        await gate.commission(
+            **ctx, name="slow", agent_id="claude", model="opus", brief="Take ages."
         )
 
 
@@ -284,15 +275,14 @@ async def test_three_commissions_in_one_reply_run_concurrently() -> None:
             SlowAgent(id="claude", delay=0.1),
         ),
     }
-    gate, _, conversations, _ = await _gate(agents=agents)
-    parent_id = conversations.store[(THREAD, "inkling", "")].id
-    commission = _tool(gate, GatewayTool.COMMISSION)
+    gate, _, conversations, ctx = await _gate(agents=agents)
+    commission = gate.commission
 
     started = time.monotonic()
     reports = await asyncio.gather(
         *(
             commission(
-                _ctx(parent_id, run_id="run-parent", tool_call_id=f"call-{i}"),
+                **{**ctx, "parent_tool_call_id": f"call-{i}"},
                 name=f"hand-{i}",
                 agent_id="claude",
                 model="opus",
@@ -314,19 +304,13 @@ async def test_three_commissions_in_one_reply_run_concurrently() -> None:
     }
 
 
-async def test_a_gate_without_commission_deps_offers_no_commission() -> None:
-    bare = GatewayCapability(
-        session=OctomateSession(
-            channel_routes={"im": [CLAUDE_ROUTE]}, current_agent_id="inkling"
+async def test_accomplice_requires_a_live_core_session() -> None:
+    gate, _, _, ctx = await _gate()
+    gate.agents = None
+    with pytest.raises(RuntimeError, match="need agents"):
+        await gate.commission(
+            **ctx, name="probe", agent_id="claude", model="opus", brief="Go."
         )
-    )
-    assert bare.toolset is not None
-    assert GatewayTool.COMMISSION not in bare.toolset.tools
-    assert not bare.commissioning
-    assert GatewayTool.COMMISSION not in bare.get_instructions()
-
-    gate, _, _, _ = await _gate()
-    assert GatewayTool.COMMISSION in gate.get_instructions()
 
 
 async def _watched(

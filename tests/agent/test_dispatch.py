@@ -343,7 +343,7 @@ async def test_a_second_kick_on_an_awake_thread_is_refused() -> None:
     signal = UserMessageSignal([_event(text="hello", thread_id="t1")])
 
     reflex = await octomate.kick(signal)
-    with octomate.nerve.subscribe(ThreadTopic(thread)) as live:
+    async with octomate.nerve.subscribe(ThreadTopic(thread)) as live:
         with pytest.raises(StillAwake):
             await octomate.kick(signal)
         assert held(live) == []
@@ -696,6 +696,8 @@ def _inkling(octomate: Octomate, stream_text: str) -> InklingTentacle:
     return InklingTentacle(
         "inkling",
         octomate,
+        auth=octomate.auth,
+        habitats=octomate.habitats,
         agent=cast(
             Agent[None, InklingOutput],
             Agent(
@@ -833,7 +835,7 @@ async def test_status_facts_keep_the_reflex_open_across_runs(ending: str) -> Non
     app.connect(FakeAgent(id="claude"))
     app.connect(FakeChannelTentacle(config=_summon_config(stream=False)))
 
-    with (
+    async with (
         app.nerve.subscribe(ThreadTopic(ThreadKey.from_address(_key()))) as live,
         app.nerve.subscribe(ChannelTopic("im")) as channel_live,
     ):
@@ -895,7 +897,9 @@ async def test_status_facts_keep_the_reflex_open_across_runs(ending: str) -> Non
         entry.reception_output = "Resumed and finished."
         [approval] = batch.approvals
         assert approval.batch_id is not None
-        with app.nerve.subscribe(ThreadTopic(ThreadKey.from_address(_key()))) as live:
+        async with app.nerve.subscribe(
+            ThreadTopic(ThreadKey.from_address(_key()))
+        ) as live:
             await kicked(
                 app,
                 DeferredActionBatchResponse(
@@ -930,7 +934,7 @@ async def test_status_outcomes_survive_failed_or_cancelled_lifecycle(
     else:
         monkeypatch.setattr(app.workspaces, "save", failure)
 
-    with app.nerve.subscribe(ThreadTopic(ThreadKey.from_address(_key()))) as live:
+    async with app.nerve.subscribe(ThreadTopic(ThreadKey.from_address(_key()))) as live:
         with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
             await kicked(app, UserMessageSignal([_event()]))
         events = [impulse.event for impulse in held(live)]

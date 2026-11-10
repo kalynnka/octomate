@@ -222,9 +222,12 @@ async def test_inkling_output_reaches_napcat(
             )
         }
 
+    host = Octomate()
     inkling = InklingTentacle(
         "inkling",
-        Octomate(),
+        host,
+        auth=host.auth,
+        habitats=host.habitats,
         models={
             "scripted": FunctionModel(stream_function=respond, model_name="scripted")
         },

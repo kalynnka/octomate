@@ -53,6 +53,8 @@ def agent(client: AsyncMock) -> ClaudeTentacle:
     host = Octomate()
     return ClaudeTentacle(
         host,
+        auth=host.auth,
+        habitats=host.habitats,
         config=ClaudeCodeConfig(),
         commands=host.commands,
         projects=host.projects,

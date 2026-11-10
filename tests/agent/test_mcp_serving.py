@@ -69,7 +69,17 @@ OCTOMATE_TOOLS = [
     "gateway_scheme",
     "gateway_send",
     "gateway_dismiss",
+    "gateway_commission",
+    "gateway_whisper",
     *map(history_tool, HISTORY_TOOLS),
+    "read_todos",
+    "write_todos",
+    "add_todo",
+    "update_todo_status",
+    "remove_todo",
+    "add_subtask",
+    "set_dependency",
+    "get_available_tasks",
 ]
 
 

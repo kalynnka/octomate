@@ -78,7 +78,7 @@ async def test_form_can_correct_invalid_answers_and_revise_drafts_before_submit(
         assert count.batch_id is not None
         manager = tentacle.octomate.deferred_actions
         topic = ChannelTopic(suspender.target_address.channel_tentacle_id)
-        with tentacle.octomate.nerve.subscribe(topic) as changes:
+        async with tentacle.octomate.nerve.subscribe(topic) as changes:
             await tentacle.octomate.kick(
                 DeferredActionBatchResponse(
                     batch_id=count.batch_id,

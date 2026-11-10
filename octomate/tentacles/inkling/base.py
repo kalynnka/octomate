@@ -16,6 +16,8 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self, get_args, overload
 
+import anyio
+from httpx import URL
 from pydantic import UUID7, TypeAdapter
 from pydantic_ai import (
     AgentCapability,
@@ -48,9 +50,10 @@ from pydantic_ai_harness.step_persistence.naming import generate_name
 from pydantic_graph import GraphRunContext
 from rich.style import Style
 
-from octomate.capabilities.gateway import GatewayCapability
 from octomate.config.agents import AgentRouteModelName, InklingConfig
 from octomate.managers.conversation import ConversationManager
+from octomate.mcp.gateway import CONVERSATION_HEADER
+from octomate.mcp.server import OCTOMATE_MCP_PATH
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import Claim
@@ -63,12 +66,12 @@ from octomate.tentacles.agent import (
 from octomate.tentacles.deferred import DeferredSuspender
 from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.capabilities import UserScopedCapability
-from octomate.tentacles.inkling.capabilities.mcp import tentacles_capability
 from octomate.tentacles.inkling.deferred import (
     DeclineResolver,
     DeferredResolver,
     PostureResolver,
 )
+from octomate.tentacles.inkling.mcp import OctomateTools
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.inkling.react import (
     ReactDeps,
@@ -83,6 +86,8 @@ from octomate.types.permissions import InklingPermissionMode, PermissionMode
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
+    from octomate.managers.auth import AuthManager
+    from octomate.managers.habitat import HabitatManager
     from octomate.managers.mcp import McpManager
 
 logger = logging.getLogger(__name__)
@@ -218,6 +223,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         id: str,
         octomate: Octomate,
         *,
+        auth: AuthManager | None,
+        habitats: HabitatManager,
         agent: Agent[None, InklingOutput] | None = None,
         models: Mapping[AgentRouteModelName, Model | str] | None = None,
         naming_model: Model | str | None = None,
@@ -241,6 +248,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             projects=octomate.projects,
             threads=octomate.threads,
             files=octomate.files,
+            auth=auth,
+            habitats=habitats,
         )
         self.config = config
         self.mcp = octomate.mcp
@@ -437,6 +446,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 pass
             self.warm_task = None
         await self._exit_stack.aclose()
+        with anyio.CancelScope(shield=True):
+            await self.revoke_runtime_keys()
 
     @overload
     async def run(
@@ -728,6 +739,68 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             )
         )
 
+    @overload
+    def iter_graph_events(
+        self,
+        *,
+        user_prompt: str | Sequence[UserContent] | None,
+        conversation_address: ChannelAddress,
+        thread_id: UUID7 | None,
+        source_thread_address: ChannelAddress | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
+        run_name: str | None = None,
+        output_type: None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: DeferredSuspender | None = None,
+        model: Model | KnownModelName | str | None = None,
+        effort: str | None = None,
+        conversation_id: UUID7 | None = None,
+        interactive: bool = True,
+        instructions: AgentInstructions[None] = None,
+        deps: None = None,
+        model_settings: AgentModelSettings[None] | None = None,
+        usage_limits: UsageLimits | None = None,
+        usage: RunUsage | None = None,
+        metadata: AgentMetadata[None] | None = None,
+        output_retries: int | None = None,
+        infer_name: bool = True,
+        toolsets: Sequence[AbstractToolset[None]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[None]] | None = None,
+        capabilities: Sequence[AgentCapability[None]] | None = None,
+        spec: AgentSpecInput | None = None,
+    ) -> AsyncGenerator[ReactStreamEvent[InklingOutput], None]: ...
+
+    @overload
+    def iter_graph_events(
+        self,
+        *,
+        user_prompt: str | Sequence[UserContent] | None,
+        conversation_address: ChannelAddress,
+        thread_id: UUID7 | None,
+        source_thread_address: ChannelAddress | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
+        run_name: str | None = None,
+        output_type: OutputSpec[RunOutputDataT] | None,
+        deferred_tool_results: DeferredToolResults | None = None,
+        deferred_suspender: DeferredSuspender | None = None,
+        model: Model | KnownModelName | str | None = None,
+        effort: str | None = None,
+        conversation_id: UUID7 | None = None,
+        interactive: bool = True,
+        instructions: AgentInstructions[None] = None,
+        deps: None = None,
+        model_settings: AgentModelSettings[None] | None = None,
+        usage_limits: UsageLimits | None = None,
+        usage: RunUsage | None = None,
+        metadata: AgentMetadata[None] | None = None,
+        output_retries: int | None = None,
+        infer_name: bool = True,
+        toolsets: Sequence[AbstractToolset[None]] | None = None,
+        builtin_tools: Sequence[AgentNativeTool[None]] | None = None,
+        capabilities: Sequence[AgentCapability[None]] | None = None,
+        spec: AgentSpecInput | None = None,
+    ) -> AsyncGenerator[ReactStreamEvent[InklingOutput | RunOutputDataT], None]: ...
+
     async def iter_graph_events(
         self,
         *,
@@ -782,24 +855,42 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         )
 
         capabilities = list(capabilities or [])
-        # The MCP tentacles the host holds act as the person the turn is for, which
-        # is what the Octomate session carries; a run without one has nobody for
-        # them to act as.
-        octomate_session = next(
-            (
-                capability.session
-                for capability in capabilities
-                if isinstance(capability, GatewayCapability)
-            ),
-            None,
+        # The core owns the session; the agent receives only its MCP connection.
+        octomate_session = (
+            self.octomate.gateway.get(conversation_id)
+            if conversation_id is not None
+            else None
         )
-        if octomate_session is not None:
-            capabilities.append(
-                tentacles_capability(
-                    octomate_session,
-                    manager=self.mcp,
-                )
+        profile = (
+            octomate_session.user_profile if octomate_session is not None else None
+        )
+        if profile is not None and profile.user_id is not None:
+            key = await self.runtime_api_key(profile.user_id)
+            if key is None:
+                raise ValueError("Inkling MCP tools require configured authentication")
+            if octomate_session is None or octomate_session.conversation_id is None:
+                raise ValueError("Inkling MCP tools require a core-owned conversation")
+            deployment = self.octomate.config
+            client: MCPToolset[None] = MCPToolset(
+                str(
+                    URL(
+                        scheme="http",
+                        host="127.0.0.1"
+                        if deployment.host.is_unspecified
+                        else str(deployment.host),
+                        port=deployment.port,
+                        path=OCTOMATE_MCP_PATH,
+                    )
+                ),
+                id="octomate",
+                headers={
+                    "Authorization": f"Bearer {key.token.get_secret_value()}",
+                    CONVERSATION_HEADER: str(octomate_session.conversation_id),
+                },
+                process_tool_call=OctomateTools.call,
+                max_retries=2,
             )
+            capabilities.extend(OctomateTools.capabilities(client))
         # The react graph carries only the thread/agent identity; each node fetches
         # the live conversation (and its history) from the ConversationManager, the
         # single source of truth — no message-history copy is threaded here. A

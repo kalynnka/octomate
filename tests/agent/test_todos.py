@@ -1,21 +1,6 @@
-"""TodoCapability: persists via the manager and emits granular todo events on the
-stream through `Agent.stream_events`.
+"""MCP todos persist in the calling conversation and publish each mutation once."""
 
-TestModel drives the create path end-to-end. Status-change/completed/deleted
-derivation and stream injection are covered deterministically as units, because
-TestModel generates random tool args (so it can't target a real todo `ref`) and
-FunctionModel's streaming form is fiddly to script for one assertion.
-"""
-
-from __future__ import annotations
-
-from collections.abc import AsyncIterator
-from types import SimpleNamespace
-from typing import Any, cast
-
-from pydantic_ai import AgentStreamEvent, RunContext
-from pydantic_ai.messages import FunctionToolResultEvent, ToolReturn, ToolReturnPart
-from pydantic_ai.models.test import TestModel
+from fastmcp import Client
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
@@ -26,46 +11,50 @@ from octomate.events import (
     TodoStatusChangedEvent,
 )
 from octomate.managers.conversation import ConversationManager
+from octomate.managers.gateway import OctomateSession
 from octomate.managers.todos import TodoManager
-from octomate.schemas.conversation import Conversation
+from octomate.mcp.todos import update_events
+from octomate.nerve import ChannelTopic, Nerve
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.todos import Todo
-from octomate.tentacles.inkling.agent import Agent
-from octomate.tentacles.inkling.capabilities.todos import TodoCapability, update_events
 from tests.support.managers import a_thread
+from tests.support.mcp import core_tool_server
+from tests.support.nerve import held
 
 
-async def _conversation() -> Conversation:
-    return await ConversationManager().ensure(
-        await a_thread(),
-        agent_tentacle_id="agent",
+async def a_session() -> OctomateSession:
+    conversation = await ConversationManager().ensure(
+        await a_thread(), agent_tentacle_id="agent"
     )
-
-
-def _tool_ctx(conversation: Conversation) -> RunContext[Any]:
-    """The todo tools only read `ctx.conversation_id` — one dynamic-boundary cast."""
-    return cast(RunContext[Any], SimpleNamespace(conversation_id=str(conversation.id)))
+    return OctomateSession(
+        channel_routes={},
+        current_agent_id="agent",
+        conversation_id=conversation.id,
+        conversation_address=ChannelAddress("im", "dm", "alice", "alice"),
+        nerve=Nerve(),
+    )
 
 
 async def test_add_todo_emits_created_event_and_persists(
     in_memory_engine: AsyncEngine,
 ) -> None:
-    conv = await _conversation()
-    manager = TodoManager()
-    agent = Agent(
-        TestModel(call_tools=["add_todo"]),
-        capabilities=[TodoCapability(manager=manager)],
-    )
-
-    events = [
-        event
-        async for event in agent.stream_events("plan it", conversation_id=str(conv.id))
-    ]
-
-    created = [event for event in events if isinstance(event, TodoCreatedEvent)]
-    assert created, "expected a TodoCreatedEvent emitted by add_todo"
-    persisted = await manager.list_todos(conv.id)
+    session = await a_session()
+    assert session.nerve is not None
+    assert session.conversation_id is not None
+    async with (
+        session.nerve.subscribe(ChannelTopic("im")) as events,
+        Client(core_tool_server(session)) as client,
+    ):
+        result = await client.call_tool(
+            "add_todo", {"content": "Run tests", "active_form": "Running tests"}
+        )
+        [created] = [impulse.event for impulse in held(events)]
+    assert isinstance(created, TodoCreatedEvent)
+    persisted = await TodoManager().list_todos(session.conversation_id)
     assert len(persisted) == 1
-    assert persisted[0].ref == created[0].todo.ref
+    assert persisted[0].ref == created.todo.ref
+    assert persisted[0].content == "Run tests"
+    assert "Added" in result.data
 
 
 def test_update_events_derivation() -> None:
@@ -88,93 +77,103 @@ def test_update_events_derivation() -> None:
     ]
 
 
-async def test_wrap_forwards_stashed_todo_events() -> None:
-    cid = uuid7()
-    todo = Todo(conversation_id=cid, ref="r1", content="x", status="completed")
-    stashed = [TodoStatusChangedEvent(todo=todo), TodoCompletedEvent(todo=todo)]
-    result_event = FunctionToolResultEvent(
-        part=ToolReturnPart(
-            tool_name="update_todo_status",
-            content="ok",
-            tool_call_id="c1",
-            metadata=stashed,
-        )
+async def test_status_change_publishes_update_status_and_completion_once(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    session = await a_session()
+    assert session.nerve is not None
+    assert session.conversation_id is not None
+    todo = await TodoManager().add_todo(
+        session.conversation_id, content="test", active_form="testing"
     )
-
-    async def fake_stream() -> AsyncIterator[AgentStreamEvent]:
-        yield result_event
-
-    capability = TodoCapability(manager=TodoManager())
-    out = [
-        event
-        async for event in capability.wrap_run_event_stream(
-            cast(RunContext[Any], None), stream=fake_stream()
+    async with (
+        session.nerve.subscribe(ChannelTopic("im")) as events,
+        Client(core_tool_server(session)) as client,
+    ):
+        await client.call_tool(
+            "update_todo_status", {"todo_id": todo.ref, "status": "completed"}
         )
+        changed = [impulse.event for impulse in held(events)]
+    assert [type(event).__name__ for event in changed] == [
+        "TodoUpdatedEvent",
+        "TodoStatusChangedEvent",
+        "TodoCompletedEvent",
     ]
-
-    assert out[0] is result_event
-    assert out[1:] == stashed
+    assert isinstance(changed[1], TodoStatusChangedEvent)
+    assert isinstance(changed[2], TodoCompletedEvent)
+    assert changed[2].todo.status == "completed"
+    stored = await TodoManager().get_todo(session.conversation_id, todo.ref)
+    assert stored is not None
+    assert stored.status == "completed"
 
 
 async def test_write_todos_emits_diff_events(in_memory_engine: AsyncEngine) -> None:
-    conv = await _conversation()
+    session = await a_session()
+    assert session.nerve is not None
+    assert session.conversation_id is not None
     manager = TodoManager()
-    old = await manager.add_todo(conv.id, content="old", active_form="olding")
-    agent = Agent(
-        TestModel(call_tools=["write_todos"]),
-        capabilities=[TodoCapability(manager=manager)],
+    old = await manager.add_todo(
+        session.conversation_id, content="old", active_form="olding"
     )
-
-    events = [
-        event
-        async for event in agent.stream_events("replan", conversation_id=str(conv.id))
-    ]
-
-    deleted = [event for event in events if isinstance(event, TodoDeletedEvent)]
-    created = [event for event in events if isinstance(event, TodoCreatedEvent)]
-    assert [event.todo.ref for event in deleted] == [old.ref]
-    assert created, "expected TodoCreatedEvents for the written todos"
-    persisted = await manager.list_todos(conv.id)
-    assert {todo.ref for todo in persisted} == {event.todo.ref for event in created}
+    async with (
+        session.nerve.subscribe(ChannelTopic("im")) as events,
+        Client(core_tool_server(session)) as client,
+    ):
+        await client.call_tool(
+            "write_todos", {"todos": [{"content": "new", "active_form": "renewing"}]}
+        )
+        deleted, created = [impulse.event for impulse in held(events)]
+    assert isinstance(deleted, TodoDeletedEvent)
+    assert deleted.todo.ref == old.ref
+    assert isinstance(created, TodoCreatedEvent)
+    persisted = await manager.list_todos(session.conversation_id)
+    assert {todo.ref for todo in persisted} == {created.todo.ref}
 
 
 async def test_set_dependency_rejects_cycles(in_memory_engine: AsyncEngine) -> None:
-    conv = await _conversation()
+    session = await a_session()
+    assert session.conversation_id is not None
     manager = TodoManager()
-    capability = TodoCapability(manager=manager)
-    assert capability.toolset is not None
-    set_dependency = capability.toolset.tools["set_dependency"].function
-    ctx = _tool_ctx(conv)
-
-    first = await manager.add_todo(conv.id, content="first", active_form="firsting")
-    second = await manager.add_todo(conv.id, content="second", active_form="seconding")
-
-    forward = await set_dependency(ctx, todo_id=second.ref, depends_on_id=first.ref)
-    assert isinstance(forward, ToolReturn)
-
-    rejected = await set_dependency(ctx, todo_id=first.ref, depends_on_id=second.ref)
-    assert rejected == "Cannot add dependency: it would create a cycle."
-    assert (await manager.get_todo(conv.id, first.ref)).depends_on == []  # type: ignore[union-attr]
+    first = await manager.add_todo(
+        session.conversation_id, content="first", active_form="firsting"
+    )
+    second = await manager.add_todo(
+        session.conversation_id, content="second", active_form="seconding"
+    )
+    async with Client(core_tool_server(session)) as client:
+        forward = await client.call_tool(
+            "set_dependency", {"todo_id": second.ref, "depends_on_id": first.ref}
+        )
+        assert "now depends on" in forward.data
+        rejected = await client.call_tool(
+            "set_dependency", {"todo_id": first.ref, "depends_on_id": second.ref}
+        )
+    assert rejected.data == "Cannot add dependency: it would create a cycle."
+    stored = await manager.get_todo(session.conversation_id, first.ref)
+    assert stored is not None
+    assert stored.depends_on == []
 
 
 async def test_get_available_tasks_excludes_blocked(
     in_memory_engine: AsyncEngine,
 ) -> None:
-    conv = await _conversation()
+    session = await a_session()
+    assert session.conversation_id is not None
     manager = TodoManager()
-    capability = TodoCapability(manager=manager)
-    assert capability.toolset is not None
-    get_available_tasks = capability.toolset.tools["get_available_tasks"].function
-    ctx = _tool_ctx(conv)
-
-    blocker = await manager.add_todo(conv.id, content="dig", active_form="digging")
-    blocked = await manager.add_todo(conv.id, content="fill", active_form="filling")
-    await manager.update_todo(conv.id, blocked.ref, depends_on=[blocker.ref])
-
-    rendered = await get_available_tasks(ctx)
-    assert blocker.ref in rendered
-    assert blocked.ref not in rendered
-
-    await manager.update_todo(conv.id, blocker.ref, status="completed")
-    rendered = await get_available_tasks(ctx)
-    assert blocked.ref in rendered
+    blocker = await manager.add_todo(
+        session.conversation_id, content="dig", active_form="digging"
+    )
+    blocked = await manager.add_todo(
+        session.conversation_id, content="fill", active_form="filling"
+    )
+    await manager.update_todo(
+        session.conversation_id, blocked.ref, depends_on=[blocker.ref]
+    )
+    async with Client(core_tool_server(session)) as client:
+        rendered = (await client.call_tool("get_available_tasks", {})).data
+        assert blocker.ref in rendered
+        assert blocked.ref not in rendered
+        await manager.update_todo(
+            session.conversation_id, blocker.ref, status="completed"
+        )
+        assert blocked.ref in (await client.call_tool("get_available_tasks", {})).data

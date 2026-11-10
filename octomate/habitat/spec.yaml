@@ -1,0 +1,51 @@
+schemaVersion: "2"
+kind: sandbox
+name: octomate
+args:
+  user_id:
+    required: true
+  image:
+    required: true
+  cpus:
+    required: true
+  memory_mib:
+    required: true
+  internet_access:
+    required: true
+    enum: ["true", "false"]
+sandbox:
+  image: "${{ kit.args.image }}"
+  entrypoint: [/bin/bash]
+  resources:
+    cpu: ${{ kit.args.cpus }}
+    memory: "${{ kit.args.memory_mib }}m"
+environment:
+  variables:
+    OCTOMATE_HABITAT_USER_ID: "${{ kit.args.user_id }}"
+    OCTOMATE_HABITAT_IMAGE: "${{ kit.args.image }}"
+    OCTOMATE_HABITAT_CPUS: "${{ kit.args.cpus }}"
+    OCTOMATE_HABITAT_MEMORY_MIB: "${{ kit.args.memory_mib }}"
+    OCTOMATE_HABITAT_INTERNET_ACCESS: "${{ kit.args.internet_access }}"
+permissions:
+  network:
+    allow:
+      - "**"
+credentials:
+  - service: anthropic
+    oauth:
+      tokenEndpoint:
+        host: platform.claude.com
+        path: /v1/oauth/token
+      resourceHosts:
+        - api.anthropic.com
+      sentinels:
+        accessToken: sk-ant-oat01-proxy-managed
+        refreshToken: sk-ant-ort01-proxy-managed
+      credentialFile:
+        path: ~/.claude/.credentials.json
+        structure:
+          claudeAiOauth:
+            accessToken: "{{.AccessToken}}"
+            refreshToken: "{{.RefreshToken}}"
+            expiresAt: "{{.ExpiresAt}}"
+            scopes: "{{.Scopes}}"

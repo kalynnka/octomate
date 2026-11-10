@@ -90,7 +90,13 @@ async def test_group_naming_only_runs_inside_a_work_subthread(
     chat_type: ChatType,
 ) -> None:
     octomate = Octomate()
-    tentacle = InklingTentacle("inkling", octomate, models={"test": naming_model})
+    tentacle = InklingTentacle(
+        "inkling",
+        octomate,
+        auth=octomate.auth,
+        habitats=octomate.habitats,
+        models={"test": naming_model},
+    )
     address = ChannelAddress("test", chat_type, "room", "test")
     group = await octomate.threads.ensure(address)
     thread = await octomate.threads.open_sub_thread(group) if subthread else group
@@ -114,7 +120,13 @@ async def test_new_prompts_name_and_revise_the_session_and_thread(
     naming_model: FunctionModel, naming_requests: list[str]
 ) -> None:
     octomate = Octomate()
-    tentacle = InklingTentacle("inkling", octomate, models={"test": naming_model})
+    tentacle = InklingTentacle(
+        "inkling",
+        octomate,
+        auth=octomate.auth,
+        habitats=octomate.habitats,
+        models={"test": naming_model},
+    )
     thread_id = (await tentacle.threads.ensure(ADDRESS)).id
 
     first = await tentacle.run(
@@ -163,6 +175,8 @@ async def test_naming_model_override_and_active_model_default(
     tentacle = InklingTentacle(
         "inkling",
         octomate,
+        auth=octomate.auth,
+        habitats=octomate.habitats,
         models={"default": TestModel()},
         naming_model=naming_model if configured else None,
     )
@@ -202,7 +216,13 @@ async def test_naming_and_foreground_stream_run_concurrently(
         yield "The new reply."
 
     octomate = Octomate()
-    tentacle = InklingTentacle("inkling", octomate, models={"default": naming_model})
+    tentacle = InklingTentacle(
+        "inkling",
+        octomate,
+        auth=octomate.auth,
+        habitats=octomate.habitats,
+        models={"default": naming_model},
+    )
     thread_id = (await tentacle.threads.ensure(ADDRESS)).id
     await tentacle.run(
         "Prior question",
@@ -244,7 +264,13 @@ async def test_child_name_does_not_replace_the_parent_thread_title(
     naming_model: FunctionModel,
 ) -> None:
     octomate = Octomate()
-    tentacle = InklingTentacle("inkling", octomate, models={"test": naming_model})
+    tentacle = InklingTentacle(
+        "inkling",
+        octomate,
+        auth=octomate.auth,
+        habitats=octomate.habitats,
+        models={"test": naming_model},
+    )
     thread_id = (await tentacle.threads.ensure(ADDRESS)).id
     parent = await octomate.conversations.ensure(thread_id, agent_tentacle_id="inkling")
     child = await octomate.conversations.ensure(
@@ -274,7 +300,13 @@ async def test_naming_failure_preserves_the_reply_and_existing_name(
     naming_model: FunctionModel, monkeypatch: pytest.MonkeyPatch, error: Exception
 ) -> None:
     octomate = Octomate()
-    tentacle = InklingTentacle("inkling", octomate, models={"test": naming_model})
+    tentacle = InklingTentacle(
+        "inkling",
+        octomate,
+        auth=octomate.auth,
+        habitats=octomate.habitats,
+        models={"test": naming_model},
+    )
     thread_id = (await tentacle.threads.ensure(ADDRESS)).id
     conversation = await octomate.conversations.ensure(
         thread_id, agent_tentacle_id="inkling"
@@ -304,7 +336,14 @@ async def test_cancelling_a_run_cleans_up_its_naming_task(
             cancelled.set()
         raise AssertionError("naming should be cancelled")
 
-    tentacle = InklingTentacle("inkling", Octomate(), models={"test": naming_model})
+    host = Octomate()
+    tentacle = InklingTentacle(
+        "inkling",
+        host,
+        auth=host.auth,
+        habitats=host.habitats,
+        models={"test": naming_model},
+    )
     monkeypatch.setattr(inkling_base, "generate_name", name)
     task = asyncio.create_task(
         tentacle.run(
@@ -325,9 +364,12 @@ async def test_cancelling_a_run_cleans_up_its_naming_task(
 async def test_a_prompt_names_a_deferred_turn_but_its_resume_does_not(
     naming_model: FunctionModel, naming_requests: list[str]
 ) -> None:
+    host = Octomate()
     tentacle = InklingTentacle(
         "inkling",
-        Octomate(),
+        host,
+        auth=host.auth,
+        habitats=host.habitats,
         models={"test": TestModel(call_tools=["ask_questions"])},
         naming_model=naming_model,
         capabilities=[AskCapability()],

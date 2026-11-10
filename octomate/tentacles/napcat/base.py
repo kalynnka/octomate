@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self
 
 from pydantic import SecretStr
@@ -91,7 +92,12 @@ class NapcatTentacle(ChannelTentacle[str | bytes, NapcatOutboundMessage]):
         self.serve_task = asyncio.create_task(self.serve(), name=f"napcat:{self.id}")
         return self
 
-    async def __aexit__(self, *exc: object) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         if self.stop_event is not None:
             self.stop_event.set()
         if self.ws_client is not None:
@@ -104,7 +110,7 @@ class NapcatTentacle(ChannelTentacle[str | bytes, NapcatOutboundMessage]):
             except asyncio.CancelledError:
                 pass
             self.serve_task = None
-        await super().__aexit__(*exc)
+        await super().__aexit__(exc_type, exc, traceback)
 
     async def serve(self) -> None:
         logger.info("Channel %s: connecting to Napcat at %s", self.id, self.ws_url)

@@ -20,7 +20,14 @@ from tests.support.users import a_user
 
 
 async def test_inkling_fork_needs_no_external_session(tmp_path: Path) -> None:
-    tentacle = InklingTentacle("inkling", Octomate(), models={"test": TestModel()})
+    host = Octomate()
+    tentacle = InklingTentacle(
+        "inkling",
+        host,
+        auth=host.auth,
+        habitats=host.habitats,
+        models={"test": TestModel()},
+    )
     conversation = Conversation(thread_id=uuid7(), agent_tentacle_id="inkling")
 
     assert await tentacle.fork_session(conversation, cwd=tmp_path) is None
@@ -34,7 +41,13 @@ async def test_shared_fork_can_share_history_without_an_external_session(
     in_memory_engine: AsyncEngine,
 ) -> None:
     app = Octomate()
-    agent = InklingTentacle("inkling", app, models={"test": TestModel()})
+    agent = InklingTentacle(
+        "inkling",
+        app,
+        auth=app.auth,
+        habitats=app.habitats,
+        models={"test": TestModel()},
+    )
     owner = await a_user()
     sender = UserProfile(channel_user_id="owner", user_id=owner.id)
     key = ThreadKey("trunkline", "thread", "owner", "source")

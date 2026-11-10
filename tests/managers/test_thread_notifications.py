@@ -65,7 +65,7 @@ async def test_first_participation_notifies_each_user_once_and_only_on_user_topi
     await app.users.ensure_profile(
         "im", UserProfile(channel_user_id="alice-alias", user_id=alice.id)
     )
-    with (
+    async with (
         app.nerve.subscribe(UserTopic(alice.id)) as first,
         app.nerve.subscribe(UserTopic(bob.id)) as second,
         app.nerve.subscribe(UserTopic(carol.id)) as other,
@@ -130,7 +130,7 @@ async def test_first_message_publishes_its_committed_title_and_timestamp(
     app: Octomate,
 ) -> None:
     alice = await a_user("alice", profiles={"im": "alice"})
-    with app.nerve.subscribe(UserTopic(alice.id)) as live:
+    async with app.nerve.subscribe(UserTopic(alice.id)) as live:
         message = await app.threads.record_inbound(prompt("alice", "Opening title"))
         stored = await app.threads.get(message.thread_id, with_messages=False)
         assert stored is not None
@@ -166,7 +166,7 @@ async def test_committed_listing_changes_notify_participants(
     alice = await a_user("alice", profiles={"im": "alice"})
     message = await app.threads.record_inbound(prompt("alice", "opening"))
     thread = await app.threads.ensure(KEY)
-    with app.nerve.subscribe(UserTopic(alice.id)) as live:
+    async with app.nerve.subscribe(UserTopic(alice.id)) as live:
         match change:
             case "rename":
                 await app.threads.rename(thread, "Renamed")
@@ -266,7 +266,7 @@ async def test_inherited_history_and_unlinked_profiles_do_not_receive_changes(
         await session.commit()
     sender = await app.users.profile("im", "bob")
     assert sender is not None
-    with (
+    async with (
         app.nerve.subscribe(UserTopic(alice.id)) as inherited,
         app.nerve.subscribe(UserTopic(bob.id)) as own,
     ):
@@ -296,7 +296,7 @@ async def test_subthreads_do_not_publish_listing_changes(app: Octomate) -> None:
     alice = await a_user("alice", profiles={"im": "alice"})
     opening = await app.threads.record_inbound(prompt("alice", "opening"))
     parent = await app.threads.ensure(ThreadKey("im", "group", "group"))
-    with app.nerve.subscribe(UserTopic(alice.id)) as live:
+    async with app.nerve.subscribe(UserTopic(alice.id)) as live:
         child = await app.threads.open_sub_thread(parent)
         await app.threads.store_message(
             ThreadMessage(
@@ -322,28 +322,28 @@ async def test_failed_commits_publish_nothing(
     alice = await a_user("alice", profiles={"im": "alice"})
     opening = await app.threads.record_inbound(prompt("alice", "opening"))
     thread = await app.threads.ensure(KEY)
-    with (
-        app.nerve.subscribe(UserTopic(alice.id)) as live,
-        monkeypatch.context() as patch,
-    ):
-        patch.setattr(
-            AsyncSession, "commit", AsyncMock(side_effect=RuntimeError("commit failed"))
-        )
-        operation = (
-            app.threads.rename(thread, "Uncommitted")
-            if change == "rename"
-            else app.threads.store_message(
-                ThreadMessage(
-                    thread_id=thread.id,
-                    sender_id=opening.sender_id,
-                    direction="inbound",
-                    actor_kind="human",
-                ),
-                thread,
+    async with app.nerve.subscribe(UserTopic(alice.id)) as live:
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                AsyncSession,
+                "commit",
+                AsyncMock(side_effect=RuntimeError("commit failed")),
             )
-        )
-        with pytest.raises(RuntimeError, match="commit failed"):
-            await operation
+            operation = (
+                app.threads.rename(thread, "Uncommitted")
+                if change == "rename"
+                else app.threads.store_message(
+                    ThreadMessage(
+                        thread_id=thread.id,
+                        sender_id=opening.sender_id,
+                        direction="inbound",
+                        actor_kind="human",
+                    ),
+                    thread,
+                )
+            )
+            with pytest.raises(RuntimeError, match="commit failed"):
+                await operation
         assert held(live) == []
     stored = await app.threads.get(thread.id)
     assert stored is not None
@@ -356,7 +356,7 @@ async def test_token_events_do_not_query_visibility(
 ) -> None:
     lookup = AsyncMock(side_effect=AssertionError("token stream queried the database"))
     monkeypatch.setattr(AsyncSession, "scalars", lookup)
-    with app.nerve.subscribe(ThreadTopic(KEY)) as live:
+    async with app.nerve.subscribe(ThreadTopic(KEY)) as live:
         async with app.nerve.publish(KEY.address("alice")) as stream:
             for _ in range(3):
                 await stream.send(

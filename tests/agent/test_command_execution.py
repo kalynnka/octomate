@@ -58,6 +58,7 @@ class ExecutingAgent(DiscoveringAgent):
     stream_closed: bool = False
     suspender: DeferredSuspender | None = None
     capabilities: Sequence[AgentCapability[None]] | None = None
+    session: OctomateSession | None = None
 
     async def execute_command(
         self,
@@ -72,6 +73,11 @@ class ExecutingAgent(DiscoveringAgent):
         self.invocations.append(invocation)
         self.suspender = deferred_suspender
         self.capabilities = capabilities
+        self.session = (
+            self.octomate.gateway.get(context.conversation.id)
+            if self.octomate is not None and context.conversation is not None
+            else None
+        )
         if self.behavior == "raise":
             raise RuntimeError("private runtime details")
         if self.behavior == "cancel":

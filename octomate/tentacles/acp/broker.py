@@ -517,7 +517,7 @@ class AcpBroker:
         translator: AcpTranslator,
     ) -> DeferredActionBatchResponse | None:
         app = self.tentacle.octomate
-        with app.nerve.subscribe(ThreadTopic(session.thread.key)) as stream:
+        async with app.nerve.subscribe(ThreadTopic(session.thread.key)) as stream:
             task = await app.kick(signal)
             if task is None:
                 raise RuntimeError("Expected a new reflex turn")

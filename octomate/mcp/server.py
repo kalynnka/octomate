@@ -1,9 +1,4 @@
-"""Compose gateway, history, and user-installed MCP tools under one server.
-
-Runtimes use the same discovery and call helpers for every installed MCP.
-Inkling already has gateway and history tools in process, so it mounts only
-`tentacles_mcp`; the other runtimes mount the combined server.
-"""
+"""Compose gateway, history, todos and installed integrations on one MCP server."""
 
 from __future__ import annotations
 
@@ -20,15 +15,16 @@ from mcp.shared.exceptions import MCPError
 from octomate_protocol.gateway import GATEWAY_NAMESPACE, gateway_tool
 from pydantic import UUID7, Field, JsonValue, WithJsonSchema
 
-from octomate.capabilities.gateway import gateway_instructions
 from octomate.capabilities.history import history_instructions
+from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpManager, McpUnavailable
 from octomate.managers.thread import ThreadManager
 from octomate.mcp.base import KnownBearers
-from octomate.mcp.gateway import mount_gateway
+from octomate.mcp.gateway import gateway_instructions, mount_gateway
 from octomate.mcp.history import HISTORY_TOOL_NAMES, mount_history
 from octomate.mcp.oauth import OAUTH_NAMESPACE, mount_oauth
+from octomate.mcp.todos import mount_todos, todo_instructions
 from octomate.schemas.awakes import NativeGatewaySignal
 from octomate.schemas.mcp import (
     McpInstallRequest,
@@ -94,6 +90,7 @@ def tentacle_instructions() -> str:
 def octomate_instructions() -> str:
     return "\n".join(
         [
+            todo_instructions(),
             gateway_instructions(gateway_tool),
             history_instructions(history_tool),
             tentacle_instructions(),
@@ -309,6 +306,7 @@ def octomate_mcp(
     *,
     bearers: KnownBearers | None = None,
     manager: McpManager,
+    conversations: ConversationManager,
 ) -> FastMCP:
     """Compose the gateway, history, and user-scoped MCP tools over one session resolver."""
     session = Depends(resolve_session)
@@ -318,11 +316,14 @@ def octomate_mcp(
         auth=bearers,
     )
     gateway = FastMCP(GATEWAY_NAMESPACE)
-    mount_gateway(gateway, session, thread_manager, kick)
+    mount_gateway(gateway, session, thread_manager, kick, conversations=conversations)
     mcp.mount(gateway, namespace=GATEWAY_NAMESPACE)
     history = FastMCP(HISTORY_NAMESPACE)
     mount_history(history, session, thread_manager)
     mcp.mount(history, namespace=HISTORY_NAMESPACE)
+    todos = FastMCP("todos")
+    mount_todos(todos, session)
+    mcp.mount(todos)
     # Discovery, call, and linking helpers already carry their served names.
     mcp.mount(tentacles_mcp(resolve_session, manager=manager))
     return mcp

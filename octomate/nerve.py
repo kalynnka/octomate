@@ -1,8 +1,9 @@
 """The nerve: what a thread does, as it happens, for whoever is watching.
 
-In-process publish and subscribe, keyed by channel, thread or user topics, carrying
-wire events:
-the run's stream as a wire consumer sees it, and what the graph says around a
+Publish and subscribe, keyed by channel, thread, user or habitat topics. The
+nerve carries wire events, including habitat lifecycle observations. Local publishers and
+subscribers use memory fibers by default; supplied fibers use the same lifecycle.
+Wire events are the run's stream as a wire consumer sees it, and what the graph says around a
 run — its start and end, a move, a failure, the reflex waking and falling
 asleep, an authorization. Every way in and out is a stream end the nerve
 hands over. A kick publishes on the send end of a stream opened on the thread
@@ -15,9 +16,8 @@ nothing and holds nobody up, since what it has yet to read is kept for it. A
 thread's subscriber — the console's live socket — reads the receive end of a
 stream of its own, for as long as its block runs, and one that falls further
 behind than its backlog reads what was held for it and is cut off, never
-quietly skipped ahead. Each such stream is a fiber: a pair of ends in
-memory today, and the one thing to replace for a stream that outlives the
-process. Publishing is one way and knows nothing of who subscribed, and
+quietly skipped ahead. Each local stream is a fiber: a pair of buffered ends in
+memory. Publishing is one way and knows nothing of who subscribed, and
 nothing is kept for a reader that is not there: an event published to a
 thread nobody subscribes to goes nowhere, and a console re-reads the thread
 ledger when it opens.
@@ -32,29 +32,45 @@ from __future__ import annotations
 import asyncio
 import math
 from collections import defaultdict
-from collections.abc import AsyncGenerator, Generator
-from contextlib import asynccontextmanager, contextmanager
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, replace
+from typing import Generic
 
 import anyio
 from anyio.abc import ObjectReceiveStream, ObjectSendStream
-from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
-from pydantic import UUID7
+from pydantic import (
+    UUID7,
+    ConfigDict,
+    TypeAdapter,
+    with_config,
+)
+from typing_extensions import TypeVar
 
 from octomate.events import WireEvent
+from octomate.fibers import FIBER_BUFFER as FIBER_BUFFER
+from octomate.fibers import Fiber, FiberError, MemoryFiber
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
 
-# How far a publisher's fiber may run ahead of the pump before it waits.
-FIBER_BUFFER = 1024
+EventT = TypeVar("EventT", default=WireEvent, covariant=True)
+NerveEventT = TypeVar("NerveEventT", default=WireEvent)
 
 
+# Python 3.12 needs typing_extensions for a type parameter with a default.
+@with_config(
+    ConfigDict(
+        extra="forbid",
+        ser_json_bytes="base64",
+        val_json_bytes="base64",
+    )
+)
 @dataclass(frozen=True)
-class Impulse:
-    """One wire event with an optional channel address and the routing metadata
+class Impulse(Generic[EventT]):
+    """One event with an optional address and the routing metadata
     used by `Nerve.publish`. Direct topic publication carries it unchanged."""
 
-    event: WireEvent
+    event: EventT
     address: ChannelAddress | None = None
     # Whether Nerve.publish excludes the origin thread for a private delivery.
     private: bool = False
@@ -84,60 +100,74 @@ class UserTopic:
     user_id: UUID7
 
 
-type Topic = ChannelTopic | ThreadTopic | UserTopic
+@dataclass(frozen=True)
+class HabitatTopic:
+    """A user's habitat lifecycle observations."""
+
+    user_id: UUID7
 
 
-class Fiber[ItemT]:
-    """One stream through the nerve, both ends: a kick's or a subscriber's,
-    holding up to `buffer` items its reader has yet to take."""
-
-    send: MemoryObjectSendStream[ItemT]
-    receive: MemoryObjectReceiveStream[ItemT]
-
-    def __init__(self, buffer: float = FIBER_BUFFER) -> None:
-        self.send, self.receive = anyio.create_memory_object_stream[ItemT](buffer)
-
-    def close(self) -> None:
-        self.send.close()
-        self.receive.close()
+type EventTopic = ChannelTopic | ThreadTopic | UserTopic
+type Topic = EventTopic | HabitatTopic
 
 
-class Nerve:
-    """The subscribers of each channel, thread and user, and what is
-    published to them."""
+impulse_adapter: TypeAdapter[Impulse[WireEvent]] = TypeAdapter(Impulse[WireEvent])
+
+
+class Nerve(Generic[NerveEventT]):
+    """Route impulses through publishers and subscribers backed by any fiber."""
 
     def __init__(self) -> None:
         # Each subscriber's fiber, by the topic it hears.
-        self.subscribers: defaultdict[Topic, set[Fiber[Impulse]]] = defaultdict(set)
+        self.subscribers: defaultdict[Topic, set[Fiber[Impulse[NerveEventT]]]] = (
+            defaultdict(set)
+        )
 
-    @contextmanager
-    def subscribe(
-        self, topic: Topic, *, backlog: float = math.inf
-    ) -> Generator[ObjectReceiveStream[Impulse]]:
+    @asynccontextmanager
+    async def subscribe(
+        self,
+        topic: Topic,
+        *,
+        backlog: float = math.inf,
+        fiber: Fiber[Impulse[NerveEventT]] | None = None,
+    ) -> AsyncGenerator[ObjectReceiveStream[Impulse[NerveEventT]]]:
         """The receive end of a stream of the topic's impulses, from now until
         the block ends. Nothing is dropped: a reader that falls more than
         `backlog` impulses behind reads what was held for it, and then its
         stream ends.
 
         `ChannelTopic` names a channel's addresses, `ThreadTopic` wraps one
-        `ThreadKey`, and `UserTopic` wraps a registered user's UUID.
+        `ThreadKey`, `UserTopic` wraps a registered user's UUID, and `HabitatTopic`
+        names the habitat lifecycle. Receivers select the events they handle.
         Publishers choose authorized topics before publishing; the nerve does
         not filter subscribers within a topic.
+
+        A supplied fiber receives the same impulses as a local subscription.
+        Its caller owns its buffering and closure; leaving only unsubscribes it.
         """
-        fiber = Fiber[Impulse](backlog)
-        self.subscribers[topic].add(fiber)
+        subscriber = (
+            fiber if fiber is not None else MemoryFiber[Impulse[NerveEventT]](backlog)
+        )
+        recipients = self.subscribers.get(topic, set())
+        if subscriber.closed or subscriber in recipients:
+            raise ValueError("Fiber is already subscribed or closed")
+        self.subscribers[topic].add(subscriber)
         try:
-            yield fiber.receive
+            yield subscriber
         finally:
-            self.subscribers[topic].discard(fiber)
+            self.subscribers[topic].discard(subscriber)
             if not self.subscribers[topic]:
                 del self.subscribers[topic]
-            fiber.close()
+            if fiber is None:
+                subscriber.close()
 
     @asynccontextmanager
     async def publish(
-        self, origin: ChannelAddress | None
-    ) -> AsyncGenerator[ObjectSendStream[Impulse]]:
+        self,
+        origin: ChannelAddress | Topic | None,
+        *,
+        fiber: Fiber[Impulse[NerveEventT]] | None = None,
+    ) -> AsyncGenerator[ObjectSendStream[Impulse[NerveEventT]]]:
         """A buffered publisher for kicks and native tails, open for the block.
 
         A kick names the thread it was asked on as `origin`; a native tail names
@@ -148,39 +178,82 @@ class Nerve:
 
         Sending may wait for the pump, never for a subscriber. Everything sent before
         the block ends is published; closing emits no lifecycle events of its own.
+
+        A topic publishes impulses unchanged to that topic. A supplied fiber is
+        read for the block's lifetime and remains owned by its caller. Its incoming
+        impulses are delivered to subscribers on the core-bound topic.
         """
-        fiber = Fiber[Impulse]()
-        asked = ThreadKey.from_address(origin) if origin is not None else None
+        publisher = fiber if fiber is not None else MemoryFiber[Impulse[NerveEventT]]()
+        if publisher.closed:
+            raise ValueError("Publisher fiber is closed")
+        asked = (
+            ThreadKey.from_address(origin)
+            if isinstance(origin, ChannelAddress)
+            else None
+        )
+        topic = (
+            origin
+            if isinstance(origin, ChannelTopic | ThreadTopic | UserTopic | HabitatTopic)
+            else None
+        )
 
         async def pump() -> None:
-            async for sent in fiber.receive:
-                impulse = replace(sent, origin=asked)
-                topics: set[Topic] = set()
-                if impulse.address is not None:
-                    topics.add(ChannelTopic(impulse.address.channel_tentacle_id))
-                    topics.add(ThreadTopic(ThreadKey.from_address(impulse.address)))
-                if not impulse.private and asked is not None:
-                    topics.add(ThreadTopic(asked))
-                for topic in topics:
-                    self.deliver(topic, impulse)
+            try:
+                async for sent in publisher:
+                    if topic is not None:
+                        self.deliver(topic, sent)
+                        continue
+                    impulse = replace(sent, origin=asked)
+                    topics: set[Topic] = set()
+                    if impulse.address is not None:
+                        topics.add(ChannelTopic(impulse.address.channel_tentacle_id))
+                        topics.add(ThreadTopic(ThreadKey.from_address(impulse.address)))
+                    if not impulse.private and asked is not None:
+                        topics.add(ThreadTopic(asked))
+                    for destination in topics:
+                        self.deliver(destination, impulse)
+            except (anyio.BrokenResourceError, anyio.ClosedResourceError):
+                pass  # The owner closed the supplied fiber while its pump was waiting.
+            finally:
+                if fiber is None:
+                    publisher.close()
 
         pumping = asyncio.create_task(pump())
         try:
-            yield fiber.send
+            yield publisher
         finally:
-            fiber.send.close()
-            await pumping
-            fiber.close()
+            if fiber is not None:
+                if not publisher.closed or publisher.failure is not None:
+                    pumping.cancel()
+                with suppress(asyncio.CancelledError):
+                    await pumping
+            else:
+                publisher.close_send()
+                try:
+                    await pumping
+                finally:
+                    publisher.close()
 
-    def deliver(self, topic: Topic, impulse: Impulse) -> None:
-        """Deliver one impulse to every subscriber of exactly `topic`, waiting
-        for none. The impulse is delivered unchanged; its address, origin and
-        privacy flag do not select or exclude subscribers."""
-        for fiber in self.subscribers.get(topic, set()):
+    def deliver(
+        self,
+        topic: Topic,
+        impulse: Impulse[NerveEventT],
+    ) -> None:
+        """Fan out to every subscriber of one topic.
+
+        A slow local subscriber is cut off at its backlog. A full or broken peer
+        fiber is disconnected independently; other subscribers keep receiving.
+        Message handling belongs to receivers; unobserved publications are dropped.
+        """
+        recipients = self.subscribers.get(topic, set())
+        for fiber in recipients:
+            if fiber.closed:
+                continue
             try:
-                fiber.send.send_nowait(impulse)
-            except anyio.WouldBlock:
-                # Further behind than it asked to be held for: its stream ends.
-                fiber.send.close()
-            except (anyio.BrokenResourceError, anyio.ClosedResourceError):
-                pass  # Already leaving, or already cut off.
+                fiber.send_nowait(impulse)
+            except (
+                anyio.WouldBlock,
+                anyio.BrokenResourceError,
+                anyio.ClosedResourceError,
+            ):
+                fiber.fail(FiberError("Subscriber fiber cannot accept publication"))

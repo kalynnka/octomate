@@ -53,6 +53,7 @@ from octomate.config.channels import (
     LarkChannelConfig,
     SlackChannelConfig,
 )
+from octomate.config.habitat import HabitatConfig, NativeHabitatConfig
 from octomate.config.mcp import DiscoveredOAuthMcpConfig, OAuthMcpConfig
 from octomate.config.mcp.base import AuthorizationCodeFlowConfig
 from octomate.config.mcp.pool import McpPoolConfig
@@ -133,6 +134,10 @@ class OctomateConfig(BaseSettings):
     workspaces: WorkspacesConfig = Field(
         default_factory=WorkspacesConfig,
         description="When a thread's workspace is reclaimed.",
+    )
+    habitat: HabitatConfig = Field(
+        default_factory=NativeHabitatConfig,
+        description="How every agent of this service runs, chosen by `mode`.",
     )
 
     @field_validator("projects", mode="wrap")

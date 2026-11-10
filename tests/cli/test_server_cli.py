@@ -468,6 +468,13 @@ def test_server_group_is_removed() -> None:
     assert "No such command 'server'" in result.output
 
 
+@pytest.mark.parametrize("command", ["run", "sandbox"])
+def test_sandbox_bootstrap_commands_are_removed(command: str) -> None:
+    result = CliRunner().invoke(app, [command])
+    assert result.exit_code == 2
+    assert f"No such command '{command}'" in result.output
+
+
 @pytest.mark.parametrize(
     "command",
     [

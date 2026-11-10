@@ -14,6 +14,8 @@ async def test_unregistered_agents_keep_overlapping_claims_until_the_last_releas
     host = Octomate()
     driver = ClaudeTentacle(
         host,
+        auth=host.auth,
+        habitats=host.habitats,
         config=ClaudeCodeConfig(),
         commands=host.commands,
         projects=host.projects,

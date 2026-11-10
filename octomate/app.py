@@ -163,16 +163,25 @@ def create_app() -> Octomate:
             case AcpAgentConfig():
                 tentacle = AcpAgentTentacle(
                     id=id,
+                    auth=octomate.auth,
+                    habitats=octomate.habitats,
                     octomate=octomate,
                     config=tentacle_config,
                 )
             case InklingConfig():
                 tentacle = build_inkling(
-                    id, tentacle_config, octomate, registry=registry
+                    id,
+                    tentacle_config,
+                    octomate,
+                    auth=octomate.auth,
+                    habitats=octomate.habitats,
+                    registry=registry,
                 )
             case ClaudeCodeConfig():
                 tentacle = ClaudeTentacle(
                     octomate,
+                    auth=octomate.auth,
+                    habitats=octomate.habitats,
                     config=tentacle_config,
                     commands=octomate.commands,
                     projects=octomate.projects,
@@ -188,6 +197,7 @@ def create_app() -> Octomate:
             case CodexConfig():
                 tentacle = CodexTentacle(
                     octomate,
+                    habitats=octomate.habitats,
                     config=tentacle_config,
                     commands=octomate.commands,
                     projects=octomate.projects,
@@ -202,7 +212,12 @@ def create_app() -> Octomate:
                     gateway_manager=octomate.gateway,
                 )
             case DeepseekConfig():
-                tentacle = DeepseekTentacle(octomate, config=tentacle_config)
+                tentacle = DeepseekTentacle(
+                    octomate,
+                    auth=octomate.auth,
+                    habitats=octomate.habitats,
+                    config=tentacle_config,
+                )
             case (
                 SlackChannelConfig()
                 | LarkChannelConfig()

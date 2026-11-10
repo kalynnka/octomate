@@ -84,7 +84,7 @@ async def teleport_to_trunkline(case: ForkCase, client: httpx.AsyncClient) -> Th
         for one in options["teleport"]["destinations"]
         if one["channel_tentacle_id"] == "trunkline"
     ]
-    with app.nerve.subscribe(ThreadTopic(await source_key(case))) as live:
+    async with app.nerve.subscribe(ThreadTopic(await source_key(case))) as live:
         response = await client.post(
             f"{path}/teleport", json={"destination": address, "hint": "Continue here"}
         )
@@ -306,7 +306,7 @@ async def test_thread_access_does_not_grant_transcript_ownership(
     app.dependency_overrides[current_user] = lambda: other
     visible = await client.get(f"/api/trunkline/threads/{case.source.thread_id}")
     assert visible.status_code == 200
-    with app.nerve.subscribe(ThreadTopic(await source_key(case))) as live:
+    async with app.nerve.subscribe(ThreadTopic(await source_key(case))) as live:
         response = await client.post(
             f"/api/trunkline/threads/{case.source.thread_id}/teleport",
             json={
@@ -363,7 +363,7 @@ async def test_native_teleport_imports_completed_history_before_resuming(
         if one["channel_tentacle_id"] == destination
     ]
     if asked_by == "console":
-        with app.nerve.subscribe(ThreadTopic(await source_key(case))) as live:
+        async with app.nerve.subscribe(ThreadTopic(await source_key(case))) as live:
             response = await client.post(
                 f"{path}/teleport",
                 json={"destination": address, "hint": "Continue here"},
@@ -478,7 +478,7 @@ async def test_a_native_session_with_a_prompt_answers_it_where_it_lands(
         if one["channel_tentacle_id"] == "trunkline"
     ]
 
-    with case.tentacle.octomate.nerve.subscribe(
+    async with case.tentacle.octomate.nerve.subscribe(
         ThreadTopic(await source_key(case))
     ) as live:
         response = await client.post(
@@ -561,7 +561,7 @@ async def test_native_teleport_validates_history_before_opening_destination(
             files=app.files,
             owner_id=case.owner_id,
         )
-    with app.nerve.subscribe(ThreadTopic(await source_key(case))) as live:
+    async with app.nerve.subscribe(ThreadTopic(await source_key(case))) as live:
         response = await client.post(
             f"/api/trunkline/threads/{case.source.thread_id}/teleport",
             json={

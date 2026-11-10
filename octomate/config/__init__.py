@@ -9,7 +9,6 @@ from octomate.config.agents import (
     AgentConfig,
     AgentRouteModelName,
     ClaudeCodeConfig,
-    ClaudeSSHConfig,
     CodexConfig,
     DeepseekConfig,
     InklingConfig,
@@ -39,6 +38,7 @@ from octomate.config.channels import (
     SlackStreamConfig,
 )
 from octomate.config.database import DatabaseSettings, database_settings
+from octomate.config.habitat import NativeHabitatConfig, SbxHabitatConfig
 from octomate.config.mcp import (
     BareMcpConfig,
     DiscoveredOAuthMcpConfig,
@@ -78,11 +78,12 @@ __all__ = [  # noqa: RUF022
     "AcpAgentConfig",
     "AcpChannelConfig",
     "ArtifactConfig",
+    "NativeHabitatConfig",
+    "SbxHabitatConfig",
     # agents
     "AgentConfig",
     "AgentRouteModelName",
     "ClaudeCodeConfig",
-    "ClaudeSSHConfig",
     "CodexConfig",
     "DeepseekConfig",
     "InklingConfig",

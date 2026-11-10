@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import suppress
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
@@ -37,7 +37,7 @@ from octomate.events import (
     WireEvent,
     wire_event_adapter,
 )
-from octomate.nerve import Topic
+from octomate.nerve import EventTopic
 from octomate.schemas.awakes import StillAwake, UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
@@ -182,10 +182,11 @@ class TrunklineSiphon(Siphon):
     watches its user topic and any selected thread, on any channel. Each live
     socket holds one subscription for as long as it is open."""
 
-    def start(self) -> None:
+    async def __aenter__(self) -> Self:
         """Nothing to subscribe to until a socket opens."""
+        return self
 
-    async def watch(self, websocket: WebSocket, topic: Topic) -> None:
+    async def watch(self, websocket: WebSocket, topic: EventTopic) -> None:
         """Hold the console's socket on a topic until the console closes it,
         sending each event the nerve carries to that topic down it meanwhile.
         The subscription is open before the handshake completes, so a request
@@ -193,7 +194,7 @@ class TrunklineSiphon(Siphon):
         `CONSOLE_BACKLOG` events behind is closed with 1013 to read its state
         again; one that is gone ends the same way, once its close is read."""
         nerve = self.channel.octomate.nerve
-        with nerve.subscribe(topic, backlog=CONSOLE_BACKLOG) as impulses:
+        async with nerve.subscribe(topic, backlog=CONSOLE_BACKLOG) as impulses:
             await websocket.accept()
 
             async def send() -> None:

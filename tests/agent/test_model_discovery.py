@@ -61,6 +61,8 @@ async def test_claude_uses_native_metadata_before_config(
     host = Octomate()
     tentacle = ClaudeTentacle(
         host,
+        auth=host.auth,
+        habitats=host.habitats,
         config=ClaudeCodeConfig(
             claims={
                 f"{prefix}:future-model": configured,
@@ -105,6 +107,8 @@ async def test_claude_discovery_claims_its_session_through_client_cleanup(
     host = Octomate()
     tentacle = ClaudeTentacle(
         host,
+        auth=host.auth,
+        habitats=host.habitats,
         config=ClaudeCodeConfig(),
         commands=host.commands,
         projects=host.projects,
@@ -209,6 +213,7 @@ async def test_codex_reads_provider_configured_default_and_every_catalog_page(
     host = Octomate()
     tentacle = CodexTentacle(
         host,
+        habitats=host.habitats,
         config=CodexConfig(
             claims={f"{prefix}:future-model": Claim("Old metadata", efforts=("low",))}
         ),
@@ -285,8 +290,10 @@ async def test_codex_claims_the_effort_a_turn_runs_at_by_default(
         ),
         ModelListResponse(data=[model]),
     ]
+    host = Octomate()
     tentacle = CodexTentacle(
-        Octomate(),
+        host,
+        habitats=host.habitats,
         config=CodexConfig(effort=ours),
         commands=Octomate().commands,
         projects=Octomate().projects,
@@ -316,6 +323,7 @@ async def test_codex_empty_catalog_fails_without_fabricating_models(
     host = Octomate()
     tentacle = CodexTentacle(
         host,
+        habitats=host.habitats,
         config=CodexConfig(),
         commands=host.commands,
         projects=host.projects,
@@ -369,8 +377,11 @@ async def test_deepseek_preserves_provider_pairs_and_native_effort_ids(
             "failures": [],
         }
     )
+    host = Octomate(conversations=FakeConversationManager())
     tentacle = DeepseekTentacle(
-        Octomate(conversations=FakeConversationManager()),
+        host,
+        auth=host.auth,
+        habitats=host.habitats,
         config=DeepseekConfig(),
     )
     async with tentacle:
@@ -421,7 +432,13 @@ async def test_deepseek_reports_catalog_failure_without_inventing_models(
             ],
         }
     )
-    tentacle = DeepseekTentacle(Octomate(), config=DeepseekConfig())
+    host = Octomate()
+    tentacle = DeepseekTentacle(
+        host,
+        auth=host.auth,
+        habitats=host.habitats,
+        config=DeepseekConfig(),
+    )
     with pytest.raises(ValueError, match="no available models"):
         async with tentacle:
             pytest.fail("An empty catalog must not start successfully")
@@ -451,6 +468,8 @@ def harness(
         )
         return ClaudeTentacle(
             octomate,
+            auth=octomate.auth,
+            habitats=octomate.habitats,
             config=ClaudeCodeConfig(),
             commands=octomate.commands,
             projects=octomate.projects,
@@ -477,6 +496,7 @@ def harness(
         ]
         return CodexTentacle(
             octomate,
+            habitats=octomate.habitats,
             config=CodexConfig(),
             commands=octomate.commands,
             projects=octomate.projects,
@@ -507,7 +527,12 @@ def harness(
             "failures": [],
         }
     )
-    return DeepseekTentacle(octomate, config=DeepseekConfig())
+    return DeepseekTentacle(
+        octomate,
+        auth=octomate.auth,
+        habitats=octomate.habitats,
+        config=DeepseekConfig(),
+    )
 
 
 async def test_harness_catalogs_expose_all_models_and_native_defaults(
@@ -545,8 +570,14 @@ async def test_harness_catalogs_expose_all_models_and_native_defaults(
 
 async def test_inkling_uses_the_shared_agent_lifecycle() -> None:
     claim = Claim("Test agent", efforts=("medium",))
+    host = Octomate()
     tentacle = InklingTentacle(
-        "inkling", Octomate(), models={"test": TestModel()}, claims={"test": claim}
+        "inkling",
+        host,
+        auth=host.auth,
+        habitats=host.habitats,
+        models={"test": TestModel()},
+        claims={"test": claim},
     )
     async with tentacle as entered:
         assert entered is tentacle
