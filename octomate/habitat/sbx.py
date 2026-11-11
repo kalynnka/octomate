@@ -18,7 +18,7 @@ from anyio.abc import UNIXSocketStream
 from pydantic import UUID7
 
 from octomate.config.habitat import SbxHabitatConfig
-from octomate.habitat.base import Habitat, HabitatError
+from octomate.habitat.base import HabitatError, ManagedHabitat
 
 COMMAND_TIMEOUT = 30.0
 PREPARE_TIMEOUT = 300.0
@@ -47,7 +47,7 @@ class SbxOptions(TypedDict, total=False):
 
 
 @dataclass
-class SbxHabitat(Habitat):
+class SbxHabitat(ManagedHabitat):
     config: SbxHabitatConfig
     user_id: UUID7
     managed: bool = field(default=False, init=False)  # Name found or create tried.

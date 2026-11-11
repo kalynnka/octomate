@@ -111,7 +111,7 @@ async def execution(
     )
     await app.threads.record_handoff(thread, to_agent_tentacle_id=agent.id)
     conversation = await app.conversations.ensure(thread.id, agent_tentacle_id=agent.id)
-    async with await app.workspaces.open(thread.id, None, user.id) as workspace:
+    async with app.workspaces.open(thread.id, None, user.id) as workspace:
         context = CommandContext(
             agent_id=agent.id,
             user_id=user.id,

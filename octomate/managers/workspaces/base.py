@@ -9,11 +9,12 @@ import shutil
 import tempfile
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import TracebackType
-from typing import Self, overload
+from typing import overload
 
 import anyio
 from pydantic import UUID7
@@ -108,40 +109,15 @@ async def copy(source: Path, target: Path, flag: str) -> None:
 
 @dataclass
 class Workspace(ABC):
-    """The directory one run happens in, and what becomes of it when the run ends.
+    """A run's directory and identity, with its lifetime owned by the manager."""
 
-    Handed out by `WorkspaceManager.open` and entered by the run that was given it.
-    Its path is settled when it is opened, before anything is made on disk, which
-    is what lets a runtime be configured with its own working directory before the
-    process that will run there exists.
-    """
-
-    workspaces: WorkspaceManager
+    path: Path  # Absolute path, known before the directory is prepared.
     thread_id: UUID7
 
     @property
     @abstractmethod
-    def path(self) -> Path:
-        """Where this run happens. Absolute, because it becomes the working
-        directory of a process Octomate did not start in its own, and known
-        without touching the disk."""
-
-    @abstractmethod
-    async def prepare(self) -> Path:
-        """The directory, made and ready for a run to happen in."""
-
-    async def __aenter__(self) -> Self:
-        await self.prepare()
-        return self
-
-    @abstractmethod
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        """End the run's claim on the directory, however the run ended."""
+    def owner_id(self) -> UUID7 | None:
+        """The registered owner, or None for an unregistered chat."""
 
 
 @dataclass
@@ -157,8 +133,8 @@ class TreeWorkspace(Workspace, ABC):
     volume: TreeVolume
 
     @property
-    def path(self) -> Path:
-        return self.workspaces.path(self.volume)
+    def owner_id(self) -> UUID7:
+        return self.volume.owner_id
 
 
 @dataclass
@@ -171,70 +147,6 @@ class ProjectWorkspace(TreeWorkspace):
     """
 
     project: Project
-
-    async def prepare(self) -> Path:
-        """This checkout, resumed as it stands or forked when it is gone.
-
-        Only a tree's first turn, or the first after a release, does any of that. A
-        tree that exists is resumed into as it stands, and its mirror is not synced
-        for it either: a fetch would buy the turn nothing and would couple
-        continuing a thread to the upstream being reachable.
-        """
-        if self.path.is_dir():
-            return self.path
-        mirror = await self.workspaces.mirrors.sync(self.project)
-        return await self.workspaces.materialize(self, mirror)
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        """Save completed or failed work; cancellation leaves the tree in place."""
-        if exc_type is None or issubclass(exc_type, Exception):
-            await self.save()
-
-    async def save(self) -> None:
-        """Checkpoint this exact volume without changing the user's index or tree.
-
-        A failed push leaves the tree unsaved and unreclaimable. An unchanged
-        checkpoint needs no second push when another lifecycle boundary closes.
-        """
-        manager = self.workspaces
-        path = self.path
-        with workspace_logfire.span(
-            "workspace.save",
-            thread_id=str(self.thread_id),
-            volume_id=str(self.volume.id),
-            project=self.project.name,
-            saved=False,
-        ) as span:
-            if not path.is_dir():
-                return
-            try:
-                async with manager.lock(self.volume.id):
-                    if await manager.saved(path):
-                        span.set_attribute("saved", True)
-                        return
-                    snapshot = await manager.snapshot(path)
-                    await run_git(
-                        "push",
-                        "--force",
-                        str(manager.mirrors.path(self.project)),
-                        f"{snapshot}:{tree_ref(self.volume.id)}",
-                        cwd=path,
-                    )
-                    await run_git("update-ref", SAVED_REF, snapshot, cwd=path)
-                span.set_attribute("snapshot", snapshot)
-                span.set_attribute("saved", True)
-            except (GitCommandError, OSError):
-                logger.exception(
-                    "the tree for thread %s could not be saved; its work is only in "
-                    "%s until a later turn saves it",
-                    self.thread_id,
-                    path,
-                )
 
 
 @dataclass
@@ -258,34 +170,6 @@ class ChatWorkspace(TreeWorkspace):
         """What overlapping runs in this folder are counted by."""
         return self.volume.id
 
-    async def prepare(self) -> Path:
-        """An empty tree of this run's own, forked from the blank mirror.
-
-        Claimed first, which throws away whatever a killed run left at this path:
-        nothing resumes a chat tree, so anything there when nobody is in it belongs
-        to a run that is over. Nothing here is ever saved.
-        """
-        await self.workspaces.claim(self)
-        try:
-            mirror = await self.workspaces.mirrors.create()
-            return await self.workspaces.materialize(self, mirror)
-        except BaseException:
-            with anyio.CancelScope(shield=True):
-                await self.workspaces.discard(self)
-            raise
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        """Throw the folder away and keep the row. In `__aexit__` rather than after
-        the run's last event, so a turn that raised does not leave its files
-        behind."""
-        with anyio.CancelScope(shield=True):
-            await self.workspaces.discard(self)
-
 
 @dataclass
 class UnregisteredWorkspace(Workspace):
@@ -298,34 +182,13 @@ class UnregisteredWorkspace(Workspace):
     """
 
     @property
+    def owner_id(self) -> None:
+        return None
+
+    @property
     def key(self) -> UUID7:
         """What overlapping runs in this directory are counted by."""
         return self.thread_id
-
-    @property
-    def path(self) -> Path:
-        return (
-            Path(tempfile.gettempdir()) / "octomate-unregistered" / str(self.thread_id)
-        ).resolve()
-
-    async def prepare(self) -> Path:
-        await self.workspaces.claim(self)
-        try:
-            self.path.mkdir(parents=True, exist_ok=True)
-            return self.path
-        except BaseException:
-            with anyio.CancelScope(shield=True):
-                await self.workspaces.discard(self)
-            raise
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        with anyio.CancelScope(shield=True):
-            await self.workspaces.discard(self)
 
 
 class WorkspaceManager(Manager, Locks[UUID7]):
@@ -350,9 +213,10 @@ class WorkspaceManager(Manager, Locks[UUID7]):
     mirror and thrown away when the run that made it ends. Same mechanism, opposite
     ending: there is no project to keep it for.
 
-    A turn asks `open` for its workspace and enters it to prepare the directory.
+    A turn enters `open` to prepare its workspace and scope its lifetime.
     Project exit checkpoints its exact volume; chat exit releases its temporary
-    directory. Explicit `save` and `dismiss` resolve an owner's existing tree for
+    directory. `resolve` records a volume and settles its path without preparing it.
+    Explicit `save` and `dismiss` resolve an owner's existing tree for
     graph finalization and handoffs. The registry identifies the project and the
     mirrors hold its checkpoints.
     """
@@ -446,7 +310,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
             return volume
 
     @overload
-    async def open(
+    async def resolve(
         self,
         thread_id: UUID7,
         project: Project,
@@ -455,7 +319,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
     ) -> ProjectWorkspace: ...
 
     @overload
-    async def open(
+    async def resolve(
         self,
         thread_id: UUID7,
         project: None,
@@ -464,7 +328,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
     ) -> ChatWorkspace: ...
 
     @overload
-    async def open(
+    async def resolve(
         self,
         thread_id: UUID7,
         project: Project | None,
@@ -472,36 +336,113 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         ref: str | None = None,
     ) -> Workspace: ...
 
-    async def open(
+    async def resolve(
         self,
         thread_id: UUID7,
         project: Project | None,
         owner_id: UUID7 | None,
         ref: str | None = None,
     ) -> Workspace:
-        """The workspace a run in this thread happens in, ready to be entered.
+        """Record the owner's volume and settle its path without making files.
 
-        A registered owner gets a tree in their own root: a checkout of the project
-        that outlives the turn, or an empty tree that does not. An unregistered
-        sender may only chat, in a temporary directory, and asking for a project
-        raises `UnregisteredProjectError` so the caller can say so.
-
-        `project` is passed rather than looked up because the caller has already
-        asked. Only the row is written here; the folder is made when the run
-        enters the workspace, so a runtime can be told where it will run first.
+        Unregistered senders receive a temporary chat path and cannot resolve
+        project workspaces. This writes or stamps a registered volume row; use
+        `find` and `path` for read-only inspection.
         """
         if owner_id is None:
             if project is not None:
                 raise UnregisteredProjectError(
                     f"project {project.name!r} needs a registered user"
                 )
-            return UnregisteredWorkspace(self, thread_id)
+            path = (
+                Path(tempfile.gettempdir()) / "octomate-unregistered" / str(thread_id)
+            ).resolve()
+            return UnregisteredWorkspace(path, thread_id)
         if project is None:
-            return ChatWorkspace(
-                self, thread_id, await self.tree(owner_id, thread_id, None)
-            )
+            volume = await self.tree(owner_id, thread_id, None)
+            return ChatWorkspace(self.path(volume), thread_id, volume)
         volume = await self.tree(owner_id, thread_id, project.id, ref)
-        return ProjectWorkspace(self, thread_id, volume, project)
+        return ProjectWorkspace(self.path(volume), thread_id, volume, project)
+
+    @overload
+    def open(
+        self,
+        thread_id: UUID7,
+        project: Project,
+        owner_id: UUID7,
+        ref: str | None = None,
+    ) -> AbstractAsyncContextManager[ProjectWorkspace]: ...
+
+    @overload
+    def open(
+        self,
+        thread_id: UUID7,
+        project: None,
+        owner_id: UUID7,
+        ref: None = None,
+    ) -> AbstractAsyncContextManager[ChatWorkspace]: ...
+
+    @overload
+    def open(
+        self,
+        thread_id: UUID7,
+        project: Project | None,
+        owner_id: UUID7 | None,
+        ref: str | None = None,
+    ) -> AbstractAsyncContextManager[Workspace]: ...
+
+    @asynccontextmanager
+    async def open(
+        self,
+        thread_id: UUID7,
+        project: Project | None,
+        owner_id: UUID7 | None,
+        ref: str | None = None,
+    ) -> AsyncGenerator[Workspace]:
+        """Prepare a workspace and own its checkpoint or release when the run ends."""
+        workspace = await self.resolve(thread_id, project, owner_id, ref)
+        async with self.enter(workspace):
+            yield workspace
+
+    @asynccontextmanager
+    async def enter[WorkspaceT: Workspace](
+        self, workspace: WorkspaceT
+    ) -> AsyncGenerator[WorkspaceT]:
+        """Scope a resolved workspace, keeping project work on cancellation."""
+        await self.prepare(workspace)
+        save_project = True
+        try:
+            yield workspace
+        except BaseException as error:
+            save_project = isinstance(error, Exception)
+            raise
+        finally:
+            if isinstance(workspace, ProjectWorkspace) and save_project:
+                await self.checkpoint(workspace)
+            elif isinstance(workspace, ChatWorkspace | UnregisteredWorkspace):
+                with anyio.CancelScope(shield=True):
+                    await self.discard(workspace)
+
+    async def prepare(self, workspace: Workspace) -> Path:
+        """Make a resolved directory ready; a chat acquires a claim until discard."""
+        if isinstance(workspace, ProjectWorkspace):
+            if workspace.path.is_dir():
+                return workspace.path
+            mirror = await self.mirrors.sync(workspace.project)
+            return await self.materialize(workspace, mirror)
+        if not isinstance(workspace, ChatWorkspace | UnregisteredWorkspace):
+            raise TypeError(f"Unsupported workspace: {type(workspace).__name__}")
+        await self.claim(workspace)
+        try:
+            if isinstance(workspace, ChatWorkspace):
+                mirror = await self.mirrors.create()
+                return await self.materialize(workspace, mirror)
+            workspace.path.mkdir(parents=True, exist_ok=True)
+            return workspace.path
+        except BaseException:
+            with anyio.CancelScope(shield=True):
+                await self.discard(workspace)
+            raise
 
     async def claim(self, workspace: ChatWorkspace | UnregisteredWorkspace) -> None:
         """Count this run into a throwaway directory, and clear whatever the last
@@ -837,7 +778,52 @@ class WorkspaceManager(Manager, Locks[UUID7]):
             return
         volume = await self.find(owner_id, thread.id, project.id)
         if volume is not None:
-            await ProjectWorkspace(self, thread.id, volume, project).save()
+            await self.checkpoint(
+                ProjectWorkspace(self.path(volume), thread.id, volume, project)
+            )
+
+    async def checkpoint(self, workspace: ProjectWorkspace) -> None:
+        """Checkpoint this exact volume without changing the user's index or tree.
+
+        A failed push leaves the tree unsaved and unreclaimable. An unchanged
+        checkpoint needs no second push when another lifecycle boundary closes.
+        """
+        path = workspace.path
+        async with AsyncExitStack() as scope:
+            span = scope.enter_context(
+                workspace_logfire.span(
+                    "workspace.save",
+                    thread_id=str(workspace.thread_id),
+                    volume_id=str(workspace.volume.id),
+                    project=workspace.project.name,
+                    saved=False,
+                )
+            )
+            if not path.is_dir():
+                return
+            try:
+                await scope.enter_async_context(self.lock(workspace.volume.id))
+                if await self.saved(path):
+                    span.set_attribute("saved", True)
+                    return
+                snapshot = await self.snapshot(path)
+                await run_git(
+                    "push",
+                    "--force",
+                    str(self.mirrors.path(workspace.project)),
+                    f"{snapshot}:{tree_ref(workspace.volume.id)}",
+                    cwd=path,
+                )
+                await run_git("update-ref", SAVED_REF, snapshot, cwd=path)
+                span.set_attribute("snapshot", snapshot)
+                span.set_attribute("saved", True)
+            except (GitCommandError, OSError):
+                logger.exception(
+                    "the tree for thread %s could not be saved; its work is only in "
+                    "%s until a later turn saves it",
+                    workspace.thread_id,
+                    path,
+                )
 
     async def saved(self, path: Path) -> bool:
         """Whether the mirror already holds everything in this workspace: the same
@@ -973,7 +959,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
             return
         await self.save(source, owner_id)
         origin = await self.find(owner_id, source.id, project.id)
-        landing = await self.open(thread.id, project, owner_id)
+        landing = await self.resolve(thread.id, project, owner_id)
         mirror = self.mirrors.path(project)
         if origin is not None and await run_git(
             "ls-remote", str(mirror), tree_ref(origin.id)
@@ -995,7 +981,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
             await run_git(
                 "update-ref", tree_ref(landing.volume.id), filed.strip(), cwd=mirror
             )
-        landed = await landing.prepare()
+        landed = await self.prepare(landing)
         if origin is None or not self.path(origin).is_dir():
             return
         source_path = self.path(origin)

@@ -1055,7 +1055,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         project = await self.run_project(conversation.thread_id)
         async with (
             self.conversation_locks.hold(str(conversation.id)),
-            await self.workspaces.open(
+            self.workspaces.open(
                 conversation.thread_id, project, context.user_id
             ) as workspace,
             self.driving(thread_id),
@@ -1760,7 +1760,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         # project — and the workspace is what makes that boundary this run's rather
         # than everyone's checkout.
         project = await self.run_project(conversation.thread_id)
-        workspace = self.workspaces.open(conversation.thread_id, project)
+        workspace = await self.workspaces.resolve(conversation.thread_id, project)
         run_cwd = str(workspace.path)
 
         async with contextlib.AsyncExitStack() as resources:
@@ -1802,7 +1802,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 else None
             )
             # Keep the workspace alive until the native turn finishes.
-            await resources.enter_async_context(workspace)
+            await resources.enter_async_context(self.workspaces.enter(workspace))
             self.commands.invalidate(agent_id=self.id, conversation_id=conversation.id)
             session = self.gateway_manager.get(conversation.id)
             user_id = (

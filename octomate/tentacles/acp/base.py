@@ -355,7 +355,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         thread = await self.threads.get(thread_id, with_messages=False)
         assert thread is not None
         project = await self.projects.of(thread)
-        workspace = self.workspaces.open(thread_id, project)
+        workspace = await self.workspaces.resolve(thread_id, project)
         updates: asyncio.Queue[
             StreamEvent | ActionBatchEvent | ActionBatchAnsweredEvent | None
         ] = asyncio.Queue()
@@ -394,7 +394,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             )
 
         async with (
-            workspace,
+            self.workspaces.enter(workspace),
             AsyncExitStack() as credentials,
             NativeAcpClient.connect(
                 provider,

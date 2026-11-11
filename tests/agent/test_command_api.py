@@ -397,7 +397,7 @@ async def test_http_uses_injected_managers(
     tmp_path: Path,
 ) -> None:
     workspaces = WorkspaceManager(volumes_dir=tmp_path / "injected")
-    workspace = await workspaces.open(conversation.thread_id, None, user.id)
+    workspace = await workspaces.resolve(conversation.thread_id, None, user.id)
     app.dependency_overrides[workspace_manager] = lambda: workspaces
     body = {
         "agent_id": "inkling",
@@ -582,7 +582,7 @@ async def test_workspace_and_session_are_resolved_again_before_cache_lookup(
     conversation: Conversation,
     tmp_path: Path,
 ) -> None:
-    chat = await app.workspaces.open(conversation.thread_id, None, user.id)
+    chat = await app.workspaces.resolve(conversation.thread_id, None, user.id)
     first = await discover(
         app=app,
         user=user,
@@ -594,7 +594,7 @@ async def test_workspace_and_session_are_resolved_again_before_cache_lookup(
     project = a_project(tmp_path / "project")
     app.workspaces.projects = await a_registry(project)
     await app.threads.bind(conversation.thread_id, project)
-    workspace = await app.workspaces.open(conversation.thread_id, project, user.id)
+    workspace = await app.workspaces.resolve(conversation.thread_id, project, user.id)
     async with async_session() as session:
         loaded = await session.get(Conversation, conversation.id)
         assert loaded is not None
@@ -624,9 +624,9 @@ async def test_inspection_reads_only_the_requesting_owners_volume(
     existing: bool,
 ) -> None:
     other = await a_user("bob")
-    await app.workspaces.open(conversation.thread_id, None, other.id)
+    await app.workspaces.resolve(conversation.thread_id, None, other.id)
     workspace = (
-        await app.workspaces.open(conversation.thread_id, None, user.id)
+        await app.workspaces.resolve(conversation.thread_id, None, user.id)
         if existing
         else None
     )
@@ -757,7 +757,7 @@ async def test_subthread_uses_surface_model_but_its_own_workspace(
     child_conversation = await app.conversations.ensure(
         child.id, agent_tentacle_id=agent.id
     )
-    workspace = await app.workspaces.open(child.id, None, user.id)
+    workspace = await app.workspaces.resolve(child.id, None, user.id)
     result = await discover(
         app=app,
         user=user,

@@ -289,7 +289,7 @@ class AcpBroker:
             project=project,
             new=True,
         )
-        await app.workspaces.open(thread.id, project, self.sender.user_id)
+        await app.workspaces.resolve(thread.id, project, self.sender.user_id)
         session = AcpSession(thread)
         await self.select(session, selection)
         self.sessions[str(thread.id)] = session

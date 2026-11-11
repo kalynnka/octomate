@@ -910,7 +910,9 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         # somewhere its file tools are rooted rather than somewhere a subprocess is
         # started, and a project's workspace has no ending for a run to scope.
         workspace = (
-            await self.workspaces.open(thread_id, project).prepare()
+            await self.workspaces.prepare(
+                await self.workspaces.resolve(thread_id, project)
+            )
             if project is not None
             else None
         )

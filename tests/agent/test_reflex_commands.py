@@ -98,7 +98,7 @@ async def scenario(
         agent_id=agent.id,
         user_id=user.id,
         address=address,
-        cwd=(await app.workspaces.open(thread.id, None, user.id)).path,
+        cwd=(await app.workspaces.resolve(thread.id, None, user.id)).path,
         conversation=conversation,
         model="test",
         permission_mode=agent.default_permission_mode,
@@ -532,7 +532,7 @@ async def test_a_commands_events_reach_its_trunkline_thread(
             address=address,
             conversation=conversation,
             cwd=(
-                await app.workspaces.open(thread.id, None, signal.context.user_id)
+                await app.workspaces.resolve(thread.id, None, signal.context.user_id)
             ).path,
         ),
     )

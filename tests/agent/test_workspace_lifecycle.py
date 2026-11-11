@@ -184,13 +184,13 @@ async def test_workspace_operations_leave_the_other_senders_tree_untouched(
     project = deps.workspaces.projects.get("demo")
     assert project is not None
     state.thread = await deps.thread_manager.bind(state.thread.id, project)
-    own = await deps.workspaces.open(
+    own = await deps.workspaces.resolve(
         state.thread.id, project, state.user_profile.user_id
     )
     other_user = await a_user("bob")
-    other = await deps.workspaces.open(state.thread.id, project, other_user.id)
-    await own.prepare()
-    await other.prepare()
+    other = await deps.workspaces.resolve(state.thread.id, project, other_user.id)
+    await deps.workspaces.prepare(own)
+    await deps.workspaces.prepare(other)
     (own.path / "work.txt").write_text("Alice's unfinished work")
     (other.path / "work.txt").write_text("Bob's unfinished work")
     if operation == "dismiss":

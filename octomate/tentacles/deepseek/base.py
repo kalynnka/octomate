@@ -566,9 +566,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         project = await self.run_project(conversation.thread_id)
         async with (
             self.conversation_locks.hold(str(conversation.id)),
-            await self.workspaces.open(
-                conversation.thread_id, project, context.user_id
-            ),
+            self.workspaces.open(conversation.thread_id, project, context.user_id),
             self.driving(session_id),
             contextlib.AsyncExitStack() as resources,
         ):
@@ -1090,7 +1088,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             prompt_text = f"{tagged('instructions', instructions)}\n\n{prompt_text}"
 
         project = await self.run_project(conversation.thread_id)
-        workspace = self.workspaces.open(conversation.thread_id, project)
+        workspace = await self.workspaces.resolve(conversation.thread_id, project)
         run_cwd = str(workspace.path)
 
         with deepseek_logfire.span(
@@ -1105,7 +1103,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             # using it is finished with it.
             async with (
                 self.conversation_locks.hold(str(conversation.id)),
-                workspace,
+                self.workspaces.enter(workspace),
             ):
                 conversation = await self.conversations.get(
                     conversation.id, with_history=False

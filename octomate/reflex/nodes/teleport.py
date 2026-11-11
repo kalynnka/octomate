@@ -180,7 +180,7 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         # The agent resumes in another directory either way — a new thread's own
         # workspace, or the project's — and a runtime session may be filed under
         # the one it ran in. The tentacle knows how to move its own; this is when.
-        async with await ctx.deps.workspaces.open(
+        async with ctx.deps.workspaces.open(
             state.thread.id,
             await ctx.deps.workspaces.projects.of(state.thread),
             owner_id,
@@ -311,11 +311,11 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 f"project {name!r} vanished between the gate and the move"
             )
         profile = ctx.state.user_profile
-        workspace = await ctx.deps.workspaces.open(
+        workspace = await ctx.deps.workspaces.resolve(
             thread.id,
             project,
             profile.user_id if profile is not None else None,
             self.request.ref,
         )
-        await workspace.prepare()
+        await ctx.deps.workspaces.prepare(workspace)
         return await ctx.deps.thread_manager.bind(thread.id, project)

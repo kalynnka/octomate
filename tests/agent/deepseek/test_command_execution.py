@@ -105,7 +105,7 @@ async def scenario(
             agent_id=agent.id,
             user_id=user.id,
             address=address,
-            cwd=(await app.workspaces.open(thread.id, None, user.id)).path,
+            cwd=(await app.workspaces.resolve(thread.id, None, user.id)).path,
             conversation=conversation,
             permission_mode=agent.default_permission_mode,
         ),

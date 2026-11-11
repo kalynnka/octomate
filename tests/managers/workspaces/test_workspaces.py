@@ -141,7 +141,7 @@ async def a_workspace(
     its folder is not."""
     project = manager.projects.get("inky")
     assert project is not None
-    return await manager.open(thread.id, project, owner.id, ref)
+    return await manager.resolve(thread.id, project, owner.id, ref)
 
 
 async def a_tree(manager: WorkspaceManager, owner: User, mirror: Path) -> Path:
@@ -1012,7 +1012,7 @@ async def test_a_thread_in_no_project_forks_an_empty_workspace(
     # exactly as a project fork does. A repository, not a directory: the run may
     # write in it, and what a run does with git works because HEAD resolves.
     thread_id = await a_thread(str(uuid7()))
-    workspace = await manager.open(thread_id, None, owner.id)
+    workspace = await manager.resolve(thread_id, None, owner.id)
 
     assert isinstance(workspace, ChatWorkspace)
     assert workspace.volume.project_id is None
@@ -1026,7 +1026,7 @@ async def test_a_thread_in_no_project_forks_an_empty_workspace(
     # will run before the process that runs there exists.
     assert not workspace.path.exists()
 
-    async with workspace as chat:
+    async with manager.enter(workspace) as chat:
         assert (chat.path / ".git").is_dir()
         branch = await run_git("rev-parse", "--abbrev-ref", "HEAD", cwd=chat.path)
         assert branch == f"octomate/thread-{thread_id}\n"
@@ -1041,7 +1041,7 @@ async def test_a_chat_workspace_is_not_the_threads_project_workspace(
     # then run in an empty repository instead of the project's code.
     thread = await a_bound_thread(manager)
 
-    async with await manager.open(thread.id, None, owner.id) as chat:
+    async with manager.open(thread.id, None, owner.id) as chat:
         chat_path = chat.path
 
     opened = await a_workspace(manager, thread, owner)
@@ -1058,7 +1058,7 @@ async def test_the_sweep_leaves_a_chat_workspace_alone(
     # It is its run's to throw away and is kept nowhere the sweep could restore it
     # from, so the pruner must not be the one to decide.
     thread_id = await a_thread(str(uuid7()))
-    async with await manager.open(thread_id, None, owner.id) as chat:
+    async with manager.open(thread_id, None, owner.id) as chat:
         assert await manager.prune(idle=0.0) == []
         assert chat.path.is_dir()
 
@@ -1070,14 +1070,14 @@ async def test_leaving_a_chat_workspace_discards_it(
     # empty tree, at the same path and on the same row — which is what the
     # runtimes key a resumable session by.
     thread_id = await a_thread(str(uuid7()))
-    workspace = await manager.open(thread_id, None, owner.id)
+    workspace = await manager.resolve(thread_id, None, owner.id)
 
-    async with workspace as chat:
+    async with manager.enter(workspace) as chat:
         (chat.path / "scratch.txt").write_text("mine")
 
     assert not workspace.path.exists()
 
-    async with await manager.open(thread_id, None, owner.id) as second:
+    async with manager.open(thread_id, None, owner.id) as second:
         assert second.volume.id == workspace.volume.id
         assert second.path == workspace.path
         assert not (second.path / "scratch.txt").exists()
@@ -1090,11 +1090,11 @@ async def test_leaving_a_chat_workspace_a_later_run_is_in_keeps_it(
     # losing its own. Both are in this tree, and the first to leave must not take
     # the floor out from under the second.
     thread_id = await a_thread(str(uuid7()))
-    superseded = await manager.open(thread_id, None, owner.id)
-    follow_up = await manager.open(thread_id, None, owner.id)
+    superseded = await manager.resolve(thread_id, None, owner.id)
+    follow_up = await manager.resolve(thread_id, None, owner.id)
 
-    async with superseded:
-        await follow_up.prepare()
+    async with manager.enter(superseded):
+        await manager.prepare(follow_up)
         assert follow_up.path == superseded.path
 
     assert follow_up.path.is_dir()
@@ -1110,11 +1110,11 @@ async def test_the_next_run_throws_away_what_a_killed_one_left(
     # Nothing ever resumes into a chat tree, so a fork that died half-made is
     # reclaimed rather than resumed into — which is why claiming one clears it, and
     # why it needs no staging directory to be forked through.
-    workspace = await manager.open(await a_thread(str(uuid7())), None, owner.id)
+    workspace = await manager.resolve(await a_thread(str(uuid7())), None, owner.id)
     workspace.path.mkdir(parents=True)
     (workspace.path / "half.txt").write_text("from a run nobody finished")
 
-    async with workspace as chat:
+    async with manager.enter(workspace) as chat:
         assert not (chat.path / "half.txt").exists()
         assert (chat.path / ".git").is_dir()
 
@@ -1127,7 +1127,7 @@ async def test_a_chat_run_leaves_nothing_in_the_blank_mirror(
     # is the opposite of what a mirror is for.
     thread = await a_chat_thread()
 
-    async with await manager.open(thread.id, None, owner.id) as chat:
+    async with manager.open(thread.id, None, owner.id) as chat:
         (chat.path / "scratch.txt").write_text("mine")
         await manager.save(thread, owner.id)
 
@@ -1143,10 +1143,10 @@ async def test_a_chat_workspace_goes_even_when_the_run_raised(
     # The files an interrupted run wrote are exactly the files nothing will ever ask
     # for again, and a failed turn on a thread nobody resumes would otherwise hold
     # its disk for good.
-    workspace = await manager.open(await a_thread(str(uuid7())), None, owner.id)
+    workspace = await manager.resolve(await a_thread(str(uuid7())), None, owner.id)
 
     with suppress(RuntimeError):
-        async with workspace as chat:
+        async with manager.enter(workspace) as chat:
             (chat.path / "scratch.txt").write_text("mine")
             raise RuntimeError("the provider dropped the connection")
 
@@ -1159,7 +1159,7 @@ async def test_an_unregistered_chat_runs_in_a_temporary_directory(
     # An unregistered sender has no root to hold a volume: an empty directory with
     # no git, the same path every turn so a runtime can resume, gone afterwards.
     thread_id = uuid7()
-    workspace = await manager.open(thread_id, None, None)
+    workspace = await manager.resolve(thread_id, None, None)
 
     assert isinstance(workspace, UnregisteredWorkspace)
     assert (
@@ -1169,7 +1169,7 @@ async def test_an_unregistered_chat_runs_in_a_temporary_directory(
         ).resolve()
     )
 
-    async with workspace as chat:
+    async with manager.enter(workspace) as chat:
         assert chat.path.is_dir()
         assert list(chat.path.iterdir()) == []
 
@@ -1186,7 +1186,8 @@ async def test_an_unregistered_sender_is_refused_a_project(
     thread = await a_bound_thread(manager)
 
     with pytest.raises(UnregisteredProjectError):
-        await manager.open(thread.id, project, None)
+        async with manager.open(thread.id, project, None):
+            pytest.fail("an unregistered project workspace was opened")
 
 
 async def test_leaving_a_project_workspace_keeps_it(
@@ -1201,7 +1202,7 @@ async def test_leaving_a_project_workspace_keeps_it(
 
     # Entering one that is already there is a resume, not a fork: the mirror is not
     # synced for it, and the tree is answered as the last turn left it.
-    async with workspace:
+    async with manager.enter(workspace):
         (workspace.path / "work.md").write_text("done")
 
     assert (workspace.path / "work.md").read_text() == "done"
@@ -1218,10 +1219,10 @@ async def test_project_exit_checkpoints_a_failed_run(
     thread = await a_bound_thread(manager)
     workspace = await a_workspace(manager, thread, owner)
     (workspace.project.root / "readme.md").write_text("hello")
-    await workspace.prepare()
+    await manager.prepare(workspace)
     (workspace.path / "work.md").write_text("unfinished")
     with pytest.raises(RuntimeError, match="provider failed"):
-        async with workspace:
+        async with manager.enter(workspace):
             raise RuntimeError("provider failed")
     assert (workspace.path / "work.md").read_text() == "unfinished"
     assert await manager.saved(workspace.path)
@@ -1233,7 +1234,7 @@ async def test_project_exit_keeps_work_when_the_checkpoint_fails(
     thread = await a_bound_thread(manager)
     workspace = await a_workspace(manager, thread, owner)
     (workspace.project.root / "readme.md").write_text("hello")
-    async with workspace:
+    async with manager.enter(workspace):
         (workspace.path / "work.md").write_text("unfinished")
         shutil.rmtree(manager.mirrors.path(workspace.project))
     assert (workspace.path / "work.md").read_text() == "unfinished"
@@ -1249,7 +1250,7 @@ async def test_checkpoint_skips_unchanged_work_but_keeps_branch_changes(
     (workspace.project.root / "readme.md").write_text("hello")
     git = AsyncMock(wraps=workspaces.run_git)
     monkeypatch.setattr(workspaces, "run_git", git)
-    async with workspace:
+    async with manager.enter(workspace):
         (workspace.path / "work.md").write_text("unfinished")
     await manager.save(thread, owner.id)
     assert sum(call.args[0] == "push" for call in git.await_args_list) == 1
@@ -1258,7 +1259,7 @@ async def test_checkpoint_skips_unchanged_work_but_keeps_branch_changes(
     await manager.save(thread, owner.id)
     assert sum(call.args[0] == "push" for call in git.await_args_list) == 2
     await manager.release(workspace.volume)
-    await workspace.prepare()
+    await manager.prepare(workspace)
     assert await branch(workspace.path) == "renamed"
     assert (workspace.path / "work.md").read_text() == "unfinished"
 
@@ -1273,11 +1274,11 @@ async def test_context_cancellation_preserves_projects_and_releases_chat_claims(
     project = await thread.project
     if project is not None:
         (project.root / "readme.md").write_text("hello")
-    workspace = await manager.open(
+    workspace = await manager.resolve(
         thread.id, project, None if kind == "unregistered" else owner.id
     )
     with anyio.CancelScope() as scope:
-        async with workspace:
+        async with manager.enter(workspace):
             (workspace.path / "work.md").write_text("unfinished")
             scope.cancel()
             await checkpoint()
@@ -1297,15 +1298,15 @@ async def test_failed_chat_entry_releases_only_its_own_claim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     thread = await a_chat_thread()
-    first = await manager.open(thread.id, None, owner.id)
+    first = await manager.resolve(thread.id, None, owner.id)
     if overlapping:
-        await first.prepare()
-    failed = await manager.open(thread.id, None, owner.id)
+        await manager.prepare(first)
+    failed = await manager.resolve(thread.id, None, owner.id)
     monkeypatch.setattr(
         manager, "materialize", AsyncMock(side_effect=RuntimeError("prepare failed"))
     )
     with pytest.raises(RuntimeError, match="prepare failed"):
-        async with failed:
+        async with manager.enter(failed):
             pytest.fail("a failed workspace was entered")
     if overlapping:
         assert first.path.is_dir()

@@ -1121,7 +1121,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         project = await self.run_project(conversation.thread_id)
         # Settled here, forked when the run enters it below: the options this builds
         # have to name the directory before the process that will run there exists.
-        workspace = self.workspaces.open(conversation.thread_id, project)
+        workspace = await self.workspaces.resolve(conversation.thread_id, project)
         run_cwd = str(workspace.path)
         octomate_session = self.octomate.gateway.get(conversation.id)
         # The turn's server, mounted in process with the session closed over —
@@ -1235,7 +1235,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             # The SDK injects the active W3C context when connecting. Starting a
             # client inside each run's span also reparents resumed sessions.
             async with (
-                workspace,
+                self.workspaces.enter(workspace),
                 self.driving(session_id),
                 contextlib.aclosing(
                     self.ink.stream(

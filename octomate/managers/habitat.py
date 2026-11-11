@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Literal
 
+import anyio
 from pydantic import UUID7
 
 from octomate.config.habitat import (
@@ -15,8 +16,8 @@ from octomate.config.habitat import (
     NativeHabitatConfig,
     SbxHabitatConfig,
 )
-from octomate.habitat import Habitat
 from octomate.habitat import HabitatError as HabitatError
+from octomate.habitat import ManagedHabitat
 from octomate.habitat.sbx import SbxHabitat
 from octomate.nerve import (
     HabitatTopic,
@@ -35,7 +36,7 @@ from octomate.schemas.habitat import (
 @dataclass
 class Residence:
     user_id: UUID7
-    habitat: Habitat
+    habitat: ManagedHabitat
     status: HabitatStatus
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     invocations: set[UUID7] = field(default_factory=set)
@@ -129,7 +130,9 @@ class HabitatManager:
         try:
             yield residence
         finally:
-            async with residence.lock:
+            async with AsyncExitStack() as cleanup:
+                cleanup.enter_context(anyio.CancelScope(shield=True))
+                await cleanup.enter_async_context(residence.lock)
                 residence.invocations.discard(invocation_id)
                 if not residence.invocations and not self.closed:
                     residence.idle = asyncio.get_running_loop().call_later(
@@ -159,7 +162,8 @@ class HabitatManager:
                 )
             )
             try:
-                await self.halt(residence)
+                with anyio.CancelScope(shield=True):
+                    await self.halt(residence)
             finally:
                 self.report(
                     residence,
