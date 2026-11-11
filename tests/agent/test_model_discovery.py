@@ -33,6 +33,7 @@ from tests.agent.deepseek.test_tentacle import (
     patch_gateway,
     turn_events,
 )
+from tests.support.invocations import invocation_for
 from tests.support.managers import FakeConversationManager
 
 
@@ -396,13 +397,16 @@ async def test_deepseek_preserves_provider_pairs_and_native_effort_ids(
             route.claim.efforts == ("low", "max", "plugin-effort")
             for route in tentacle.routes
         )
-        await tentacle.run(
-            "hello",
-            conversation_address=KEY,
-            thread_id=uuid7(),
-            model="first:future-model",
-            effort="plugin-effort",
-        )
+        async with invocation_for(
+            tentacle, conversation_address=KEY, thread_id=uuid7()
+        ) as invocation:
+            await tentacle.run(
+                "hello",
+                conversation_address=KEY,
+                invocation=invocation,
+                model="first:future-model",
+                effort="plugin-effort",
+            )
 
     [selected] = [
         payload

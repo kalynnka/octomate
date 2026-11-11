@@ -100,6 +100,7 @@ from octomate.capabilities.harness.events import (
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, CodexConfig
 from octomate.config.channels import TrunklineChannelConfig
+from octomate.managers.habitat import Invocation
 from octomate.mcp.server import OCTOMATE_MCP_PATH
 from octomate.nerve import Impulse
 from octomate.schemas.artifacts import (
@@ -112,8 +113,9 @@ from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
+    CommandDescriptor,
     CommandError,
-    CommandInvocation,
+    CommandIntent,
     CommandOutcome,
     CommandResult,
 )
@@ -130,7 +132,7 @@ from octomate.schemas.mcp import McpAppInvocation, McpAppResultMeta
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import ThreadKey
+from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
 from octomate.streaming.files import FileTransferError, FileTransferSlot
@@ -831,11 +833,38 @@ class CodexTentacle(AgentTentacle[str, None]):
         )
         return catalog
 
+    def command_invocation(
+        self,
+        context: CommandContext,
+        intent: CommandIntent,
+        descriptor: CommandDescriptor,
+        *,
+        thread: Thread | None,
+    ) -> contextlib.AbstractAsyncContextManager[Invocation | None]:
+        if not isinstance(descriptor, CodexCommandDescriptor) and descriptor.id not in {
+            "builtin:init",
+            "builtin:approve",
+            "builtin:review",
+            "builtin:mcp",
+            "builtin:plan",
+            "builtin:compact",
+        }:
+            return contextlib.nullcontext(None)
+        if thread is None or context.conversation is None:
+            raise ValueError("A runtime command requires a conversation")
+        return self.habitats.invoke(
+            self.workspaces,
+            thread=thread,
+            conversation_id=context.conversation.id,
+            owner_id=context.user_id,
+        )
+
     async def execute_command(
         self,
         context: CommandContext,
-        invocation: CommandInvocation,
+        intent: CommandIntent,
         *,
+        invocation: Invocation | None,
         deferred_suspender: DeferredSuspender | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AsyncGenerator[CommandOutcome | ReactStreamEvent[str], None]:
@@ -843,7 +872,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         conversation = context.conversation
         catalog = await self.discover_commands(context)
         descriptors = {descriptor.id: descriptor for descriptor in catalog.descriptors}
-        descriptor = descriptors.get(invocation.command_id)
+        descriptor = descriptors.get(intent.command_id)
         if descriptor is None:
             yield CommandError(
                 status="stale",
@@ -858,7 +887,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             "builtin:compact",
             "builtin:fork",
         }:
-            yield await self.command_control(context, invocation)
+            yield await self.command_control(context, intent, invocation=invocation)
             return
         if conversation is None:
             raise ValueError("an agent command run requires a conversation")
@@ -869,11 +898,11 @@ class CodexTentacle(AgentTentacle[str, None]):
                 SkillInput(name=descriptor.name, path=str(descriptor.path))
             ]
             prompt = f"/{descriptor.name}"
-            if invocation.arguments:
-                inputs.append(TextInput(invocation.arguments))
-                prompt += f" {invocation.arguments}"
+            if intent.arguments:
+                inputs.append(TextInput(intent.arguments))
+                prompt += f" {intent.arguments}"
         elif descriptor.id == "builtin:init":
-            if invocation.arguments.strip():
+            if intent.arguments.strip():
                 yield CommandError(
                     status="unsupported", message="/init takes no arguments."
                 )
@@ -886,7 +915,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
             inputs = [TextInput(prompt)]
         elif descriptor.id == "builtin:approve":
-            review_id = invocation.arguments.strip()
+            review_id = intent.arguments.strip()
             if any(char.isspace() for char in review_id):
                 yield CommandError(
                     status="unsupported", message="Use /approve [review-id]."
@@ -900,7 +929,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             prompt = "Retry the action I just explicitly approved from the preceding automatic review."
             inputs = [TextInput(prompt)]
         elif descriptor.id == "builtin:review":
-            branch = invocation.arguments.strip()
+            branch = intent.arguments.strip()
             if branch and (
                 branch.startswith("-") or any(char.isspace() for char in branch)
             ):
@@ -923,6 +952,8 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
             return
         selected_model = self.resolve_model(context.model)
+        if invocation is None:
+            raise ValueError("This command requires a prepared invocation")
         async with contextlib.aclosing(
             self.observe_run(
                 self._iter_events(
@@ -931,8 +962,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                     review=review,
                     approval=approval,
                     conversation_address=context.address,
-                    thread_id=conversation.thread_id,
-                    conversation_id=conversation.id,
+                    invocation=invocation,
                     run_name=descriptor.name,
                     model=self.models[selected_model]
                     if selected_model is not None
@@ -946,12 +976,16 @@ class CodexTentacle(AgentTentacle[str, None]):
                 yield event
 
     async def command_control(
-        self, context: CommandContext, invocation: CommandInvocation
+        self,
+        context: CommandContext,
+        intent: CommandIntent,
+        *,
+        invocation: Invocation | None,
     ) -> CommandOutcome:
         """Apply native controls or Octomate-owned effort without a model run."""
-        argument = invocation.arguments.strip()
+        argument = intent.arguments.strip()
         conversation = context.conversation
-        if invocation.command_id == "builtin:status":
+        if intent.command_id == "builtin:status":
             if argument:
                 return CommandError(
                     status="unsupported", message="/status takes no arguments."
@@ -971,7 +1005,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             return CommandResult(segments=[TextSegment(data={"text": text})])
         if conversation is None:
             raise ValueError("this command requires a conversation")
-        if invocation.command_id == "builtin:fork":
+        if intent.command_id == "builtin:fork":
             if argument:
                 return CommandError(
                     status="unsupported", message="/fork takes no arguments."
@@ -1021,7 +1055,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                     )
                 ]
             )
-        if invocation.command_id == "builtin:reasoning":
+        if intent.command_id == "builtin:reasoning":
             effort = argument or None
             if effort is not None:
                 try:
@@ -1037,12 +1071,12 @@ class CodexTentacle(AgentTentacle[str, None]):
                 status="unavailable",
                 message="Run this conversation in Codex before using this command.",
             )
-        if invocation.command_id in {"builtin:compact", "builtin:mcp"} and argument:
+        if intent.command_id in {"builtin:compact", "builtin:mcp"} and argument:
             return CommandError(
                 status="unsupported",
-                message=f"/{invocation.command_id.removeprefix('builtin:')} takes no arguments.",
+                message=f"/{intent.command_id.removeprefix('builtin:')} takes no arguments.",
             )
-        if invocation.command_id == "builtin:plan" and argument not in {
+        if intent.command_id == "builtin:plan" and argument not in {
             "",
             "on",
             "off",
@@ -1052,12 +1086,10 @@ class CodexTentacle(AgentTentacle[str, None]):
         model = self.models[selected] if selected is not None else None
         permission_mode = conversation.permission_mode or self.config.permission_mode
         self.check_permission_mode(permission_mode)
-        project = await self.run_project(conversation.thread_id)
+        if invocation is None:
+            raise ValueError("This command requires a prepared invocation")
         async with (
             self.conversation_locks.hold(str(conversation.id)),
-            self.workspaces.open(
-                conversation.thread_id, project, context.user_id
-            ) as workspace,
             self.driving(thread_id),
         ):
             api_key = await self.runtime_api_key(context.user_id)
@@ -1066,7 +1098,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 conversation_id=conversation.id,
                 api_key_id=api_key.key.id if api_key is not None else None,
                 mcp_bearer=api_key.token if api_key is not None else None,
-                cwd=str(workspace.path),
+                cwd=str(invocation.workspace.path),
                 approval_mode=ApprovalMode.auto_review
                 if permission_mode == "auto_review"
                 else ApprovalMode.deny_all
@@ -1084,7 +1116,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 if permission_mode == "full_access"
                 else Sandbox.workspace_write,
             )
-            if invocation.command_id == "builtin:compact":
+            if intent.command_id == "builtin:compact":
                 turn = await self.ink.start_command(thread_id)
                 completed = await turn.run()
                 if completed.status != TurnStatus.completed:
@@ -1099,7 +1131,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                         TextSegment(data={"text": "Conversation context compacted."})
                     ]
                 )
-            if invocation.command_id == "builtin:mcp":
+            if intent.command_id == "builtin:mcp":
                 text = await self.ink.mcp_status(thread_id)
                 return CommandResult(segments=[TextSegment(data={"text": text})])
             if model is None:
@@ -1650,14 +1682,13 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
@@ -1667,9 +1698,9 @@ class CodexTentacle(AgentTentacle[str, None]):
         review: ReviewTarget | None = None,
         approval: ItemGuardianApprovalReviewCompletedNotification | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
+        thread_id = invocation.thread_id
+        conversation_id = invocation.conversation_id
         sdk_model = model.model_name if isinstance(model, Model) else model
-        if thread_id is None:
-            raise ValueError("agent run requires a thread_id to own its conversation")
         if not self.ink.running:
             raise RuntimeError("CodexTentacle.run requires the tentacle to be entered")
         if output_type is DeferredToolRequests or (
@@ -1759,8 +1790,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         # writes to it, so for Codex the directory is the whole of running inside a
         # project — and the workspace is what makes that boundary this run's rather
         # than everyone's checkout.
-        project = await self.run_project(conversation.thread_id)
-        workspace = await self.workspaces.resolve(conversation.thread_id, project)
+        workspace = invocation.workspace
         run_cwd = str(workspace.path)
 
         async with contextlib.AsyncExitStack() as resources:
@@ -1801,16 +1831,9 @@ class CodexTentacle(AgentTentacle[str, None]):
                 if permission_mode == "full_access" or not interactive
                 else None
             )
-            # Keep the workspace alive until the native turn finishes.
-            await resources.enter_async_context(self.workspaces.enter(workspace))
             self.commands.invalidate(agent_id=self.id, conversation_id=conversation.id)
             session = self.gateway_manager.get(conversation.id)
-            user_id = (
-                session.user_profile.user_id
-                if session is not None and session.user_profile is not None
-                else None
-            )
-            api_key = await self.runtime_api_key(user_id)
+            api_key = await self.runtime_api_key(invocation.owner_id)
             codex_thread, model_name = await self.ink.open_thread(
                 thread_id=conversation.external_id,
                 conversation_id=conversation.id,
@@ -2162,7 +2185,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -2171,7 +2194,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -2194,7 +2216,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -2203,7 +2225,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -2225,7 +2246,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -2234,7 +2255,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -2255,14 +2275,13 @@ class CodexTentacle(AgentTentacle[str, None]):
             self._iter_events(
                 user_prompt,
                 conversation_address=conversation_address,
-                thread_id=thread_id,
+                invocation=invocation,
                 source_thread_address=source_thread_address,
                 source_thread_message_ids=source_thread_message_ids,
                 run_name=run_name,
                 output_type=output_type,
                 model=model,
                 effort=effort,
-                conversation_id=conversation_id,
                 interactive=interactive,
                 instructions=instructions,
                 capabilities=capabilities,
@@ -2284,7 +2303,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -2293,7 +2312,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -2315,7 +2333,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -2324,7 +2342,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -2345,7 +2362,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -2354,7 +2371,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -2374,14 +2390,13 @@ class CodexTentacle(AgentTentacle[str, None]):
                 self._iter_events(
                     user_prompt,
                     conversation_address=conversation_address,
-                    thread_id=thread_id,
+                    invocation=invocation,
                     source_thread_address=source_thread_address,
                     source_thread_message_ids=source_thread_message_ids,
                     run_name=run_name,
                     output_type=output_type,
                     model=model,
                     effort=effort,
-                    conversation_id=conversation_id,
                     interactive=interactive,
                     instructions=instructions,
                     capabilities=capabilities,

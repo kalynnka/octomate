@@ -441,7 +441,7 @@ class ThreadCommand(ThreadMessage):
         nullable=True,
         comment="The command's target conversation; NULL after that conversation is deleted.",
     )
-    invocation: Mapped[JsonValue] = mapped_column(
+    intent: Mapped[JsonValue] = mapped_column(
         JSON,
         nullable=True,
         comment="Explicit command intent with raw arguments and resolved attachments.",

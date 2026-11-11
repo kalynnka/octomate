@@ -1,4 +1,4 @@
-"""Runtime command catalogs and explicit invocations, separate from chat text."""
+"""Runtime command catalogs and explicit command intent, separate from chat text."""
 
 import uuid
 from dataclasses import dataclass, replace
@@ -176,7 +176,7 @@ class CommandCatalog(BaseModel):
         )
 
 
-class CommandInvocation(BaseModel):
+class CommandIntent(BaseModel):
     """Explicit command intent; ordinary chat text does not use this contract.
 
     The caller must revalidate catalog membership and attachment support before dispatch.

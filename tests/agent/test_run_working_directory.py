@@ -20,15 +20,17 @@ from pathlib import Path
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config.agents import ClaudeCodeConfig, CodexConfig
+from octomate.database import async_session
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import Nerve
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadKey
-from octomate.schemas.user import UserProfile
+from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.claude.hooks import ClaudeHookInput
@@ -51,6 +53,7 @@ from tests.agent.codex.test_tentacle import (
     native_thread_handles as native_thread_handles,
 )
 from tests.support.agents import RecordingClaudeClient
+from tests.support.invocations import invocation_for, volume_for
 from tests.support.managers import a_project, a_registry
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
@@ -65,9 +68,14 @@ ADDRESS = ChannelAddress(
 )
 
 
+OWNER_ID = uuid7()
+
+
 @pytest.fixture(autouse=True)
 async def _db(in_memory_engine: AsyncEngine) -> None:
-    return
+    async with async_session() as session:
+        session.add(User(id=OWNER_ID, username="workspace-owner"))
+        await session.commit()
 
 
 @pytest.fixture
@@ -459,15 +467,28 @@ async def test_a_driven_claude_run_records_where_it_dispatched(
         mcp=octomate.mcp,
     )
 
-    async with tentacle.run_stream_events(
-        "do it", conversation_address=ADDRESS, thread_id=thread.id, run_name="react"
-    ) as stream:
+    async with (
+        invocation_for(
+            tentacle,
+            conversation_address=ADDRESS,
+            thread_id=thread.id,
+            owner_id=OWNER_ID,
+        ) as invocation,
+        tentacle.run_stream_events(
+            "do it",
+            conversation_address=ADDRESS,
+            invocation=invocation,
+            run_name="react",
+        ) as stream,
+    ):
         async for _event in stream:
             pass
 
     options: ClaudeAgentOptions | None = RecordingClaudeClient.last_options
     assert options is not None
-    workspace = octomate.workspaces.path(thread.id)
+    workspace = octomate.workspaces.path(
+        await volume_for(octomate.workspaces, thread.id, OWNER_ID)
+    )
     assert options.cwd == str(workspace)
     [run] = await driven_runs(octomate, thread, "claude")
     # The same directory the run was launched in, so a driven run answers "where did
@@ -497,15 +518,28 @@ async def test_a_driven_codex_run_records_where_it_dispatched() -> None:
         gateway_manager=octomate.gateway,
     )
 
-    async with tentacle:
-        async with tentacle.run_stream_events(
-            "do it", conversation_address=ADDRESS, thread_id=thread.id, run_name="react"
-        ) as stream:
-            async for _event in stream:
-                pass
+    async with (
+        tentacle,
+        invocation_for(
+            tentacle,
+            conversation_address=ADDRESS,
+            thread_id=thread.id,
+            owner_id=OWNER_ID,
+        ) as invocation,
+        tentacle.run_stream_events(
+            "do it",
+            conversation_address=ADDRESS,
+            invocation=invocation,
+            run_name="react",
+        ) as stream,
+    ):
+        async for _event in stream:
+            pass
 
     # No project declared, so the run happens in the workspace forked for it rather
     # than the configured directory — and that is what the run records, even though
     # the run's end is what throws it away.
     [run] = await driven_runs(octomate, thread, "codex")
-    assert run.cwd == octomate.workspaces.open(thread.id, None).path
+    assert (
+        run.cwd == (await octomate.workspaces.resolve(thread.id, None, OWNER_ID)).path
+    )

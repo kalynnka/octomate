@@ -45,6 +45,7 @@ from octomate.database import async_session
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.oauth import OAuthConnector
 from octomate.managers.user import UserManager
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL, LINK_PROFILE_TOOL
 from octomate.mcp.server import (
     CALL_MCP_TOOL,
@@ -76,7 +77,12 @@ from octomate.tentacles.mcp import (
     OAuthMcpTentacle,
 )
 from tests.channels.slack.test_mcp import into
-from tests.support.managers import FakeConversationManager, fixed_session
+from tests.support.invocations import invocation_for
+from tests.support.managers import (
+    FakeConversationManager,
+    FakeThreadManager,
+    fixed_session,
+)
 from tests.support.mcp import discover, install_tentacle, served_inkling_mcp
 from tests.support.users import a_user, auth_config
 
@@ -175,8 +181,14 @@ def an_upstream(tool: str) -> tuple[FastMCP, list[str]]:
 def a_turn(profile: UserProfile | None = None) -> OctomateSession:
     """A turn by `profile`, or by nobody registered — the session a proxied call
     resolves to."""
+    threads = FakeThreadManager()
     return OctomateSession(
-        channel_routes={}, current_agent_id="inkling", user_profile=profile
+        channel_routes={},
+        current_agent_id="inkling",
+        user_profile=profile,
+        users=threads.users,
+        threads=threads,
+        workspaces=WorkspaceManager(),
     )
 
 
@@ -464,13 +476,16 @@ async def test_a_run_mounts_the_tentacles_for_its_octomate_session(
     ).id
     session.conversation_address = address
     async with (
-        served_inkling_mcp(host, monkeypatch),
-        host.gateway.driving(session),
-        inkling.run_stream_events(
-            "hello",
+        invocation_for(
+            inkling,
             conversation_address=address,
             thread_id=thread_id,
             conversation_id=session.conversation_id,
+        ) as invocation,
+        served_inkling_mcp(host, monkeypatch),
+        host.gateway.driving(session),
+        inkling.run_stream_events(
+            "hello", conversation_address=address, invocation=invocation
         ) as stream,
     ):
         async for _event in stream:

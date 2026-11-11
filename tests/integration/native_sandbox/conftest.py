@@ -25,6 +25,7 @@ from tests.integration.native_sandbox.runners import (
     inkling_runner,
 )
 from tests.support.managers import a_project, a_registry
+from tests.support.users import a_user
 
 
 @pytest.fixture
@@ -89,23 +90,30 @@ async def native_call(
     octomate = Octomate(
         workspaces=WorkspaceManager(
             projects=await a_registry(project),
-            workspaces_dir=sandbox_tree.workspace.parent / "runs",
+            volumes_dir=sandbox_tree.workspace.parent / "runs",
         )
     )
     thread = await octomate.threads.ensure(
         ThreadKey("sandbox-audit", "thread", "synthetic", "audit"), project=project
     )
-    workspace = octomate.workspaces.open(thread.id, project)
-    sandbox_tree.workspace = await workspace.prepare()
+    owner = await a_user("sandbox-owner")
+    workspace = await octomate.workspaces.resolve(thread.id, project, owner.id)
+    sandbox_tree.workspace = await octomate.workspaces.prepare(workspace)
     if request.param == "inkling":
-        async with inkling_runner(octomate, thread.id) as call:
+        async with inkling_runner(octomate, thread.id, owner_id=owner.id) as call:
             yield call
     elif request.param == "codex":
-        async with codex_runner(octomate, thread.id, tmp_path) as call:
+        async with codex_runner(
+            octomate, thread.id, tmp_path, owner_id=owner.id
+        ) as call:
             yield call
     elif request.param == "claude":
-        async with claude_runner(octomate, thread.id, tmp_path, monkeypatch) as call:
+        async with claude_runner(
+            octomate, thread.id, tmp_path, monkeypatch, owner_id=owner.id
+        ) as call:
             yield call
     else:
-        async with deepseek_runner(octomate, thread.id, tmp_path, monkeypatch) as call:
+        async with deepseek_runner(
+            octomate, thread.id, tmp_path, monkeypatch, owner_id=owner.id
+        ) as call:
             yield call

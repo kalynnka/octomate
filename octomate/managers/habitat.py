@@ -1,4 +1,4 @@
-"""One persistent habitat per registered user."""
+"""Invocation resources and each registered user's persistent habitat."""
 
 from __future__ import annotations
 
@@ -10,15 +10,17 @@ from typing import Literal
 
 import anyio
 from pydantic import UUID7
+from uuid_utils.compat import uuid7
 
 from octomate.config.habitat import (
     HabitatConfig,
     NativeHabitatConfig,
     SbxHabitatConfig,
 )
+from octomate.habitat import Habitat, ManagedHabitat, NativeHabitat
 from octomate.habitat import HabitatError as HabitatError
-from octomate.habitat import ManagedHabitat
 from octomate.habitat.sbx import SbxHabitat
+from octomate.managers.workspaces.base import Workspace, WorkspaceManager
 from octomate.nerve import (
     HabitatTopic,
     Impulse,
@@ -31,6 +33,37 @@ from octomate.schemas.habitat import (
     HabitatStatus,
     InvocationScope,
 )
+from octomate.schemas.thread import Thread
+
+
+@dataclass(frozen=True, kw_only=True)
+class Invocation:
+    """Core-authorized resources, valid only inside the core's owning contexts.
+
+    Core prepares the workspace and acquires any habitat before constructing this
+    value. Adapters borrow them for the call; core owns their lifetime and the
+    cleanup required on completion, failure, or cancellation.
+    """
+
+    id: UUID7  # Allocated by core before acquisition, shared with lifecycle events.
+    conversation_id: UUID7
+    workspace: Workspace
+    habitat: Habitat  # Prepared environment, owned by core for this call.
+
+    def __post_init__(self) -> None:
+        if isinstance(self.habitat, ManagedHabitat):
+            if self.owner_id is None:
+                raise ValueError("Habitat execution requires a registered user")
+            if self.habitat.user_id != self.owner_id:
+                raise ValueError("Habitat and workspace owners do not match")
+
+    @property
+    def owner_id(self) -> UUID7 | None:
+        return self.workspace.owner_id
+
+    @property
+    def thread_id(self) -> UUID7:
+        return self.workspace.thread_id
 
 
 @dataclass
@@ -51,6 +84,35 @@ class HabitatManager:
     nerve: Nerve
     residences: dict[UUID7, Residence] = field(default_factory=dict, init=False)
     closed: bool = field(default=False, init=False)
+
+    @asynccontextmanager
+    async def invoke(
+        self,
+        workspaces: WorkspaceManager,
+        *,
+        thread: Thread,
+        conversation_id: UUID7,
+        owner_id: UUID7 | None,
+    ) -> AsyncGenerator[Invocation]:
+        """Own one native call's resources for the full consumption of its events."""
+        if not isinstance(self.config, NativeHabitatConfig):
+            raise HabitatError("Managed habitat dispatch is not yet supported")
+        invocation_id = uuid7()
+        project = (
+            await workspaces.projects.of(thread) if workspaces.projects.roots else None
+        )
+        habitat = NativeHabitat()
+        await habitat.prepare()
+        try:
+            async with workspaces.open(thread.id, project, owner_id) as workspace:
+                yield Invocation(
+                    id=invocation_id,
+                    conversation_id=conversation_id,
+                    workspace=workspace,
+                    habitat=habitat,
+                )
+        finally:
+            await habitat.stop()
 
     def residence(self, scope: InvocationScope) -> Residence:
         """Internal lookup; callers must supply a core-authorized owner."""

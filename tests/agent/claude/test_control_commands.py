@@ -13,7 +13,7 @@ from uuid_utils.compat import uuid7
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
-    CommandInvocation,
+    CommandIntent,
     CommandResult,
 )
 from octomate.schemas.thread import ThreadCommand
@@ -32,6 +32,7 @@ from tests.agent.claude.test_command_execution import (
 from tests.agent.claude.test_command_execution import (
     streams as streams,
 )
+from tests.support.invocations import invocation_for
 
 
 async def deliver(
@@ -40,14 +41,14 @@ async def deliver(
     command: str,
     arguments: str = "",
 ) -> CommandResult | CommandError:
-    invocation = CommandInvocation(command_id=command, arguments=arguments)
+    intent = CommandIntent(command_id=command, arguments=arguments)
     async with agent.commands.validate(
-        agent, context, invocation, delivery_id="control"
+        agent, context, intent, delivery_id="control"
     ) as validated:
         if isinstance(validated, CommandResult | CommandError):
             return validated
         async with agent.commands.execute(
-            agent, context, invocation, validated, delivery_id="control"
+            agent, context, intent, validated, delivery_id="control"
         ) as result:
             assert isinstance(result, CommandResult | CommandError)
             return result
@@ -87,12 +88,18 @@ async def test_plan_updates_live_permissions_and_persists_for_next_run(
     assert receipt.outcome == outcome
     agent.ink.live_clients.clear()
     client.receive_response.side_effect = lambda: native_messages(streams["skill"])
-    await agent.run(
-        "continue",
+    async with invocation_for(
+        agent,
         conversation_address=context.address,
-        conversation_id=conversation.id,
         thread_id=conversation.thread_id,
-    )
+        conversation_id=conversation.id,
+        owner_id=context.user_id,
+    ) as invocation:
+        await agent.run(
+            "continue",
+            conversation_address=context.address,
+            invocation=invocation,
+        )
     assert options[-1].permission_mode == mode
 
 
@@ -186,7 +193,7 @@ async def test_fork_copies_sdk_transcript_and_resumes_from_destination(
     assert [message.parts for message in copied.messages] == [
         message.parts for message in source.messages
     ]
-    target_cwd = agent.workspaces.open(target.id, None).path
+    target_cwd = (await agent.workspaces.resolve(target.id, None, context.user_id)).path
     assert target_cwd != context.cwd
     fork_file = transcripts_dir(target_cwd) / f"{copied.external_id}.jsonl"
     assert fork_file.is_file()
@@ -200,15 +207,23 @@ async def test_fork_copies_sdk_transcript_and_resumes_from_destination(
     assert prompt["message"]["content"] == "Earlier work"
     assert len(await source.runs) == 1
     client.receive_response.side_effect = lambda: native_messages(streams["skill"])
-    await agent.run(
-        "continue the fork",
+    async with invocation_for(
+        agent,
         conversation_address=replace(
             context.address, channel_thread_id=target.channel_thread_id
         ),
-        conversation_id=copied.id,
         thread_id=target.id,
-        model=context.model,
-    )
+        conversation_id=copied.id,
+        owner_id=context.user_id,
+    ) as invocation:
+        await agent.run(
+            "continue the fork",
+            conversation_address=replace(
+                context.address, channel_thread_id=target.channel_thread_id
+            ),
+            invocation=invocation,
+            model=context.model,
+        )
     assert options[-1].resume == copied.external_id
     assert options[-1].cwd == str(target_cwd)
     assert options[-1].permission_mode == "plan"

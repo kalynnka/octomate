@@ -17,7 +17,7 @@ from octomate.capabilities.harness.events import (
 )
 from octomate.database import AsyncSession, async_session
 from octomate.nerve import ChannelTopic, Impulse, ThreadTopic, UserTopic
-from octomate.schemas.commands import CommandInvocation, CommandResult
+from octomate.schemas.commands import CommandIntent, CommandResult
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import (
@@ -196,7 +196,7 @@ async def test_committed_listing_changes_notify_participants(
                     actor_kind="human",
                     platform_message_id="command",
                     conversation_id=conversation.id,
-                    invocation=CommandInvocation(command_id="review"),
+                    intent=CommandIntent(command_id="review"),
                 )
                 await app.threads.store_message(receipt, thread)
                 recorded = held(live)

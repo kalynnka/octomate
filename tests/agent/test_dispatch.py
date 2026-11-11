@@ -65,6 +65,7 @@ from tests.support.channels import (
 from tests.support.managers import a_loaded_thread, the_sub_thread
 from tests.support.nerve import awake_on, held, kicked
 from tests.support.scenarios import mid_run_notice
+from tests.support.users import a_user
 
 
 @pytest.fixture(autouse=True)
@@ -921,6 +922,9 @@ async def test_status_outcomes_survive_failed_or_cancelled_lifecycle(
     cancel: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    owner = await a_user()
+    event = _event()
+    event.sender.user_id = owner.id
     app = Octomate()
     app.connect(FakeAgent())
     app.connect(FakeChannelTentacle(config=_entry_config(stream=False)))
@@ -936,7 +940,7 @@ async def test_status_outcomes_survive_failed_or_cancelled_lifecycle(
 
     async with app.nerve.subscribe(ThreadTopic(ThreadKey.from_address(_key()))) as live:
         with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
-            await kicked(app, UserMessageSignal([_event()]))
+            await kicked(app, UserMessageSignal([event]))
         events = [impulse.event for impulse in held(live)]
 
     assert events[-1] == ReflexAsleepEvent(outcome="cancelled" if cancel else "failed")

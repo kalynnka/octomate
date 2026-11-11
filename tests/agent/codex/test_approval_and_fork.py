@@ -19,7 +19,7 @@ from octomate.database import async_session
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
-    CommandInvocation,
+    CommandIntent,
     CommandResult,
 )
 from octomate.schemas.conversation import ChannelAddress
@@ -32,6 +32,7 @@ from octomate.tentacles.trunkline import TrunklineTentacle
 from octomate.types.json import JsonObject
 from tests.agent.codex.test_command_execution import execution as execution
 from tests.agent.codex.test_tentacle import FakeCodex, failed_script, text_script
+from tests.support.invocations import invocation_for
 from tests.support.managers import a_project
 
 
@@ -70,19 +71,22 @@ async def recorded_context(
     agent: CodexTentacle, context: CommandContext
 ) -> CommandContext:
     assert context.conversation is not None
-    await agent.run(
-        "Do the work",
+    async with invocation_for(
+        agent,
         conversation_address=context.address,
-        conversation_id=context.conversation.id,
         thread_id=context.conversation.thread_id,
-    )
+        conversation_id=context.conversation.id,
+        owner_id=context.user_id,
+    ) as invocation:
+        await agent.run(
+            "Do the work",
+            conversation_address=context.address,
+            invocation=invocation,
+        )
     return replace(
         context,
         conversation=await agent.conversations.get(context.conversation.id),
-        cwd=agent.workspaces.open(
-            context.conversation.thread_id,
-            await agent.run_project(context.conversation.thread_id),
-        ).path,
+        cwd=invocation.workspace.path,
     )
 
 
@@ -94,14 +98,14 @@ async def deliver(
     arguments: str = "",
     delivery_id: str = "delivery-1",
 ) -> CommandResult | CommandError:
-    invocation = CommandInvocation(command_id=f"builtin:{command}", arguments=arguments)
+    intent = CommandIntent(command_id=f"builtin:{command}", arguments=arguments)
     async with agent.commands.validate(
-        agent, context, invocation, delivery_id=delivery_id
+        agent, context, intent, delivery_id=delivery_id
     ) as validated:
         if isinstance(validated, CommandResult | CommandError):
             return validated
         async with agent.commands.execute(
-            agent, context, invocation, validated, delivery_id=delivery_id
+            agent, context, intent, validated, delivery_id=delivery_id
         ) as result:
             if isinstance(result, CommandResult | CommandError):
                 return result
@@ -425,7 +429,11 @@ async def test_fork_copies_history_settings_and_preserves_source(
     assert target.active_model == context.model
     assert target.project_id == source_thread.project_id
     if project_bound:
-        target_cwd = agent.workspaces.open(target.id, await target.project).path
+        target_cwd = (
+            await agent.workspaces.resolve(
+                target.id, await target.project, context.user_id
+            )
+        ).path
         assert (target_cwd / "work.txt").read_text() == "Uncommitted work"
         (target_cwd / "work.txt").write_text("Independent fork")
         assert context.cwd is not None
@@ -438,13 +446,19 @@ async def test_fork_copies_history_settings_and_preserves_source(
         threads
     )
     FakeCodex.script = text_script("Continued the fork", thread_id="thread-fork")
-    await agent.run(
-        "Continue",
+    async with invocation_for(
+        agent,
         conversation_address=target.key.address(context.address.user_id),
-        conversation_id=copied.id,
         thread_id=target.id,
-        interactive=False,
-    )
+        conversation_id=copied.id,
+        owner_id=context.user_id,
+    ) as invocation:
+        await agent.run(
+            "Continue",
+            conversation_address=target.key.address(context.address.user_id),
+            invocation=invocation,
+            interactive=False,
+        )
     assert FakeCodex.thread_calls[-1].thread_id == "thread-fork"
     assert len((await agent.conversations.get(source.id)).runs) == 1
     assert len((await agent.conversations.get(copied.id)).runs) == 2

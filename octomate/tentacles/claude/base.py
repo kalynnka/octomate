@@ -86,14 +86,17 @@ from octomate.capabilities.harness.events import (
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.config.channels import TrunklineChannelConfig
+from octomate.managers.habitat import Invocation
+from octomate.managers.workspaces.base import ProjectWorkspace
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
 from octomate.nerve import Impulse
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
+    CommandDescriptor,
     CommandError,
-    CommandInvocation,
+    CommandIntent,
     CommandOutcome,
     CommandResult,
 )
@@ -108,7 +111,7 @@ from octomate.schemas.deferred import (
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import ThreadKey
+from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import (
@@ -738,11 +741,34 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         )
         return catalog
 
+    def command_invocation(
+        self,
+        context: CommandContext,
+        intent: CommandIntent,
+        descriptor: CommandDescriptor,
+        *,
+        thread: Thread | None,
+    ) -> contextlib.AbstractAsyncContextManager[Invocation | None]:
+        if (
+            not isinstance(descriptor, ClaudeCommandDescriptor)
+            or descriptor.id in CONTROL_COMMANDS
+        ):
+            return contextlib.nullcontext(None)
+        if thread is None or context.conversation is None:
+            raise ValueError("A runtime command requires a conversation")
+        return self.habitats.invoke(
+            self.workspaces,
+            thread=thread,
+            conversation_id=context.conversation.id,
+            owner_id=context.user_id,
+        )
+
     async def execute_command(
         self,
         context: CommandContext,
-        invocation: CommandInvocation,
+        intent: CommandIntent,
         *,
+        invocation: Invocation | None,
         deferred_suspender: DeferredSuspender | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AsyncGenerator[CommandOutcome | ReactStreamEvent[str], None]:
@@ -756,44 +782,46 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             for entry in catalog.descriptors
             if isinstance(entry, ClaudeCommandDescriptor)
         }
-        descriptor = descriptors.get(invocation.command_id)
+        descriptor = descriptors.get(intent.command_id)
         if descriptor is None:
             yield CommandError(
                 status="stale", message="This command changed; refresh commands."
             )
             return
         if descriptor.id in CONTROL_COMMANDS:
-            yield await self.command_control(context, invocation)
+            yield await self.command_control(context, intent)
             return
         prompt = f"/{descriptor.name}"
-        if invocation.arguments:
-            prompt += f" {invocation.arguments}"
-        events = self._iter_events(
-            prompt,
-            command=descriptor,
-            conversation_address=context.address,
-            thread_id=conversation.thread_id,
-            conversation_id=conversation.id,
-            run_name=descriptor.name,
-            model=context.model,
-            deferred_suspender=deferred_suspender,
-            capabilities=capabilities,
-        )
-        try:
-            async with contextlib.aclosing(events):
+        if intent.arguments:
+            prompt += f" {intent.arguments}"
+        if invocation is None:
+            raise ValueError("This command requires a prepared invocation")
+        async with contextlib.aclosing(
+            self._iter_events(
+                prompt,
+                command=descriptor,
+                conversation_address=context.address,
+                invocation=invocation,
+                run_name=descriptor.name,
+                model=context.model,
+                deferred_suspender=deferred_suspender,
+                capabilities=capabilities,
+            )
+        ) as events:
+            try:
                 async for event in events:
                     yield event
-        except LookupError as error:
-            yield CommandError(status="stale", message=str(error))
+            except LookupError as error:
+                yield CommandError(status="stale", message=str(error))
 
     async def command_control(
-        self, context: CommandContext, invocation: CommandInvocation
+        self, context: CommandContext, intent: CommandIntent
     ) -> CommandOutcome:
         """Apply persistent planning permissions or fork without submitting a turn."""
         conversation = context.conversation
         assert conversation is not None
-        argument = invocation.arguments.strip()
-        if invocation.command_id == "plan":
+        argument = intent.arguments.strip()
+        if intent.command_id == "plan":
             if argument not in {"", "on", "off"}:
                 return CommandError(status="unsupported", message="Use /plan [on|off].")
             mode = "default" if argument == "off" else "plan"
@@ -936,14 +964,13 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
@@ -951,9 +978,9 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         command: ClaudeCommandDescriptor | None = None,
     ) -> AsyncGenerator[CommandOutcome | ReactStreamEvent[str], None]:
+        thread_id = invocation.thread_id
+        conversation_id = invocation.conversation_id
         cli_model = model.model_name if isinstance(model, Model) else model
-        if thread_id is None:
-            raise ValueError("agent run requires a thread_id to own its conversation")
         conversation = await self.resolve_conversation(
             thread_id,
             conversation_address=conversation_address,
@@ -1118,10 +1145,8 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             prompt_id = event.prompt_id
             return {}
 
-        project = await self.run_project(conversation.thread_id)
-        # Settled here, forked when the run enters it below: the options this builds
-        # have to name the directory before the process that will run there exists.
-        workspace = await self.workspaces.resolve(conversation.thread_id, project)
+        workspace = invocation.workspace
+        project = workspace.project if isinstance(workspace, ProjectWorkspace) else None
         run_cwd = str(workspace.path)
         octomate_session = self.octomate.gateway.get(conversation.id)
         # The turn's server, mounted in process with the session closed over —
@@ -1229,13 +1254,9 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             **agent_input_message_attributes(user_prompt),
             transport="local",
         ):
-            # Entered first so it leaves last: the tree exists before the CLI is
-            # launched into it, and a chat thread's is only thrown away once the CLI
-            # holding it open has been waited out.
             # The SDK injects the active W3C context when connecting. Starting a
             # client inside each run's span also reparents resumed sessions.
             async with (
-                self.workspaces.enter(workspace),
                 self.driving(session_id),
                 contextlib.aclosing(
                     self.ink.stream(
@@ -1379,7 +1400,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -1388,7 +1409,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1411,7 +1431,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -1420,7 +1440,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1442,7 +1461,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -1451,7 +1470,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1471,14 +1489,13 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         async for event in self._iter_events(
             user_prompt,
             conversation_address=conversation_address,
-            thread_id=thread_id,
+            invocation=invocation,
             source_thread_address=source_thread_address,
             source_thread_message_ids=source_thread_message_ids,
             run_name=run_name,
             output_type=output_type,
             model=model,
             effort=effort,
-            conversation_id=conversation_id,
             interactive=interactive,
             instructions=instructions,
             capabilities=capabilities,
@@ -1501,7 +1518,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -1510,7 +1527,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1532,7 +1548,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -1541,7 +1557,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1562,7 +1577,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -1571,7 +1586,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1589,14 +1603,13 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         source = self._iter_events(
             user_prompt,
             conversation_address=conversation_address,
-            thread_id=thread_id,
+            invocation=invocation,
             source_thread_address=source_thread_address,
             source_thread_message_ids=source_thread_message_ids,
             run_name=run_name,
             output_type=output_type,
             model=model,
             effort=effort,
-            conversation_id=conversation_id,
             interactive=interactive,
             instructions=instructions,
             capabilities=capabilities,

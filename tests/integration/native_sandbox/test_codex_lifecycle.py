@@ -13,6 +13,7 @@ from octomate.types.permissions import CodexPermissionMode
 from tests.integration.native_sandbox.matrix import SandboxTree
 from tests.integration.native_sandbox.runners import codex_runner
 from tests.support.managers import a_project, a_registry
+from tests.support.users import a_user
 
 
 async def test_codex_profile_survives_mode_changes_and_resume(
@@ -22,14 +23,15 @@ async def test_codex_profile_survives_mode_changes_and_resume(
     octomate = Octomate(
         workspaces=WorkspaceManager(
             projects=await a_registry(project),
-            workspaces_dir=sandbox_tree.workspace.parent / "runs",
+            volumes_dir=sandbox_tree.workspace.parent / "runs",
         )
     )
     thread = await octomate.threads.ensure(
         ThreadKey("sandbox-audit", "thread", "synthetic", "audit"), project=project
     )
-    workspace = octomate.workspaces.open(thread.id, project)
-    sandbox_tree.workspace = await workspace.prepare()
+    owner = await a_user("sandbox-owner")
+    workspace = await octomate.workspaces.resolve(thread.id, project, owner.id)
+    sandbox_tree.workspace = await octomate.workspaces.prepare(workspace)
     source = sandbox_tree.outside / "canary.txt"
     assert source.read_text() == sandbox_tree.marker
     command = (
@@ -45,7 +47,7 @@ async def test_codex_profile_survives_mode_changes_and_resume(
         "auto_review",
     )
     session_id: str | None = None
-    async with codex_runner(octomate, thread.id, tmp_path) as call:
+    async with codex_runner(octomate, thread.id, tmp_path, owner_id=owner.id) as call:
         for mode in modes:
             await octomate.conversations.set_permission_mode(conversation, mode)
             outcome = await call("shell", command)
@@ -57,7 +59,7 @@ async def test_codex_profile_survives_mode_changes_and_resume(
             if session_id is None:
                 session_id = conversation.external_id
             assert conversation.external_id == session_id
-    async with codex_runner(octomate, thread.id, tmp_path) as call:
+    async with codex_runner(octomate, thread.id, tmp_path, owner_id=owner.id) as call:
         outcome = await call("shell", command)
         assert sandbox_tree.marker in outcome.text, outcome.text
         assert "OUTSIDE_DENIED" in outcome.text, outcome.text
@@ -70,5 +72,7 @@ async def test_codex_profile_survives_mode_changes_and_resume(
     with pytest.raises(
         ValueError, match="native workspace permission profile was overridden"
     ):
-        async with codex_runner(octomate, thread.id, tmp_path) as call:
+        async with codex_runner(
+            octomate, thread.id, tmp_path, owner_id=owner.id
+        ) as call:
             await call("shell", command)

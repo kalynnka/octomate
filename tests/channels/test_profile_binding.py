@@ -64,6 +64,9 @@ async def link_profile_context(
         channels={channel.id: channel},
         user_profile=signal.messages[-1].sender,
         conversation_address=signal.address,
+        users=app.users,
+        threads=app.threads,
+        workspaces=app.workspaces,
     )
     server = tentacles_mcp(fixed_session(scope), manager=app.mcp)
     return channel, scope, server

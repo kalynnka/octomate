@@ -72,14 +72,16 @@ from octomate.capabilities.harness.events import (
 )
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, DeepseekConfig
+from octomate.managers.habitat import Invocation
 from octomate.nerve import Impulse
 from octomate.prompts import tagged
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
+    CommandDescriptor,
     CommandError,
-    CommandInvocation,
+    CommandIntent,
     CommandOutcome,
     CommandResult,
 )
@@ -90,7 +92,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import ThreadKey
+from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import agent_input_message_attributes, deepseek_logfire
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
@@ -522,15 +524,35 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             },
         )
 
+    def command_invocation(
+        self,
+        context: CommandContext,
+        intent: CommandIntent,
+        descriptor: CommandDescriptor,
+        *,
+        thread: Thread | None,
+    ) -> contextlib.AbstractAsyncContextManager[Invocation | None]:
+        if not isinstance(descriptor, DeepseekCommandDescriptor):
+            return contextlib.nullcontext(None)
+        if thread is None or context.conversation is None:
+            raise ValueError("A runtime command requires a conversation")
+        return self.habitats.invoke(
+            self.workspaces,
+            thread=thread,
+            conversation_id=context.conversation.id,
+            owner_id=context.user_id,
+        )
+
     async def execute_command(
         self,
         context: CommandContext,
-        invocation: CommandInvocation,
+        intent: CommandIntent,
         *,
+        invocation: Invocation | None,
         deferred_suspender: DeferredSuspender | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AsyncGenerator[CommandOutcome | ReactStreamEvent[str], None]:
-        """Own direct feedback and any immediate native turn in one invocation."""
+        """Own direct feedback and any immediate native turn in one command."""
         conversation = context.conversation
         if conversation is None or not conversation.external_id:
             yield CommandError(
@@ -538,7 +560,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 message="Start a DSH session before running commands.",
             )
             return
-        if invocation.attachments:
+        if intent.attachments:
             yield CommandError(
                 status="unsupported",
                 message="DSH command attachments are not supported yet.",
@@ -546,7 +568,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             return
         catalog = await self.discover_commands(context)
         descriptor = {entry.id: entry for entry in catalog.descriptors}.get(
-            invocation.command_id
+            intent.command_id
         )
         if not isinstance(descriptor, DeepseekCommandDescriptor):
             yield CommandError(
@@ -561,18 +583,25 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             return
         session_id = conversation.external_id
         line = f"/{descriptor.name}"
-        if invocation.arguments:
-            line += f" {invocation.arguments}"
-        project = await self.run_project(conversation.thread_id)
+        if intent.arguments:
+            line += f" {intent.arguments}"
+        if invocation is None:
+            raise ValueError("This command requires a prepared invocation")
         async with (
             self.conversation_locks.hold(str(conversation.id)),
-            self.workspaces.open(conversation.thread_id, project, context.user_id),
             self.driving(session_id),
             contextlib.AsyncExitStack() as resources,
         ):
             conversation = await self.conversations.get(
                 conversation.id, with_history=False
             )
+            if (
+                await self.conversations.latest_cwd(conversation.id)
+                != invocation.workspace.path
+            ):
+                raise ValueError(
+                    "DeepSeek cannot resume a session in a different or unverified workspace"
+                )
             effort = await self.resolve_effort(conversation, model=context.model)
             permission_mode = (
                 conversation.permission_mode or self.config.permission_mode
@@ -1015,22 +1044,21 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
         deferred_suspender: DeferredSuspender | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
+        thread_id = invocation.thread_id
+        conversation_id = invocation.conversation_id
         deepseek_model = model.model_name if isinstance(model, Model) else model
-        if thread_id is None:
-            raise ValueError("agent run requires a thread_id to own its conversation")
         client = self.ink.client
         if not self.ink.running:
             # The client exists from birth, but a run needs the mux pump: an
@@ -1044,24 +1072,11 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 "session/prompt has no output schema"
             )
 
-        if conversation_id is not None:
-            conversation = await self.conversations.get(
-                conversation_id, with_history=False
-            )
-            if (
-                conversation.agent_tentacle_id != self.id
-                or conversation.thread_id != thread_id
-            ):
-                raise ValueError(
-                    f"conversation {conversation_id} does not belong to "
-                    f"({self.id!r}, {thread_id})"
-                )
-        else:
-            conversation = await self.conversations.ensure(
-                thread_id,
-                agent_tentacle_id=self.id,
-                with_history=False,
-            )
+        conversation = await self.resolve_conversation(
+            thread_id,
+            conversation_address=conversation_address,
+            conversation_id=conversation_id,
+        )
         accumulator = DeepseekRunAccumulator(
             context_window=await self.conversations.latest_context_window(
                 conversation.id
@@ -1087,8 +1102,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         if isinstance(instructions, str) and instructions:
             prompt_text = f"{tagged('instructions', instructions)}\n\n{prompt_text}"
 
-        project = await self.run_project(conversation.thread_id)
-        workspace = await self.workspaces.resolve(conversation.thread_id, project)
+        workspace = invocation.workspace
         run_cwd = str(workspace.path)
 
         with deepseek_logfire.span(
@@ -1098,13 +1112,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             conversation_address=str(conversation_address),
             **agent_input_message_attributes(user_prompt),
         ):
-            # Entered first so it leaves last: the tree exists before dsh is given
-            # it as a cwd, and a chat thread's is only thrown away once the turn
-            # using it is finished with it.
-            async with (
-                self.conversation_locks.hold(str(conversation.id)),
-                self.workspaces.enter(workspace),
-            ):
+            async with self.conversation_locks.hold(str(conversation.id)):
                 conversation = await self.conversations.get(
                     conversation.id, with_history=False
                 )
@@ -1116,6 +1124,14 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 )
                 self.check_permission_mode(permission_mode)
                 session_id = conversation.external_id
+                if (
+                    session_id
+                    and await self.conversations.latest_cwd(conversation.id)
+                    != workspace.path
+                ):
+                    raise ValueError(
+                        "DeepSeek cannot resume a session in a different or unverified workspace"
+                    )
                 if not session_id:
                     create_payload: JsonObject = {"cwd": run_cwd}
                     if self.config.agent_preset is not None:
@@ -1278,7 +1294,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -1287,7 +1303,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1310,7 +1325,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -1319,7 +1334,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1341,7 +1355,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -1350,7 +1364,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1371,14 +1384,13 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             self._iter_events(
                 user_prompt,
                 conversation_address=conversation_address,
-                thread_id=thread_id,
+                invocation=invocation,
                 source_thread_address=source_thread_address,
                 source_thread_message_ids=source_thread_message_ids,
                 run_name=run_name,
                 output_type=output_type,
                 model=model,
                 effort=effort,
-                conversation_id=conversation_id,
                 interactive=interactive,
                 instructions=instructions,
                 capabilities=capabilities,
@@ -1397,7 +1409,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -1406,7 +1418,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1428,7 +1439,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -1437,7 +1448,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1458,7 +1468,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -1467,7 +1477,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1487,14 +1496,13 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 self._iter_events(
                     user_prompt,
                     conversation_address=conversation_address,
-                    thread_id=thread_id,
+                    invocation=invocation,
                     source_thread_address=source_thread_address,
                     source_thread_message_ids=source_thread_message_ids,
                     run_name=run_name,
                     output_type=output_type,
                     model=model,
                     effort=effort,
-                    conversation_id=conversation_id,
                     interactive=interactive,
                     instructions=instructions,
                     capabilities=capabilities,

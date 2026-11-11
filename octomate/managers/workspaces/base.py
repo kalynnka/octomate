@@ -734,8 +734,11 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         the tree compares timestamps instead of rehashing every file.
         """
         index = path / ".git" / "octomate-snapshot-index"
-        await asyncio.to_thread(shutil.copyfile, path / ".git" / "index", index)
         env = {"GIT_INDEX_FILE": str(index)}
+        if (path / ".git" / "index").is_file():
+            await asyncio.to_thread(shutil.copyfile, path / ".git" / "index", index)
+        else:
+            await run_git("read-tree", "HEAD", cwd=path, env=env)
         await run_git("add", "-A", cwd=path, env=env)
         tree = (await run_git("write-tree", cwd=path, env=env)).strip()
         branch = (await run_git("rev-parse", "--abbrev-ref", "HEAD", cwd=path)).strip()

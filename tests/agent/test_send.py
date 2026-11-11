@@ -18,6 +18,7 @@ from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.config import ChannelConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.user import UserManager
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import ChannelTopic, Nerve
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.segments import MarkdownSegment
@@ -49,6 +50,7 @@ def _gate(
 
     `chat_type` overrides the type the surface reports without changing whether it
     is private — an assistant pane is a thread only one person can read."""
+    threads = FakeThreadManager()
     return OctomateSession(
         nerve=Nerve(),
         channel_routes={},
@@ -61,6 +63,9 @@ def _gate(
             user_id="alice",
             shared=not already_private,
         ),
+        users=threads.users,
+        threads=threads,
+        workspaces=WorkspaceManager(),
     )
 
 

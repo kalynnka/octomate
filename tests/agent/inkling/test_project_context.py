@@ -28,16 +28,20 @@ from pydantic_ai_harness.filesystem import FileSystemToolset
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import ShellToolset
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.capabilities.harness.agent import Agent
+from octomate.database import async_session
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadKey
+from octomate.schemas.user import User
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.base import InklingOutput
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
+from tests.support.invocations import invocation_for, volume_for
 from tests.support.managers import a_project, a_registry
 
 ADDRESS = ChannelAddress(
@@ -46,9 +50,14 @@ ADDRESS = ChannelAddress(
 STR_OUTPUT: list[type[str] | type[DeferredToolRequests]] = [str, DeferredToolRequests]
 
 
+OWNER_ID = uuid7()
+
+
 @pytest.fixture(autouse=True)
 async def _db(in_memory_engine: AsyncEngine) -> None:
-    return
+    async with async_session() as session:
+        session.add(User(id=OWNER_ID, username="workspace-owner"))
+        await session.commit()
 
 
 @dataclass
@@ -99,12 +108,15 @@ async def inkling_run(octomate: Octomate, thread: Thread, scripted: Scripted) ->
         habitats=octomate.habitats,
         agent=scripted.agent(),
     )
-    await tentacle.run(
-        "what is this repo?",
-        conversation_address=ADDRESS,
-        thread_id=thread.id,
-        output_type=STR_OUTPUT,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=ADDRESS, thread_id=thread.id, owner_id=OWNER_ID
+    ) as invocation:
+        await tentacle.run(
+            "what is this repo?",
+            conversation_address=ADDRESS,
+            invocation=invocation,
+            output_type=STR_OUTPUT,
+        )
 
 
 async def runs_of(octomate: Octomate, thread: Thread) -> list[AgentRun]:
@@ -188,21 +200,24 @@ async def test_project_file_calls_defer_for_user_approval(tmp_path: Path) -> Non
         agent=agent,
     )
 
-    result = await tentacle.run(
-        "read the instructions",
-        conversation_address=ADDRESS,
-        thread_id=thread.id,
-        output_type=STR_OUTPUT,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=ADDRESS, thread_id=thread.id, owner_id=OWNER_ID
+    ) as invocation:
+        result = await tentacle.run(
+            "read the instructions",
+            conversation_address=ADDRESS,
+            invocation=invocation,
+            output_type=STR_OUTPUT,
+        )
 
     assert isinstance(result.output, DeferredToolRequests)
     assert [approval.tool_name for approval in result.output.approvals] == ["read_file"]
 
 
-async def test_outside_every_project_there_is_nothing_to_act_with(
+async def test_a_chat_run_keeps_project_tools_unavailable(
     tmp_path: Path,
 ) -> None:
-    # No project is a conversation: nothing to read, nothing to run, nowhere to do it.
+    # Preparing a chat directory does not enable the project toolset.
     a_repo(tmp_path / "inky", "Never commit without asking.")
     octomate = Octomate()
     scripted = Scripted()
@@ -255,7 +270,7 @@ async def test_outside_every_project_nothing_is_loaded(tmp_path: Path) -> None:
 
     await inkling_run(octomate, await a_thread(octomate, "chat"), scripted)
 
-    assert scripted.instructions[-1] == ""
+    assert "Never commit without asking." not in scripted.instructions[-1]
 
 
 async def test_two_projects_never_see_each_other_s_instructions(
@@ -314,9 +329,10 @@ async def test_a_disabled_project_reaches_no_run(tmp_path: Path) -> None:
 
     await inkling_run(octomate, thread, scripted)
 
-    assert scripted.instructions[-1] == ""
+    assert "Never commit without asking." not in scripted.instructions[-1]
     [run] = await runs_of(octomate, thread)
-    assert run.cwd is None
+    assert run.cwd is not None
+    assert not run.cwd.exists()
 
 
 async def test_a_run_in_a_project_records_its_workspace(tmp_path: Path) -> None:
@@ -329,16 +345,17 @@ async def test_a_run_in_a_project_records_its_workspace(tmp_path: Path) -> None:
     await inkling_run(octomate, thread, Scripted())
 
     [run] = await runs_of(octomate, thread)
-    assert run.cwd == octomate.workspaces.path(thread.id)
+    assert run.cwd == octomate.workspaces.path(
+        await volume_for(octomate.workspaces, thread.id, OWNER_ID)
+    )
 
 
-async def test_a_run_outside_every_project_records_no_directory() -> None:
-    # Inkling has no configured directory to fall back to, so a run in no project
-    # names none rather than claiming wherever Octomate was started.
+async def test_a_run_outside_every_project_records_its_temporary_directory() -> None:
     octomate = Octomate()
     thread = await a_thread(octomate, "chat")
 
     await inkling_run(octomate, thread, Scripted())
 
     [run] = await runs_of(octomate, thread)
-    assert run.cwd is None
+    assert run.cwd is not None
+    assert not run.cwd.exists()

@@ -50,6 +50,7 @@ from octomate.capabilities.harness.events import (
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.acp import AcpAgentConfig
 from octomate.config.agents import Claim
+from octomate.managers.habitat import Invocation
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -184,7 +185,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -193,7 +194,6 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -216,7 +216,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         async with self.run_stream_events(
             user_prompt,
             conversation_address=conversation_address,
-            thread_id=thread_id,
+            invocation=invocation,
             source_thread_address=source_thread_address,
             source_thread_message_ids=source_thread_message_ids,
             run_name=run_name,
@@ -225,7 +225,6 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             deferred_suspender=deferred_suspender,
             model=model,
             effort=effort,
-            conversation_id=conversation_id,
             interactive=interactive,
             instructions=instructions,
             deps=deps,
@@ -252,7 +251,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -261,7 +260,6 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -305,8 +303,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             self.stream(
                 user_prompt,
                 conversation_address,
-                thread_id,
-                conversation_id,
+                invocation,
                 source_thread_address,
                 source_thread_message_ids,
                 run_name,
@@ -320,8 +317,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         self,
         user_prompt: str | Sequence[UserContent] | None,
         address: ChannelAddress,
-        thread_id: UUID7 | None,
-        conversation_id: UUID7 | None,
+        invocation: Invocation,
         source_address: ChannelAddress | None,
         source_message_ids: Sequence[UUID7] | None,
         run_name: str | None,
@@ -329,9 +325,9 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         model: str | None,
         effort: str | None,
     ) -> AsyncGenerator[ReactStreamEvent[str]]:
+        thread_id = invocation.thread_id
+        conversation_id = invocation.conversation_id
         provider = self.config.provider
-        if thread_id is None:
-            raise ValueError("agent run requires a thread_id to own its conversation")
         if isinstance(user_prompt, str):
             text = user_prompt
         else:
@@ -350,12 +346,9 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         sender = await self.octomate.users.profile(
             address.channel_tentacle_id, address.user_id
         )
-        if sender is None or sender.user_id is None:
+        if sender is None or invocation.owner_id is None:
             raise ValueError("Outbound ACP requires a registered user")
-        thread = await self.threads.get(thread_id, with_messages=False)
-        assert thread is not None
-        project = await self.projects.of(thread)
-        workspace = await self.workspaces.resolve(thread_id, project)
+        workspace = invocation.workspace
         updates: asyncio.Queue[
             StreamEvent | ActionBatchEvent | ActionBatchAnsweredEvent | None
         ] = asyncio.Queue()
@@ -394,7 +387,6 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             )
 
         async with (
-            self.workspaces.enter(workspace),
             AsyncExitStack() as credentials,
             NativeAcpClient.connect(
                 provider,
@@ -412,7 +404,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             ) as client,
         ):
             mcp_servers = await credentials.enter_async_context(
-                self.mcp_servers(client, sender, conversation.id)
+                self.mcp_servers(client, invocation.owner_id, conversation.id)
             )
             if conversation.external_id is None:
                 native = await client.new_session(
@@ -675,7 +667,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
 
     @asynccontextmanager
     async def mcp_servers(
-        self, client: NativeAcpClient, sender: UserProfile, conversation_id: UUID7
+        self, client: NativeAcpClient, user_id: UUID7, conversation_id: UUID7
     ) -> AsyncGenerator[list[schema.HttpMcpServer]]:
         """Supply the caller's remote Octomate MCP, revoking its key after the turn."""
         if not self.gateway:
@@ -689,7 +681,6 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         ):
             raise ValueError("The ACP provider must support HTTP MCP servers")
         auth = self.octomate.auth
-        user_id = sender.user_id
         if auth is None or user_id is None:
             raise ValueError(
                 "ACP MCP access requires a registered user and authentication"

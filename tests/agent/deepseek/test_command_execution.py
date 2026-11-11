@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import AsyncGenerator
 from dataclasses import replace
+from unittest.mock import AsyncMock
 
 import pytest
 from octomate_protocol.deepseek import ErrResult, OkResult, RpcError, RpcResult
@@ -18,7 +19,7 @@ from octomate.schemas.awakes import CommandSignal
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
-    CommandInvocation,
+    CommandIntent,
     CommandResult,
 )
 from octomate.schemas.conversation import ChannelAddress
@@ -40,6 +41,7 @@ from tests.agent.deepseek.test_tentacle import (
     turn_events,
 )
 from tests.support.channels import FakeChannelTentacle
+from tests.support.invocations import invocation_for
 from tests.support.managers import RecordingWorkspaceManager
 from tests.support.nerve import kick_and_wait, kicked
 from tests.support.users import a_user
@@ -109,8 +111,11 @@ async def scenario(
             conversation=conversation,
             permission_mode=agent.default_permission_mode,
         ),
-        CommandInvocation(command_id="plan", arguments=' \t"objective"\n--flag=✓  '),
+        CommandIntent(command_id="plan", arguments=' \t"objective"\n--flag=✓  '),
         "command-1",
+    )
+    monkeypatch.setattr(
+        app.conversations, "latest_cwd", AsyncMock(return_value=signal.context.cwd)
     )
     remote = FakeDeepseekApi.remote
 
@@ -191,7 +196,7 @@ async def test_direct_results_are_recorded_once_without_a_model_run(
         value=[{"name": command, "description": "Native command"}]
     )
     signal = replace(
-        signal, invocation=CommandInvocation(command_id=command, arguments=arguments)
+        signal, intent=CommandIntent(command_id=command, arguments=arguments)
     )
     result: JsonObject = {"kind": "success", "text": "  Native feedback.\n"}
     if kind == "silent":
@@ -387,9 +392,7 @@ async def test_permission_change_is_persisted_from_native_event(
     )
     signal = replace(
         signal,
-        invocation=CommandInvocation(
-            command_id="permission", arguments="danger-full-access"
-        ),
+        intent=CommandIntent(command_id="permission", arguments="danger-full-access"),
     )
     FakeDeepseekApi.turn_script = [
         {
@@ -426,7 +429,7 @@ async def test_fork_is_refused_before_any_runtime_operation(
         if advertised
         else []
     )
-    signal = replace(signal, invocation=CommandInvocation(command_id="fork"))
+    signal = replace(signal, intent=CommandIntent(command_id="fork"))
     outcome = await kick_and_wait(app, signal)
     assert isinstance(outcome, CommandError)
     assert outcome.status == "unavailable"
@@ -446,7 +449,7 @@ async def test_goal_commands_never_reach_dsh(
         value=[{"name": "goal", "description": "Manage goals"}]
     )
     signal = replace(
-        signal, invocation=CommandInvocation(command_id="goal", arguments=arguments)
+        signal, intent=CommandIntent(command_id="goal", arguments=arguments)
     )
     outcome = await kick_and_wait(app, signal)
     assert isinstance(outcome, CommandError)
@@ -467,7 +470,7 @@ async def test_client_owned_export_is_refused_before_dispatch(
             }
         ]
     )
-    signal = replace(signal, invocation=CommandInvocation(command_id="export"))
+    signal = replace(signal, intent=CommandIntent(command_id="export"))
     outcome = await kick_and_wait(app, signal)
     assert isinstance(outcome, CommandError)
     assert outcome.status == "unavailable"
@@ -531,12 +534,18 @@ async def test_dsh_permission_update_reaches_live_run_without_another_prompt(
             stored.external_id = None
             await session.commit()
     FakeDeepseekApi.turn_script = turn_events("Done")[:2]
-    async with agent.run_stream_events(
-        "work",
-        conversation_address=signal.context.address,
-        conversation_id=conversation.id,
-        thread_id=conversation.thread_id,
-    ) as events:
+    async with (
+        invocation_for(
+            agent,
+            conversation_address=signal.context.address,
+            thread_id=conversation.thread_id,
+            conversation_id=conversation.id,
+            owner_id=signal.context.user_id,
+        ) as invocation,
+        agent.run_stream_events(
+            "work", conversation_address=signal.context.address, invocation=invocation
+        ) as events,
+    ):
         await anext(events)
         selected = await agent.conversations.get(conversation.id, with_history=False)
         assert selected.external_id == "sess-1"
@@ -555,12 +564,18 @@ async def test_dsh_permission_update_reaches_live_run_without_another_prompt(
     stored = await agent.conversations.get(conversation.id, with_history=False)
     assert stored.permission_mode == "danger-full-access"
     FakeDeepseekApi.turn_script = turn_events("Done")
-    await agent.run(
-        "continue",
+    async with invocation_for(
+        agent,
         conversation_address=signal.context.address,
-        conversation_id=conversation.id,
         thread_id=conversation.thread_id,
-    )
+        conversation_id=conversation.id,
+        owner_id=signal.context.user_id,
+    ) as invocation:
+        await agent.run(
+            "continue",
+            conversation_address=signal.context.address,
+            invocation=invocation,
+        )
     assert calls_of("commands/execute")[-1] == {
         "args": {
             "agentId": "sess-1",

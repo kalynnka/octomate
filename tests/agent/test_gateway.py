@@ -24,6 +24,7 @@ from octomate.managers.gateway import (
 from octomate.managers.mcp import McpManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.mcp.gateway import HANDOFF_INSTRUCTION, gateway_instructions
 from octomate.mcp.server import octomate_mcp
 from octomate.nerve import Nerve
@@ -90,6 +91,7 @@ def _capability(
 ) -> OctomateSession:
     """A gate answering from `shape`, on a channel with every surface unless one is
     passed. `test_reflex_graph` covers how the real channels reach each shape."""
+    threads = FakeThreadManager()
     chat_type, shared, thread_id = SHAPES[shape]
     capability = OctomateSession(
         channel_routes={"im": [CLAUDE_ROUTE, INKLING_ROUTE]},
@@ -103,6 +105,9 @@ def _capability(
             user_id=user_id,
             shared=shared,
         ),
+        users=threads.users,
+        threads=threads,
+        workspaces=WorkspaceManager(),
     )
     return capability
 
@@ -222,11 +227,14 @@ async def test_inspect_computes_only_the_facet_it_was_asked_for() -> None:
 
 async def test_destination_discovery_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
     users = UserManager()
+    threads = FakeThreadManager(users=users)
     session = OctomateSession(
         channel_routes={},
         current_agent_id="inkling",
         users=users,
         user_profile=UserProfile(channel_user_id="alice"),
+        threads=threads,
+        workspaces=WorkspaceManager(),
     )
     discover = AsyncMock(return_value=[])
     monkeypatch.setattr(users, "linked_profiles", discover)
@@ -244,6 +252,7 @@ async def test_destination_discovery_is_cached(monkeypatch: pytest.MonkeyPatch) 
 async def test_a_native_session_cannot_be_summoned() -> None:
     """A summon hands the conversation over where it is, and a native session has
     nothing here to hand over: it teleports into a thread first."""
+    threads = FakeThreadManager()
     route = AgentRoute(agent_id="claude", model="test", claim=CLAUDE_CLAIM)
     session = OctomateSession(
         channel_routes={"far": [route]},
@@ -251,6 +260,9 @@ async def test_a_native_session_cannot_be_summoned() -> None:
         native=True,
         channels={"far": FakeChannelTentacle("far")},
         user_profile=UserProfile(channel_tentacle_id="far", channel_user_id="alice"),
+        users=threads.users,
+        threads=threads,
+        workspaces=WorkspaceManager(),
     )
 
     operations = await session.operations
@@ -348,6 +360,7 @@ async def test_a_threads_privacy_is_read_from_its_surface_not_its_type(
     Slack assistant pane or Lark p2p topic. Only one has somewhere private left to
     move to — reading the type alone would offer `scheme` a surface beside the one
     it is already in, under whatever agent owns that."""
+    threads = FakeThreadManager()
     capability = OctomateSession(
         channel_routes={},
         current_agent_id="inkling",
@@ -360,6 +373,9 @@ async def test_a_threads_privacy_is_read_from_its_surface_not_its_type(
             channel_thread_id="t-1",
             shared=shared,
         ),
+        users=threads.users,
+        threads=threads,
+        workspaces=WorkspaceManager(),
     )
 
     assert capability.private_blocked_by == blocked_by
@@ -695,7 +711,8 @@ async def test_explicit_teleport_parent_keeps_policy_checks(
     )
     session = capability
     if blocked == "unlinked":
-        session.users = None
+        assert session.user_profile is not None
+        session.user_profile = session.user_profile.model_copy(update={"user_id": None})
     lookup = AsyncMock(
         return_value=ChannelAddress(
             channel_tentacle_id="far",
@@ -864,7 +881,14 @@ async def test_scheme_records_a_decision_that_names_no_agent() -> None:
 
 
 def _registered_session() -> OctomateSession:
-    session = OctomateSession(channel_routes={}, current_agent_id="inkling")
+    threads = FakeThreadManager()
+    session = OctomateSession(
+        channel_routes={},
+        current_agent_id="inkling",
+        users=threads.users,
+        threads=threads,
+        workspaces=WorkspaceManager(),
+    )
     session.conversation_id = uuid7()
     return session
 
@@ -881,9 +905,16 @@ def test_the_manager_finds_a_session_by_its_conversation_while_registered() -> N
 
 
 def test_a_session_without_a_conversation_cannot_be_registered() -> None:
+    threads = FakeThreadManager()
     with pytest.raises(ValueError, match="conversation id"):
         GatewayManager().register(
-            OctomateSession(channel_routes={}, current_agent_id="inkling")
+            OctomateSession(
+                channel_routes={},
+                current_agent_id="inkling",
+                users=threads.users,
+                threads=threads,
+                workspaces=WorkspaceManager(),
+            )
         )
 
 
@@ -891,9 +922,16 @@ def test_a_second_turn_on_a_live_conversation_is_refused_not_queued() -> None:
     # Nothing serialises two turns of one conversation, so the registry does the
     # one thing it can: the first arrival holds the conversation, a second is
     # refused outright, and the slot frees only when the holder's turn ends.
+    threads = FakeThreadManager()
     manager = GatewayManager()
     first = _registered_session()
-    second = OctomateSession(channel_routes={}, current_agent_id="inkling")
+    second = OctomateSession(
+        channel_routes={},
+        current_agent_id="inkling",
+        users=threads.users,
+        threads=threads,
+        workspaces=WorkspaceManager(),
+    )
     second.conversation_id = first.conversation_id
     assert first.conversation_id is not None
 
@@ -923,11 +961,18 @@ async def test_driving_registers_the_session_for_exactly_its_span() -> None:
 async def test_driving_tolerates_a_gateway_that_was_never_built() -> None:
     # A disabled connection builds no session, and a run with no thread has no
     # conversation id — neither registers, and neither breaks the span.
+    threads = FakeThreadManager()
     manager = GatewayManager()
     async with manager.driving(None):
         assert manager.sessions == {}
     async with manager.driving(
-        OctomateSession(channel_routes={}, current_agent_id="i")
+        OctomateSession(
+            channel_routes={},
+            current_agent_id="i",
+            users=threads.users,
+            threads=threads,
+            workspaces=WorkspaceManager(),
+        )
     ):
         assert manager.sessions == {}
 
@@ -1148,7 +1193,10 @@ async def test_inspect_routes_for_an_address_does_not_discover_destinations(
     discover = AsyncMock(side_effect=AssertionError("Do not enumerate destinations"))
     monkeypatch.setattr(capability, "destinations", discover)
     assert await capability.inspect("routes", channel="far") == [CLAUDE_ROUTE]
-    capability.users = None
+    assert capability.user_profile is not None
+    capability.user_profile = capability.user_profile.model_copy(
+        update={"user_id": None}
+    )
     with pytest.raises(GatewayRefusal, match="Link your profile"):
         await capability.inspect("routes", channel="far")
     discover.assert_not_awaited()
@@ -1219,6 +1267,7 @@ async def test_a_native_call_binds_only_a_session_its_caller_wrote(
         user_profile=profile,
         native=True,
         threads=threads,
+        workspaces=WorkspaceManager(),
     )
 
     for elsewhere in ("sess-2", "sess-unknown"):

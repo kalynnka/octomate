@@ -105,12 +105,13 @@ class OctomateSession:
     # This run's own channel answers `routes`; the rest answer a crossing.
     channel_routes: dict[str, list[AgentRoute]]
     current_agent_id: str
+    users: UserManager
+    threads: ThreadManager
+    workspaces: WorkspaceManager
     # Every connected channel, so `surfaces` can be read for any of them and not
     # just this run's own — what a cross-channel move needs.
     channels: dict[str, ChannelTentacle] = field(default_factory=dict)
-    # The identity registry and the run's own profile: together they say where else
-    # this person is reachable. Both None on a gateway built only to route locally.
-    users: UserManager | None = None
+    # The sender may be unregistered even though the identity registry is present.
     user_profile: UserProfile | None = None
     # Which agents are live, narrowing destinations to channels somebody
     # actually serves; also what the accomplice spells run with.
@@ -128,11 +129,6 @@ class OctomateSession:
     # can be summoned, and a teleport or scheme is kicked as its own turn instead of
     # being read after this one.
     native: bool = False
-    # What the project spells work with — a `teleport` that binds, `dismiss`, the
-    # `projects` facet: the ledger a binding is written to and read from, and the
-    # registry and forks. Both None on a gateway built only to route.
-    threads: ThreadManager | None = None
-    workspaces: WorkspaceManager | None = None
     # The kick's end of the nerve when a kick drives this turn, for a served spell
     # to publish on the turn's own stream; None for a call no kick drives.
     impulses: ObjectSendStream[Impulse] | None = None
@@ -197,26 +193,28 @@ class OctomateSession:
     ) -> str:
         agents, thread_id, conversation_address = self.commission_deps()
         agent = agents[child.agent_tentacle_id]
+        thread = await self.threads.get(thread_id, with_messages=False)
+        if thread is None:
+            raise ValueError(f"unknown thread {thread_id}")
         try:
-            # The subagent contract (non-interactive, no capabilities,
-            # addressed at the pre-ensured child conversation) lives on
-            # `subagent_run`; the accomplice framing is this spawner's and is
-            # passed here. An accomplice that defers anyway ends its run with
-            # DeferredToolRequests, surfaced loudly below instead of parking a
-            # batch nothing resumes.
-            result = await asyncio.wait_for(
-                agent.subagent_run(
+            async with (
+                asyncio.timeout(commission_timeout),
+                agent.habitats.invoke(
+                    self.workspaces,
+                    thread=thread,
+                    conversation_id=child.id,
+                    owner_id=self.user_profile.user_id if self.user_profile else None,
+                ) as invocation,
+            ):
+                result = await agent.subagent_run(
                     prompt,
                     conversation_address=conversation_address,
-                    thread_id=thread_id,
-                    conversation_id=child.id,
+                    invocation=invocation,
                     run_name=run_name,
                     model=model,
                     effort=effort,
                     instructions=ACCOMPLICE_INSTRUCTION,
-                ),
-                timeout=commission_timeout,
-            )
+                )
         except TimeoutError:
             raise GatewayRefusal(
                 f"The accomplice {child.subagent_id!r} exceeded "
@@ -308,7 +306,7 @@ class OctomateSession:
             return self.destination_cache
         linked = (
             await self.users.linked_profiles(self.user_profile)
-            if self.users is not None and self.user_profile is not None
+            if self.user_profile is not None
             else []
         )
         profiles = {profile.channel_tentacle_id: profile for profile in linked}
@@ -491,7 +489,7 @@ class OctomateSession:
             )
         if profile is not None and channel.thread_user_id(profile) is not None:
             return profile
-        if profile is not None and self.users is not None:
+        if profile is not None:
             linked = await self.users.linked_profiles(profile)
             found = next(
                 (one for one in linked if one.channel_tentacle_id == channel.id), None
@@ -592,16 +590,13 @@ class OctomateSession:
         """The projects this deployment can work on — a registered user's to see,
         being theirs to bind; a visitor is refused rather than shown nothing."""
         if (
-            self.users is None
-            or self.user_profile is None
+            self.user_profile is None
             or await self.users.owner(self.user_profile) is None
         ):
             raise GatewayRefusal(
                 "This session speaks for no registered user, and the projects are a "
                 "registered user's to see."
             )
-        if self.workspaces is None:
-            raise RuntimeError("the project facet needs the workspace manager")
         return [
             ProjectSummary(name=project.name, description=project.description)
             for project in self.workspaces.projects.list()
@@ -630,8 +625,8 @@ class OctomateSession:
         history. Only a thread the caller has written to is found: naming another
         session, theirs or anyone's, finds nothing."""
         profile = self.user_profile
-        if not self.native or self.threads is None or profile is None:
-            raise RuntimeError("only a native session with a ledger binds a thread")
+        if not self.native or profile is None:
+            raise RuntimeError("only a native session with a sender binds a thread")
         thread = await self.threads.get(
             ThreadKey(self.current_agent_id, "thread", session_id),
             with_messages=False,
@@ -823,8 +818,6 @@ class OctomateSession:
             raise GatewayRefusal("A starting ref requires a project.")
         if project is not None:
             available = await self.projects()
-            if self.workspaces is None:
-                raise RuntimeError("summoning project work needs the workspaces")
             registered = self.workspaces.projects.get(project)
             if registered is None or not registered.enabled:
                 raise GatewayRefusal(
@@ -897,8 +890,7 @@ class OctomateSession:
                 "A native teleport keeps the project its session is about."
             )
         if project is not None and (
-            self.users is None
-            or self.user_profile is None
+            self.user_profile is None
             or await self.users.owner(self.user_profile) is None
         ):
             raise GatewayRefusal(
@@ -906,10 +898,9 @@ class OctomateSession:
                 "a project is a registered user's act."
             )
         if project is not None:
-            if self.thread_id is None or self.threads is None:
+            if self.thread_id is None:
                 raise RuntimeError(
-                    "a teleport naming a project needs the thread this turn is in, "
-                    "and the ledger it is written to"
+                    "a teleport naming a project needs the thread this turn is in"
                 )
             thread = await self.threads.get(self.thread_id)
             if thread is None:
@@ -967,8 +958,6 @@ class OctomateSession:
         if reason := self.teleport_unavailable:
             raise GatewayRefusal(reason)
         if project is not None:
-            if self.workspaces is None:
-                raise RuntimeError("a teleport into a project needs the workspaces")
             registered = self.workspaces.projects.get(project)
             if registered is None or not registered.enabled:
                 available = sorted(
@@ -1017,11 +1006,8 @@ class OctomateSession:
                 "This session lives in your terminal, in a directory of its own — "
                 "Octomate forked nothing for it, and has nothing to release."
             )
-        if self.thread_id is None or self.threads is None:
-            raise RuntimeError(
-                "a dismiss needs the thread this turn is in, and the ledger it is "
-                "read from"
-            )
+        if self.thread_id is None:
+            raise RuntimeError("a dismiss needs the thread this turn is in")
         thread = await self.threads.get(self.thread_id)
         if thread is None:
             raise RuntimeError(f"thread {self.thread_id} vanished")

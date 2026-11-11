@@ -295,18 +295,22 @@ async def test_a_native_session_may_list_but_neither_move_nor_dismiss(
         await harness.session.dismiss()
 
 
-async def test_a_gateway_built_without_the_managers_is_a_wiring_bug() -> None:
+async def test_a_gateway_without_a_thread_can_list_projects_but_not_move_or_dismiss() -> (
+    None
+):
     users, profile = await a_registered_profile()
+    threads = FakeThreadManager(users=users)
     session = OctomateSession(
         channel_routes={},
         current_agent_id="inkling",
         users=users,
         user_profile=profile,
         conversation_address=ChannelAddress("im", "thread", "room", "U1", "thread"),
+        threads=threads,
+        workspaces=WorkspaceManager(),
     )
 
-    with pytest.raises(RuntimeError):
-        await session.inspect("projects")
+    assert await session.inspect("projects") == []
     with pytest.raises(RuntimeError):
         await session.teleport(hint="h", new_thread=False, project="inky")
     with pytest.raises(RuntimeError):

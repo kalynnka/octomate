@@ -41,7 +41,7 @@ from octomate.schemas.awakes import CommandSignal, DeferredActionBatchResponse
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
-    CommandInvocation,
+    CommandIntent,
     CommandResult,
 )
 from octomate.schemas.conversation import ChannelAddress
@@ -105,7 +105,7 @@ async def scenario(
     )
     signal = CommandSignal(
         context,
-        CommandInvocation(command_id="skill", arguments='  "raw argument"\n--flag=✓  '),
+        CommandIntent(command_id="skill", arguments='  "raw argument"\n--flag=✓  '),
         "command-1",
     )
     return app, agent, channel, signal
@@ -147,7 +147,7 @@ async def test_direct_command_delivers_feedback_without_model_history_and_replay
         )
     assert state.decision is None
     await kicked(app, signal)
-    assert agent.invocations == [signal.invocation]
+    assert agent.intents == [signal.intent]
     assert not agent.turns
     assert not app.gateway.sessions
     assert any(
@@ -196,9 +196,7 @@ async def test_command_agent_stream_is_recorded_bound_and_delivered_without_anot
             result.run_id,
             [
                 ModelRequest(
-                    parts=[
-                        UserPromptPart(content=f"/review {signal.invocation.arguments}")
-                    ]
+                    parts=[UserPromptPart(content=f"/review {signal.intent.arguments}")]
                 ),
                 ModelResponse(parts=[TextPart(content="Command reply")]),
             ],
@@ -212,7 +210,7 @@ async def test_command_agent_stream_is_recorded_bound_and_delivered_without_anot
     monkeypatch.setattr(agent, "events", events)
     await kicked(app, signal)
     await kicked(app, signal)
-    assert agent.invocations == [signal.invocation]
+    assert agent.intents == [signal.intent]
     assert not agent.turns
     assert not app.gateway.sessions
     thread = await app.threads.get(conversation.thread_id)
@@ -299,7 +297,7 @@ async def test_command_defers_through_reflex_then_resumes_as_an_ordinary_agent_r
     assert len(runs) == 1
     assert runs[0].run_name == "resume"
     assert runs[0].model == "selected-model"
-    assert len(agent.invocations) == 1
+    assert len(agent.intents) == 1
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -340,7 +338,7 @@ async def test_command_teleport_before_first_event_continues_the_agent_run(
     assert runs[0].model == agent.models["test"]
     assert runs[0].deferred_results is not None
     assert "move" in runs[0].deferred_results.calls
-    assert len(agent.invocations) == 1
+    assert len(agent.intents) == 1
     assert not app.gateway.sessions
 
 
@@ -384,7 +382,7 @@ async def test_command_gateway_handoff_continues_in_the_same_reflex_graph(
             impulses=impulses,
         )
         await reflex_graph.run(inputs=Awake(signal), state=state, deps=deps)
-    assert len(agent.invocations) == 1
+    assert len(agent.intents) == 1
     assert not agent.turns
     runs = other.turns
     assert len(runs) == 1
@@ -415,7 +413,7 @@ async def test_refused_command_does_not_mount_user_tools_or_save_a_workspace(
     if reason == "busy":
         app.gateway.sessions[conversation.id] = None
     elif reason == "unknown":
-        signal = replace(signal, invocation=CommandInvocation(command_id="missing"))
+        signal = replace(signal, intent=CommandIntent(command_id="missing"))
     else:
         channel.config.agents = []
     capabilities = AsyncMock(return_value=[])
@@ -423,7 +421,7 @@ async def test_refused_command_does_not_mount_user_tools_or_save_a_workspace(
     outcome = await kicked(app, signal)
     assert isinstance(outcome, CommandError)
     assert outcome.status == reason
-    assert not agent.invocations
+    assert not agent.intents
     capabilities.assert_not_awaited()
     assert isinstance(app.workspaces, RecordingWorkspaceManager)
     assert not app.workspaces.saved
@@ -444,12 +442,12 @@ async def test_user_preparation_failure_releases_guard_without_accepting_command
         patch.setattr(agent, "user_capabilities", AsyncMock(side_effect=error))
         with pytest.raises(error):
             await kicked(app, signal)
-    assert not agent.invocations
+    assert not agent.intents
     assert not app.gateway.sessions
     async with async_session() as session:
         assert await session.count(ThreadCommand) == 0
     await kicked(app, signal)
-    assert agent.invocations == [signal.invocation]
+    assert agent.intents == [signal.intent]
 
 
 @pytest.mark.parametrize("cancel", [False, True])
@@ -559,5 +557,5 @@ async def test_a_commands_events_reach_its_trunkline_thread(
         ReflexPhaseChangedEvent,
         ReflexAsleepEvent,
     ]
-    assert len(agent.invocations) == 1
+    assert len(agent.intents) == 1
     assert not app.gateway.sessions

@@ -54,8 +54,13 @@ from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEve
 from octomate.config.agents import (
     AgentRouteModelName,
 )
+from octomate.config.habitat import NativeHabitatConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import OctomateSession
+from octomate.managers.habitat import HabitatManager, Invocation
+from octomate.managers.project import ProjectManager
+from octomate.managers.workspaces import WorkspaceManager
+from octomate.nerve import Nerve
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.triage import (
     DIRECT_TARGET,
@@ -142,6 +147,7 @@ class RecordedRun:
     history: list[ModelMessage]
     address: ChannelAddress
     run_name: str | None
+    invocation: Invocation
     thread_id: UUID7 | None = None
     source_thread_address: ChannelAddress | None = None
     source_thread_message_ids: list[UUID7] = field(default_factory=list)
@@ -168,6 +174,13 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     description: str = "fake agent"
     octomate: Octomate | None = None
     conversations: ConversationManager = field(default_factory=ConversationManager)
+    projects: ProjectManager = field(default_factory=ProjectManager)
+    workspaces: WorkspaceManager = field(default_factory=WorkspaceManager)
+    habitats: HabitatManager = field(
+        default_factory=lambda: HabitatManager(
+            config=NativeHabitatConfig(), nerve=Nerve()
+        )
+    )
     reception_output: ChannelOutput = "handled"
     reception_summon: SummonDecision | None = None
     reception_scheme: SchemeDecision | None = None
@@ -244,14 +257,13 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[FakeRunOutput] | None = None,
         model: Model | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -259,6 +271,8 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         instructions: str | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AgentRunResult[FakeRunOutput]:
+        thread_id = invocation.thread_id
+        conversation_id = invocation.conversation_id
         session = (
             self.octomate.gateway.get(conversation_id)
             if self.octomate is not None and conversation_id is not None
@@ -266,6 +280,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         )
         self.turns.append(
             RecordedRun(
+                invocation=invocation,
                 prompt=user_prompt,
                 history=list(message_history or []),
                 address=conversation_address,
@@ -300,18 +315,19 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         model: Model | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> ReactEventStream[ChannelOutput]:
+        thread_id = invocation.thread_id
+        conversation_id = invocation.conversation_id
         session = (
             self.octomate.gateway.get(conversation_id)
             if self.octomate is not None and conversation_id is not None
@@ -319,6 +335,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         )
         self.turns.append(
             RecordedRun(
+                invocation=invocation,
                 prompt=user_prompt,
                 history=list(message_history or []),
                 address=conversation_address,

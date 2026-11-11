@@ -76,7 +76,6 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         state.conversation_id = None
         agent = ctx.deps.agent(resolved.agent)
         run_model = agent.models[model] if model is not None else None
-        thread_id = state.thread.id if state.thread else None
         claim = state.handoff
         if state.thread is not None and claim is not None:
             await claim.land(ctx.deps, state.thread, decision)
@@ -110,20 +109,29 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         )
 
         async def events() -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
-            async with agent.run_stream_events(
-                user_prompt,
-                conversation_address=target_address,
-                thread_id=thread_id,
-                conversation_id=state.conversation_id,
-                source_thread_address=state.source_thread_address,
-                source_thread_message_ids=state.source_thread_message_ids,
-                run_name=state.run_name,
-                model=run_model,
-                effort=effort,
-                deferred_tool_results=deferred_results,
-                deferred_suspender=suspender,
-                capabilities=capabilities,
-            ) as stream:
+            if state.thread is None or state.conversation_id is None:
+                raise ValueError("React requires a resolved thread and conversation")
+            async with (
+                agent.habitats.invoke(
+                    ctx.deps.workspaces,
+                    thread=state.thread,
+                    conversation_id=state.conversation_id,
+                    owner_id=state.user_profile.user_id if state.user_profile else None,
+                ) as invocation,
+                agent.run_stream_events(
+                    user_prompt,
+                    conversation_address=target_address,
+                    invocation=invocation,
+                    source_thread_address=state.source_thread_address,
+                    source_thread_message_ids=state.source_thread_message_ids,
+                    run_name=state.run_name,
+                    model=run_model,
+                    effort=effort,
+                    deferred_tool_results=deferred_results,
+                    deferred_suspender=suspender,
+                    capabilities=capabilities,
+                ) as stream,
+            ):
                 async for event in stream:
                     yield event
 

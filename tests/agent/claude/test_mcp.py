@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.managers.gateway import OctomateSession
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.mcp.gateway import TELEPORT_RECORDED
 from octomate.mcp.server import (
     CALL_MCP_TOOL,
@@ -64,6 +65,7 @@ SUMMON_ARGUMENTS = {
 def a_turn(*, in_thread: bool = False) -> OctomateSession:
     """A turn on a group main, or in a thread of it — the shared surface a summon can
     take over."""
+    threads = FakeThreadManager()
     return OctomateSession(
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id="inkling",
@@ -76,6 +78,9 @@ def a_turn(*, in_thread: bool = False) -> OctomateSession:
             channel_thread_id="t-1" if in_thread else None,
             shared=True,
         ),
+        users=threads.users,
+        threads=threads,
+        workspaces=WorkspaceManager(),
     )
 
 

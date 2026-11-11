@@ -18,6 +18,7 @@
 8. The tree is `ruff format`ed. Run `uv run ruff format` and `uv run ruff check` on the files your change touches, and pass paths explicitly — never format the whole tree, which buries the change under unrelated reflow.
 9. Never put a ticket identifier in code, a docstring, a comment, or a document. Say the reason itself: a reader of the code has no tracker in front of them, and the identifier is what the commit that closed the ticket records.
 10. Prefer at most two levels of control-flow nesting, and never exceed three within a function (excluding the function and class scopes). Use guard clauses, combined context managers, or methods that own meaningful behavior to flatten deeper code; preserve resource cleanup and exception behavior.
+11. Do not use bare `assert` statements outside tests. Use explicit validation with an appropriate exception and a clear message for runtime checks. Express invariants through types or validation at the boundary instead of adding assertions merely to narrow a type. Bare assertions are allowed in tests.
 
 ### Helpers
 

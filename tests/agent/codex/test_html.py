@@ -41,6 +41,7 @@ from tests.agent.codex.test_tentacle import (
     native_thread_handles as native_thread_handles,
 )
 from tests.support.channels import FakeChannelTentacle
+from tests.support.invocations import invocation_for
 from tests.support.users import a_user, auth_config
 
 
@@ -151,6 +152,9 @@ async def test_driven_html_reaches_the_owned_viewer_and_channel_card(
             current_agent_id="codex",
             conversation_id=conversation.id,
             user_profile=profile,
+            users=host.users,
+            threads=host.threads,
+            workspaces=host.workspaces,
         )
     )
     tentacle = CodexTentacle(
@@ -169,7 +173,7 @@ async def test_driven_html_reaches_the_owned_viewer_and_channel_card(
         auth=host.auth,
         gateway_manager=host.gateway,
     )
-    workspace = host.workspaces.open(thread.id, None).path
+    workspace = (await host.workspaces.resolve(thread.id, None, None)).path
     source = workspace / "chart.html"
     html = "<button onclick=\"this.textContent = 'Updated'\">Update</button>"
 
@@ -203,9 +207,12 @@ async def test_driven_html_reaches_the_owned_viewer_and_channel_card(
 
     FakeCodex.on_turn = write_visual
     async with (
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=thread.id
+        ) as invocation,
         tentacle,
         tentacle.run_stream_events(
-            "Draw a chart", conversation_address=KEY, thread_id=thread.id
+            "Draw a chart", conversation_address=KEY, invocation=invocation
         ) as stream,
     ):
         events = [event async for event in stream]

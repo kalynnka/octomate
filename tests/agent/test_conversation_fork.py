@@ -24,7 +24,7 @@ from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.nerve import Nerve
-from octomate.schemas.commands import CommandInvocation, CommandResult
+from octomate.schemas.commands import CommandIntent, CommandResult
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.messages import ModelMessage
 from octomate.schemas.runs import AgentRun
@@ -150,7 +150,7 @@ async def test_fork_shares_the_source_history_and_grows_apart(
         actor_kind="human",
         sender_id=bob.id,
         conversation_id=source.id,
-        invocation=CommandInvocation(command_id="builtin:status"),
+        intent=CommandIntent(command_id="builtin:status"),
         outcome=CommandResult(),
     )
     bindings = [
@@ -225,7 +225,7 @@ async def test_fork_shares_the_source_history_and_grows_apart(
             if statement.startswith("SELECT"):
                 assert "model_messages.parts" not in statement
                 assert "thread_messages.segments" not in statement
-                assert "thread_messages.invocation" not in statement
+                assert "thread_messages.intent" not in statement
                 assert "message_binding.kind" not in statement
         # Nothing is copied: the fork writes only rows pointing at the history.
         assert {

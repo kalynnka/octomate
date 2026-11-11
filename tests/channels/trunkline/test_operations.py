@@ -48,7 +48,7 @@ class Case:
 
 @pytest.fixture
 async def case(in_memory_engine: AsyncEngine, tmp_path: Path) -> Case:
-    app = Octomate(workspaces=WorkspaceManager(workspaces_dir=tmp_path / "workspaces"))
+    app = Octomate(workspaces=WorkspaceManager(volumes_dir=tmp_path / "workspaces"))
     owner = await a_user(profiles={"far": "alice"})
     app.dependency_overrides[current_user] = lambda: owner
     agent = app.connect(FakeAgent(id="first"))
@@ -499,7 +499,12 @@ async def test_validation_precedes_side_effects(
 async def test_busy_thread_is_refused(case: Case, client: httpx.AsyncClient) -> None:
     conversation = (await case.app.conversations.for_thread(case.thread.id))[0]
     session = OctomateSession(
-        channel_routes={}, current_agent_id="first", conversation_id=conversation.id
+        channel_routes={},
+        current_agent_id="first",
+        conversation_id=conversation.id,
+        users=case.app.users,
+        threads=case.app.threads,
+        workspaces=case.app.workspaces,
     )
     async with case.app.gateway.driving(session):
         response = await client.post(
@@ -689,6 +694,8 @@ async def test_trunkline_offers_a_new_thread_without_a_dm(case: Case) -> None:
         conversation_address=ChannelAddress(
             channel_tentacle_id="far", chat_type="dm", chat_id="alice", user_id="alice"
         ),
+        threads=case.app.threads,
+        workspaces=case.app.workspaces,
     )
     destinations = await gateway.destinations()
     destination = ChannelAddress(
@@ -761,6 +768,9 @@ async def test_an_empty_offer_is_closed_only_by_what_rules_it_out(
         conversation_address=ChannelAddress(
             "far", "thread", "room", "alice", "topic", shared=shared
         ),
+        users=case.app.users,
+        threads=case.app.threads,
+        workspaces=case.app.workspaces,
     )
     gateway.destination_cache = []
 
@@ -823,6 +833,8 @@ async def test_discord_dm_threads_are_not_offered(case: Case) -> None:
             channel_thread_id=uuid7().hex,
             user_id=str(case.owner.id),
         ),
+        threads=case.app.threads,
+        workspaces=case.app.workspaces,
     )
     options = await session.operations
     assert all(

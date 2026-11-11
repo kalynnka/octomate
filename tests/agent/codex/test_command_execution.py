@@ -38,7 +38,7 @@ from octomate.config.agents import CodexConfig
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
-    CommandInvocation,
+    CommandIntent,
     CommandResult,
 )
 from octomate.schemas.events import MessageEvent
@@ -59,6 +59,7 @@ from tests.agent.codex.test_tentacle import (
     text_script,
 )
 from tests.support.channels import FakeChannelTentacle
+from tests.support.invocations import invocation_for
 from tests.support.users import a_user
 
 
@@ -179,21 +180,34 @@ async def test_runs_apply_saved_effort(
     await agent.conversations.set_effort(conversation, effort)
     if command:
         catalog = await agent.discover_commands(context)
-        invocation = CommandInvocation(
+        intent = CommandIntent(
             command_id=next(
                 item for item in catalog.descriptors if item.id.startswith("skill:")
             ).id
         )
-        async for _ in agent.execute_command(context, invocation):
-            pass
-    else:
-        await agent.run(
-            "review",
+        async with invocation_for(
+            agent,
             conversation_address=context.address,
-            conversation_id=conversation.id,
             thread_id=conversation.thread_id,
-            model=selected,
-        )
+            conversation_id=conversation.id,
+            owner_id=context.user_id,
+        ) as prepared:
+            async for _ in agent.execute_command(context, intent, invocation=prepared):
+                pass
+    else:
+        async with invocation_for(
+            agent,
+            conversation_address=context.address,
+            thread_id=conversation.thread_id,
+            conversation_id=conversation.id,
+            owner_id=context.user_id,
+        ) as invocation:
+            await agent.run(
+                "review",
+                conversation_address=context.address,
+                invocation=invocation,
+                model=selected,
+            )
     assert FakeCodex.turn_calls[-1].effort == (
         ReasoningEffort(effort) if effort is not None else None
     )
@@ -243,14 +257,21 @@ async def test_command_rejects_effort_unsupported_by_current_model(
     context = replace(context, model=model)
     await agent.conversations.set_effort(conversation, "high")
     catalog = await agent.discover_commands(context)
-    invocation = CommandInvocation(
+    intent = CommandIntent(
         command_id=next(
             item for item in catalog.descriptors if item.id.startswith("skill:")
         ).id
     )
-    with pytest.raises(ValueError, match="does not take effort 'high'"):
-        async for _ in agent.execute_command(context, invocation):
-            pass
+    async with invocation_for(
+        agent,
+        conversation_address=context.address,
+        thread_id=conversation.thread_id,
+        conversation_id=conversation.id,
+        owner_id=context.user_id,
+    ) as prepared:
+        with pytest.raises(ValueError, match="does not take effort 'high'"):
+            async for _ in agent.execute_command(context, intent, invocation=prepared):
+                pass
     assert not FakeCodex.thread_calls
     assert not FakeCodex.turn_calls
 
@@ -272,17 +293,17 @@ async def test_skill_turn_preserves_input_context_and_records_outcome(
     descriptor = next(
         item for item in catalog.descriptors if item.id.startswith("skill:")
     )
-    invocation = CommandInvocation(command_id=descriptor.id, arguments=arguments)
+    intent = CommandIntent(command_id=descriptor.id, arguments=arguments)
     async with AsyncExitStack() as stack:
         validated = await stack.enter_async_context(
             agent.octomate.commands.validate(
-                agent, context, invocation, delivery_id="command-1"
+                agent, context, intent, delivery_id="command-1"
             )
         )
         assert isinstance(validated, tuple)
         stream = await stack.enter_async_context(
             agent.octomate.commands.execute(
-                agent, context, invocation, validated, delivery_id="command-1"
+                agent, context, intent, validated, delivery_id="command-1"
             )
         )
         assert isinstance(stream, AsyncGenerator)
@@ -311,7 +332,7 @@ async def test_skill_turn_preserves_input_context_and_records_outcome(
         conversation.thread_id, "command-1", "inbound"
     )
     assert isinstance(receipt, ThreadCommand)
-    assert receipt.invocation == invocation
+    assert receipt.intent == intent
     assert receipt.outcome is not None
     assert receipt.outcome.status == "completed"
 
@@ -337,7 +358,7 @@ async def test_skill_execution_rejects_stale_or_undiscovered_paths(
     else:
         command_id = "skill:/client/supplied/SKILL.md"
     async with agent.octomate.commands.validate(
-        agent, context, CommandInvocation(command_id=command_id), delivery_id="stale"
+        agent, context, CommandIntent(command_id=command_id), delivery_id="stale"
     ) as outcome:
         assert isinstance(outcome, CommandError)
         assert outcome.status == "unknown"
@@ -367,17 +388,17 @@ async def test_detached_skill_stream_drains_before_releasing_the_command_guard(
             yield event
 
     async def consume() -> None:
-        invocation = CommandInvocation(command_id=descriptor.id)
+        intent = CommandIntent(command_id=descriptor.id)
         async with AsyncExitStack() as stack:
             validated = await stack.enter_async_context(
                 agent.octomate.commands.validate(
-                    agent, context, invocation, delivery_id="detached"
+                    agent, context, intent, delivery_id="detached"
                 )
             )
             assert isinstance(validated, tuple)
             stream = await stack.enter_async_context(
                 agent.octomate.commands.execute(
-                    agent, context, invocation, validated, delivery_id="detached"
+                    agent, context, intent, validated, delivery_id="detached"
                 )
             )
             assert isinstance(stream, AsyncGenerator)
@@ -435,12 +456,18 @@ async def test_permission_update_applies_to_next_turn_on_the_same_thread(
             yield notification
 
     monkeypatch.setattr(FakeTurn, "stream", stream)
-    async with agent.run_stream_events(
-        "work",
-        conversation_address=context.address,
-        conversation_id=conversation.id,
-        thread_id=conversation.thread_id,
-    ) as events:
+    async with (
+        invocation_for(
+            agent,
+            conversation_address=context.address,
+            thread_id=conversation.thread_id,
+            conversation_id=conversation.id,
+            owner_id=context.user_id,
+        ) as invocation,
+        agent.run_stream_events(
+            "work", conversation_address=context.address, invocation=invocation
+        ) as events,
+    ):
         try:
             await anext(events)
             assert conversation.id in agent.live_turns
@@ -463,12 +490,18 @@ async def test_permission_update_applies_to_next_turn_on_the_same_thread(
         async for _ in events:
             pass
     assert len(FakeCodex.turn_calls) == 1
-    await agent.run(
-        "continue",
+    async with invocation_for(
+        agent,
         conversation_address=context.address,
-        conversation_id=conversation.id,
         thread_id=conversation.thread_id,
-    )
+        conversation_id=conversation.id,
+        owner_id=context.user_id,
+    ) as invocation:
+        await agent.run(
+            "continue",
+            conversation_address=context.address,
+            invocation=invocation,
+        )
     stored = await agent.conversations.get(conversation.id)
     assert stored.permission_mode == "full_access"
     assert [run.permission_mode for run in await stored.runs] == [
@@ -493,12 +526,18 @@ async def test_permission_update_resets_native_reviewer_on_an_idle_thread(
     conversation = context.conversation
     assert conversation is not None
     await agent.set_permission_mode(conversation, "full_access")
-    await agent.run(
-        "work",
+    async with invocation_for(
+        agent,
         conversation_address=context.address,
-        conversation_id=conversation.id,
         thread_id=conversation.thread_id,
-    )
+        conversation_id=conversation.id,
+        owner_id=context.user_id,
+    ) as invocation:
+        await agent.run(
+            "work",
+            conversation_address=context.address,
+            invocation=invocation,
+        )
     request = agent.ink.client._client.request
     assert isinstance(request, AsyncMock)
     request.reset_mock()
@@ -545,12 +584,18 @@ async def test_rejected_codex_permission_update_does_not_save_the_selection(
     agent, context, _ = execution
     conversation = context.conversation
     assert conversation is not None
-    await agent.run(
-        "work",
+    async with invocation_for(
+        agent,
         conversation_address=context.address,
-        conversation_id=conversation.id,
         thread_id=conversation.thread_id,
-    )
+        conversation_id=conversation.id,
+        owner_id=context.user_id,
+    ) as invocation:
+        await agent.run(
+            "work",
+            conversation_address=context.address,
+            invocation=invocation,
+        )
     request = agent.ink.client._client.request
     assert isinstance(request, AsyncMock)
     request.side_effect = CodexError("permission update rejected")
@@ -576,7 +621,7 @@ async def test_status_before_a_conversation_does_not_start_codex(
     events = [
         event
         async for event in agent.execute_command(
-            context, CommandInvocation(command_id="builtin:status")
+            context, CommandIntent(command_id="builtin:status"), invocation=None
         )
     ]
     assert len(events) == 1
@@ -632,7 +677,8 @@ async def test_status_reads_account_limits_without_a_conversation(
     ]
     result = await agent.command_control(
         replace(context, conversation=None, cwd=None),
-        CommandInvocation(command_id="builtin:status"),
+        CommandIntent(command_id="builtin:status"),
+        invocation=None,
     )
     assert isinstance(result, CommandResult)
     text = result.model_dump_json()
@@ -682,12 +728,18 @@ async def test_status_uses_latest_recorded_native_usage(
                 ),
             ),
         )
-    await agent.run(
-        "review",
+    async with invocation_for(
+        agent,
         conversation_address=context.address,
-        conversation_id=conversation.id,
         thread_id=conversation.thread_id,
-    )
+        conversation_id=conversation.id,
+        owner_id=context.user_id,
+    ) as invocation:
+        await agent.run(
+            "review",
+            conversation_address=context.address,
+            invocation=invocation,
+        )
     conversation = await agent.conversations.get(conversation.id, with_history=False)
     if copied_history:
         await agent.conversations.set_external_id(conversation, "forked-thread")
@@ -696,7 +748,8 @@ async def test_status_uses_latest_recorded_native_usage(
     request.side_effect = [GetAccountResponse(account=None, requires_openai_auth=True)]
     result = await agent.command_control(
         replace(context, conversation=conversation),
-        CommandInvocation(command_id="builtin:status"),
+        CommandIntent(command_id="builtin:status"),
+        invocation=None,
     )
     assert isinstance(result, CommandResult)
     text = result.model_dump_json()
@@ -737,7 +790,7 @@ async def test_status_does_not_invent_missing_quota_windows(
         ),
     ]
     result = await agent.command_control(
-        context, CommandInvocation(command_id="builtin:status")
+        context, CommandIntent(command_id="builtin:status"), invocation=None
     )
     assert isinstance(result, CommandResult)
     assert "Account limits: not reported." in result.model_dump_json()
@@ -751,7 +804,9 @@ async def test_status_rejects_arguments_before_reading_account(
     assert isinstance(request, AsyncMock)
     request.reset_mock()
     result = await agent.command_control(
-        context, CommandInvocation(command_id="builtin:status", arguments="extra")
+        context,
+        CommandIntent(command_id="builtin:status", arguments="extra"),
+        invocation=None,
     )
     assert isinstance(result, CommandError)
     assert result.status == "unsupported"
@@ -773,7 +828,8 @@ async def test_reasoning_saves_host_effort_without_a_run(
         event
         async for event in agent.execute_command(
             replace(context, model=model),
-            CommandInvocation(command_id="builtin:reasoning", arguments=argument),
+            CommandIntent(command_id="builtin:reasoning", arguments=argument),
+            invocation=None,
         )
     ]
     stored = await agent.conversations.get(conversation.id)
@@ -805,13 +861,21 @@ async def test_plan_uses_native_preset_preserving_model_and_effort(
     request = agent.ink.client._client.request
     assert isinstance(request, AsyncMock)
     request.reset_mock()
-    events = [
-        event
-        async for event in agent.execute_command(
-            replace(context, model=model),
-            CommandInvocation(command_id="builtin:plan", arguments=argument),
-        )
-    ]
+    async with invocation_for(
+        agent,
+        conversation_address=context.address,
+        thread_id=conversation.thread_id,
+        conversation_id=conversation.id,
+        owner_id=context.user_id,
+    ) as prepared:
+        events = [
+            event
+            async for event in agent.execute_command(
+                replace(context, model=model),
+                CommandIntent(command_id="builtin:plan", arguments=argument),
+                invocation=prepared,
+            )
+        ]
     assert isinstance(events[0], CommandResult)
     request.assert_awaited_once_with(
         "thread/settings/update",
@@ -842,9 +906,9 @@ async def test_native_controls_are_disabled_without_a_saved_runtime_thread(
     agent, context, _ = execution
     conversation = context.conversation
     assert conversation is not None
-    invocation = CommandInvocation(command_id=f"builtin:{command}")
+    intent = CommandIntent(command_id=f"builtin:{command}")
     async with agent.commands.validate(
-        agent, context, invocation, delivery_id="unbound"
+        agent, context, intent, delivery_id="unbound"
     ) as outcome:
         assert isinstance(outcome, CommandError)
         assert outcome.status == "unavailable"
@@ -885,13 +949,13 @@ async def test_native_controls_resume_saved_threads_without_an_agent_run(
     assert descriptor.unavailable_reason is None
     assert not FakeCodex.read_calls
     assert not FakeCodex.thread_calls
-    invocation = CommandInvocation(command_id=descriptor.id)
+    intent = CommandIntent(command_id=descriptor.id)
     async with agent.commands.validate(
-        agent, context, invocation, delivery_id="resumed-control"
+        agent, context, intent, delivery_id="resumed-control"
     ) as validated:
         assert isinstance(validated, tuple)
         async with agent.commands.execute(
-            agent, context, invocation, validated, delivery_id="resumed-control"
+            agent, context, intent, validated, delivery_id="resumed-control"
         ) as outcome:
             assert isinstance(outcome, CommandResult)
     [resumed] = FakeCodex.thread_calls
@@ -942,12 +1006,21 @@ async def test_mcp_inspection_is_thread_scoped_and_reads_all_pages(
         ),
         ListMcpServerStatusResponse(data=[]),
     ]
-    events = [
-        event
-        async for event in agent.execute_command(
-            context, CommandInvocation(command_id="builtin:mcp")
-        )
-    ]
+    async with invocation_for(
+        agent,
+        conversation_address=context.address,
+        thread_id=conversation.thread_id,
+        conversation_id=conversation.id,
+        owner_id=context.user_id,
+    ) as prepared:
+        events = [
+            event
+            async for event in agent.execute_command(
+                context,
+                CommandIntent(command_id="builtin:mcp"),
+                invocation=prepared,
+            )
+        ]
     assert isinstance(events[0], CommandResult)
     assert "gateway: 0 tools" in events[0].model_dump_json()
     assert [call.args[1] for call in request.await_args_list] == [
@@ -963,12 +1036,21 @@ async def test_init_streams_and_records_one_real_run(
     agent, context, _ = execution
     conversation = context.conversation
     assert conversation is not None
-    events = [
-        event
-        async for event in agent.execute_command(
-            context, CommandInvocation(command_id="builtin:init")
-        )
-    ]
+    async with invocation_for(
+        agent,
+        conversation_address=context.address,
+        thread_id=conversation.thread_id,
+        conversation_id=conversation.id,
+        owner_id=context.user_id,
+    ) as prepared:
+        events = [
+            event
+            async for event in agent.execute_command(
+                context,
+                CommandIntent(command_id="builtin:init"),
+                invocation=prepared,
+            )
+        ]
     assert isinstance(events[-1], AgentRunResultEvent)
     [call] = FakeCodex.turn_calls
     assert isinstance(call.prompt, str)
@@ -993,7 +1075,8 @@ async def test_builtin_arguments_are_rejected_without_native_effects(
         event
         async for event in agent.execute_command(
             context,
-            CommandInvocation(command_id=f"builtin:{command}", arguments="unexpected"),
+            CommandIntent(command_id=f"builtin:{command}", arguments="unexpected"),
+            invocation=None,
         )
     ]
     assert isinstance(events[0], CommandError)
@@ -1032,13 +1115,13 @@ async def test_compact_waits_and_records_only_a_command_receipt(
     monkeypatch.setattr(agent.ink, "start_command", start)
 
     async def execute() -> CommandResult | CommandError:
-        invocation = CommandInvocation(command_id="builtin:compact")
+        intent = CommandIntent(command_id="builtin:compact")
         async with AsyncExitStack() as stack:
             validated = await stack.enter_async_context(
                 agent.commands.validate(
                     agent,
                     context,
-                    invocation,
+                    intent,
                     delivery_id="compact-1",
                 )
             )
@@ -1047,7 +1130,7 @@ async def test_compact_waits_and_records_only_a_command_receipt(
                 agent.commands.execute(
                     agent,
                     context,
-                    invocation,
+                    intent,
                     validated,
                     delivery_id="compact-1",
                 )
@@ -1111,13 +1194,21 @@ async def test_review_streams_native_review_text_and_records_a_real_run(
     agent.routes = agent.build_routes()
     context = replace(context, model=model)
     await agent.conversations.set_effort(conversation, "medium")
-    events = [
-        event
-        async for event in agent.execute_command(
-            context,
-            CommandInvocation(command_id="builtin:review", arguments=branch),
-        )
-    ]
+    async with invocation_for(
+        agent,
+        conversation_address=context.address,
+        thread_id=conversation.thread_id,
+        conversation_id=conversation.id,
+        owner_id=context.user_id,
+    ) as prepared:
+        events = [
+            event
+            async for event in agent.execute_command(
+                context,
+                CommandIntent(command_id="builtin:review", arguments=branch),
+                invocation=prepared,
+            )
+        ]
     assert isinstance(events[-1], AgentRunResultEvent)
     assert events[-1].result.output == "No issues found"
     start.assert_awaited_once()
@@ -1158,7 +1249,8 @@ async def test_review_rejects_invalid_targets_before_starting_a_run(
         event
         async for event in agent.execute_command(
             context,
-            CommandInvocation(command_id="builtin:review", arguments=argument),
+            CommandIntent(command_id="builtin:review", arguments=argument),
+            invocation=None,
         )
     ]
     assert isinstance(events[0], CommandError)

@@ -222,13 +222,15 @@ class MirrorManager(Manager, Locks[str]):
             "GIT_INDEX_FILE": str(path / ".git" / "sync-index"),
         }
         await run_git("add", "-A", cwd=folder, env=against)
-        # `status` rather than `diff HEAD`, because a just-init'd mirror has no
-        # HEAD to diff against, and an unchanged folder has to read as clean.
-        if not await run_git("status", "--porcelain", cwd=folder, env=against):
+        # An empty folder still needs an initial commit so its mirror can be forked.
+        if not await run_git(
+            "status", "--porcelain", cwd=folder, env=against
+        ) and await run_git("rev-list", "--all", "--max-count=1", cwd=path):
             return
         await run_git(
             *self.config.identity.commit_flags,
             "commit",
+            "--allow-empty",
             "-m",
             f"sync {folder}",
             cwd=folder,

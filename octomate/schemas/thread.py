@@ -23,7 +23,7 @@ from octomate.config.agents import AgentRouteModelName
 from octomate.models import thread as thread_models
 from octomate.schemas.artifacts import Artifact
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.schemas.commands import CommandInvocation, CommandOutcome
+from octomate.schemas.commands import CommandIntent, CommandOutcome
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.project import Project
 from octomate.schemas.segments import MessageSegment
@@ -187,7 +187,7 @@ class ThreadCommand(ThreadMessage):
     conversation_id: UUID7 | None = Field(
         description="The command's target conversation; null after that conversation is deleted."
     )
-    invocation: CommandInvocation = Field(
+    intent: CommandIntent = Field(
         description="Explicit command intent with raw arguments and resolved attachments."
     )
     outcome: CommandOutcome | None = Field(

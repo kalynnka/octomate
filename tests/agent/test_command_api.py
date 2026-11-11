@@ -59,7 +59,7 @@ from octomate.schemas.commands import (
     CommandCatalog,
     CommandDescriptor,
     CommandError,
-    CommandInvocation,
+    CommandIntent,
     CommandOutcomeEvent,
     CommandResult,
 )
@@ -272,8 +272,8 @@ async def test_http_direct_command_before_conversation_creates_no_runtime_record
         assert isinstance(outcome.outcome, CommandError)
         assert "without a conversation" in outcome.outcome.message
     assert not any(isinstance(event, RunStartedEvent) for event in carried)
-    assert agent.invocations == [
-        CommandInvocation(command_id="status", arguments="  --raw=value  ")
+    assert agent.intents == [
+        CommandIntent(command_id="status", arguments="  --raw=value  ")
     ]
     assert not agent.receipts
     assert not agent.turns
@@ -338,7 +338,7 @@ async def test_http_composer_execution_checks_scope_membership_and_identity(
     assert outcome.outcome.status == (
         "unknown" if refusal == "unknown" else "unavailable"
     )
-    assert not agent.invocations
+    assert not agent.intents
     assert not app.gateway.sessions
     async with async_session() as session:
         assert await session.count(Thread) == 0
@@ -904,8 +904,8 @@ async def test_http_execution_preserves_arguments_and_replays_saved_outcome(
         ] == ["Done", "Done"]
     assert command_outcome(response) == outcome
     assert command_outcome(replay) == outcome
-    assert agent.invocations == [
-        CommandInvocation(command_id="skill", arguments='  "raw argument"\n--flag=✓  ')
+    assert agent.intents == [
+        CommandIntent(command_id="skill", arguments='  "raw argument"\n--flag=✓  ')
     ]
     assert not app.gateway.sessions
     assert not agent.turns
@@ -937,7 +937,7 @@ async def test_http_execution_rejects_invalid_intent_before_dispatch(
         )
     assert response.status_code == 422
     assert response.headers["content-type"] == "application/json"
-    assert not agent.invocations
+    assert not agent.intents
 
 
 @pytest.mark.parametrize("refusal", ["unknown", "busy", "composer", "other_user"])
@@ -985,7 +985,7 @@ async def test_http_execution_uses_manager_refusals(
         ReflexPhaseChangedEvent(phase="finalizing"),
         ReflexAsleepEvent(outcome="failed"),
     ]
-    assert not agent.invocations
+    assert not agent.intents
     async with async_session() as session:
         assert await session.count(ThreadCommand) == 0
 
@@ -1078,7 +1078,7 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
         ]
         assert "Running" in shown
         assert "Done" in shown
-    assert len(agent.invocations) == 1
+    assert len(agent.intents) == 1
     assert not app.gateway.sessions
     user_capabilities.assert_awaited_once()
     assert isinstance(agent.suspender, ReflexSuspender)
@@ -1158,7 +1158,7 @@ async def test_command_presents_a_persisted_reflex_approval(
     assert batch.decision is not None
     assert batch.decision.agent_id == agent.id
     assert batch.decision.model == "test"
-    assert len(agent.invocations) == 1
+    assert len(agent.intents) == 1
     assert not agent.turns
     assert not app.gateway.sessions
 
@@ -1281,8 +1281,8 @@ async def test_foreign_agent_conversation_is_rejected_before_discovery_or_execut
     kick.assert_not_awaited()
     assert not other.calls
     assert not agent.calls
-    assert not other.invocations
-    assert not agent.invocations
+    assert not other.intents
+    assert not agent.intents
     assert not app.workspaces.volumes_dir.exists()
     async with async_session() as session:
         assert await session.count(TreeVolume) == 0

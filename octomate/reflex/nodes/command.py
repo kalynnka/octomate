@@ -62,7 +62,7 @@ class Command(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     agent.commands.validate(
                         agent,
                         context,
-                        self.signal.invocation,
+                        self.signal.intent,
                         delivery_id=self.signal.delivery_id,
                         session=session,
                     )
@@ -83,7 +83,7 @@ class Command(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     agent.commands.execute(
                         agent,
                         context,
-                        self.signal.invocation,
+                        self.signal.intent,
                         validated,
                         delivery_id=self.signal.delivery_id,
                         deferred_suspender=suspender,

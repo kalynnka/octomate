@@ -92,6 +92,8 @@ async def app_turn(in_memory_engine: AsyncEngine) -> AppTurn:
         conversation_address=thread.key.address("alice"),
         threads=host.threads,
         nerve=host.nerve,
+        users=host.users,
+        workspaces=host.workspaces,
     )
     installation = await host.mcp.install(
         user.id,

@@ -25,6 +25,7 @@ from octomate.telemetry import (
 from octomate.tentacles.codex.telemetry import TracedCodexClient
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.types.json import JsonObject
+from tests.support.invocations import invocation_for
 from tests.support.managers import FakeConversationManager
 
 
@@ -104,8 +105,8 @@ async def test_inkling_native_model_spans_keep_the_driving_trace(
     )
 
     with use_span(NonRecordingSpan(SpanContext(101, 102, False, TraceFlags(1)))):
-        result = await tentacle.run(
-            "hello",
+        async with invocation_for(
+            tentacle,
             conversation_address=ChannelAddress(
                 channel_tentacle_id="test",
                 chat_type="dm",
@@ -113,8 +114,18 @@ async def test_inkling_native_model_spans_keep_the_driving_trace(
                 user_id="test",
             ),
             thread_id=uuid7(),
-            output_type=str,
-        )
+        ) as invocation:
+            result = await tentacle.run(
+                "hello",
+                conversation_address=ChannelAddress(
+                    channel_tentacle_id="test",
+                    chat_type="dm",
+                    chat_id="test",
+                    user_id="test",
+                ),
+                invocation=invocation,
+                output_type=str,
+            )
 
     assert result.output == "done"
     model_spans = [

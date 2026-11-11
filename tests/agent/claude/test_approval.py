@@ -48,6 +48,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
+from tests.support.invocations import invocation_for
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
@@ -217,13 +218,18 @@ def _conversation(tentacle: ClaudeTentacle) -> FakeConversation:
 async def _drain(
     tentacle: ClaudeTentacle, suspender: RecordingSuspender
 ) -> list[ReactStreamEvent[str]]:
-    async with tentacle.run_stream_events(
-        "do it",
-        conversation_address=KEY,
-        thread_id=_THREAD,
-        run_name="react",
-        deferred_suspender=suspender,
-    ) as stream:
+    async with (
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation,
+        tentacle.run_stream_events(
+            "do it",
+            conversation_address=KEY,
+            invocation=invocation,
+            run_name="react",
+            deferred_suspender=suspender,
+        ) as stream,
+    ):
         return [event async for event in stream]
 
 

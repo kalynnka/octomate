@@ -56,6 +56,7 @@ from octomate.schemas.thread import (
 )
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.schemas.user import UserProfile
+from octomate.schemas.volumes import TreeVolume
 from octomate.types.deferred import DeferredBatchStatus, DeferredResponseMode
 from octomate.types.permissions import AgentPermissionMode
 
@@ -186,6 +187,10 @@ class FakeConversationManager(ConversationManager):
         conversation = await self.get(conversation_id)
         return conversation.runs[-1].context_window if conversation.runs else None
 
+    async def latest_cwd(self, conversation_id: UUID7) -> Path | None:
+        conversation = await self.get(conversation_id)
+        return conversation.runs[-1].cwd if conversation.runs else None
+
     async def ensure(
         self,
         thread_id: UUID7,
@@ -207,6 +212,10 @@ class FakeConversationManager(ConversationManager):
                 agent_tentacle_id=agent_tentacle_id or "",
             )
             self.store[store_key] = conversation
+        if not conversation.agent_tentacle_id:
+            conversation.agent_tentacle_id = agent_tentacle_id or ""
+        if conversation.thread_id is None:
+            conversation.thread_id = thread_id
         return cast(Conversation, conversation)
 
     async def get(
@@ -639,6 +648,29 @@ class RecordingWorkspaceManager(WorkspaceManager):
     def __init__(self) -> None:
         super().__init__()
         self.saved: list[UUID7] = []
+        self.volumes: dict[tuple[UUID7, UUID7, UUID7 | None], TreeVolume] = {}
+
+    async def find(
+        self, owner_id: UUID7, thread_id: UUID7, project_id: UUID7 | None
+    ) -> TreeVolume | None:
+        return self.volumes.get((owner_id, thread_id, project_id))
+
+    async def tree(
+        self,
+        owner_id: UUID7,
+        thread_id: UUID7,
+        project_id: UUID7 | None,
+        ref: str | None = None,
+    ) -> TreeVolume:
+        key = (owner_id, thread_id, project_id)
+        if key not in self.volumes:
+            self.volumes[key] = TreeVolume(
+                owner_id=owner_id,
+                thread_id=thread_id,
+                project_id=project_id,
+                base_ref=ref,
+            )
+        return self.volumes[key]
 
     async def save(self, thread: Thread, owner_id: UUID7) -> None:
         self.saved.append(thread.id)

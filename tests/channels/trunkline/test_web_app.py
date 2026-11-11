@@ -1896,8 +1896,7 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
 async def test_a_thread_no_project_claims_reads_back_without_one(
     octomate: Octomate,
 ) -> None:
-    """A directive on the console's own channel is not work in a project — and
-    a run that reported no directory says so rather than guessing one."""
+    """An unbound thread reports no project and records its temporary directory."""
     agent, _ = build_scripted_agent(["done"])
     channel = await _register(octomate, agent)
     await _post(channel, "what changed?", thread_id="thread-8")
@@ -1913,7 +1912,9 @@ async def test_a_thread_no_project_claims_reads_back_without_one(
         thread_url = f"/api/trunkline/threads/{listed['id']}"
         assert (await client.get(f"{thread_url}/project")).json() is None
         [conversation] = (await client.get(f"{thread_url}/conversations")).json()
-        assert [run["cwd"] for run in conversation["runs"]] == [None]
+        [run] = conversation["runs"]
+        assert run["cwd"] is not None
+        assert not await asyncio.to_thread(Path(run["cwd"]).exists)
 
 
 async def test_batch_resolve_resolves_and_streams(

@@ -44,6 +44,7 @@ from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
     QuestionRequestedFrame,
 )
+from tests.support.invocations import invocation_for
 
 
 async def test_real_harness_drives_resumes_and_reads_native_history(
@@ -136,12 +137,17 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
     )
     thread = (await octomate.threads.enter(address)).id
     async with asyncio.timeout(90), tentacle:
-        async with tentacle.run_stream_events(
-            "Test integration",
-            conversation_address=address,
-            thread_id=thread,
-            model="octomate-test:mock",
-        ) as stream:
+        async with (
+            invocation_for(
+                tentacle, conversation_address=address, thread_id=thread
+            ) as invocation,
+            tentacle.run_stream_events(
+                "Test integration",
+                conversation_address=address,
+                invocation=invocation,
+                model="octomate-test:mock",
+            ) as stream,
+        ):
             events = [event async for event in stream]
         assert isinstance(events[-1], AgentRunResultEvent)
         assert events[-1].result.output == "Octomate Remote API works"
@@ -155,12 +161,15 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
         stored_thread = await octomate.threads.get(thread, with_messages=False)
         assert stored_thread is not None
         assert stored_thread.title == conversation.name
-        resumed = await tentacle.run(
-            "Continue",
-            conversation_address=address,
-            thread_id=thread,
-            model="octomate-test:mock",
-        )
+        async with invocation_for(
+            tentacle, conversation_address=address, thread_id=thread
+        ) as invocation:
+            resumed = await tentacle.run(
+                "Continue",
+                conversation_address=address,
+                invocation=invocation,
+                model="octomate-test:mock",
+            )
         assert resumed.output == "Octomate Remote API works"
         conversation = await conversations.get(conversation.id)
         assert conversation.external_id == first_session
@@ -253,11 +262,18 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
             raise AssertionError("The pending question should have been cancelled")
 
         monkeypatch.setattr(tentacle, "answer_questions", wait_for_cancel)
-        running = asyncio.create_task(
-            tentacle.run(
-                "Cancel this turn", conversation_address=address, thread_id=thread
-            )
-        )
+
+        async def run_running() -> None:
+            async with invocation_for(
+                tentacle, conversation_address=address, thread_id=thread
+            ) as invocation:
+                await tentacle.run(
+                    "Cancel this turn",
+                    conversation_address=address,
+                    invocation=invocation,
+                )
+
+        running = asyncio.create_task(run_running())
         await asyncio.wait_for(waiting.wait(), 10)
         reply = await tentacle.ink.client.remote(
             "session/cancel", {"request": {"sessionId": first_session}}
@@ -280,9 +296,14 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
     monkeypatch.setattr(restarted, "answer_approval", approve)
     monkeypatch.setattr(restarted, "answer_questions", answer)
     async with asyncio.timeout(90), restarted:
-        result = await restarted.run(
-            "Continue after restart", conversation_address=address, thread_id=thread
-        )
+        async with invocation_for(
+            restarted, conversation_address=address, thread_id=thread
+        ) as invocation:
+            result = await restarted.run(
+                "Continue after restart",
+                conversation_address=address,
+                invocation=invocation,
+            )
         assert result.output == "Octomate Remote API works"
         assert (await conversations.get(conversation.id)).external_id == first_session
 
