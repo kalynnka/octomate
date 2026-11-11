@@ -291,10 +291,16 @@ class CommandManager(Manager):
                     and not conversation.subagent_id
                     and surface.active_agent_tentacle_id == agent.id
                 )
+                project = await thread.project
+                volume = await self.workspaces.find(
+                    context.user_id,
+                    thread.id,
+                    project.id if project is not None else None,
+                )
                 current = replace(
                     context,
                     conversation=conversation,
-                    cwd=self.workspaces.open(thread.id, await thread.project).path,
+                    cwd=self.workspaces.path(volume) if volume is not None else None,
                     model=surface.active_model,
                     permission_mode=conversation.permission_mode
                     or agent.default_permission_mode,

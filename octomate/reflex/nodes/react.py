@@ -11,9 +11,7 @@ from pydantic_ai.messages import UserContent
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_graph import BaseNode, End, GraphRunContext
 
-from octomate.capabilities.harness.events import ReflexPhaseChangedEvent
 from octomate.capabilities.harness.react import ReactStreamEvent
-from octomate.nerve import Impulse
 from octomate.reflex.state import (
     ReflexDeps,
     ReflexGraphResult,
@@ -39,30 +37,9 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
     ) -> React | Summon | Scheme | Teleport | End[ReflexGraphResult]:
-        """React, and leave the turn's workspace in the mirror however it ends.
-
-        In a `finally` because a turn that raised still did whatever it did on
-        disk. The files an agent wrote before its provider dropped the connection
-        are work, and until this runs the workspace is the only copy of them —
-        which also means the sweep can never reclaim that workspace, since it
-        refuses anything the mirror has not seen. A failed turn on a thread nobody
-        resumes would otherwise hold its disk for good.
-
-        A cancelled turn is the one case this does not cover: the save's first
-        await raises straight back out, so its work stays in the workspace and the
-        sweep keeps it, which is the safe direction.
-        """
-        try:
+        """Run with the core's shared finalization and checkpoint policy."""
+        async with ctx.deps.runtime.finalizing(ctx):
             return await self.react(ctx)
-        finally:
-            await ctx.deps.impulses.send(
-                Impulse(
-                    ReflexPhaseChangedEvent(phase="finalizing"),
-                    ctx.state.target.address if ctx.state.target else None,
-                )
-            )
-            if ctx.state.thread is not None:
-                await ctx.deps.workspaces.save(ctx.state.thread)
 
     async def react(
         self,

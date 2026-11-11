@@ -31,8 +31,11 @@ import tempfile
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock
 
+import anyio
 import pytest
+from anyio.lowlevel import checkpoint
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
@@ -1203,6 +1206,113 @@ async def test_leaving_a_project_workspace_keeps_it(
 
     assert (workspace.path / "work.md").read_text() == "done"
     assert (workspace.path / "readme.md").read_text() == "hello"
+    assert (
+        await run_git("show", f"{tree_ref(workspace.volume.id)}:work.md", cwd=mirror)
+        == "done"
+    )
+
+
+async def test_project_exit_checkpoints_a_failed_run(
+    manager: WorkspaceManager, owner: User
+) -> None:
+    thread = await a_bound_thread(manager)
+    workspace = await a_workspace(manager, thread, owner)
+    (workspace.project.root / "readme.md").write_text("hello")
+    await workspace.prepare()
+    (workspace.path / "work.md").write_text("unfinished")
+    with pytest.raises(RuntimeError, match="provider failed"):
+        async with workspace:
+            raise RuntimeError("provider failed")
+    assert (workspace.path / "work.md").read_text() == "unfinished"
+    assert await manager.saved(workspace.path)
+
+
+async def test_project_exit_keeps_work_when_the_checkpoint_fails(
+    manager: WorkspaceManager, owner: User, caplog: pytest.LogCaptureFixture
+) -> None:
+    thread = await a_bound_thread(manager)
+    workspace = await a_workspace(manager, thread, owner)
+    (workspace.project.root / "readme.md").write_text("hello")
+    async with workspace:
+        (workspace.path / "work.md").write_text("unfinished")
+        shutil.rmtree(manager.mirrors.path(workspace.project))
+    assert (workspace.path / "work.md").read_text() == "unfinished"
+    assert not await manager.saved(workspace.path)
+    assert "could not be saved" in caplog.text
+
+
+async def test_checkpoint_skips_unchanged_work_but_keeps_branch_changes(
+    manager: WorkspaceManager, owner: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    thread = await a_bound_thread(manager)
+    workspace = await a_workspace(manager, thread, owner)
+    (workspace.project.root / "readme.md").write_text("hello")
+    git = AsyncMock(wraps=workspaces.run_git)
+    monkeypatch.setattr(workspaces, "run_git", git)
+    async with workspace:
+        (workspace.path / "work.md").write_text("unfinished")
+    await manager.save(thread, owner.id)
+    assert sum(call.args[0] == "push" for call in git.await_args_list) == 1
+
+    await run_git("checkout", "-b", "renamed", cwd=workspace.path)
+    await manager.save(thread, owner.id)
+    assert sum(call.args[0] == "push" for call in git.await_args_list) == 2
+    await manager.release(workspace.volume)
+    await workspace.prepare()
+    assert await branch(workspace.path) == "renamed"
+    assert (workspace.path / "work.md").read_text() == "unfinished"
+
+
+@pytest.mark.parametrize("kind", ["project", "chat", "unregistered"])
+async def test_context_cancellation_preserves_projects_and_releases_chat_claims(
+    manager: WorkspaceManager, owner: User, kind: str
+) -> None:
+    thread = (
+        await a_bound_thread(manager) if kind == "project" else await a_chat_thread()
+    )
+    project = await thread.project
+    if project is not None:
+        (project.root / "readme.md").write_text("hello")
+    workspace = await manager.open(
+        thread.id, project, None if kind == "unregistered" else owner.id
+    )
+    with anyio.CancelScope() as scope:
+        async with workspace:
+            (workspace.path / "work.md").write_text("unfinished")
+            scope.cancel()
+            await checkpoint()
+    if kind == "project":
+        assert (workspace.path / "work.md").read_text() == "unfinished"
+        assert not await manager.saved(workspace.path)
+    else:
+        assert not workspace.path.exists()
+    assert not manager.chatting
+
+
+@pytest.mark.parametrize("overlapping", [False, True])
+async def test_failed_chat_entry_releases_only_its_own_claim(
+    manager: WorkspaceManager,
+    owner: User,
+    overlapping: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    thread = await a_chat_thread()
+    first = await manager.open(thread.id, None, owner.id)
+    if overlapping:
+        await first.prepare()
+    failed = await manager.open(thread.id, None, owner.id)
+    monkeypatch.setattr(
+        manager, "materialize", AsyncMock(side_effect=RuntimeError("prepare failed"))
+    )
+    with pytest.raises(RuntimeError, match="prepare failed"):
+        async with failed:
+            pytest.fail("a failed workspace was entered")
+    if overlapping:
+        assert first.path.is_dir()
+        assert manager.chatting == {first.key: 1}
+        await manager.discard(first)
+    assert not manager.chatting
+    assert not failed.path.exists()
 
 
 async def test_a_resumed_workspace_can_be_pruned_again(

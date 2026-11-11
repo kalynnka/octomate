@@ -100,7 +100,11 @@ async def command_context(
         surface = await threads.surface(thread)
         model = surface.active_model
         permission_mode = conversation.permission_mode or agent.default_permission_mode
-        cwd = workspaces.open(thread.id, await thread.project).path
+        project = await thread.project
+        volume = await workspaces.find(
+            user.id, thread.id, project.id if project is not None else None
+        )
+        cwd = workspaces.path(volume) if volume is not None else None
 
     try:
         model = agent.resolve_model(model)

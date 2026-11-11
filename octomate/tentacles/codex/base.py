@@ -1053,10 +1053,11 @@ class CodexTentacle(AgentTentacle[str, None]):
         permission_mode = conversation.permission_mode or self.config.permission_mode
         self.check_permission_mode(permission_mode)
         project = await self.run_project(conversation.thread_id)
-        workspace = self.workspaces.open(conversation.thread_id, project)
         async with (
             self.conversation_locks.hold(str(conversation.id)),
-            workspace,
+            await self.workspaces.open(
+                conversation.thread_id, project, context.user_id
+            ) as workspace,
             self.driving(thread_id),
         ):
             api_key = await self.runtime_api_key(context.user_id)

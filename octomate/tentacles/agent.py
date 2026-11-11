@@ -626,9 +626,9 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         if thread.id == source_thread.id:
             raise ValueError("A fork requires an independent destination thread")
         target = await self.conversations.ensure(thread.id, agent_tentacle_id=self.id)
-        workspace = self.workspaces.open(thread.id, project)
+        workspace = await self.workspaces.open(thread.id, project, owner_id)
         if driven:
-            await self.workspaces.carry(source_thread, thread)
+            await self.workspaces.carry(source_thread, thread, owner_id)
             async with workspace:
                 external_id = await self.fork_session(source, cwd=workspace.path)
             if source.external_id is not None and (

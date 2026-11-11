@@ -10,7 +10,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Sequence
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload
@@ -25,6 +25,7 @@ from pydantic_graph import BaseNode, End, GraphRunContext
 
 from octomate.capabilities.harness.events import (
     MessageSentEvent,
+    ReflexPhaseChangedEvent,
     RunActivityChangedEvent,
     RunEndedEvent,
     RunErrorEvent,
@@ -498,6 +499,34 @@ class ReflexDeps:
 class ReflexRuntime:
     """Stateless orchestration in graph deps; invocation resources stay with callers."""
 
+    @asynccontextmanager
+    async def finalizing(
+        self, ctx: GraphRunContext[ReflexState, ReflexDeps]
+    ) -> AsyncGenerator[None]:
+        """Publish finalization and checkpoint registered work, except on cancellation."""
+        checkpoint = True
+        try:
+            yield
+        except BaseException as error:
+            checkpoint = isinstance(error, Exception)
+            raise
+        finally:
+            state = ctx.state
+            await ctx.deps.impulses.send(
+                Impulse(
+                    ReflexPhaseChangedEvent(phase="finalizing"),
+                    state.target.address if state.target is not None else None,
+                )
+            )
+            profile = state.user_profile
+            if (
+                checkpoint
+                and state.thread is not None
+                and profile is not None
+                and profile.user_id is not None
+            ):
+                await ctx.deps.workspaces.save(state.thread, profile.user_id)
+
     async def resources(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
@@ -736,10 +765,19 @@ class ReflexRuntime:
         thread_id = state.thread.id if state.thread else None
         output = run_result.output
         with reflex_logfire.span("reflex.finish", run_id=run_result.run_id) as span:
-            if session is not None and session.dismissing and state.thread is not None:
+            profile = state.user_profile
+            if (
+                session is not None
+                and session.dismissing
+                and state.thread is not None
+                and profile is not None
+                and profile.user_id is not None
+            ):
                 # The agent said this thread's work is done: its tree goes now
                 # that the run is out of it, saved first and kept if that failed.
-                result = await ctx.deps.workspaces.dismiss(state.thread)
+                result = await ctx.deps.workspaces.dismiss(
+                    state.thread, profile.user_id
+                )
                 span.set_attribute(
                     "react.dismissed",
                     result,

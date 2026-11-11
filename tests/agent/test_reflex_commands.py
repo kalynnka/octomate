@@ -98,7 +98,7 @@ async def scenario(
         agent_id=agent.id,
         user_id=user.id,
         address=address,
-        cwd=app.workspaces.open(thread.id, None).path,
+        cwd=(await app.workspaces.open(thread.id, None, user.id)).path,
         conversation=conversation,
         model="test",
         permission_mode=agent.default_permission_mode,
@@ -124,6 +124,8 @@ async def test_direct_command_delivers_feedback_without_model_history_and_replay
     agent.gateway = gateway
     capabilities = AsyncMock(return_value=[])
     monkeypatch.setattr(agent, "user_capabilities", capabilities)
+    save = AsyncMock(wraps=app.workspaces.save)
+    monkeypatch.setattr(app.workspaces, "save", save)
     state = ReflexState()
     async with (
         drawing(channel),
@@ -168,6 +170,8 @@ async def test_direct_command_delivers_feedback_without_model_history_and_replay
     assert (agent.session is not None) is gateway
     assert isinstance(app.workspaces, RecordingWorkspaceManager)
     assert app.workspaces.saved == [conversation.thread_id]
+    assert save.await_args is not None
+    assert save.await_args.args[1] == signal.context.user_id
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -527,7 +531,9 @@ async def test_a_commands_events_reach_its_trunkline_thread(
             signal.context,
             address=address,
             conversation=conversation,
-            cwd=app.workspaces.open(thread.id, None).path,
+            cwd=(
+                await app.workspaces.open(thread.id, None, signal.context.user_id)
+            ).path,
         ),
     )
 

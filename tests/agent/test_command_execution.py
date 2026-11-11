@@ -150,7 +150,7 @@ async def context(
         agent_id=agent.id,
         user_id=user.id,
         address=address,
-        cwd=app.workspaces.open(thread.id, None).path,
+        cwd=(await app.workspaces.open(thread.id, None, user.id)).path,
         conversation=conversation,
         model="test",
         permission_mode=agent.default_permission_mode,

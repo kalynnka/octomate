@@ -1009,10 +1009,9 @@ class OctomateSession:
         release is the graph's, once the turn ends and its work is saved, so no
         tree is pulled out from under a run still in it.
 
-        No registered user is needed, unlike a binding: what a release costs is a
-        fork on the next turn, never work. A thread about no project has nothing
-        to release — its tree goes with the turn — and a native session runs in a
-        directory of its own that Octomate never forked."""
+        Only the requesting user's tree is released. A thread about no project has
+        nothing to release — its tree goes with the turn — and a native session
+        runs in a directory of its own that Octomate never forked."""
         if self.native:
             raise GatewayRefusal(
                 "This session lives in your terminal, in a directory of its own — "
@@ -1030,6 +1029,10 @@ class OctomateSession:
             raise GatewayRefusal(
                 "This thread is about no project, and its tree is thrown away when "
                 "this turn ends — there is nothing to release."
+            )
+        if self.user_profile is None or self.user_profile.user_id is None:
+            raise GatewayRefusal(
+                "This turn has no registered user whose workspace can be released."
             )
         self.dismissing = True
         return (

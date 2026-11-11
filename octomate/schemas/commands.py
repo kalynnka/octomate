@@ -36,7 +36,8 @@ class CommandContext:
         Path | None,
         Field(
             description="The effective runtime workspace, never a client-supplied path; "
-            "null before a thread exists. Discovery must not prepare this directory.",
+            "null until this user's tree volume exists. Discovery must not create "
+            "the volume or prepare its directory.",
         ),
     ]
     conversation: Annotated[

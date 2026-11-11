@@ -640,7 +640,7 @@ class RecordingWorkspaceManager(WorkspaceManager):
         super().__init__()
         self.saved: list[UUID7] = []
 
-    async def save(self, thread: Thread) -> None:
+    async def save(self, thread: Thread, owner_id: UUID7) -> None:
         self.saved.append(thread.id)
 
 

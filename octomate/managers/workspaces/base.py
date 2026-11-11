@@ -15,6 +15,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Self, overload
 
+import anyio
 from pydantic import UUID7
 
 from octomate.config.mirrors import GitIdentity
@@ -190,10 +191,50 @@ class ProjectWorkspace(TreeWorkspace):
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        """Nothing. A project's tree outlives the run that used it — that is what
-        makes the next turn a resume — and what the turn owes is a `save`, which
-        the graph does once for the turn rather than once per agent that ran in
-        it."""
+        """Save completed or failed work; cancellation leaves the tree in place."""
+        if exc_type is None or issubclass(exc_type, Exception):
+            await self.save()
+
+    async def save(self) -> None:
+        """Checkpoint this exact volume without changing the user's index or tree.
+
+        A failed push leaves the tree unsaved and unreclaimable. An unchanged
+        checkpoint needs no second push when another lifecycle boundary closes.
+        """
+        manager = self.workspaces
+        path = self.path
+        with workspace_logfire.span(
+            "workspace.save",
+            thread_id=str(self.thread_id),
+            volume_id=str(self.volume.id),
+            project=self.project.name,
+            saved=False,
+        ) as span:
+            if not path.is_dir():
+                return
+            try:
+                async with manager.lock(self.volume.id):
+                    if await manager.saved(path):
+                        span.set_attribute("saved", True)
+                        return
+                    snapshot = await manager.snapshot(path)
+                    await run_git(
+                        "push",
+                        "--force",
+                        str(manager.mirrors.path(self.project)),
+                        f"{snapshot}:{tree_ref(self.volume.id)}",
+                        cwd=path,
+                    )
+                    await run_git("update-ref", SAVED_REF, snapshot, cwd=path)
+                span.set_attribute("snapshot", snapshot)
+                span.set_attribute("saved", True)
+            except (GitCommandError, OSError):
+                logger.exception(
+                    "the tree for thread %s could not be saved; its work is only in "
+                    "%s until a later turn saves it",
+                    self.thread_id,
+                    path,
+                )
 
 
 @dataclass
@@ -225,9 +266,13 @@ class ChatWorkspace(TreeWorkspace):
         to a run that is over. Nothing here is ever saved.
         """
         await self.workspaces.claim(self)
-        # The mirror of no project, which is what this thread is in.
-        mirror = await self.workspaces.mirrors.create()
-        return await self.workspaces.materialize(self, mirror)
+        try:
+            mirror = await self.workspaces.mirrors.create()
+            return await self.workspaces.materialize(self, mirror)
+        except BaseException:
+            with anyio.CancelScope(shield=True):
+                await self.workspaces.discard(self)
+            raise
 
     async def __aexit__(
         self,
@@ -238,7 +283,8 @@ class ChatWorkspace(TreeWorkspace):
         """Throw the folder away and keep the row. In `__aexit__` rather than after
         the run's last event, so a turn that raised does not leave its files
         behind."""
-        await self.workspaces.discard(self)
+        with anyio.CancelScope(shield=True):
+            await self.workspaces.discard(self)
 
 
 @dataclass
@@ -264,8 +310,13 @@ class UnregisteredWorkspace(Workspace):
 
     async def prepare(self) -> Path:
         await self.workspaces.claim(self)
-        self.path.mkdir(parents=True, exist_ok=True)
-        return self.path
+        try:
+            self.path.mkdir(parents=True, exist_ok=True)
+            return self.path
+        except BaseException:
+            with anyio.CancelScope(shield=True):
+                await self.workspaces.discard(self)
+            raise
 
     async def __aexit__(
         self,
@@ -273,7 +324,8 @@ class UnregisteredWorkspace(Workspace):
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        await self.workspaces.discard(self)
+        with anyio.CancelScope(shield=True):
+            await self.workspaces.discard(self)
 
 
 class WorkspaceManager(Manager, Locks[UUID7]):
@@ -298,13 +350,11 @@ class WorkspaceManager(Manager, Locks[UUID7]):
     mirror and thrown away when the run that made it ends. Same mechanism, opposite
     ending: there is no project to keep it for.
 
-    The whole lifecycle is here. A turn asks `open` for the workspace its thread
-    runs in and enters it, which is what forks the tree and what ends it; the turn
-    itself owes one more thing, `save`, which the graph does after the run — or
-    `dismiss`, once the agent has said the thread's work is done. Those need the
-    registry to say which project a thread is in and the mirrors to say where that
-    project's is, which is why this holds both. Every git call stays behind this
-    manager's own methods, so where git runs on a tree can change in one place.
+    A turn asks `open` for its workspace and enters it to prepare the directory.
+    Project exit checkpoints its exact volume; chat exit releases its temporary
+    directory. Explicit `save` and `dismiss` resolve an owner's existing tree for
+    graph finalization and handoffs. The registry identifies the project and the
+    mirrors hold its checkpoints.
     """
 
     def __init__(
@@ -782,47 +832,16 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         already answered; failing it now would report a delivered answer as an
         error, and the next turn saves the same work again.
         """
-        # The turn's work leaving the tree. Until this succeeds the fork is the
-        # only copy, so `saved` — which is what the sweep reads — is the attribute
-        # to look at when a tree nobody can release turns up.
-        with workspace_logfire.span(
-            "workspace.save", thread_id=str(thread.id), saved=False
-        ) as span:
-            project = await self.projects.of(thread)
-            span.set_attribute("project", project.name if project else None)
-            if project is None:
-                return
-            volume = await self.find(owner_id, thread.id, project.id)
-            if volume is None or not self.path(volume).is_dir():
-                return
-            path = self.path(volume)
-            span.set_attribute("volume_id", str(volume.id))
-            try:
-                async with self.lock(volume.id):
-                    snapshot = await self.snapshot(path)
-                    await run_git(
-                        "push",
-                        "--force",
-                        str(self.mirrors.path(project)),
-                        f"{snapshot}:{tree_ref(volume.id)}",
-                        cwd=path,
-                    )
-                    # Only now, and only here: this is what tells the sweep that
-                    # releasing this tree costs a resume rather than the work.
-                    await run_git("update-ref", SAVED_REF, snapshot, cwd=path)
-                span.set_attribute("snapshot", snapshot)
-                span.set_attribute("saved", True)
-            except (GitCommandError, OSError):
-                logger.exception(
-                    "the tree for thread %s could not be saved; its work is only in "
-                    "%s until a later turn saves it",
-                    thread.id,
-                    path,
-                )
+        project = await self.projects.of(thread)
+        if project is None:
+            return
+        volume = await self.find(owner_id, thread.id, project.id)
+        if volume is not None:
+            await ProjectWorkspace(self, thread.id, volume, project).save()
 
     async def saved(self, path: Path) -> bool:
         """Whether the mirror already holds everything in this workspace: the same
-        tree, on the same commit, as the last push carried.
+        tree, commit and branch as the last push carried.
 
         The question the sweep has to answer before reclaiming anything, and one
         `git status` cannot answer any more — nothing here commits, so a saved
@@ -836,7 +855,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         )
         if not pushed.strip():
             return False
-        state = ("show", "-s", "--format=%T %P")
+        state = ("show", "-s", "--format=%T %P %s")
         return await run_git(*state, pushed.strip(), cwd=path) == await run_git(
             *state, await self.snapshot(path), cwd=path
         )

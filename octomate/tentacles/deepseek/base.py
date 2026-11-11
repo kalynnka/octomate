@@ -566,7 +566,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         project = await self.run_project(conversation.thread_id)
         async with (
             self.conversation_locks.hold(str(conversation.id)),
-            self.workspaces.open(conversation.thread_id, project),
+            await self.workspaces.open(
+                conversation.thread_id, project, context.user_id
+            ),
             self.driving(session_id),
             contextlib.AsyncExitStack() as resources,
         ):

@@ -31,6 +31,7 @@ from octomate.nerve import ThreadTopic
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadMessage
+from octomate.schemas.volumes import TreeVolume
 from octomate.tentacles.acp.channel import AcpChannelTentacle
 from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
@@ -637,7 +638,7 @@ async def test_workspace_filter_distinguishes_one_checkout_from_project(
     root = tmp_path / "project"
     root.mkdir()
     app.workspaces.projects = await a_registry(a_project(root, name="demo"))
-    app.workspaces.workspaces_dir = root / ".octomate" / "workspaces"
+    app.workspaces.volumes_dir = root / ".octomate" / "volumes"
     alias = tmp_path / "project-alias"
     alias.symlink_to(root, target_is_directory=True)
     with client.websocket_connect("/api/acp") as socket:
@@ -651,7 +652,13 @@ async def test_workspace_filter_distinguishes_one_checkout_from_project(
         assert isinstance(first, dict)
         assert isinstance(second, dict)
         assert isinstance(first["sessionId"], str)
-        checkout = app.workspaces.path(UUID(first["sessionId"]))
+        async with async_session() as session:
+            volume = await session.one_or_none(
+                TreeVolume,
+                expressions=[TreeVolume["thread_id"] == UUID(first["sessionId"])],
+            )
+        assert volume is not None
+        checkout = app.workspaces.path(volume)
         workspace_alias = tmp_path / "workspace-alias"
         workspace_alias.symlink_to(checkout, target_is_directory=True)
         single = rpc(socket, "session/list", {"cwd": str(workspace_alias)})
@@ -660,6 +667,41 @@ async def test_workspace_filter_distinguishes_one_checkout_from_project(
         project = rpc(socket, "session/list", {"cwd": str(alias)})
         assert first["sessionId"] in str(project)
         assert str(second["sessionId"]) in str(project)
+
+
+async def test_listing_sessions_does_not_create_or_touch_volumes(
+    client: TestClient,
+) -> None:
+    app = client.app
+    assert isinstance(app, Octomate)
+    with client.websocket_connect("/api/acp") as socket:
+        initialize(socket)
+        opened = new_session(socket)
+        missing = new_session(socket)
+        async with async_session() as session:
+            volume = await session.one_or_none(
+                TreeVolume,
+                expressions=[TreeVolume["thread_id"] == UUID(missing)],
+            )
+            assert volume is not None
+            await session.delete(volume)
+            await session.commit()
+            before = {
+                volume.id: volume.last_used_at
+                for volume in await session.list(TreeVolume)
+            }
+        listing = rpc(socket, "session/list", {})[-1]["result"]
+        assert isinstance(listing, dict)
+        sessions = listing["sessions"]
+        assert isinstance(sessions, list)
+        assert [item["sessionId"] for item in sessions if isinstance(item, dict)] == [
+            opened
+        ]
+    async with async_session() as session:
+        assert {
+            volume.id: volume.last_used_at for volume in await session.list(TreeVolume)
+        } == before
+    assert not list(app.workspaces.volumes_dir.glob("*/tree/*"))
 
 
 class ApprovingClaudeClient(FakeClaudeClient):

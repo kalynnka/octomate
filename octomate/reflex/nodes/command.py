@@ -5,8 +5,6 @@ from dataclasses import dataclass
 
 from pydantic_graph import BaseNode, End, GraphRunContext
 
-from octomate.capabilities.harness.events import ReflexPhaseChangedEvent
-from octomate.nerve import Impulse
 from octomate.reflex.nodes.scheme import Scheme
 from octomate.reflex.nodes.summon import Summon
 from octomate.reflex.nodes.teleport import Teleport
@@ -58,7 +56,7 @@ class Command(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         )
         runtime = ctx.deps.runtime
         session, suspender, capabilities = await runtime.resources(ctx)
-        try:
+        async with runtime.finalizing(ctx):
             async with AsyncExitStack() as stack:
                 validated = await stack.enter_async_context(
                     agent.commands.validate(
@@ -72,10 +70,11 @@ class Command(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 if isinstance(validated, CommandResult | CommandError):
                     await runtime.present_command(ctx, suspender, validated)
                     return End(validated)
-                if validated.profile is not None:
+                profile = validated.profile
+                if profile is not None:
                     await runtime.prepare_user(
                         ctx,
-                        validated.profile,
+                        profile,
                         session=session,
                         suspender=suspender,
                         capabilities=capabilities,
@@ -97,12 +96,3 @@ class Command(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 state.decision = suspender.continuation_decision()
                 result = await runtime.drive(ctx, suspender, output)
                 return await runtime.finish(ctx, session, suspender, result)
-        finally:
-            await ctx.deps.impulses.send(
-                Impulse(
-                    ReflexPhaseChangedEvent(phase="finalizing"),
-                    context.address,
-                )
-            )
-            if state.thread is not None and state.user_profile is not None:
-                await ctx.deps.workspaces.save(state.thread)
