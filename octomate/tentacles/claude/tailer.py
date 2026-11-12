@@ -29,6 +29,7 @@ from octomate.schemas.thread import (
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
+from octomate.tentacles.claude.content import prompt_content
 from octomate.tentacles.claude.transcript import (
     TranscriptAiTitleLine,
     TranscriptAssistantLine,
@@ -479,7 +480,7 @@ class ClaudeTranscriptTailer:
         if isinstance(line, TranscriptUserLine) and (text := prompt_text(line.message)):
             await turn.native.prompt(
                 message_id=line.uuid,
-                text=text,
+                text=prompt_content(text),
                 timestamp=line.timestamp,
             )
         await turn.native.fold(turn.accumulator.consume(line))
@@ -537,7 +538,9 @@ class ClaudeTranscriptTailer:
         text = prompt_text(line.message)
         if native is not None:
             await native.prompt(
-                message_id=line.prompt_id, text=text, timestamp=line.timestamp
+                message_id=line.prompt_id,
+                text=prompt_content(text),
+                timestamp=line.timestamp,
             )
         return OpenTurn(
             prompt_id=line.prompt_id,

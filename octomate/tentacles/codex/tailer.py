@@ -31,7 +31,7 @@ from pydantic_ai.messages import (
     NativeToolReturnPart,
     PartEndEvent,
     PartStartEvent,
-    TextPart,
+    TextContent,
     ThinkingPart,
     ToolCallPart,
     ToolReturnPart,
@@ -59,6 +59,7 @@ from octomate.tentacles.codex.adapter import (
     codex_metadata,
     model_json,
 )
+from octomate.tentacles.codex.content import answer_part, prompt_content
 from octomate.tentacles.codex.html import visualization_text
 from octomate.tentacles.codex.transcript import (
     CompletedCommandItem,
@@ -106,8 +107,9 @@ class OpenTurn:
     unpaired_prompts: list[tuple[str, str]] = field(
         default_factory=list
     )  # Source representation and text awaiting their counterpart in a mixed rollout.
+    ide_context: str | None = None  # Supplied IDE context awaiting its human prompt.
 
-    def consume_prompt(self, line: RolloutLine) -> str | None:
+    def consume_prompt(self, line: RolloutLine) -> str | TextContent | None:
         """Read human text once per source occurrence, pairing mirrored formats.
 
         Pair across representations rather than deduplicating by text: the user
@@ -125,6 +127,13 @@ class OpenTurn:
             kinds = item.metadata.content_item_kinds
             if item.metadata.turn_id != self.turn_id or len(kinds) != len(item.content):
                 return None
+            for part, kind in zip(item.content, kinds, strict=True):
+                if (
+                    kind == "additional_content.ide_context"
+                    and part.type == "input_text"
+                    and part.text
+                ):
+                    self.ide_context = part.text
             text = "\n".join(
                 part.text
                 for part, kind in zip(item.content, kinds, strict=True)
@@ -137,9 +146,11 @@ class OpenTurn:
         for index, (source, previous) in enumerate(self.unpaired_prompts):
             if source != line.type and previous == text:
                 self.unpaired_prompts.pop(index)
+                self.ide_context = None
                 return None
         self.unpaired_prompts.append((line.type, text))
-        return text
+        context, self.ide_context = self.ide_context, None
+        return prompt_content(text, ide_context=context)
 
 
 @dataclass(frozen=True)
@@ -496,11 +507,11 @@ class CodexTranscriptTailer:
                 # read is a no-op there.)
                 fallback = line.payload.get("last_agent_message")
                 if not turn.answer and isinstance(fallback, str):
-                    turn.answer = (
+                    turn.answer = answer_part(
                         visualization_text(fallback, final=True)[0]
                         if turn.visualizations
                         else fallback
-                    )
+                    ).content
                 await self.close_turn(state)
                 if ended_id == state.drain_turn:
                     state.stop_event.set()
@@ -588,9 +599,17 @@ class CodexTranscriptTailer:
             self.consume_turn_context(turn, line)
             return
         if (prompt := turn.consume_prompt(line)) is not None:
+            content = prompt
             turn.messages.append(
                 ModelRequest(
-                    parts=[UserPromptPart(content=prompt, timestamp=line.timestamp)],
+                    parts=[
+                        UserPromptPart(
+                            content=[content]
+                            if isinstance(content, TextContent)
+                            else content,
+                            timestamp=line.timestamp,
+                        )
+                    ],
                     timestamp=line.timestamp,
                     metadata=codex_metadata(),
                 )
@@ -612,7 +631,7 @@ class CodexTranscriptTailer:
             if ended_id == turn.turn_id:
                 fallback = line.payload.get("last_agent_message")
                 if not turn.answer and isinstance(fallback, str):
-                    turn.answer = fallback
+                    turn.answer = answer_part(fallback).content
                 await self.close_subagent_turn(state, tail)
 
     async def close_subagent_turn(self, state: TailState, tail: SubagentTail) -> None:
@@ -951,7 +970,7 @@ class CodexTranscriptTailer:
             if text:
                 text = visualization_text(text, final=True)[0] if captured else text
                 response_id = payload.get("id")
-                part = TextPart(content=text)
+                part = answer_part(text)
                 turn.messages.append(
                     ModelResponse(
                         parts=[part],
@@ -970,7 +989,7 @@ class CodexTranscriptTailer:
                     payload.get("phase") == "final_answer"
                     or payload.get("phase") is None
                 ):
-                    turn.answer = text
+                    turn.answer = part.content
             return
         if kind == "reasoning":
             parts: list[ThinkingPart] = []
