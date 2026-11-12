@@ -12,6 +12,7 @@ from octomate.habitat import Habitat, HabitatError, NativeHabitat
 from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import Invocation
 from octomate.managers.workspaces.base import (
+    ProjectWorkspace,
     TreeWorkspace,
     UnregisteredProjectError,
     WorkspaceManager,
@@ -265,4 +266,5 @@ async def test_core_checkpoints_an_empty_project_without_a_git_index(
         owner_id=(await a_user()).id,
     ) as invocation:
         (invocation.workspace.path / ".git" / "index").unlink(missing_ok=True)
-    assert await app.workspaces.saved(invocation.workspace.path)
+    assert isinstance(invocation.workspace, ProjectWorkspace)
+    assert await app.workspaces.saved(invocation.workspace.volume)

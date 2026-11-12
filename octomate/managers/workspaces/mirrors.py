@@ -35,15 +35,52 @@ class GitCommandError(RuntimeError):
 
 
 async def run_git(
-    *args: str, cwd: Path | None = None, env: dict[str, str] | None = None
+    *args: str,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    isolated: bool = False,
 ) -> str:
     """Run one git command and answer its stdout, raising `GitCommandError` with
-    the command and its stderr when it exits nonzero."""
+    the command and its stderr when it exits nonzero.
+
+    Isolated operations use a host-owned repository with no inherited Git
+    environment or global configuration. Local configuration is still read, so
+    callers must never use this option directly on a writable guest repository.
+    """
+    environment = dict(os.environ)
+    if isolated:
+        environment = {
+            key: value
+            for key, value in environment.items()
+            if not key.startswith("GIT_")
+        }
+        environment.update(
+            GIT_CONFIG_GLOBAL=os.devnull,
+            GIT_CONFIG_SYSTEM=os.devnull,
+            GIT_NO_REPLACE_OBJECTS="1",
+            GIT_TERMINAL_PROMPT="0",
+        )
+        args = (
+            "-c",
+            f"core.hooksPath={os.devnull}",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            f"core.attributesFile={os.devnull}",
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.file.allow=always",
+            "-c",
+            "fetch.fsckObjects=true",
+            *args,
+        )
+    environment.update(env or {})
     process = await asyncio.create_subprocess_exec(
         "git",
         *args,
         cwd=cwd,
-        env={**os.environ, **env} if env else None,
+        env=environment,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -102,18 +139,25 @@ class MirrorManager(Manager, Locks[str]):
         only history reachable from the selected refs crosses the boundary.
         The caller supplies the snapshot ref from its resolved tree volume.
         """
-        branch = (await run_git("symbolic-ref", "HEAD", cwd=source)).strip()
+        branch = (
+            await run_git("symbolic-ref", "HEAD", cwd=source, isolated=True)
+        ).strip()
         if not branch.startswith("refs/heads/"):
             raise GitCommandError("The mirror's HEAD must name a project branch")
         await run_git(
-            "init", "--template=", "-b", branch.removeprefix("refs/heads/"), str(target)
+            "init",
+            "--template=",
+            "-b",
+            branch.removeprefix("refs/heads/"),
+            str(target),
+            isolated=True,
         )
         refs = [
             "+refs/heads/*:refs/heads/*",
             "+refs/tags/*:refs/tags/*",
             "+refs/remotes/origin/*:refs/remotes/origin/*",
         ]
-        if await run_git("ls-remote", str(source), snapshot):
+        if await run_git("ls-remote", str(source), snapshot, isolated=True):
             refs.append(f"+{snapshot}:{snapshot}")
         await run_git(
             "fetch",
@@ -125,7 +169,7 @@ class MirrorManager(Manager, Locks[str]):
             str(source),
             *refs,
             cwd=target,
-            env={"GIT_NO_REPLACE_OBJECTS": "1"},
+            isolated=True,
         )
 
     async def sync(self, project: Project) -> Path:

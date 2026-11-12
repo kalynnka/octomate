@@ -10,7 +10,7 @@ import tempfile
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
-from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -30,22 +30,13 @@ from octomate.managers.workspaces.mirrors import (
     MirrorManager,
     run_git,
 )
+from octomate.managers.workspaces.snapshots import SNAPSHOT_PREFIX, Snapshot
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
 from octomate.schemas.volumes import CacheVolume, MemoryVolume, TreeVolume
 from octomate.telemetry import workspace_logfire
 
 logger = logging.getLogger(__name__)
-
-# The snapshot the last push carried, kept in the workspace itself. A workspace
-# that no longer snapshots to the same thing holds work the mirror has never
-# seen, which is the one thing the pruner may not throw away.
-SAVED_REF = "refs/octomate/saved"
-
-# What a snapshot's message carries, so a resume knows which branch to put the
-# workspace back on. A detached HEAD is called `HEAD`, git's own name for it,
-# which is also how it goes back.
-SNAPSHOT_PREFIX = "octomate: "
 
 
 def tree_ref(volume_id: UUID7) -> str:
@@ -587,7 +578,11 @@ class WorkspaceManager(Manager, Locks[UUID7]):
             ref=ref,
         ) as span:
             if not await run_git(
-                "for-each-ref", "--format=%(refname)", saved, cwd=workspace
+                "for-each-ref",
+                "--format=%(refname)",
+                saved,
+                cwd=workspace,
+                isolated=True,
             ):
                 span.set_attribute("resumed", False)
                 # Resolve only in the exported object store. A user-supplied ref
@@ -599,81 +594,53 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                         "--end-of-options",
                         f"{ref if ref is not None else 'HEAD'}^{{commit}}",
                         cwd=workspace,
+                        isolated=True,
                     )
                 ).strip()
                 await run_git(
-                    "checkout", "-b", thread_branch(thread_id), start, cwd=workspace
+                    "checkout",
+                    "-b",
+                    thread_branch(thread_id),
+                    start,
+                    cwd=workspace,
+                    isolated=True,
                 )
                 return
             span.set_attribute("resumed", True)
-            subject = await run_git("show", "-s", "--format=%s", saved, cwd=workspace)
+            subject = await run_git(
+                "show", "-s", "--format=%s", saved, cwd=workspace, isolated=True
+            )
             branch = subject.strip().removeprefix(SNAPSHOT_PREFIX)
             span.set_attribute("branch", branch)
             span.set_attribute(
                 "snapshot",
-                (await run_git("rev-parse", saved, cwd=workspace)).strip(),
+                (
+                    await run_git(
+                        "rev-parse",
+                        saved,
+                        cwd=workspace,
+                        isolated=True,
+                    )
+                ).strip(),
             )
             head = (
                 ("--detach", f"{saved}^")
                 if branch == "HEAD"
                 else ("-B", branch, f"{saved}^")
             )
-            await run_git("checkout", *head, cwd=workspace)
-            await run_git("read-tree", "-u", "--reset", saved, cwd=workspace)
-            await run_git("reset", cwd=workspace)
-            # A restored workspace is the mirror's snapshot by construction, and says
-            # so: the ref that records it was local to the workspace this one replaces,
-            # and without this a resume that never reached its next save would look
-            # like unsaved work forever, which is a workspace that cannot be reclaimed.
-            await run_git("update-ref", SAVED_REF, saved, cwd=workspace)
-
-    async def snapshot(self, path: Path) -> str:
-        """A commit holding this workspace exactly as it stands — staged, unstaged
-        and untracked alike — made without disturbing it.
-
-        Built rather than committed, so restoring a workspace is all this costs
-        the repository inside it: HEAD stays where the agent left it, its branch
-        carries the agent's commits and no others, and whatever the agent was in
-        the middle of is not finished on its behalf. Resolving that history is the
-        agent's job; putting the tree back is this one.
-
-        The parent is HEAD, so the branch's own history comes along, and the
-        snapshot belongs to no branch — reachable only from the thread's ref, the
-        way a stash is reachable only from `refs/stash`. Its message carries the
-        branch, which is the one thing a tree and a parent cannot say.
-
-        The index it is written through is a copy of the workspace's, which keeps
-        the real one untouched and carries git's stat cache with it, so staging
-        the tree compares timestamps instead of rehashing every file.
-        """
-        index = path / ".git" / "octomate-snapshot-index"
-        env = {"GIT_INDEX_FILE": str(index)}
-        if (path / ".git" / "index").is_file():
-            await asyncio.to_thread(shutil.copyfile, path / ".git" / "index", index)
-        else:
-            await run_git("read-tree", "HEAD", cwd=path, env=env)
-        await run_git("add", "-A", cwd=path, env=env)
-        tree = (await run_git("write-tree", cwd=path, env=env)).strip()
-        branch = (await run_git("rev-parse", "--abbrev-ref", "HEAD", cwd=path)).strip()
-        commit = await run_git(
-            *self.identity.commit_flags,
-            "commit-tree",
-            tree,
-            "-p",
-            "HEAD",
-            "-m",
-            f"{SNAPSHOT_PREFIX}{branch}",
-            cwd=path,
-        )
-        return commit.strip()
+            await run_git("checkout", *head, cwd=workspace, isolated=True)
+            await run_git(
+                "read-tree", "-u", "--reset", saved, cwd=workspace, isolated=True
+            )
+            await run_git("reset", cwd=workspace, isolated=True)
 
     async def save(self, thread: Thread, owner_id: UUID7) -> None:
         """Leave this owner's finished turn where losing their tree cannot cost it:
-        a snapshot of the whole tree, pushed to the project's mirror as the tree's
+        a validated snapshot imported into the project's mirror as the tree's
         own ref.
 
-        Snapshot *and* push. A fork owns its objects outright — nothing in a tree
-        survives its removal — so without the push the tree is the only copy of
+        A fork owns its objects outright — nothing in a tree survives its
+        removal — so without the import the tree is the only copy of
         what the turn did, and releasing it would be losing work rather than
         evicting a cache. That is what makes a tree disposable, and why the sweep
         is a disk decision.
@@ -681,9 +648,8 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         A thread with no tree for this owner — in no project, or one whose turn
         never forked one — has nothing to leave.
 
-        Forced, because the ref records what the tree holds rather than a history
-        to protect. The mirror is the only place this ever pushes; nothing here
-        reaches the upstream.
+        The ref records what the tree holds rather than a history to protect.
+        Imports update only that ref in the mirror and never reach the upstream.
 
         A failure is logged rather than raised. The turn has already happened and
         already answered; failing it now would report a delivered answer as an
@@ -707,37 +673,30 @@ class WorkspaceManager(Manager, Locks[UUID7]):
     async def checkpoint(self, workspace: ProjectWorkspace) -> None:
         """Checkpoint this exact volume without changing the user's index or tree.
 
-        A failed push leaves the tree unsaved and unreclaimable. An unchanged
-        checkpoint needs no second push when another lifecycle boundary closes.
+        Validate the capture in a host-owned repository before importing it. A
+        failed import leaves the tree unsaved and unreclaimable; an unchanged
+        checkpoint needs no second transfer.
         """
         path = workspace.path
-        async with AsyncExitStack() as scope:
-            span = scope.enter_context(
-                workspace_logfire.span(
-                    "workspace.save",
-                    thread_id=str(workspace.thread_id),
-                    volume_id=str(workspace.volume.id),
-                    project=workspace.project.name,
-                    saved=False,
-                )
-            )
+        with workspace_logfire.span(
+            "workspace.save",
+            thread_id=str(workspace.thread_id),
+            volume_id=str(workspace.volume.id),
+            project=workspace.project.name,
+            saved=False,
+        ) as span:
             if not path.is_dir():
                 return
             try:
-                await scope.enter_async_context(self.lock(workspace.volume.id))
-                if await self.saved(path):
-                    span.set_attribute("saved", True)
-                    return
-                snapshot = await self.snapshot(path)
-                await run_git(
-                    "push",
-                    "--force",
-                    str(self.mirrors.path(workspace.project)),
-                    f"{snapshot}:{tree_ref(workspace.volume.id)}",
-                    cwd=path,
-                )
-                await run_git("update-ref", SAVED_REF, snapshot, cwd=path)
-                span.set_attribute("snapshot", snapshot)
+                async with (
+                    self.lock(workspace.volume.id),
+                    Snapshot.capture(path, self.identity) as snapshot,
+                ):
+                    await snapshot.save(
+                        self.mirrors.path(workspace.project),
+                        tree_ref(workspace.volume.id),
+                    )
+                    span.set_attribute("snapshot", snapshot.commit)
                 span.set_attribute("saved", True)
             except (GitCommandError, OSError):
                 logger.exception(
@@ -747,26 +706,38 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                     path,
                 )
 
-    async def saved(self, path: Path) -> bool:
-        """Whether the mirror already holds everything in this workspace: the same
-        tree, commit and branch as the last push carried.
+    async def saved(self, volume: TreeVolume) -> bool:
+        """Whether this volume matches its canonical snapshot in the host mirror.
 
-        The question the sweep has to answer before reclaiming anything, and one
-        `git status` cannot answer any more — nothing here commits, so a saved
-        workspace is a dirty workspace and being dirty says nothing. Snapshotting
-        again and comparing does say it. A push that failed leaves a workspace
-        that looks saved from the outside, which is why what it is compared
-        against is a ref the push itself writes.
+        Workspace markers are writable by the harness and cannot authorize
+        reclamation. Invalid or unreadable captures leave the tree unsaved.
         """
-        pushed = await run_git(
-            "for-each-ref", "--format=%(objectname)", SAVED_REF, cwd=path
+        project = next(
+            (
+                project
+                for project in self.projects.list()
+                if project.id == volume.project_id
+            ),
+            None,
         )
-        if not pushed.strip():
+        if project is None:
             return False
-        state = ("show", "-s", "--format=%T %P %s")
-        return await run_git(*state, pushed.strip(), cwd=path) == await run_git(
-            *state, await self.snapshot(path), cwd=path
-        )
+        mirror = self.mirrors.path(project)
+        if not mirror.is_dir():
+            return False
+        ref = tree_ref(volume.id)
+        try:
+            if not await run_git(
+                "for-each-ref", "--format=%(objectname)", ref, cwd=mirror, isolated=True
+            ):
+                return False
+            async with Snapshot.capture(self.path(volume), self.identity) as snapshot:
+                return await snapshot.matches(mirror, ref)
+        except (GitCommandError, OSError):
+            logger.exception(
+                "The tree %s could not be verified; keeping its work", volume.id
+            )
+            return False
 
     async def prune(self, idle: float) -> list[UUID7]:
         """Release every project tree nothing has used for `idle` seconds, and
@@ -804,7 +775,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                 if volume.last_used_at > cutoff:
                     kept_busy += 1
                     continue
-                if not await self.saved(path):
+                if not await self.saved(volume):
                     kept_unsaved += 1
                     logger.warning(
                         "the tree %s for thread %s is idle but holds work the mirror "
@@ -944,7 +915,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
             volume = await self.find(owner_id, thread.id, project.id)
             if volume is None or not self.path(volume).is_dir():
                 return False
-            if not await self.saved(self.path(volume)):
+            if not await self.saved(volume):
                 logger.warning(
                     "the tree %s for thread %s was dismissed but holds work the "
                     "mirror does not have; keeping it",

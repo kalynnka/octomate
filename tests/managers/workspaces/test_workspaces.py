@@ -35,7 +35,7 @@ from octomate.config.workspaces import WorkspacesConfig
 from octomate.database import async_session
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
-from octomate.managers.workspaces import base as workspaces
+from octomate.managers.workspaces import snapshots
 from octomate.managers.workspaces.base import (
     ChatWorkspace,
     ProjectWorkspace,
@@ -715,7 +715,7 @@ async def test_peer_snapshot_objects_are_absent_even_by_hash(
 
     assert (restored / "secret.md").read_text() == "private"
     assert not (restored / "bob.md").exists()
-    assert await manager.saved(restored)
+    assert await manager.saved(mine.volume)
     with pytest.raises(GitCommandError):
         await run_git("cat-file", "-e", peer_snapshot, cwd=restored)
 
@@ -823,6 +823,197 @@ async def test_fork_does_not_copy_mirror_metadata_or_untracked_files(
     assert not (path / ".git/hooks/post-checkout").exists()
     with pytest.raises(GitCommandError):
         await run_git("config", "--local", "--get", "credential.helper", cwd=path)
+
+
+@pytest.mark.parametrize(
+    "trigger", ["filter", "fsmonitor", "pre-push", "reference-transaction"]
+)
+async def test_saving_never_runs_workspace_git_commands(
+    manager: WorkspaceManager, owner: User, tmp_path: Path, trigger: str
+) -> None:
+    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
+    opened = await a_workspace(manager, await a_bound_thread(manager), owner)
+    path = await manager.materialize(opened, mirror)
+    (path / "work.txt").write_text("unfinished")
+    marker = tmp_path / "executed"
+    command = path / ".git" / "attack"
+    command.write_text(f'#!/bin/sh\nprintf invoked > "{marker}"\n')
+    command.chmod(0o755)
+    if trigger == "filter":
+        (path / ".gitattributes").write_text("*.txt filter=attack\n")
+        await run_git("config", "filter.attack.clean", str(command), cwd=path)
+    elif trigger == "fsmonitor":
+        await run_git("config", "core.fsmonitor", str(command), cwd=path)
+    else:
+        hooks = path / ".git" / "hooks"
+        hooks.mkdir(exist_ok=True)
+        command.rename(hooks / trigger)
+
+    await manager.checkpoint(opened)
+
+    assert not marker.exists()
+    assert (
+        await run_git("show", f"{tree_ref(opened.volume.id)}:work.txt", cwd=mirror)
+        == "unfinished"
+    )
+
+
+@pytest.mark.parametrize(
+    "entry", ["HEAD", "index", "objects", "objects/info/alternates"]
+)
+async def test_redirected_git_data_cannot_be_saved_or_pruned(
+    manager: WorkspaceManager, owner: User, tmp_path: Path, entry: str
+) -> None:
+    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
+    opened = await a_workspace(manager, await a_bound_thread(manager), owner)
+    path = await manager.materialize(opened, mirror)
+    (path / "work.txt").write_text("unfinished")
+    target = path / ".git" / entry
+    outside = tmp_path / "outside"
+    if entry.endswith("alternates"):
+        target.parent.mkdir(exist_ok=True)
+        target.write_text(str(mirror / ".git/objects") + "\n")
+    else:
+        target.rename(outside)
+        target.symlink_to(outside)
+
+    await manager.checkpoint(opened)
+
+    assert not await saved(mirror, opened.volume)
+    assert await manager.prune(idle=0.0) == []
+    assert (path / "work.txt").read_text() == "unfinished"
+
+
+async def test_a_forged_saved_marker_cannot_discard_unimported_work(
+    manager: WorkspaceManager, owner: User
+) -> None:
+    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
+    opened = await a_workspace(manager, await a_bound_thread(manager), owner)
+    path = await manager.materialize(opened, mirror)
+    (path / "work.txt").write_text("only in this tree")
+    await run_git("add", "-A", cwd=path)
+    tree = (await run_git("write-tree", cwd=path)).strip()
+    forged = (
+        await run_git(
+            *IDENTITY,
+            "commit-tree",
+            tree,
+            "-p",
+            "HEAD",
+            "-m",
+            f"octomate: {await branch(path)}",
+            cwd=path,
+        )
+    ).strip()
+    await run_git("update-ref", "refs/octomate/saved", forged, cwd=path)
+
+    assert await manager.prune(idle=0.0) == []
+    assert (path / "work.txt").read_text() == "only in this tree"
+    assert not await saved(mirror, opened.volume)
+
+
+async def test_capture_preserves_staged_files_and_records_symlinks_without_following(
+    manager: WorkspaceManager, owner: User, tmp_path: Path
+) -> None:
+    mirror = await a_project_mirror(
+        manager, {"readme.md": "hello", ".gitignore": "*.local\n"}
+    )
+    opened = await a_workspace(manager, await a_bound_thread(manager), owner)
+    path = await manager.materialize(opened, mirror)
+    (path / "staged.local").write_text("staged")
+    await run_git("add", "-f", "staged.local", cwd=path)
+    original_index = (path / ".git/index").read_bytes()
+    original_head = await head(path)
+    (path / "ignored.local").write_text("ignored")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("host-only data")
+    (path / "link").symlink_to(outside)
+
+    await manager.checkpoint(opened)
+
+    ref = tree_ref(opened.volume.id)
+    assert (path / ".git/index").read_bytes() == original_index
+    assert await head(path) == original_head
+    assert await run_git("show", f"{ref}:staged.local", cwd=mirror) == "staged"
+    assert await run_git("show", f"{ref}:link", cwd=mirror) == str(outside)
+    with pytest.raises(GitCommandError):
+        await run_git("show", f"{ref}:ignored.local", cwd=mirror)
+
+
+async def test_capture_ignores_local_config_and_inherited_git_environment(
+    manager: WorkspaceManager,
+    owner: User,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
+    opened = await a_workspace(manager, await a_bound_thread(manager), owner)
+    path = await manager.materialize(opened, mirror)
+    (path / "work.txt").write_text("unfinished")
+    (path / ".git/config").write_text("deliberately invalid config")
+    redirected = tmp_path / "redirected"
+    with monkeypatch.context() as injected:
+        injected.setenv("GIT_DIR", str(redirected))
+        injected.setenv("GIT_CONFIG_COUNT", "1")
+        injected.setenv("GIT_CONFIG_KEY_0", "core.worktree")
+        injected.setenv("GIT_CONFIG_VALUE_0", str(redirected))
+        await manager.checkpoint(opened)
+
+    assert not redirected.exists()
+    assert (
+        await run_git("show", f"{tree_ref(opened.volume.id)}:work.txt", cwd=mirror)
+        == "unfinished"
+    )
+
+
+async def test_corrupt_returned_objects_do_not_replace_the_saved_snapshot(
+    manager: WorkspaceManager, owner: User
+) -> None:
+    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
+    opened = await a_workspace(manager, await a_bound_thread(manager), owner)
+    path = await manager.materialize(opened, mirror)
+    await manager.checkpoint(opened)
+    original = await saved(mirror, opened.volume)
+    (path / "work.txt").write_text("unfinished")
+    await run_git("add", "-A", cwd=path)
+    await run_git(*IDENTITY, "commit", "-m", "new work", cwd=path)
+    commit = await head(path)
+    returned = path / ".git/objects" / commit[:2] / commit[2:]
+    returned.chmod(0o644)
+    returned.write_bytes(b"corrupt object")
+
+    await manager.checkpoint(opened)
+
+    assert await saved(mirror, opened.volume) == original
+    assert await manager.prune(idle=0.0) == []
+    assert (path / "work.txt").read_text() == "unfinished"
+
+
+async def test_restoring_a_snapshot_does_not_run_host_filters(
+    manager: WorkspaceManager,
+    owner: User,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
+    opened = await a_workspace(manager, await a_bound_thread(manager), owner)
+    path = await manager.materialize(opened, mirror)
+    (path / ".gitattributes").write_text("*.txt filter=attack\n")
+    (path / "work.txt").write_text("unfinished")
+    await manager.checkpoint(opened)
+    await manager.release(opened.volume)
+    marker = tmp_path / "executed"
+    command = tmp_path / "attack"
+    command.write_text(f'#!/bin/sh\nprintf invoked > "{marker}"\ncat\n')
+    command.chmod(0o755)
+    config = tmp_path / "gitconfig"
+    config.write_text(f'[filter "attack"]\nsmudge = {command}\n')
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(config))
+
+    restored = await manager.materialize(opened, mirror)
+
+    assert not marker.exists()
+    assert (restored / "work.txt").read_text() == "unfinished"
 
 
 async def test_snapshots_carry_the_machine_identity(
@@ -1311,7 +1502,7 @@ async def test_project_exit_checkpoints_a_failed_run(
         async with manager.enter(workspace):
             raise RuntimeError("provider failed")
     assert (workspace.path / "work.md").read_text() == "unfinished"
-    assert await manager.saved(workspace.path)
+    assert await manager.saved(workspace.volume)
 
 
 async def test_project_exit_keeps_work_when_the_checkpoint_fails(
@@ -1324,7 +1515,7 @@ async def test_project_exit_keeps_work_when_the_checkpoint_fails(
         (workspace.path / "work.md").write_text("unfinished")
         shutil.rmtree(manager.mirrors.path(workspace.project))
     assert (workspace.path / "work.md").read_text() == "unfinished"
-    assert not await manager.saved(workspace.path)
+    assert not await manager.saved(workspace.volume)
     assert "could not be saved" in caplog.text
 
 
@@ -1334,16 +1525,16 @@ async def test_checkpoint_skips_unchanged_work_but_keeps_branch_changes(
     thread = await a_bound_thread(manager)
     workspace = await a_workspace(manager, thread, owner)
     (workspace.project.root / "readme.md").write_text("hello")
-    git = AsyncMock(wraps=workspaces.run_git)
-    monkeypatch.setattr(workspaces, "run_git", git)
+    git = AsyncMock(wraps=snapshots.run_git)
+    monkeypatch.setattr(snapshots, "run_git", git)
     async with manager.enter(workspace):
         (workspace.path / "work.md").write_text("unfinished")
     await manager.save(thread, owner.id)
-    assert sum(call.args[0] == "push" for call in git.await_args_list) == 1
+    assert sum(call.args[0] == "fetch" for call in git.await_args_list) == 1
 
     await run_git("checkout", "-b", "renamed", cwd=workspace.path)
     await manager.save(thread, owner.id)
-    assert sum(call.args[0] == "push" for call in git.await_args_list) == 2
+    assert sum(call.args[0] == "fetch" for call in git.await_args_list) == 2
     await manager.release(workspace.volume)
     await manager.prepare(workspace)
     assert await branch(workspace.path) == "renamed"
@@ -1369,8 +1560,9 @@ async def test_context_cancellation_preserves_projects_and_releases_chat_claims(
             scope.cancel()
             await checkpoint()
     if kind == "project":
+        assert isinstance(workspace, ProjectWorkspace)
         assert (workspace.path / "work.md").read_text() == "unfinished"
-        assert not await manager.saved(workspace.path)
+        assert not await manager.saved(workspace.volume)
     else:
         assert not workspace.path.exists()
     assert not manager.chatting
@@ -1416,9 +1608,9 @@ async def test_a_resumed_workspace_can_be_pruned_again(
     await manager.save(thread, owner.id)
     await manager.release(opened.volume)
 
-    resumed = await manager.materialize(opened, mirror)
+    await manager.materialize(opened, mirror)
 
-    assert await manager.saved(resumed)
+    assert await manager.saved(opened.volume)
     assert await manager.prune(idle=0.0) == [opened.volume.id]
 
 
