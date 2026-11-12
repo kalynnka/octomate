@@ -205,6 +205,9 @@ async def test_manager_uses_the_habitat_base_class(
         def name(self) -> str:
             return "another-runtime"
 
+        def path(self, path: Path, *, root: Path | None) -> Path:
+            return path
+
         @property
         def idle_timeout(self) -> float:
             return 0.01

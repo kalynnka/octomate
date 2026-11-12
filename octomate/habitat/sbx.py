@@ -10,8 +10,8 @@ import socket
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Literal, TypedDict, Unpack
+from pathlib import Path, PurePosixPath
+from typing import ClassVar, Literal, TypedDict, Unpack
 
 import sh
 from anyio.abc import UNIXSocketStream
@@ -48,6 +48,10 @@ class SbxOptions(TypedDict, total=False):
 
 @dataclass
 class SbxHabitat(ManagedHabitat):
+    guest_root: ClassVar[PurePosixPath] = PurePosixPath(
+        "/workspace"
+    )  # User-root mountpoint.
+
     config: SbxHabitatConfig
     user_id: UUID7
     managed: bool = field(default=False, init=False)  # Name found or create tried.
@@ -59,6 +63,20 @@ class SbxHabitat(ManagedHabitat):
     @property
     def idle_timeout(self) -> float:
         return self.config.idle_timeout
+
+    def path(self, path: Path, *, root: Path | None) -> PurePosixPath:
+        """Map beneath the guest mountpoint without consulting the host filesystem."""
+        if root is None:
+            raise HabitatError("Sandbox paths require a registered user's root")
+        if not root.is_absolute() or not path.is_absolute():
+            raise HabitatError("Sandbox path mapping requires absolute host paths")
+        if ".." in root.parts or ".." in path.parts:
+            raise HabitatError("Sandbox paths cannot contain parent traversal")
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            raise HabitatError("Host path is outside the user's root") from None
+        return self.guest_root.joinpath(*relative.parts)
 
     def cli(self) -> sh.Command[sh.RunningCommand]:
         """Keep host credentials out of child processes and use ordinary stdio."""

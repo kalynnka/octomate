@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractmethod
 from contextlib import AbstractAsyncContextManager
+from pathlib import Path, PurePosixPath
 
 from anyio.abc import ByteStream
 from pydantic import UUID7
@@ -18,6 +19,14 @@ class Habitat(ABC):
     @abstractmethod
     def name(self) -> str:
         """Stable identifier of this habitat."""
+
+    @abstractmethod
+    def path(self, path: Path, *, root: Path | None) -> Path | PurePosixPath:
+        """Translate a host path for execution, with the owner's host root.
+
+        Native execution permits an unregistered workspace with no root.
+        Managed runtimes must reject paths outside the supplied root.
+        """
 
     @abstractmethod
     async def prepare(self) -> None:

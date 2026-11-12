@@ -1,5 +1,7 @@
 """Host execution under the selected harness's own controls."""
 
+from pathlib import Path
+
 from octomate.habitat.base import Habitat
 
 
@@ -9,6 +11,9 @@ class NativeHabitat(Habitat):
     @property
     def name(self) -> str:
         return "native"
+
+    def path(self, path: Path, *, root: Path | None) -> Path:
+        return path
 
     async def prepare(self) -> None:
         return

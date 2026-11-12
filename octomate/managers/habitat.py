@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 import anyio
@@ -20,7 +21,7 @@ from octomate.config.habitat import (
 from octomate.habitat import Habitat, ManagedHabitat, NativeHabitat
 from octomate.habitat import HabitatError as HabitatError
 from octomate.habitat.sbx import SbxHabitat
-from octomate.managers.workspaces.base import Workspace, WorkspaceManager
+from octomate.managers.workspaces.base import TreeWorkspace, Workspace, WorkspaceManager
 from octomate.nerve import (
     HabitatTopic,
     Impulse,
@@ -64,6 +65,16 @@ class Invocation:
     @property
     def thread_id(self) -> UUID7:
         return self.workspace.thread_id
+
+    @property
+    def cwd(self) -> Path | PurePosixPath:
+        """The harness's working directory; `workspace.path` remains host-side."""
+        return self.habitat.path(
+            self.workspace.path,
+            root=self.workspace.root
+            if isinstance(self.workspace, TreeWorkspace)
+            else None,
+        )
 
 
 @dataclass

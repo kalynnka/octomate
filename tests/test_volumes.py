@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.database import async_session
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.project import Project
 from octomate.schemas.user import User
 from octomate.schemas.volumes import CacheVolume, MemoryVolume, TreeVolume, Volume
@@ -28,6 +29,29 @@ async def add(*volumes: Volume) -> None:
     async with async_session() as session:
         session.add_all(volumes)
         await session.commit()
+
+
+async def test_user_root_and_volume_paths_do_not_create_rows_or_directories(
+    project: Project, tmp_path: Path
+) -> None:
+    alice, bob = await a_user("alice"), await a_user("bob")
+    manager = WorkspaceManager(volumes_dir=tmp_path / "volumes")
+    root = manager.root(alice.id)
+    assert root == tmp_path / "volumes" / str(alice.id)
+    assert root != manager.root(bob.id)
+    volumes = (
+        TreeVolume(
+            owner_id=alice.id, thread_id=await a_thread(), project_id=project.id
+        ),
+        MemoryVolume(owner_id=alice.id),
+        CacheVolume(owner_id=alice.id),
+    )
+    for volume in volumes:
+        assert manager.path(volume) == root / volume.kind / str(volume.id)
+        assert not manager.path(volume).is_relative_to(manager.root(bob.id))
+    async with async_session() as session:
+        assert await session.count(Volume) == 0
+    assert not manager.volumes_dir.exists()
 
 
 async def test_each_kind_loads_back_as_itself(project: Project) -> None:

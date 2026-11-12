@@ -1,5 +1,5 @@
 import asyncio
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import AsyncMock
 
 import pytest
@@ -11,7 +11,11 @@ from octomate.config.habitat import SbxHabitatConfig
 from octomate.habitat import Habitat, HabitatError, NativeHabitat
 from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import Invocation
-from octomate.managers.workspaces.base import UnregisteredProjectError, WorkspaceManager
+from octomate.managers.workspaces.base import (
+    TreeWorkspace,
+    UnregisteredProjectError,
+    WorkspaceManager,
+)
 from octomate.schemas.thread import ThreadKey
 from tests.support.managers import a_project, a_registry, a_thread
 from tests.support.users import a_user
@@ -38,6 +42,10 @@ async def test_native_invocation_borrows_the_owners_chat_workspace(
         assert invocation.workspace is workspace
         assert invocation.workspace.path.is_dir()
         assert invocation.habitat is habitat
+        assert invocation.cwd == workspace.path
+        assert isinstance(invocation.cwd, Path)
+        if isinstance(workspace, TreeWorkspace):
+            assert workspace.root == workspaces.root(workspace.owner_id)
 
     await habitat.stop()
     assert not invocation.workspace.path.exists()
@@ -60,6 +68,8 @@ async def test_native_invocation_keeps_the_project_workspace_owner(
         )
         assert invocation.owner_id == workspace.volume.owner_id == owner.id
         assert invocation.thread_id == workspace.volume.thread_id
+        assert invocation.cwd == workspace.path
+        assert workspace.root == workspaces.root(owner.id)
 
 
 async def test_invocation_borrows_the_habitat_without_managing_its_lifetime(
@@ -83,9 +93,37 @@ async def test_invocation_borrows_the_habitat_without_managing_its_lifetime(
             habitat=habitat,
         )
         assert invocation.habitat is habitat
+        assert invocation.cwd == PurePosixPath("/workspace/tree") / str(
+            workspace.volume.id
+        )
+        assert not isinstance(invocation.cwd, Path)
+        assert workspace.path.is_relative_to(workspace.root)
 
     prepare.assert_not_called()
     stop.assert_not_called()
+
+
+async def test_project_guest_cwd_is_known_before_materialization(
+    in_memory_engine: AsyncEngine, tmp_path: Path
+) -> None:
+    owner = await a_user()
+    project = a_project(tmp_path / "project")
+    workspaces = WorkspaceManager(
+        projects=await a_registry(project), volumes_dir=tmp_path / "volumes"
+    )
+    workspace = await workspaces.resolve(await a_thread(), project, owner.id)
+    invocation = Invocation(
+        id=uuid7(),
+        conversation_id=uuid7(),
+        workspace=workspace,
+        habitat=SbxHabitat(
+            config=SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64),
+            user_id=owner.id,
+        ),
+    )
+    assert workspace.root == workspaces.root(owner.id)
+    assert invocation.cwd == PurePosixPath("/workspace/tree") / str(workspace.volume.id)
+    assert not workspace.root.exists()
 
 
 @pytest.mark.parametrize("registered", [False, True])
@@ -126,6 +164,7 @@ async def test_core_prepares_and_releases_native_chat(
         assert invocation.thread_id == thread.id
         assert invocation.conversation_id == conversation_id
         assert isinstance(invocation.habitat, NativeHabitat)
+        assert invocation.cwd == invocation.workspace.path
         assert invocation.workspace.path.is_dir()
     assert not invocation.workspace.path.exists()
 

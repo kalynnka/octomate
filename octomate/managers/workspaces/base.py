@@ -11,7 +11,7 @@ import uuid
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import overload
@@ -111,7 +111,7 @@ async def copy(source: Path, target: Path, flag: str) -> None:
 class Workspace(ABC):
     """A run's directory and identity, with its lifetime owned by the manager."""
 
-    path: Path  # Absolute path, known before the directory is prepared.
+    path: Path  # Absolute host path, known before the directory is prepared.
     thread_id: UUID7
 
     @property
@@ -131,6 +131,9 @@ class TreeWorkspace(Workspace, ABC):
     """
 
     volume: TreeVolume
+    root: Path = field(
+        kw_only=True
+    )  # The owner's host directory containing all volumes.
 
     @property
     def owner_id(self) -> UUID7:
@@ -257,11 +260,18 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         carry one name and cannot drift into two."""
         return self.mirrors.config.identity
 
+    def root(self, owner_id: UUID7) -> Path:
+        """The one host directory a habitat may attach for this owner.
+
+        Resolving it creates neither files nor database rows.
+        """
+        return self.volumes_dir / str(owner_id)
+
     def path(self, volume: TreeVolume | MemoryVolume | CacheVolume) -> Path:
         """Where this volume's folder lives in its owner's root. Derived from the
         row's identity, never stored, so the store can change without a
         migration."""
-        return self.volumes_dir / str(volume.owner_id) / volume.kind / str(volume.id)
+        return self.root(volume.owner_id) / volume.kind / str(volume.id)
 
     async def find(
         self, owner_id: UUID7, thread_id: UUID7, project_id: UUID7 | None
@@ -360,9 +370,20 @@ class WorkspaceManager(Manager, Locks[UUID7]):
             return UnregisteredWorkspace(path, thread_id)
         if project is None:
             volume = await self.tree(owner_id, thread_id, None)
-            return ChatWorkspace(self.path(volume), thread_id, volume)
+            return ChatWorkspace(
+                self.path(volume),
+                thread_id,
+                volume,
+                root=self.root(owner_id),
+            )
         volume = await self.tree(owner_id, thread_id, project.id, ref)
-        return ProjectWorkspace(self.path(volume), thread_id, volume, project)
+        return ProjectWorkspace(
+            self.path(volume),
+            thread_id,
+            volume,
+            project,
+            root=self.root(owner_id),
+        )
 
     @overload
     def open(
@@ -782,7 +803,13 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         volume = await self.find(owner_id, thread.id, project.id)
         if volume is not None:
             await self.checkpoint(
-                ProjectWorkspace(self.path(volume), thread.id, volume, project)
+                ProjectWorkspace(
+                    self.path(volume),
+                    thread.id,
+                    volume,
+                    project,
+                    root=self.root(owner_id),
+                )
             )
 
     async def checkpoint(self, workspace: ProjectWorkspace) -> None:
