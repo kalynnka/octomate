@@ -37,13 +37,6 @@ from octomate.telemetry import workspace_logfire
 
 logger = logging.getLogger(__name__)
 
-# `cp` forks a file by cloning its extents instead of copying its bytes, with `-c`
-# on BSD and `--reflink=always` on GNU. Each flag is an error on the other's `cp`,
-# and neither says anything about the filesystem underneath, so which one works is
-# probed rather than dispatched on by platform.
-REFLINK_FLAGS = ("-c", "--reflink=always")
-
-
 # The snapshot the last push carried, kept in the workspace itself. A workspace
 # that no longer snapshots to the same thing holds work the mirror has never
 # seen, which is the one thing the pruner may not throw away.
@@ -60,9 +53,8 @@ def tree_ref(volume_id: UUID7) -> str:
 
     Outside `refs/heads/`, so the mirror does not grow a branch per tree. Keyed by
     the tree's volume rather than its thread, so two users working in one shared
-    thread never save over each other. That a fork holds none of these refs is
-    `discard_octomate_refs`' doing — a copied fork brings across whatever the
-    mirror has.
+    thread never save over each other. A fork receives only its own snapshot
+    alongside the project's public history.
     """
     return f"refs/octomate/trees/{volume_id}"
 
@@ -75,36 +67,6 @@ def thread_branch(thread_id: uuid.UUID) -> str:
 class UnregisteredProjectError(PermissionError):
     """An unregistered sender asked to work in a project. A project's tree lives in
     a registered user's root, so an unregistered sender may only chat."""
-
-
-class CopyError(RuntimeError):
-    """A `cp` exited nonzero; the message carries its stderr."""
-
-
-async def copy(source: Path, target: Path, flag: str) -> None:
-    """Copy `source` to `target` with `flag`, raising `CopyError` with the stderr
-    when `cp` exits nonzero.
-
-    `-a` because a fork has to be the tree it was made from: a symlink stays a
-    symlink, and preserved timestamps keep the copied git index valid, so the
-    workspace's first `git status` compares stat data rather than rehashing
-    every file in the tree.
-    """
-    process = await asyncio.create_subprocess_exec(
-        "cp",
-        "-a",
-        flag,
-        str(source),
-        str(target),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await process.communicate()
-    if process.returncode != 0:
-        raise CopyError(
-            f"cp -a {flag} {source} {target} failed: "
-            f"{stderr.decode(errors='replace').strip()}"
-        )
 
 
 @dataclass
@@ -201,10 +163,9 @@ class WorkspaceManager(Manager, Locks[UUID7]):
     empty temporary directory.
 
     A fork is a complete, independent repository — its own `.git`, its own object
-    store — made by cloning the mirror's extents where the filesystem does
-    copy-on-write and by `git clone` where it does not. Never a `git worktree`,
-    whose `.git` is a file pointing back at the mirror: commits in one write
-    outside the workspace, which an agent's write sandbox refuses.
+    store — containing only project history and this tree's saved snapshot.
+    The mirror's private refs, unreachable objects and host metadata stay on
+    the host; no hardlinks or object alternates connect the two repositories.
 
     A project's tree is a cache rather than the only copy: each turn's tree is
     snapshotted and pushed to the mirror under the tree's own ref, so releasing
@@ -245,8 +206,6 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         # subprocess's cwd and a `GIT_INDEX_FILE` beside it, and the default is
         # relative to wherever Octomate was started.
         self.volumes_dir = volumes_dir.resolve()
-        self.reflink: str | None = None
-        self.probed = False
         # How many runs are in each throwaway directory right now, keyed by the
         # chat tree's volume or the unregistered thread. Two overlapping runs of
         # one conversation share it — this is what stops the first to finish
@@ -509,38 +468,6 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                 if path.is_dir():
                     await asyncio.to_thread(shutil.rmtree, path)
 
-    async def detect(self) -> str | None:
-        """The `cp` flag that forks without copying bytes on this host, or None
-        where nothing does and workspaces are cloned instead.
-
-        Probed once, by actually cloning a file where workspaces land: the answer
-        belongs to that filesystem rather than to the platform, and it cannot
-        change under a running host. A host with no copy-on-write filesystem is
-        not a failure — it pays a full tree per workspace and works.
-        """
-        if self.probed:
-            return self.reflink
-        self.volumes_dir.mkdir(parents=True, exist_ok=True)
-        probe = Path(tempfile.mkdtemp(dir=self.volumes_dir))
-        try:
-            source = probe / "source"
-            source.write_bytes(b"probe")
-            for flag in REFLINK_FLAGS:
-                try:
-                    await copy(source, probe / "target", flag)
-                except CopyError:
-                    continue
-                self.reflink = flag
-                break
-        finally:
-            shutil.rmtree(probe)
-        self.probed = True
-        logger.info(
-            "thread workspaces fork by %s",
-            f"cp -a {self.reflink}" if self.reflink else "git clone",
-        )
-        return self.reflink
-
     async def materialize(self, workspace: TreeWorkspace, mirror: Path) -> Path:
         """Fork `mirror` into `workspace`, and answer the tree.
 
@@ -565,10 +492,8 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         error travels on. Serialized per tree, so two users forking into one
         thread do not wait on each other.
 
-        It is installed before it is moved into place, so a workspace is ready to
-        run the moment it exists. A copy inherits the mirror's installed trees and
-        that costs nothing; a clone carries no untracked file, so an ext4 host
-        builds its own out of the store the mirror already warmed.
+        It is installed before it is moved into place. Only selected Git objects
+        cross from the mirror; host metadata and untracked files do not.
         """
         path = workspace.path
         # Outside the lock, so a turn waiting on another turn's fork is time this
@@ -589,10 +514,6 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                     return path
                 span.set_attribute("forked", True)
                 path.parent.mkdir(parents=True, exist_ok=True)
-                flag = await self.detect()
-                # The one thing about a fork that another host would do differently,
-                # so a trace of one says it before anything else.
-                span.set_attribute("mechanism", f"cp -a {flag}" if flag else "clone")
                 # Hidden, and named after the volume, so it is never mistaken for a
                 # tree and the next fork of this volume reclaims whatever a killed
                 # one left — the case the cleanup below cannot reach.
@@ -600,13 +521,11 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                 if staging.exists():
                     shutil.rmtree(staging)
                 try:
-                    if flag is not None:
-                        await copy(mirror, staging, flag)
-                    else:
-                        await run_git("clone", str(mirror), str(staging))
+                    await self.mirrors.export(
+                        mirror, staging, tree_ref(workspace.volume.id)
+                    )
                     await self.inherit_remotes(mirror, staging)
-                    await self.discard_octomate_refs(staging)
-                    await self.checkout(workspace.volume, mirror, staging)
+                    await self.checkout(workspace.volume, staging)
                     await install(staging)
                     staging.rename(path)
                 except BaseException:
@@ -617,12 +536,6 @@ class WorkspaceManager(Manager, Locks[UUID7]):
     async def inherit_remotes(self, mirror: Path, workspace: Path) -> None:
         """Give the fork the mirror's own `origin`, or no remote where the mirror
         has none.
-
-        Otherwise where a workspace points depends on how it was forked: a copy
-        inherits the mirror's remotes, and a clone gets an `origin` pointing at the
-        mirror itself. An agent asked to push its branch would find a different
-        answer on a copy-on-write host than on one that clones, which is not
-        something the host's filesystem gets to decide.
 
         The mirror's `origin` is the project's real upstream, and is what an agent
         means by pushing — a branch it named for the job, on the repository people
@@ -640,32 +553,9 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         url = await run_git("remote", "get-url", "origin", cwd=mirror)
         await run_git("remote", "add", "origin", url.strip(), cwd=workspace)
 
-    async def discard_octomate_refs(self, workspace: Path) -> None:
-        """Take Octomate's own refs out of a fresh fork, however it was made.
-
-        `git clone` asks for `refs/heads/*` and tags, so a cloned fork never had
-        them. `cp` does not know what git is: it brings `.git` across whole, and
-        with it every other thread's `refs/octomate/threads/*` — their snapshots
-        sitting in a workspace that was never told about them, out of `git branch`
-        but not out of `git log --all`. Which of the two a host does is `detect`'s
-        answer about its filesystem, and what one thread can read of another is not
-        something the filesystem gets to decide.
-
-        The whole namespace rather than the foreign entries: a mirror that somehow
-        carried a `refs/octomate/saved` would hand a fresh fork a workspace that
-        reads as already saved, which the sweep answers by reclaiming work that was
-        never pushed. Dropping this thread's own along with the rest costs nothing —
-        the mirror is where it lives, and `checkout` fetches it back next.
-        """
-        listing = await run_git(
-            "for-each-ref", "--format=%(refname)", "refs/octomate/", cwd=workspace
-        )
-        for ref in listing.split():
-            await run_git("update-ref", "-d", ref, cwd=workspace)
-
-    async def checkout(self, volume: TreeVolume, mirror: Path, workspace: Path) -> None:
+    async def checkout(self, volume: TreeVolume, workspace: Path) -> None:
         """Put a freshly forked `workspace` back the way this tree's last turn left
-        it, when `mirror` is keeping a snapshot of it.
+        it, when the export includes its saved snapshot.
 
         A thread whose workspace was pruned resumes here, and resumes into the
         state it was interrupted in rather than a tidied version of it: the branch
@@ -696,24 +586,26 @@ class WorkspaceManager(Manager, Locks[UUID7]):
             volume_id=str(volume.id),
             ref=ref,
         ) as span:
-            if not await run_git("ls-remote", str(mirror), saved):
+            if not await run_git(
+                "for-each-ref", "--format=%(refname)", saved, cwd=workspace
+            ):
                 span.set_attribute("resumed", False)
-                branch = thread_branch(thread_id)
-                if ref is None:
-                    await run_git("checkout", "-b", branch, cwd=workspace)
-                    return
-                # Fetched from the mirror rather than named directly: a clone's
-                # remote-tracking refs are removed with the `origin` `inherit_remotes`
-                # replaces, so the only commit a fork is certain to resolve is the one
-                # it was left on. A ref the mirror does not have fails here, which is
-                # what the caller has to be able to report.
-                await run_git("fetch", str(mirror), ref, cwd=workspace)
-                await run_git("checkout", "-b", branch, "FETCH_HEAD", cwd=workspace)
+                # Resolve only in the exported object store. A user-supplied ref
+                # must never trigger a fetch of private mirror objects.
+                start = (
+                    await run_git(
+                        "rev-parse",
+                        "--verify",
+                        "--end-of-options",
+                        f"{ref if ref is not None else 'HEAD'}^{{commit}}",
+                        cwd=workspace,
+                    )
+                ).strip()
+                await run_git(
+                    "checkout", "-b", thread_branch(thread_id), start, cwd=workspace
+                )
                 return
             span.set_attribute("resumed", True)
-            # Every fork arrives without it, whichever way it was made, so this is how
-            # the workspace comes to have it at all.
-            await run_git("fetch", str(mirror), f"+{saved}:{saved}", cwd=workspace)
             subject = await run_git("show", "-s", "--format=%s", saved, cwd=workspace)
             branch = subject.strip().removeprefix(SNAPSHOT_PREFIX)
             span.set_attribute("branch", branch)
@@ -1068,8 +960,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         """Give this tree's folder back to the disk, or nothing when it is already
         gone. The row stays, so the next fork lands at the same path.
 
-        The mirror is untouched: a copied fork owns its objects outright, and a
-        cloned one holds hard links, where unlinking a link leaves the file. In a
+        The mirror is untouched: each fork owns its objects outright. In a
         thread, off the loop: a released tree is as big as the project.
         """
         path = self.path(volume)

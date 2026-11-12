@@ -1,18 +1,9 @@
 """A thread's workspace is a tree volume in its owner's root: a fork of the
 project's mirror, and a disposable one.
 
-Every test here runs twice, once per mechanism: the copy-on-write fork where the
-filesystem under the test host offers one, and the `git clone` fallback always,
-since a host that can clone extents must still be able to fall back. What both
-have to produce is the same thing — a complete independent repository on the
-thread's branch, whose commits reach nothing outside it.
-
-What makes it disposable is that every turn is snapshotted and pushed to the
-mirror under the tree's own ref, so a folder that goes away costs a resume rather
-than the work. The ref is keyed by the tree's volume, so two users in one shared
-thread never save over each other. That ref namespace is where the two mechanisms
-would otherwise disagree, a copy bringing the mirror's refs across where a clone
-asks for none of them. Both forks are emptied of it, so both arrive the same way.
+Each fork is an independent repository containing project history and only its
+own saved snapshot. Peer objects must be absent even when their hashes are known.
+Saving to the mirror makes the working directory disposable without losing work.
 
 A snapshot is not a commit on the agent's branch, and the tests below are mostly
 about the difference: the repository comes back as the agent left it, history and
@@ -47,7 +38,6 @@ from octomate.managers.user import UserManager
 from octomate.managers.workspaces import base as workspaces
 from octomate.managers.workspaces.base import (
     ChatWorkspace,
-    CopyError,
     ProjectWorkspace,
     UnregisteredProjectError,
     UnregisteredWorkspace,
@@ -169,18 +159,9 @@ async def age(volume: TreeVolume, seconds: float) -> None:
         await session.commit()
 
 
-@pytest.fixture(params=["copy-on-write", "clone"])
-async def manager(request: pytest.FixtureRequest, tmp_path: Path) -> WorkspaceManager:
-    """A manager per mechanism this host can actually fork with. The clone case is
-    forced rather than probed, so a copy-on-write workstation still exercises what
-    a plain ext4 server does; the copy case is skipped where the filesystem the
-    workspaces land on has no clone to offer."""
-    made = await a_manager(tmp_path)
-    if request.param == "clone":
-        made.reflink, made.probed = None, True
-    elif await made.detect() is None:
-        pytest.skip("no copy-on-write filesystem under the test host's tmp_path")
-    return made
+@pytest.fixture
+async def manager(tmp_path: Path) -> WorkspaceManager:
+    return await a_manager(tmp_path)
 
 
 async def a_mirror(path: Path, files: dict[str, str]) -> Path:
@@ -376,7 +357,7 @@ async def test_a_fork_that_fails_leaves_nothing_behind(
 ) -> None:
     opened = await a_workspace(manager, await a_bound_thread(manager), owner)
 
-    with pytest.raises((CopyError, GitCommandError)):
+    with pytest.raises(FileNotFoundError):
         await manager.materialize(opened, tmp_path / "no-such-mirror")
 
     assert not opened.path.exists()
@@ -419,39 +400,6 @@ async def test_two_materializations_of_one_tree_serialize(
 
     lock.release()
     assert await second == opened.path
-
-
-async def test_the_mechanism_is_probed_once_and_logged(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    manager = await a_manager(tmp_path)
-
-    with caplog.at_level(logging.INFO):
-        first = await manager.detect()
-        assert await manager.detect() == first
-
-    assert len([line for line in caplog.messages if "workspaces fork by" in line]) == 1
-
-
-async def test_a_host_without_copy_on_write_forks_by_cloning(
-    tmp_path: Path,
-    owner: User,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    # The ext4 server, wherever the tests run: every clone flag refused, and a
-    # workspace all the same.
-    monkeypatch.setattr(workspaces, "REFLINK_FLAGS", ("--not-a-flag",))
-    manager = await a_manager(tmp_path)
-    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
-
-    with caplog.at_level(logging.INFO):
-        workspace = await a_tree(manager, owner, mirror)
-
-    assert manager.reflink is None
-    assert "thread workspaces fork by git clone" in caplog.text
-    assert (workspace / "readme.md").read_text() == "hello"
-    assert await common_dir(workspace) == workspace / ".git"
 
 
 async def test_a_workspace_path_is_absolute_from_a_relative_directory(
@@ -715,12 +663,6 @@ async def test_another_threads_work_is_no_branch_of_this_ones(
 async def test_another_threads_snapshot_is_no_ref_of_this_ones(
     manager: WorkspaceManager, owner: User
 ) -> None:
-    """`git branch` was never where this could leak, and the test above is not the
-    whole of it. A copied fork brings the mirror's `.git` across whole — other
-    trees' snapshot refs with it, reachable by `git log --all` — where a cloned
-    one asks for `refs/heads/*` and gets none of them. Left alone, what one thread
-    could read of another's unreviewed work came down to the host's filesystem.
-    """
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     one = await a_bound_thread(manager)
     other = await a_bound_thread(manager)
@@ -734,6 +676,153 @@ async def test_another_threads_snapshot_is_no_ref_of_this_ones(
     assert [ref for ref in refs.split() if ref.startswith("refs/octomate/")] == []
     reachable = await run_git("log", "--all", "--format=%s", cwd=second)
     assert f"octomate/thread-{one.id}" not in reachable
+
+
+@pytest.mark.parametrize("packed", [False, True])
+async def test_peer_snapshot_objects_are_absent_even_by_hash(
+    manager: WorkspaceManager, owner: User, packed: bool
+) -> None:
+    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
+    thread = await a_bound_thread(manager)
+    mine = await a_workspace(manager, thread, owner)
+    await a_turn(await manager.materialize(mine, mirror), {"secret.md": "private"})
+    await manager.save(thread, owner.id)
+    private = (await run_git("rev-parse", tree_ref(mine.volume.id), cwd=mirror)).strip()
+    blob = (await run_git("rev-parse", f"{private}:secret.md", cwd=mirror)).strip()
+    if packed:
+        await run_git("repack", "-ad", cwd=mirror)
+
+    peer = await a_workspace(manager, thread, await a_user("bob"))
+    path = await manager.materialize(peer, mirror)
+
+    for oid in (private, blob):
+        with pytest.raises(GitCommandError):
+            await run_git("cat-file", "-e", oid, cwd=path)
+    assert not (path / ".git/objects/info/alternates").exists()
+    assert all(
+        file.stat().st_nlink == 1
+        for file in (path / ".git/objects").rglob("*")
+        if file.is_file()
+    )
+    await a_turn(path, {"bob.md": "bob's private work"})
+    await manager.save(thread, peer.owner_id)
+    peer_snapshot = (
+        await run_git("rev-parse", tree_ref(peer.volume.id), cwd=mirror)
+    ).strip()
+    await manager.release(mine.volume)
+
+    restored = await manager.materialize(mine, mirror)
+
+    assert (restored / "secret.md").read_text() == "private"
+    assert not (restored / "bob.md").exists()
+    assert await manager.saved(restored)
+    with pytest.raises(GitCommandError):
+        await run_git("cat-file", "-e", peer_snapshot, cwd=restored)
+
+
+async def test_unreachable_objects_are_not_exported(
+    manager: WorkspaceManager, owner: User
+) -> None:
+    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
+    await run_git("checkout", "-b", "temporary", cwd=mirror)
+    (mirror / "deleted-secret.md").write_text("unreachable")
+    await run_git("add", "-A", cwd=mirror)
+    await run_git(*IDENTITY, "commit", "-m", "unreachable", cwd=mirror)
+    unreachable = await head(mirror)
+    await run_git("checkout", "main", cwd=mirror)
+    await run_git("branch", "-D", "temporary", cwd=mirror)
+    await run_git("repack", "-ad", cwd=mirror)
+
+    path = await a_tree(manager, owner, mirror)
+
+    with pytest.raises(GitCommandError):
+        await run_git("cat-file", "-e", unreachable, cwd=path)
+
+
+async def test_mirror_replace_refs_cannot_export_private_history(
+    manager: WorkspaceManager, owner: User
+) -> None:
+    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
+    thread = await a_bound_thread(manager)
+    mine = await a_workspace(manager, thread, owner)
+    await a_turn(await manager.materialize(mine, mirror), {"secret.md": "private"})
+    await manager.save(thread, owner.id)
+    private = (await run_git("rev-parse", tree_ref(mine.volume.id), cwd=mirror)).strip()
+    await run_git("replace", "HEAD", private, cwd=mirror)
+
+    peer = await a_workspace(manager, thread, await a_user("bob"))
+    path = await manager.materialize(peer, mirror)
+
+    assert not (path / "secret.md").exists()
+    assert (path / "readme.md").read_text() == "hello"
+    with pytest.raises(GitCommandError):
+        await run_git("cat-file", "-e", private, cwd=path)
+
+
+@pytest.mark.parametrize("ref", ["feature", "v1", "origin/feature", "commit"])
+async def test_authorized_project_refs_can_start_a_workspace(
+    manager: WorkspaceManager, owner: User, ref: str
+) -> None:
+    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
+    await run_git("checkout", "-b", "feature", cwd=mirror)
+    (mirror / "feature.md").write_text("public history")
+    await run_git("add", "-A", cwd=mirror)
+    await run_git(*IDENTITY, "commit", "-m", "feature", cwd=mirror)
+    commit = await head(mirror)
+    await run_git(*IDENTITY, "tag", "-a", "v1", "-m", "release", cwd=mirror)
+    await run_git("update-ref", "refs/remotes/origin/feature", commit, cwd=mirror)
+    await run_git("checkout", "main", cwd=mirror)
+    if ref != "feature":
+        await run_git("branch", "-D", "feature", cwd=mirror)
+    opened = await a_workspace(
+        manager,
+        await a_bound_thread(manager),
+        owner,
+        commit if ref == "commit" else ref,
+    )
+
+    path = await manager.materialize(opened, mirror)
+
+    assert await head(path) == commit
+    assert (path / "feature.md").read_text() == "public history"
+    assert await run_git("cat-file", "-t", "refs/tags/v1", cwd=path) == "tag\n"
+
+
+@pytest.mark.parametrize("by_hash", [False, True])
+async def test_base_ref_cannot_request_a_peer_snapshot(
+    manager: WorkspaceManager, owner: User, by_hash: bool
+) -> None:
+    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
+    thread = await a_bound_thread(manager)
+    mine = await a_workspace(manager, thread, owner)
+    await a_turn(await manager.materialize(mine, mirror), {"secret.md": "private"})
+    await manager.save(thread, owner.id)
+    ref = tree_ref(mine.volume.id)
+    if by_hash:
+        ref = (await run_git("rev-parse", ref, cwd=mirror)).strip()
+    peer = await a_workspace(manager, thread, await a_user("bob"), ref)
+
+    with pytest.raises(GitCommandError):
+        await manager.materialize(peer, mirror)
+    assert not peer.path.exists()
+
+
+async def test_fork_does_not_copy_mirror_metadata_or_untracked_files(
+    manager: WorkspaceManager, owner: User
+) -> None:
+    mirror = await a_project_mirror(manager, {"readme.md": "hello"})
+    (mirror / ".env").write_text("HOST_SECRET=private")
+    (mirror / ".git/host-secret").write_text("private")
+    (mirror / ".git/hooks/post-checkout").write_text("host hook")
+    await run_git("config", "credential.helper", "host-only", cwd=mirror)
+
+    path = await a_tree(manager, owner, mirror)
+
+    assert not (path / ".env").exists()
+    assert not (path / ".git/host-secret").exists()
+    assert not (path / ".git/hooks/post-checkout").exists()
+    with pytest.raises(GitCommandError):
+        await run_git("config", "--local", "--get", "credential.helper", cwd=path)
 
 
 async def test_snapshots_carry_the_machine_identity(
@@ -991,10 +1080,7 @@ async def test_a_fork_of_a_folder_project_has_no_remote(
 async def test_a_fork_arrives_installed_however_it_was_made(
     manager: WorkspaceManager, owner: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # One install either way is the whole of it: a copy inherits the mirror's
-    # installed trees along with the stamp saying so, and does not install again;
-    # a clone carries no untracked file, so it installs for the first time out of
-    # the store the mirror already warmed.
+    # Exports carry no host installs, so every fresh fork installs for itself.
     probing(monkeypatch)
     mirror = await a_project_mirror(manager, {Probe.lockfile: "one"})
     await install(mirror)

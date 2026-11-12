@@ -422,10 +422,6 @@ class Octomate(FastAPI):
             # the resolution index, so a declared project resolves before
             # anything is running that could ask.
             await self.projects.reconcile()
-            # How a workspace is forked is the filesystem's answer, not a
-            # setting: probed here so the log says which mechanism this host
-            # got, once, before anything asks for a workspace.
-            await self.workspaces.detect()
             # A live request's waiter died with the last process, so a reply to
             # one still pending would be lost: it is refused as expired instead.
             await self.deferred_actions.expire_live()

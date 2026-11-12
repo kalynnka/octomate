@@ -94,6 +94,40 @@ class MirrorManager(Manager, Locks[str]):
         projects, and so after directories people actually have."""
         return project.name if project is not None else BLANK_MIRROR
 
+    async def export(self, source: Path, target: Path, snapshot: str) -> None:
+        """Export project refs and one core-selected snapshot to a fresh repository.
+
+        Copying or locally cloning the mirror would expose every cached object,
+        including other users' snapshots. Fetch into an empty object store so
+        only history reachable from the selected refs crosses the boundary.
+        The caller supplies the snapshot ref from its resolved tree volume.
+        """
+        branch = (await run_git("symbolic-ref", "HEAD", cwd=source)).strip()
+        if not branch.startswith("refs/heads/"):
+            raise GitCommandError("The mirror's HEAD must name a project branch")
+        await run_git(
+            "init", "--template=", "-b", branch.removeprefix("refs/heads/"), str(target)
+        )
+        refs = [
+            "+refs/heads/*:refs/heads/*",
+            "+refs/tags/*:refs/tags/*",
+            "+refs/remotes/origin/*:refs/remotes/origin/*",
+        ]
+        if await run_git("ls-remote", str(source), snapshot):
+            refs.append(f"+{snapshot}:{snapshot}")
+        await run_git(
+            "fetch",
+            "--update-head-ok",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--no-auto-maintenance",
+            "--no-write-fetch-head",
+            str(source),
+            *refs,
+            cwd=target,
+            env={"GIT_NO_REPLACE_OBJECTS": "1"},
+        )
+
     async def sync(self, project: Project) -> Path:
         """The mirror, current enough to fork from: created from the upstream when
         missing, freshened from it when the freshness window has lapsed.
@@ -108,10 +142,9 @@ class MirrorManager(Manager, Locks[str]):
         the stale stamp is not renewed, so the next sync tries again. A mirror
         that cannot be created is a hard failure: there is nothing to fall back to.
 
-        A mirror whose tree just changed is installed as well, which is what makes
-        forking it cheap: the machine's package store is warm and the installed
-        trees themselves are copied. Not on the window's short path, and not on the
-        stale one — nothing moved there, so there is nothing to install.
+        A mirror whose tree just changed is installed as well, warming the host's
+        package store for later workspace installs. Not on the window's short path
+        or the stale one — nothing moved there, so there is nothing to install.
         """
         # Asked before `create`, which is where the waiting happens: a mirror this
         # call had to make is one nothing can be behind, so it is not fetched again
