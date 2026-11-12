@@ -40,6 +40,7 @@ from octomate import Octomate
 from octomate.config import ChannelConfig
 from octomate.config.agents import CodexConfig
 from octomate.database import async_session
+from octomate.managers.conversation import ConversationManager
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
@@ -696,7 +697,7 @@ async def test_status_uses_latest_recorded_native_usage(
         conversation_id=conversation.id,
         thread_id=conversation.thread_id,
     )
-    conversation = await agent.conversations.get(conversation.id, with_history=False)
+    conversation = await agent.conversations.get(conversation.id, with_runs=False)
     if copied_history:
         await agent.conversations.set_external_id(conversation, "forked-thread")
     request = agent.ink.client._client.request
@@ -1048,9 +1049,10 @@ async def test_automatic_compactions_persist_independently_of_the_run_outcome(
         assert not rows[0].messages
     stored = await agent.conversations.get(conversation.id)
     assert len(stored.runs) == 1
-    assert [message.message_text for message in stored.messages] == (
-        ["ask", "model failed"] if failed else ["ask", "answer"]
-    )
+    assert [
+        message.message_text
+        for message in (await ConversationManager().history(stored.id))
+    ] == (["ask", "model failed"] if failed else ["ask", "answer"])
 
 
 @pytest.mark.parametrize("failed", [False, True])

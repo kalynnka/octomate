@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from arcanus import BaseTransmuter, Relation, Relationship
-from arcanus.base import Identity
+from arcanus import BaseTransmuter, Identity, Relation, Relationship
 from pydantic import AwareDatetime, ConfigDict, Field
 from pydantic_ai_harness.step_persistence import (
     EventKind,

@@ -140,7 +140,6 @@ async def test_a_run_in_a_project_can_act_in_it(tmp_path: Path) -> None:
     await inkling_run(octomate, await a_thread(octomate, "chat", "inky"), scripted)
 
     assert scripted.tools[-1] == [
-        "inventory_agent_context",
         "read_file",
         "write_file",
         "edit_file",

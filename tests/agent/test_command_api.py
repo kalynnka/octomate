@@ -367,7 +367,7 @@ async def test_http_catalog_preserves_extensions_and_omits_runtime_history(
         assert data["descriptors"][0]["path"] == "skill"
         assert data["context"]["conversation"]["id"] == str(conversation.id)
         assert (
-            not {"runs", "messages", "external_id", "allowed_tools"}
+            not {"runs", "messages", "all_messages", "external_id", "allowed_tools"}
             & data["context"]["conversation"].keys()
         )
         schema = (await client.get("/openapi.json")).json()

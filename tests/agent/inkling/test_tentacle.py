@@ -220,7 +220,7 @@ async def test_run_records_the_resolved_models_context_capacity(
     assert run.context_used > 0
 
 
-@pytest.mark.parametrize("effort", ["minimal", "low", "medium", "high", "xhigh"])
+@pytest.mark.parametrize("effort", ["minimal", "low", "medium", "high", "xhigh", "max"])
 async def test_inkling_keeps_pydantic_ai_effort_names(effort: str) -> None:
     agent, _ = build_scripted_agent(["done"])
     tentacle = _tentacle(agent, FakeConversationManager())
@@ -236,7 +236,7 @@ async def test_inkling_keeps_pydantic_ai_effort_names(effort: str) -> None:
     assert result.output == "done"
 
 
-@pytest.mark.parametrize("effort", ["none", "max", "ultra"])
+@pytest.mark.parametrize("effort", ["none", "ultra"])
 async def test_inkling_rejects_other_harness_efforts(effort: str) -> None:
     agent, script = build_scripted_agent(["done"])
     tentacle = _tentacle(agent, FakeConversationManager())

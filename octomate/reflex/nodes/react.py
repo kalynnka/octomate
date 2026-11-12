@@ -111,7 +111,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         effort = decision.effort
         if effort is None and state.conversation_id is not None:
             conversation = await ctx.deps.conversation_manager.get(
-                state.conversation_id, with_history=False
+                state.conversation_id, with_runs=False
             )
             effort = await agent.resolve_effort(conversation, model=model)
         if state.user_profile is not None:

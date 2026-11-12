@@ -3,22 +3,22 @@
 import asyncio
 import sqlite3
 from pathlib import Path
+from typing import Literal
 from unittest.mock import Mock
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from arcanus import RelationCollection
-from arcanus.materia.sqlalchemy import AsyncSession
 from pydantic import UUID7, ValidationError
 from pydantic_ai.messages import TextPart, UserPromptPart
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate.config.database import database_settings
-from octomate.database import async_session, create_engine
+from octomate.database import async_session
 from octomate.managers import ConversationManager
 from octomate.schemas.compactions import Compaction, CompactionMembership
 from octomate.schemas.conversation import Conversation, ConversationCompaction
@@ -109,7 +109,9 @@ async def test_ordered_membership_reuses_retained_messages_without_changing_owne
         assert retained.run_id == run.id
         assert retained.compaction_id is None
     archive = await ConversationManager().get(conversation.id)
-    assert [message.id for message in archive.messages] == before
+    assert [
+        message.id for message in (await ConversationManager().history(archive.id))
+    ] == before
 
 
 @pytest.mark.parametrize("duplicate", ["position", "message"])
@@ -278,13 +280,46 @@ async def test_unknown_compaction_order_is_distinct_from_conflicting_known_posit
             await session.commit()
 
 
-async def test_membership_migration_backfills_only_known_provenance_on_a_copy(
+@pytest.mark.parametrize(
+    "recorded", ["membership", "complete", "inherited", "position"]
+)
+async def test_migration_refuses_to_discard_context_or_inherited_history(
     history: History,
     in_memory_engine: AsyncEngine,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    recorded: Literal["membership", "complete", "inherited", "position"],
 ) -> None:
     conversation, run, compaction = history
+    owner = conversation
+    if recorded == "inherited":
+        owner = await ConversationManager().ensure(
+            await a_thread("fork"), agent_tentacle_id="agent"
+        )
+    async with async_session() as session:
+        match recorded:
+            case "membership":
+                session.add(
+                    CompactionMembership(
+                        compaction_id=compaction.id,
+                        stage="before",
+                        position=0,
+                        model_message_id=run.messages[0].id,
+                    )
+                )
+            case "complete":
+                stored = await session.get(Compaction, compaction.id)
+                assert stored is not None
+                stored.membership_complete = True
+            case "inherited" | "position":
+                session.add(
+                    ConversationCompaction(
+                        conversation_id=owner.id,
+                        compaction_id=compaction.id,
+                        position=0 if recorded == "position" else None,
+                    )
+                )
+        await session.commit()
     source = await asyncio.to_thread(Path(in_memory_engine.url.database or "").resolve)
     assert source.parent == await asyncio.to_thread(tmp_path.resolve)
     target = tmp_path / "membership-migration-copy.db"
@@ -293,27 +328,6 @@ async def test_membership_migration_backfills_only_known_provenance_on_a_copy(
         sqlite3.connect(target) as copied,
     ):
         original.backup(copied)
-        tables = (
-            "conversations",
-            "agent_runs",
-            "conversation_runs",
-            "model_messages",
-            "compactions",
-        )
-        columns = {
-            table: ", ".join(
-                f'"{row[1]}"'
-                for row in copied.execute(f'PRAGMA table_info("{table}")')
-                if row[1] != "membership_complete"
-            )
-            for table in tables
-        }
-        before = {
-            table: copied.execute(
-                f'SELECT {columns[table]} FROM "{table}" ORDER BY rowid'
-            ).fetchall()
-            for table in tables
-        }
     monkeypatch.setattr(database_settings, "db_url", f"sqlite+aiosqlite:///{target}")
     assert await asyncio.to_thread(
         Path(make_url(database_settings.db_url).database or "").resolve
@@ -322,48 +336,11 @@ async def test_membership_migration_backfills_only_known_provenance_on_a_copy(
     module_path = await asyncio.to_thread(Path(__file__).resolve)
     config = Config(str(module_path.parents[2] / "alembic.ini"))
     monkeypatch.setattr("logging.config.fileConfig", Mock())
-    await asyncio.to_thread(command.stamp, config, "head")
-    await asyncio.to_thread(command.downgrade, config, "1f46faa4d027")
-    await asyncio.to_thread(command.upgrade, config, "head")
-    await asyncio.to_thread(command.check, config)
+    await asyncio.to_thread(command.stamp, config, "a1a2d6fe9638")
+    with sqlite3.connect(target) as copied:
+        before = list(copied.iterdump())
+    with pytest.raises(RuntimeError, match="context or inherited history is recorded"):
+        await asyncio.to_thread(command.downgrade, config, "792e14ef4f19")
     with sqlite3.connect(target) as copied:
         assert copied.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert {
-            table: copied.execute(
-                f'SELECT {columns[table]} FROM "{table}" ORDER BY rowid'
-            ).fetchall()
-            for table in tables
-        } == before
-    engine = create_engine(database_settings.db_url)
-    maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    try:
-        async with maker() as session:
-            [link] = await session.list(ConversationCompaction)
-            assert link.conversation_id == conversation.id
-            assert link.compaction_id == compaction.id
-            assert link.position is None
-            stored = await session.get(Compaction, compaction.id)
-            assert stored is not None
-            assert not stored.membership_complete
-            assert await session.count(CompactionMembership) == 0
-            session.add(
-                CompactionMembership(
-                    compaction_id=compaction.id,
-                    stage="before",
-                    position=0,
-                    model_message_id=run.messages[0].id,
-                )
-            )
-            link.position = 0
-            stored.membership_complete = True
-            await session.commit()
-        with pytest.raises(
-            RuntimeError, match="context or inherited history is recorded"
-        ):
-            await asyncio.to_thread(command.downgrade, config, "1f46faa4d027")
-        await asyncio.to_thread(command.upgrade, config, "head")
-        await asyncio.to_thread(command.check, config)
-        async with maker() as session:
-            assert await session.count(CompactionMembership) == 1
-    finally:
-        await engine.dispose()
+        assert list(copied.iterdump()) == before

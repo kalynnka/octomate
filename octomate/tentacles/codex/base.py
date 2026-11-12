@@ -293,7 +293,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         self, conversation: Conversation, mode: str
     ) -> None:
         # A first run may have assigned its native ID since the caller loaded it.
-        current = await self.conversations.get(conversation.id, with_history=False)
+        current = await self.conversations.get(conversation.id, with_runs=False)
         if current.external_id is None:
             return
         await self.ink.set_permission_mode(
@@ -702,12 +702,16 @@ class CodexTentacle(AgentTentacle[str, None]):
         conversations = self.conversations
         async with conversations.lock(target.key):
             source = await conversations.get(source.id)
-            target = await conversations.get(target.id)
+            target = await conversations.get(target.id, with_runs=False)
             if source.agent_tentacle_id != self.id:
                 raise ValueError("Transcript imports require a native Codex source")
             if target.agent_tentacle_id != self.id or source.id == target.id:
                 raise ValueError("Transcript imports require a separate Codex target")
-            if target.messages or target.external_id or target.transcript_file_id:
+            if (
+                target.external_id
+                or target.transcript_file_id
+                or await conversations.has_history(target.id)
+            ):
                 raise ValueError("Transcript imports require an empty target")
             if source.transcript_file_id is None or source.external_id is None:
                 raise ValueError("Native Codex history has not been uploaded")
@@ -1176,10 +1180,10 @@ class CodexTentacle(AgentTentacle[str, None]):
         """
         if conversation is None or conversation.external_id is None:
             return "Token usage: not reported yet."
-        conversation = await self.conversations.get(conversation.id)
+        messages = await self.conversations.history(conversation.id)
         events = (
             event
-            for message in reversed(conversation.messages)
+            for message in reversed(messages)
             if (metadata := message.metadata) is not None
             and metadata.get("source") == CODEX_METADATA_SOURCE
             and isinstance(recorded := metadata.get("events"), list)
@@ -1825,7 +1829,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 self.conversation_locks.hold(str(conversation.id))
             )
             conversation = await self.conversations.get(
-                conversation.id, with_history=False
+                conversation.id, with_runs=False
             )
             effort = await self.resolve_effort(
                 conversation, model=sdk_model, effort=effort

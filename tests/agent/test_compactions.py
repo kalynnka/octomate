@@ -386,7 +386,9 @@ async def test_compaction_messages_preserve_content_and_the_run_archive(
         assert message.thread_messages == []
     reloaded = await manager.get(conversation.id)
     assert [item.id for item in reloaded.runs] == [run.id]
-    assert [message.id for message in reloaded.messages] == archive
+    assert [
+        message.id for message in (await ConversationManager().history(reloaded.id))
+    ] == archive
     async with async_session() as session:
         await session.delete(stored)
         await session.commit()

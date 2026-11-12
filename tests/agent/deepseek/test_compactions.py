@@ -12,6 +12,7 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.config.agents import DeepseekConfig
 from octomate.database import async_session
+from octomate.managers.conversation import ConversationManager
 from octomate.schemas.commands import CommandContext, CommandResult
 from octomate.schemas.compactions import Compaction
 from octomate.tentacles.deepseek import DeepseekTentacle
@@ -98,7 +99,9 @@ async def test_native_compactions_between_turns_and_replay_preserve_archive(
         await stream_events(tailer, app.nerve, records)
     conversation = await native_conversation(app)
     assert len(conversation.runs) == 2
-    assert [m.message_text for m in conversation.messages] == [
+    assert [
+        m.message_text for m in (await ConversationManager().history(conversation.id))
+    ] == [
         "first",
         "one",
         "second",

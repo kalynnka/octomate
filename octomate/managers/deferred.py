@@ -110,11 +110,8 @@ class DeferredActionManager(Manager):
         async with async_session() as session:
             conversations = await session.list(
                 Conversation,
-                # Only the ids are wanted. Both of these are lazy="selectin", so
-                # without the suppression this walks every run and every model
-                # message in the thread to collect a handful of uuids.
+                # Only the ids are wanted; leave runs unloaded.
                 options=[
-                    noload(Conversation["messages"]),
                     noload(Conversation["runs"]),
                 ],
                 expressions=[Conversation["thread_id"] == thread_id],

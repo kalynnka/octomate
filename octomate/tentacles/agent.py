@@ -395,9 +395,9 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         """
         if conversation_id is None:
             return await self.conversations.ensure(
-                thread_id, agent_tentacle_id=self.id, with_history=False
+                thread_id, agent_tentacle_id=self.id, with_runs=False
             )
-        conversation = await self.conversations.get(conversation_id, with_history=False)
+        conversation = await self.conversations.get(conversation_id, with_runs=False)
         if (
             conversation.agent_tentacle_id != self.id
             or conversation.thread_id != thread_id

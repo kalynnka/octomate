@@ -34,6 +34,7 @@ from octomate.events import (
     RunStartedEvent,
     StreamEvents,
 )
+from octomate.managers.conversation import ConversationManager
 from octomate.nerve import ThreadTopic
 from octomate.schemas.compactions import ExternalCompaction
 from octomate.schemas.runs import ExternalAgentRun
@@ -518,7 +519,7 @@ async def test_completed_command_activity_is_published_and_saved() -> None:
             assert call.part.args_as_dict()["commandActions"] == [{"type": "read"}]
             assert state.conversation is not None
             stored = await octomate.conversations.get(state.conversation.id)
-            saved = stored.messages[0].parts[0]
+            saved = (await ConversationManager().history(stored.id))[0].parts[0]
             assert isinstance(saved, NativeToolCallPart)
             assert saved.args == call.part.args
             tailer.detach_remote(state)
@@ -569,13 +570,15 @@ async def test_encrypted_reasoning_placeholder_is_published_and_saved() -> None:
             )
             assert state.conversation is not None
             stored = await octomate.conversations.get(state.conversation.id)
-            assert len(stored.messages) == 1
-            part = stored.messages[0].parts[0]
+            assert len(await ConversationManager().history(stored.id)) == 1
+            part = (await ConversationManager().history(stored.id))[0].parts[0]
             assert isinstance(part, ThinkingPart)
             assert part.content == ""
             assert part.id == "reasoning-1"
             assert part.provider_name == "openai_codex"
-            assert "opaque-ciphertext" not in str(stored.messages)
+            assert "opaque-ciphertext" not in str(
+                await ConversationManager().history(stored.id)
+            )
             tailer.detach_remote(state)
         events = [impulse.event for impulse in held(live)]
         assert [event.event_kind for event in events] == [
@@ -760,7 +763,7 @@ async def test_compaction_only_tasks_never_write_a_run(
             assert state.conversation is not None
             stored = await octomate.conversations.get(state.conversation.id)
             assert not stored.runs
-            assert not stored.messages
+            assert not (await ConversationManager().history(stored.id))
             state, _ = await tailer.attach_remote(
                 SESSION_ID, ROLLOUT_LABEL, SENDER, SESSION_ADDRESS, publisher
             )
@@ -818,7 +821,7 @@ async def test_compaction_does_not_discard_interrupted_model_activity(
     assert state.conversation is not None
     stored = await octomate.conversations.get(state.conversation.id)
     assert [run.id for run in stored.runs] == [TURN_ID]
-    assert not stored.messages
+    assert not (await ConversationManager().history(stored.id))
 
 
 @pytest.mark.usefixtures("db")
@@ -864,7 +867,7 @@ async def test_empty_reserved_turn_commits_its_checkpoint_and_settles(
             )
             stored = await octomate.conversations.get(state.conversation.id)
             assert stored.native_run_ids == {TURN_ID}
-            assert not stored.messages
+            assert not (await ConversationManager().history(stored.id))
             tailer.detach_remote(state)
         assert [impulse.event.event_kind for impulse in held(live)] == [
             "run_started",

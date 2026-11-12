@@ -16,6 +16,7 @@ from pydantic_ai.exceptions import AgentRunError
 
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import async_session
+from octomate.managers.conversation import ConversationManager
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
@@ -412,15 +413,15 @@ async def test_fork_copies_history_settings_and_preserves_source(
     assert copied.external_id == "thread-fork"
     assert copied.effort == source.effort == "high"
     assert copied.permission_mode == source.permission_mode == "user_review"
-    assert [message.parts for message in copied.messages] == [
-        message.parts for message in source.messages
-    ]
+    assert [
+        message.parts for message in (await ConversationManager().history(copied.id))
+    ] == [message.parts for message in (await ConversationManager().history(source.id))]
     assert [run.model_name for run in copied.runs] == [
         run.model_name for run in source.runs
     ]
-    assert [message.id for message in copied.messages] == [
-        message.id for message in source.messages
-    ]
+    assert [
+        message.id for message in (await ConversationManager().history(copied.id))
+    ] == [message.id for message in (await ConversationManager().history(source.id))]
     assert target.active_agent_tentacle_id == agent.id
     assert target.active_model == context.model
     assert target.project_id == source_thread.project_id

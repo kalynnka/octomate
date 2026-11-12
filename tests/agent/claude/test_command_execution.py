@@ -717,7 +717,7 @@ async def test_permission_updates_reach_live_client_and_next_run(
     ) as events:
         await anext(events)
         assert conversation.id in agent.ink.live_clients
-        selected = await agent.conversations.get(conversation.id, with_history=False)
+        selected = await agent.conversations.get(conversation.id, with_runs=False)
         await agent.set_permission_mode(selected, mode)
         client.set_permission_mode.assert_awaited_once_with(
             mode or agent.default_permission_mode
@@ -726,7 +726,7 @@ async def test_permission_updates_reach_live_client_and_next_run(
         async for _ in events:
             pass
     assert not agent.ink.live_clients
-    stored = await agent.conversations.get(conversation.id, with_history=False)
+    stored = await agent.conversations.get(conversation.id, with_runs=False)
     assert stored.permission_mode == mode
     await agent.run(
         "continue",
@@ -763,7 +763,7 @@ async def test_rejected_live_permission_update_does_not_save_the_selection(
         release.set()
         async for _ in events:
             pass
-    stored = await agent.conversations.get(conversation.id, with_history=False)
+    stored = await agent.conversations.get(conversation.id, with_runs=False)
     assert stored.permission_mode is None
 
 
@@ -783,5 +783,5 @@ async def test_permission_selection_validates_owner_and_mode_before_runtime_acce
     with pytest.raises(ValueError, match="belongs to another agent"):
         await agent.set_permission_mode(foreign, "plan")
     client.set_permission_mode.assert_not_called()
-    stored = await agent.conversations.get(conversation.id, with_history=False)
+    stored = await agent.conversations.get(conversation.id, with_runs=False)
     assert stored.permission_mode is None

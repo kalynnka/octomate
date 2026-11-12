@@ -441,7 +441,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             if agent_id is None:
                 raise ValueError("Select a route before setting its effort")
             conversation = await self.octomate.conversations.ensure(
-                thread.id, agent_tentacle_id=agent_id, with_history=False
+                thread.id, agent_tentacle_id=agent_id, with_runs=False
             )
             effort = await self.octomate.agents[agent_id].resolve_effort(
                 conversation, model=thread.active_model, effort=directive.effort

@@ -96,9 +96,9 @@ async def test_rewrites_preserve_archive_owners_and_append_later_messages(
         original[3].id,
     ]
     archived = await manager.get(conversation.id)
-    assert [message.id for message in archived.messages] == [
-        message.id for message in original
-    ]
+    assert [
+        message.id for message in (await ConversationManager().history(archived.id))
+    ] == [message.id for message in original]
     async with async_session() as session:
         stored = await session.get(ModelRequest, original[2].id)
         assert stored is not None
@@ -182,7 +182,12 @@ async def test_noop_and_invalid_prefix_do_not_record_compactions(
     )
     assert compacted is not None
     assert await manager.effective_messages(conversation) == []
-    assert len((await manager.get(conversation.id)).messages) == 2
+    assert (
+        len(
+            await ConversationManager().history((await manager.get(conversation.id)).id)
+        )
+        == 2
+    )
 
 
 @pytest.mark.parametrize(

@@ -262,7 +262,7 @@ class CommandManager(Manager):
                 )
                 try:
                     conversation = await self.conversations.get(
-                        conversation_id, with_history=False
+                        conversation_id, with_runs=False
                     )
                 except ValueError:
                     conversation = None

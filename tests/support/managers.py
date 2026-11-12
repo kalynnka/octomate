@@ -146,8 +146,7 @@ def fixed_session(
 
 @dataclass
 class FakeConversation:
-    """Stand-in whose `messages` is a plain list react can read + accumulate
-    into, since the real arcanus relation can't be appended to detached."""
+    """In-memory context for graph tests without database persistence."""
 
     id: UUID7 = field(default_factory=uuid7)
     messages: list[ModelMessage] = field(default_factory=list)
@@ -193,7 +192,7 @@ class FakeConversationManager(ConversationManager):
         agent_tentacle_id: str | None = None,
         subagent_id: str = "",
         parent_conversation_id: UUID7 | None = None,
-        with_history: bool = True,
+        with_runs: bool = True,
         native: bool = False,
     ) -> Conversation:
         self.ensured.append((thread_id, agent_tentacle_id))
@@ -210,12 +209,31 @@ class FakeConversationManager(ConversationManager):
         return cast(Conversation, conversation)
 
     async def get(
-        self, conversation_id: UUID7, *, with_history: bool = True
+        self,
+        conversation_id: UUID7,
+        *,
+        with_runs: bool = True,
+        with_messages: bool = False,
     ) -> Conversation:
         for conversation in self.store.values():
             if conversation.id == conversation_id:
                 return cast(Conversation, conversation)
         raise ValueError(f"unknown conversation {conversation_id}")
+
+    async def history(
+        self, conversation_id: UUID7, *, limit: int | None = None
+    ) -> list[ModelMessage]:
+        messages = (await self.get(conversation_id)).messages
+        return (
+            list(messages)
+            if limit is None
+            else list(messages[-limit:])
+            if limit
+            else []
+        )
+
+    async def has_history(self, conversation_id: UUID7) -> bool:
+        return bool((await self.get(conversation_id)).messages)
 
     async def set_external_id(
         self,

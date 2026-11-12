@@ -440,9 +440,7 @@ async def test_driven_names_are_persisted_and_revised(
             assert result.output == "done"
             if name and name.strip():
                 expected = name.strip()
-            stored = await octomate.conversations.get(
-                conversation.id, with_history=False
-            )
+            stored = await octomate.conversations.get(conversation.id, with_runs=False)
             thread = await octomate.threads.get(thread_id, with_messages=False)
             assert thread is not None
             assert stored.name == expected
@@ -488,10 +486,10 @@ async def test_driven_child_name_does_not_rename_parent_thread(
             conversation_id=child.id,
         )
     assert (
-        await octomate.conversations.get(child.id, with_history=False)
+        await octomate.conversations.get(child.id, with_runs=False)
     ).name == "Child work"
     assert (
-        await octomate.conversations.get(parent.id, with_history=False)
+        await octomate.conversations.get(parent.id, with_runs=False)
     ).name == "Parent work"
     thread = await octomate.threads.get(thread_id, with_messages=False)
     assert thread is not None

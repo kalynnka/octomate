@@ -629,7 +629,7 @@ async def test_stale_upload_cannot_replace_a_newer_transcript(tmp_path: Path) ->
             owner_id=owner.id,
         )
 
-    current = await octomate.conversations.get(conversation.id, with_history=False)
+    current = await octomate.conversations.get(conversation.id, with_runs=False)
     assert current.transcript_file_id == first.id
     assert await files.read(first.id, owner_id=owner.id) == b"first\n"
     assert conversation.transcript_file_id is None

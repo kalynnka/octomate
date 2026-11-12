@@ -636,7 +636,7 @@ async def test_driven_names_are_persisted_and_revised_without_reading_turns(
             if name and name.strip():
                 expected = name.strip()
             stored_conversation = await octomate.conversations.get(
-                conversation.id, with_history=False
+                conversation.id, with_runs=False
             )
             thread = await octomate.threads.get(thread_id, with_messages=False)
             assert thread is not None
@@ -692,10 +692,10 @@ async def test_driven_child_name_does_not_rename_parent_thread(
             conversation_id=child.id,
         )
     assert (
-        await octomate.conversations.get(child.id, with_history=False)
+        await octomate.conversations.get(child.id, with_runs=False)
     ).name == "Child work"
     assert (
-        await octomate.conversations.get(parent.id, with_history=False)
+        await octomate.conversations.get(parent.id, with_runs=False)
     ).name == "Parent work"
     thread = await octomate.threads.get(thread_id, with_messages=False)
     assert thread is not None
@@ -1009,7 +1009,9 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
             assert (
                 await octomate.conversations.get(source.id)
             ).external_id == "thread-new"
-            assert len(destination.messages) == len(source.messages)
+            assert len(await ConversationManager().history(destination.id)) == len(
+                await ConversationManager().history(source.id)
+            )
         fork.assert_awaited_once_with(
             "thread-new",
             ThreadForkParams(
@@ -1032,8 +1034,12 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
             forked = await octomate.conversations.get(destination.id)
             assert original.external_id == "thread-new"
             assert forked.external_id == "thread-fork"
-            assert "local continuation" not in str(list(forked.messages))
-            assert "after" not in str(list(original.messages))
+            assert "local continuation" not in str(
+                list(await ConversationManager().history(forked.id))
+            )
+            assert "after" not in str(
+                list(await ConversationManager().history(original.id))
+            )
 
     # A fresh app-server must also select the persisted fork, without forking again.
     FakeCodex.script = text_script("restarted", thread_id="thread-fork")
@@ -2524,7 +2530,7 @@ async def test_cached_binding_reconfigures_a_changed_caller(
         key = tentacle.api_keys[session.user_profile.user_id]
         assert headers["Authorization"] == f"Bearer {key.token.get_secret_value()}"
         assert session.conversation_id is not None
-        stored = await conversations.get(session.conversation_id, with_history=False)
+        stored = await conversations.get(session.conversation_id, with_runs=False)
         assert stored.external_id == "thread-new"
         assert tentacle.ink.thread_bindings[stored.external_id] == (
             stored.id,
@@ -3180,7 +3186,7 @@ async def test_async_questions_continue_and_answers_resume_the_same_thread(
         assert conversation.external_id == "thread-new"
         assert any(
             "Which region?" in (message.message_text or "")
-            for message in conversation.messages
+            for message in (await ConversationManager().history(conversation.id))
         )
 
         # Partial replies settle their cards without starting a premature turn.

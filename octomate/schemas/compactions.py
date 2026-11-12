@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Self
 
-from arcanus import BaseTransmuter, RelationCollection, Relationships
-from arcanus.base import Identity
+from arcanus import BaseTransmuter, Identity, RelationCollection, Relationships
 from pydantic import (
     UUID7,
     AwareDatetime,

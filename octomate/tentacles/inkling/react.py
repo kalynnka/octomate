@@ -263,23 +263,26 @@ async def resolve_conversation[ReactOutputT, ReactDepsT](
 ) -> Conversation:
     """The node's conversation: the pre-ensured one when the run is addressed
     by id, otherwise the agent's own (thread, agent) conversation."""
-    if ctx.state.conversation_id is not None:
-        conversation = await ctx.deps.conversation_manager.get(
-            ctx.state.conversation_id
+    conversation_id = ctx.state.conversation_id
+    if conversation_id is None:
+        owner = await ctx.deps.conversation_manager.ensure(
+            ctx.state.thread_id,
+            agent_tentacle_id=ctx.state.agent_tentacle_id,
+            with_runs=False,
         )
-        if (
-            conversation.agent_tentacle_id != ctx.state.agent_tentacle_id
-            or conversation.thread_id != ctx.state.thread_id
-        ):
-            raise ValueError(
-                f"conversation {ctx.state.conversation_id} does not belong to "
-                f"({ctx.state.agent_tentacle_id!r}, {ctx.state.thread_id})"
-            )
-        return conversation
-    return await ctx.deps.conversation_manager.ensure(
-        ctx.state.thread_id,
-        agent_tentacle_id=ctx.state.agent_tentacle_id,
+        conversation_id = owner.id
+    conversation = await ctx.deps.conversation_manager.get(
+        conversation_id, with_runs=False, with_messages=True
     )
+    if ctx.state.conversation_id is not None and (
+        conversation.agent_tentacle_id != ctx.state.agent_tentacle_id
+        or conversation.thread_id != ctx.state.thread_id
+    ):
+        raise ValueError(
+            f"conversation {ctx.state.conversation_id} does not belong to "
+            f"({ctx.state.agent_tentacle_id!r}, {ctx.state.thread_id})"
+        )
+    return conversation
 
 
 @dataclass

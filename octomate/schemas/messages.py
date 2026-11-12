@@ -7,8 +7,13 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Annotated, Literal, Self
 
-from arcanus import BaseTransmuter, RelationCollection, Relationships, Transmuter
-from arcanus.base import Identity
+from arcanus import (
+    BaseTransmuter,
+    Identity,
+    RelationCollection,
+    Relationships,
+    Transmuter,
+)
 from arcanus.dataclass import dataclass as arcanus_dataclass
 from octomate_protocol.gateway import GatewayTool
 from pydantic import (

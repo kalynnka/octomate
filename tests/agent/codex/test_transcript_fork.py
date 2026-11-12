@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -11,6 +11,7 @@ from uuid import UUID
 
 import opendal
 import pytest
+from arcanus import RelationCollection
 from arcanus.materia.sqlalchemy import AsyncSession
 from fastapi import UploadFile
 from openai_codex import CodexConfig as RuntimeConfig
@@ -21,6 +22,7 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.config.agents import CodexConfig
 from octomate.database import async_session
+from octomate.managers.conversation import ConversationManager
 from octomate.managers.files import FileManager
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.files import File
@@ -196,8 +198,8 @@ async def test_fork_copies_only_completed_uploaded_history(
     assert result.runs[-1].permission_mode == "auto_review"
     assert result.transcript_file_id is not None
     assert result.transcript_file_id != case.source.transcript_file_id
-    assert len(result.messages) == 1
-    [part] = result.messages[0].parts
+    assert len(await ConversationManager().history(result.id)) == 1
+    [part] = (await ConversationManager().history(result.id))[0].parts
     assert isinstance(part, UserPromptPart)
     assert part.content == "completed"
     assert (
@@ -305,7 +307,7 @@ async def test_fork_failure_publishes_no_target_or_file(
     assert target.external_id is None
     assert target.transcript_file_id is None
     assert target.permission_mode is None
-    assert not target.messages
+    assert not (await ConversationManager().history(target.id))
     assert not list(case.home.rglob("*.jsonl"))
     assert len(list((tmp_path / "files").glob("users/*/*"))) == 1
     async with async_session() as session:
@@ -496,7 +498,9 @@ async def test_fork_requires_a_matching_terminal_event(
     assert await files.read(result.transcript_file_id, owner_id=case.owner_id) == (
         content if terminal else case.prefix
     )
-    assert len(result.messages) == int(previous_completed) + int(terminal)
+    assert len(await ConversationManager().history(result.id)) == int(
+        previous_completed
+    ) + int(terminal)
     assert result.runs[-1].model_name == ("other-model" if terminal else "gpt-6-luna")
     assert result.permission_mode == ("full_access" if terminal else "auto_review")
     completed_id = json.loads(case.prefix.splitlines()[-1])["payload"]["turn_id"]
@@ -508,9 +512,10 @@ async def test_fork_requires_a_matching_terminal_event(
 async def test_latest_completed_turn_does_not_validate_stale_older_offsets(
     case: ForkCase,
 ) -> None:
-    source = case.source.model_copy(
-        update={
-            "runs": [
+    source = replace(
+        case.source,
+        runs=RelationCollection(
+            [
                 ExternalAgentRun(
                     id=str(uuid7()),
                     conversation_id=case.source.id,
@@ -521,7 +526,7 @@ async def test_latest_completed_turn_does_not_validate_stale_older_offsets(
                 ),
                 *case.source.runs,
             ]
-        }
+        ),
     )
     data, completed = await case.tentacle.read_fork_transcript(
         source, owner_id=case.owner_id

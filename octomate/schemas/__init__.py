@@ -49,6 +49,7 @@ thread.ThreadArtifact.model_rebuild()
 messages.ModelMessage.model_rebuild()
 rebuild_dataclass(messages.ModelRequest)
 rebuild_dataclass(messages.ModelResponse)
+rebuild_dataclass(conversation.Conversation)
 
 __all__ = [
     "MessageEvent",

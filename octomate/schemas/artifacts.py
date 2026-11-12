@@ -3,8 +3,7 @@
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
-from arcanus import BaseTransmuter
-from arcanus.base import Identity
+from arcanus import BaseTransmuter, Identity
 from pydantic import (
     UUID7,
     AnyHttpUrl,

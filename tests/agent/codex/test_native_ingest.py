@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.database import async_session
+from octomate.managers.conversation import ConversationManager
 from octomate.nerve import Impulse, Nerve
 from octomate.schemas.compactions import Compaction, ExternalCompaction
 from octomate.schemas.messages import ModelMessage
@@ -585,7 +586,10 @@ async def test_hooks_for_an_sdk_session_are_recorded_as_external() -> None:
     assert sdk is not None
     assert sdk.external_id == SESSION_ID
     assert [run.id for run in sdk.runs] == ["sdk-run"]
-    assert [message.message_text for message in sdk.messages] == ["SDK prompt"]
+    assert [
+        message.message_text
+        for message in (await ConversationManager().history(sdk.id))
+    ] == ["SDK prompt"]
     await tailer.shutdown()
 
 
@@ -888,7 +892,10 @@ async def test_thread_spawn_rollout_tree_records_resumed_child_runs(
         "call-spawn",
         "call-followup",
     ]
-    assert [message.message_text for message in child.messages] == [
+    assert [
+        message.message_text
+        for message in (await ConversationManager().history(child.id))
+    ] == [
         "first finding",
         "second finding",
     ]
@@ -1109,7 +1116,10 @@ async def test_compactions_survive_turn_replay_and_use_the_runtime_owner(
         assert rows[0].conversation_id == owner.id
     conversation = await octomate.conversations.get(rows[0].conversation_id)
     assert [run.id for run in conversation.runs] == [TURN_ID]
-    assert [message.message_text for message in conversation.messages] == [
+    assert [
+        message.message_text
+        for message in (await ConversationManager().history(conversation.id))
+    ] == [
         "original prompt",
         "original answer",
     ]

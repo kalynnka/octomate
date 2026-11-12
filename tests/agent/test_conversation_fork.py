@@ -246,9 +246,9 @@ async def test_fork_shares_the_source_history_and_grows_apart(
         ["read"],
     )
     assert [run.id for run in forked.runs] == [first.id, second.id]
-    assert [message.id for message in forked.messages] == [
-        message.id for message in original.messages
-    ]
+    assert [
+        message.id for message in (await ConversationManager().history(forked.id))
+    ] == [message.id for message in (await ConversationManager().history(original.id))]
     contexts = await manager.for_thread(forked.thread_id)
     assert [context.id for context in contexts] == [forked.id]
     landed = await threads.get(forked.thread_id)
@@ -389,14 +389,17 @@ async def test_abandoning_a_shared_tool_call_leaves_the_fork_resuming_it() -> No
         [ModelRequest(parts=[denial, prompt])],
     )
     source = await manager.get(source.id)
-    assert [message.id for message in source.messages[:-1]] == [
-        message.id for message in pending.messages
+    assert [
+        message.id for message in (await ConversationManager().history(source.id))[:-1]
+    ] == [message.id for message in pending.messages]
+    assert (await ConversationManager().history(source.id))[-1].parts == [
+        denial,
+        prompt,
     ]
-    assert source.messages[-1].parts == [denial, prompt]
     forked = await manager.get(target.id)
-    assert [message.id for message in forked.messages] == [
-        message.id for message in pending.messages
-    ]
+    assert [
+        message.id for message in (await ConversationManager().history(forked.id))
+    ] == [message.id for message in pending.messages]
 
 
 @pytest.mark.parametrize("removal", ["conversation", "thread", "run"])
@@ -421,7 +424,9 @@ async def test_a_run_a_fork_includes_cannot_be_deleted(removal: str) -> None:
 
     for conversation in (source, target):
         history = await manager.get(conversation.id)
-        assert [message.id for message in history.messages] == [run.messages[0].id]
+        assert [
+            message.id for message in (await ConversationManager().history(history.id))
+        ] == [run.messages[0].id]
 
 
 async def test_a_source_deletes_with_its_runs_once_no_fork_includes_them() -> None:
@@ -440,7 +445,9 @@ async def test_a_source_deletes_with_its_runs_once_no_fork_includes_them() -> No
         )
         await session.commit()
     history = await manager.get(source.id)
-    assert [message.id for message in history.messages] == [run.messages[0].id]
+    assert [
+        message.id for message in (await ConversationManager().history(history.id))
+    ] == [run.messages[0].id]
 
     async with async_session() as session:
         await session.execute(

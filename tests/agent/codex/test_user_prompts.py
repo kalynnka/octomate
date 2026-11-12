@@ -7,6 +7,7 @@ from anyio.abc import ObjectSendStream
 
 from octomate import Octomate
 from octomate.database import async_session
+from octomate.managers.conversation import ConversationManager
 from octomate.nerve import Impulse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import ThreadKey
@@ -251,7 +252,10 @@ async def test_context_and_other_turns_are_not_human_prompts(
     )
     assert state.conversation is not None
     conversation = await octomate.conversations.get(state.conversation.id)
-    assert [message.message_text for message in conversation.messages] == [
+    assert [
+        message.message_text
+        for message in (await ConversationManager().history(conversation.id))
+    ] == [
         "actual prompt",
         "done",
     ]

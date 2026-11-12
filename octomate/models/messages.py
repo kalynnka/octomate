@@ -67,9 +67,20 @@ class ModelMessage(Base, TransmuterProxiedMixin):
     instructions: Mapped[str | None] = mapped_column(String, nullable=True)
 
     usage: Mapped[JsonValue] = mapped_column(JSON, nullable=True)
+    model_id: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment="Configured model identifier used for the request, distinct from the provider-reported model name.",
+    )
     model_name: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+
     provider_name: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     provider_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    canonical_system: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment="Provider system whose keys validate this response's signed or encrypted content, when distinct from provider_name.",
+    )
     provider_details: Mapped[JsonValue] = mapped_column(JSON, nullable=True)
     provider_response_id: Mapped[str | None] = mapped_column(
         String, nullable=True, index=True

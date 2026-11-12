@@ -80,7 +80,7 @@ async def command_context(
     cwd = None
     if conversation_id is not None:
         try:
-            conversation = await conversations.get(conversation_id, with_history=False)
+            conversation = await conversations.get(conversation_id, with_runs=False)
         except ValueError as error:
             raise HTTPException(
                 status_code=404, detail="Command conversation is unavailable"
@@ -123,7 +123,12 @@ async def command_context(
     "/catalog",
     response_model_exclude={
         "context": {
-            "conversation": {"runs", "messages", "external_id", "allowed_tools"}
+            "conversation": {
+                "runs",
+                "messages",
+                "external_id",
+                "allowed_tools",
+            }
         }
     },
 )

@@ -125,7 +125,7 @@ class PendingHandoff:
         """Record this handoff on the chat `thread` belongs to, naming the agent
         and model `decision` resolved to, unless that chat already names them."""
         target_conversation = await deps.conversation_manager.ensure(
-            thread.id, agent_tentacle_id=decision.agent_id, with_history=False
+            thread.id, agent_tentacle_id=decision.agent_id, with_runs=False
         )
         # A handoff pins who owns the chat, so it is read and written there: a
         # chat room's sub-thread is new every kick and would forget the owner.
@@ -302,7 +302,7 @@ class ReflexDeps:
             # external runtime's tool call finds this turn's session by the
             # conversation it already knows.
             conversation = await self.conversation_manager.ensure(
-                thread_id, agent_tentacle_id=agent.id, with_history=False
+                thread_id, agent_tentacle_id=agent.id, with_runs=False
             )
             session.conversation_id = conversation.id
         return session
@@ -768,20 +768,19 @@ class ReflexRuntime:
                 # conversation this turn ran in, as of its last message.
                 conversation = (
                     await ctx.deps.conversation_manager.ensure(
-                        thread_id, agent_tentacle_id=agent_id
+                        thread_id, agent_tentacle_id=agent_id, with_runs=False
                     )
                     if thread_id is not None
                     else None
                 )
-                last = (
-                    max(
-                        conversation.messages,
-                        key=lambda message: message.id,
-                        default=None,
+                history = (
+                    await ctx.deps.conversation_manager.history(
+                        conversation.id, limit=1
                     )
                     if conversation is not None
-                    else None
+                    else []
                 )
+                last = history[-1] if history else None
                 state.handoff = PendingHandoff(
                     source_agent_tentacle_id=agent_id,
                     source_conversation_id=conversation.id if conversation else None,

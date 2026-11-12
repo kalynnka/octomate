@@ -595,8 +595,8 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         with fresh message ids, for this tentacle to resume; the staged copy goes."""
         conversations = self.conversations
         async with conversations.lock(target.key):
-            target = await conversations.get(target.id)
-            if target.messages or target.external_id:
+            target = await conversations.get(target.id, with_runs=False)
+            if target.external_id or await conversations.has_history(target.id):
                 raise ValueError("Transcript imports require an empty target")
             if source.external_id is None:
                 raise ValueError("Native Claude Code history has not been uploaded")

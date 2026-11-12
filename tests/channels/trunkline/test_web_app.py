@@ -1652,6 +1652,7 @@ async def test_threads_and_detail_endpoints(
         [conversation] = conversations.json()
         assert conversation["agent_tentacle_id"] == "inkling"
         assert "messages" not in conversation
+        assert "all_messages" not in conversation
         [run] = conversation["runs"]
         assert run["kind"] == "octomate"
         assert run["started_at"].endswith("Z") or "+" in run["started_at"]

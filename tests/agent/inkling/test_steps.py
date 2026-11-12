@@ -247,13 +247,10 @@ async def test_model_failure_preserves_the_registered_run_and_settled_checkpoint
         assert run.messages
         assert run.name == "react"
         if snapshot is not None:
-            assert [message.parts for message in snapshot.messages[:-1]] == [
+            assert snapshot.state == "complete"
+            assert [message.parts for message in snapshot.messages] == [
                 message.parts for message in run.messages
             ]
-            interrupted = snapshot.messages[-1]
-            assert isinstance(interrupted, ModelResponse)
-            assert interrupted.parts == []
-            assert interrupted.state == "interrupted"
 
 
 async def test_deferred_resume_registers_a_new_run_in_the_same_conversation(

@@ -572,7 +572,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             contextlib.AsyncExitStack() as resources,
         ):
             conversation = await self.conversations.get(
-                conversation.id, with_history=False
+                conversation.id, with_runs=False
             )
             effort = await self.resolve_effort(conversation, model=context.model)
             permission_mode = (
@@ -1052,7 +1052,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
 
         if conversation_id is not None:
             conversation = await self.conversations.get(
-                conversation_id, with_history=False
+                conversation_id, with_runs=False
             )
             if (
                 conversation.agent_tentacle_id != self.id
@@ -1066,7 +1066,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             conversation = await self.conversations.ensure(
                 thread_id,
                 agent_tentacle_id=self.id,
-                with_history=False,
+                with_runs=False,
             )
         accumulator = DeepseekRunAccumulator(
             context_window=await self.conversations.latest_context_window(
@@ -1112,7 +1112,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 workspace,
             ):
                 conversation = await self.conversations.get(
-                    conversation.id, with_history=False
+                    conversation.id, with_runs=False
                 )
                 effort = await self.resolve_effort(
                     conversation, model=deepseek_model, effort=effort

@@ -6,8 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Literal
 
-from arcanus import BaseTransmuter, RelationCollection, Relationships
-from arcanus.base import Identity
+from arcanus import BaseTransmuter, Identity, RelationCollection, Relationships
 from pydantic import UUID7, AwareDatetime, ConfigDict, Field
 
 from octomate.models.runs import AgentRun as AgentRunModel

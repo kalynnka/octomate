@@ -538,7 +538,7 @@ async def test_dsh_permission_update_reaches_live_run_without_another_prompt(
         thread_id=conversation.thread_id,
     ) as events:
         await anext(events)
-        selected = await agent.conversations.get(conversation.id, with_history=False)
+        selected = await agent.conversations.get(conversation.id, with_runs=False)
         assert selected.external_id == "sess-1"
         await agent.set_permission_mode(selected, "danger-full-access")
         assert calls_of("commands/execute")[-1] == {
@@ -552,7 +552,7 @@ async def test_dsh_permission_update_reaches_live_run_without_another_prompt(
         FakeDeepseekApi.push("sess-1", turn_events("Done")[2:])
         async for _ in events:
             pass
-    stored = await agent.conversations.get(conversation.id, with_history=False)
+    stored = await agent.conversations.get(conversation.id, with_runs=False)
     assert stored.permission_mode == "danger-full-access"
     FakeDeepseekApi.turn_script = turn_events("Done")
     await agent.run(

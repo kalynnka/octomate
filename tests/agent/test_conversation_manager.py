@@ -9,7 +9,6 @@ from unittest.mock import Mock
 
 import pytest
 import sqlalchemy.exc
-from arcanus.materia.sqlalchemy import lazyload
 from pydantic import UUID7
 from pydantic_ai.messages import (
     ModelRequest as RawModelRequest,
@@ -335,9 +334,7 @@ async def test_latest_run_uses_each_conversations_ordered_history(
             rows = await session.list(
                 Conversation,
                 limit=None,
-                options=[
-                    lazyload(Conversation["messages"]),
-                ],
+                options=[],
                 expressions=[Conversation["thread_id"] == thread_id],
             )
         latest = {row.id: row.latest_run for row in rows}
@@ -593,7 +590,7 @@ async def test_record_run_creates_run_and_persists_messages() -> None:
     assert len(listed) == 2
     kinds = {type(m).__name__ for m in listed}
     assert kinds == {"ModelRequest", "ModelResponse"}
-    assert len(list(reloaded.messages)) == 2
+    assert len(list(await ConversationManager().history(reloaded.id))) == 2
 
 
 @pytest.mark.parametrize("lookup", ["ensure", "get"])
@@ -612,10 +609,10 @@ async def test_native_resume_reads_no_history_and_can_append_a_run(
     try:
         if lookup == "ensure":
             resumed = await service.ensure(
-                thread_id, agent_tentacle_id="claude", with_history=False
+                thread_id, agent_tentacle_id="claude", with_runs=False
             )
         else:
-            resumed = await service.get(conversation.id, with_history=False)
+            resumed = await service.get(conversation.id, with_runs=False)
     finally:
         event.remove(in_memory_engine.sync_engine, "before_cursor_execute", queries)
 
@@ -626,14 +623,17 @@ async def test_native_resume_reads_no_history_and_can_append_a_run(
     assert "FROM conversations" in statement
     assert "agent_runs" not in statement
     assert "model_messages" not in statement
+    assert "conversations.messages" not in statement
+    assert "conversations.usage" not in statement
+    assert "conversations.deferred_tool_requests" not in statement
 
     await service.record_agent_run(resumed, run_id="next", messages=messages)
     reloaded = await service.get(resumed.id)
     assert {run.id for run in reloaded.runs} == {"previous", "next"}
-    assert len(reloaded.messages) == 2
+    assert len(await ConversationManager().history(reloaded.id)) == 2
 
 
-async def test_history_loading_leaves_the_conversation_creation_lock(
+async def test_run_loading_leaves_the_conversation_creation_lock(
     in_memory_engine: AsyncEngine,
 ) -> None:
     service = ConversationManager()
@@ -656,7 +656,7 @@ async def test_history_loading_leaves_the_conversation_creation_lock(
     finally:
         event.remove(in_memory_engine.sync_engine, "before_cursor_execute", queries)
 
-    assert len(reloaded.messages) == 1
+    assert len(await ConversationManager().history(reloaded.id)) == 1
     assert locked[0] is True
     assert len(locked) > 1
     assert not any(locked[1:])
@@ -738,7 +738,7 @@ async def test_record_run_preserves_finish_reason() -> None:
 
     fresh = ConversationManager()
     reloaded = await fresh.ensure(await _thread(), agent_tentacle_id="inkling")
-    msgs = list(reloaded.messages)
+    msgs = list(await ConversationManager().history(reloaded.id))
     assert len(msgs) == 1
     assert msgs[0].finish_reason == "tool_call"
 
@@ -780,7 +780,7 @@ async def test_record_run_no_op_for_empty_list() -> None:
 async def test_record_run_persists_history() -> None:
     service = ConversationManager()
     conversation = await service.ensure(await _thread(), agent_tentacle_id="inkling")
-    assert list(conversation.messages) == []
+    assert list(await ConversationManager().history(conversation.id)) == []
 
     await service.record_agent_run(
         conversation,
@@ -802,7 +802,7 @@ async def test_record_run_persists_history() -> None:
 
     # record_agent_run persisted the turn; a re-ensure reads it back.
     hot = await service.ensure(await _thread(), agent_tentacle_id="inkling")
-    assert len(list(hot.messages)) == 2
+    assert len(list(await ConversationManager().history(hot.id))) == 2
 
 
 async def test_record_second_run_keeps_prior_run_messages() -> None:
@@ -857,7 +857,7 @@ async def test_record_second_run_keeps_prior_run_messages() -> None:
     fresh = ConversationManager()
     reloaded = await fresh.ensure(await _thread(), agent_tentacle_id="inkling")
     assert {run.id for run in reloaded.runs} == {"run-1", "run-2"}
-    assert len(list(reloaded.messages)) == 4
+    assert len(list(await ConversationManager().history(reloaded.id))) == 4
 
 
 async def test_record_tool_denial_preserves_the_original_call() -> None:
@@ -888,7 +888,9 @@ async def test_record_tool_denial_preserves_the_original_call() -> None:
 
     # ensure() re-reads the conversation record_agent_run persisted.
     conversation = await service.ensure(await _thread(), agent_tentacle_id="inkling")
-    original_ids = [message.id for message in conversation.messages]
+    original_ids = [
+        message.id for message in (await ConversationManager().history(conversation.id))
+    ]
     denial = ToolReturnPart("ask_questions", "Not carried out", tool_call_id="call_1")
     prompt = UserPromptPart("never mind")
     await service.record_agent_run(
@@ -904,8 +906,14 @@ async def test_record_tool_denial_preserves_the_original_call() -> None:
         await _thread(), agent_tentacle_id="inkling"
     )
     for reloaded in (hot, cold):
-        assert [message.id for message in reloaded.messages[:-1]] == original_ids
-        assert reloaded.messages[-1].parts == [denial, prompt]
+        assert [
+            message.id
+            for message in (await ConversationManager().history(reloaded.id))[:-1]
+        ] == original_ids
+        assert (await ConversationManager().history(reloaded.id))[-1].parts == [
+            denial,
+            prompt,
+        ]
 
 
 async def test_fork_copies_history_preserving_trailing_deferral() -> None:
@@ -948,13 +956,15 @@ async def test_fork_copies_history_preserving_trailing_deferral() -> None:
     cold = await ConversationManager().ensure(
         target_thread, agent_tentacle_id="inkling"
     )
-    assert [type(m).__name__ for m in cold.messages] == [
+    assert [
+        type(m).__name__ for m in (await ConversationManager().history(cold.id))
+    ] == [
         "ModelRequest",
         "ModelResponse",
     ]
     # Non-trivial columns copy verbatim, not just id/parts.
-    assert next(iter(cold.messages)).message_text == "hi"
-    last = list(cold.messages)[-1]
+    assert next(iter(await ConversationManager().history(cold.id))).message_text == "hi"
+    last = list(await ConversationManager().history(cold.id))[-1]
     assert any(
         isinstance(part, ToolCallPart) and part.tool_name == "teleport"
         for part in last.parts
@@ -966,7 +976,7 @@ async def test_fork_copies_history_preserving_trailing_deferral() -> None:
     origin = await ConversationManager().ensure(
         await _thread(), agent_tentacle_id="inkling"
     )
-    assert len(list(origin.messages)) == 2
+    assert len(list(await ConversationManager().history(origin.id))) == 2
 
 
 async def test_fork_rejects_non_empty_target() -> None:
@@ -1246,7 +1256,9 @@ async def test_a_run_remembers_which_call_spawned_it() -> None:
     parent_fresh = await ConversationManager().ensure(
         await _thread(), agent_tentacle_id="inkling"
     )
-    assert [m.message_text for m in parent_fresh.messages] == [
+    assert [
+        m.message_text for m in (await ConversationManager().history(parent_fresh.id))
+    ] == [
         "audit the repo",
         "commissioning codex",
     ]
@@ -1392,7 +1404,7 @@ async def test_fork_rejects_reusing_the_source_runtime_id() -> None:
     assert (await service.get(source.id)).external_id == "sess-1"
     unchanged = await service.get(target.id)
     assert unchanged.external_id is None
-    assert list(unchanged.messages) == []
+    assert list(await ConversationManager().history(unchanged.id)) == []
 
 
 async def test_fork_carries_the_handle_even_with_nothing_to_copy() -> None:
@@ -1487,5 +1499,7 @@ async def test_empty_run_reservation_never_replaces_transcript_messages() -> Non
     )
     stored = await manager.get(conversation.id)
     assert len(stored.runs) == 1
-    assert [m.id for m in stored.messages] == message_ids
+    assert [
+        m.id for m in (await ConversationManager().history(stored.id))
+    ] == message_ids
     assert stored.runs[0].end_offset == 100

@@ -4,17 +4,40 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TypeVar, cast
+from typing import ClassVar, Literal, TypeVar, cast
 
 from arcanus import Cursor, Page, RelationCollection
-from arcanus.materia.sqlalchemy import lazyload, noload, selectinload
+from arcanus.materia.sqlalchemy import lazyload, noload, selectinload, undefer
 from fastapi import UploadFile
-from pydantic import UUID7, AwareDatetime, TypeAdapter
+from pydantic import UUID7, AwareDatetime, NonNegativeInt, TypeAdapter, validate_call
+from pydantic_ai import Conversation as PydanticConversation
+
+# Core's store uses these marks to distinguish appended messages from edited history.
+from pydantic_ai._conversation_marks import mark_stored, stored_boundary
+from pydantic_ai.conversation_store import (
+    ConversationConflict,
+    ConversationEntry,
+    ConversationRecord,
+)
+from pydantic_ai.conversation_store import (
+    ConversationStore as PydanticConversationStore,
+)
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
-from pydantic_ai.messages import ToolReturnPart
+from pydantic_ai.messages import ModelMessagesTypeAdapter, ToolReturnPart
 from pydantic_ai.usage import RequestUsage
-from sqlalchemy import Select, and_, func, insert, literal, or_, select
+from sqlalchemy import (
+    Select,
+    and_,
+    func,
+    insert,
+    literal,
+    or_,
+    select,
+)
+from sqlalchemy.orm.exc import StaleDataError
+from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
@@ -64,6 +87,10 @@ def own_runs(thread_id: UUID7) -> Select[tuple[str]]:
     )
 
 
+class ConversationNotFound(ValueError):
+    """The requested conversation no longer exists or was never created."""
+
+
 class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]):
     """Resolves and persists agent `Conversation` entities, and owns their model
     message history.
@@ -74,6 +101,96 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
     `(thread_id, agent_tentacle_id, subagent_id)`: every sender in a group thread
     keys to the same owning agent's conversation, regardless of who woke it.
     """
+
+    @validate_call
+    async def get(
+        self,
+        conversation_id: UUID7,
+        *,
+        with_runs: bool = True,
+        with_messages: bool = False,
+    ) -> Conversation:
+        """Read an existing conversation by id; raise on an unknown id.
+
+        `with_runs` loads runs and their messages. Independently, `with_messages`
+        loads effective context, cumulative usage, and deferred tool requests for
+        an agent run, with upstream's persistence cursor. Disable both for a
+        metadata-only read. Thread ownership is established by ensure().
+        """
+        options = [lazyload(Conversation["runs"])]
+        if with_messages:
+            options.extend(
+                [
+                    undefer(Conversation["usage"]),
+                    undefer(Conversation["deferred_tool_requests"]),
+                ]
+            )
+        async with async_session() as session:
+            conversation = await session.get(
+                Conversation,
+                conversation_id,
+                options=options,
+            )
+            if conversation is None:
+                raise ConversationNotFound(f"unknown conversation {conversation_id}")
+            if with_runs:
+                await conversation.runs
+        if with_messages:
+            conversation.messages = await self.effective_messages(conversation)
+            mark_stored(conversation, conversation.messages)
+        return conversation
+
+    @validate_call
+    async def history(
+        self, conversation_id: UUID7, *, limit: NonNegativeInt | None = None
+    ) -> list[ModelRequest | ModelResponse]:
+        """Read original run messages in order, including history replaced by compaction.
+
+        A limit selects the most recent messages. Shared fork runs are included;
+        compaction-owned replacements belong to get(..., with_messages=True).
+        """
+        statement = (
+            select(ModelMessage)
+            .select_from(Conversation)
+            .join(Conversation["runs"])
+            .join(AgentRun["messages"])
+            .where(Conversation["id"] == conversation_id)
+        )
+        order = (AgentRun["started_at"], AgentRun["id"], ModelMessage["id"])
+        if limit is not None:
+            statement = statement.order_by(*(column.desc() for column in order)).limit(
+                limit
+            )
+        else:
+            statement = statement.order_by(*order)
+        async with async_session() as session:
+            # The polymorphic query anchor materializes its concrete message schemas.
+            messages = list(
+                cast(
+                    Sequence[ModelRequest | ModelResponse],
+                    (await session.scalars(statement)).all(),
+                )
+            )
+        if limit is not None:
+            messages.reverse()
+        return messages
+
+    @validate_call
+    async def has_history(self, conversation_id: UUID7) -> bool:
+        """Whether the conversation has any archived run messages."""
+        async with async_session() as session:
+            return bool(
+                await session.scalar(
+                    select(
+                        select(ModelMessage["id"])
+                        .select_from(Conversation)
+                        .join(Conversation["runs"])
+                        .join(AgentRun["messages"])
+                        .where(Conversation["id"] == conversation_id)
+                        .exists()
+                    )
+                )
+            )
 
     async def effective_messages(
         self, conversation: Conversation
@@ -105,7 +222,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 )
             ).one()
             if not exists:
-                raise ValueError(f"unknown conversation {conversation.id}")
+                raise ConversationNotFound(f"unknown conversation {conversation.id}")
             if unlinked:
                 raise ValueError(
                     "effective context requires every compaction to be linked"
@@ -207,6 +324,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         Retained inputs keep their ids and ownership. New replacement messages
         belong to the compaction, whose two ordered stages include every input
         and output message. A later suffix already archived by the run is allowed.
+        The revision advances atomically; get(..., with_messages=True) before continuing.
         """
         before_ids = [message.id for message in before]
         after_ids = [message.id for message in after]
@@ -220,7 +338,12 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
             raise ValueError(
                 "compaction requires nonempty input and unique stage members"
             )
-        async with self.lock(conversation.key):
+        async with self.lock(conversation.key), async_session() as session:
+            current = await session.one(
+                Conversation,
+                expressions=[Conversation["id"] == conversation.id],
+                options=[lazyload(Conversation["runs"])],
+            )
             effective = await self.effective_messages(conversation)
             if [message.id for message in effective[: len(before)]] != before_ids:
                 raise ValueError(
@@ -243,37 +366,38 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 membership_complete=True,
                 messages=RelationCollection(replacements),
             )
-            async with async_session() as session:
-                position = await session.count(
-                    ConversationCompaction,
-                    expressions=[
-                        ConversationCompaction["conversation_id"] == conversation.id
-                    ],
+            current.revision = str(uuid7())
+            await session.flush()
+            position = await session.count(
+                ConversationCompaction,
+                expressions=[
+                    ConversationCompaction["conversation_id"] == conversation.id
+                ],
+            )
+            session.add(compaction)
+            await session.flush()
+            stages: tuple[tuple[CompactionStage, list[UUID7]], ...] = (
+                ("before", before_ids),
+                ("after", after_ids),
+            )
+            session.add_all(
+                CompactionMembership(
+                    compaction_id=compaction.id,
+                    stage=stage,
+                    position=index,
+                    model_message_id=message_id,
                 )
-                session.add(compaction)
-                await session.flush()
-                stages: tuple[tuple[CompactionStage, list[UUID7]], ...] = (
-                    ("before", before_ids),
-                    ("after", after_ids),
+                for stage, message_ids in stages
+                for index, message_id in enumerate(message_ids)
+            )
+            session.add(
+                ConversationCompaction(
+                    conversation_id=conversation.id,
+                    compaction_id=compaction.id,
+                    position=position,
                 )
-                session.add_all(
-                    CompactionMembership(
-                        compaction_id=compaction.id,
-                        stage=stage,
-                        position=index,
-                        model_message_id=message_id,
-                    )
-                    for stage, message_ids in stages
-                    for index, message_id in enumerate(message_ids)
-                )
-                session.add(
-                    ConversationCompaction(
-                        conversation_id=conversation.id,
-                        compaction_id=compaction.id,
-                        position=position,
-                    )
-                )
-                await session.commit()
+            )
+            await session.commit()
             return compaction
 
     async def record_driven_compaction(
@@ -392,9 +516,38 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 if native_compaction_id is not None
                 else []
             )
-            existing = matches[0] if matches else None
+            if not matches:
+                owner = None
+                if not conversation.subagent_id:
+                    owner = await session.one_or_none(
+                        Conversation,
+                        expressions=[
+                            Conversation["external_id"] == native_session_id,
+                            Conversation["agent_tentacle_id"]
+                            == conversation.agent_tentacle_id,
+                            Conversation["id"] != conversation.id,
+                            Conversation["subagent_id"] == "",
+                        ],
+                        options=[
+                            noload(Conversation["runs"]),
+                        ],
+                    )
+                compaction = ExternalCompaction(
+                    conversation_id=owner.id if owner is not None else conversation.id,
+                    native_session_id=native_session_id,
+                    native_compaction_id=native_compaction_id,
+                    trigger=trigger,
+                    source=source,
+                    start_offset=start_offset,
+                    end_offset=end_offset,
+                    happened_at=happened_at,
+                    messages=RelationCollection(messages),
+                )
+                session.add(compaction)
+                await session.commit()
+                return compaction
+            existing = matches[0]
             for duplicate in matches[1:]:
-                assert existing is not None
                 if not existing.messages:
                     content = list(duplicate.messages)
                     duplicate.messages.clear()
@@ -404,57 +557,26 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 if existing.happened_at is None:
                     existing.happened_at = duplicate.happened_at
                 await session.delete(duplicate)
-            if existing is not None:
-                if existing.native_compaction_id not in {None, native_compaction_id}:
-                    raise ValueError(
-                        "Compaction coordinates identify a different native item"
-                    )
-                existing.native_compaction_id = native_compaction_id
-                add_messages = bool(messages) and not existing.messages
-                if add_messages:
-                    existing.messages.extend(messages)
-                if existing.happened_at is None:
-                    existing.happened_at = happened_at
-                if existing.trigger == "unknown":
-                    existing.trigger = trigger
-                if (
-                    add_messages
-                    and isinstance(existing, ExternalCompaction)
-                    and existing.source == source
-                ):
-                    existing.end_offset = end_offset
-                await session.commit()
-                return None
-            owner = None
-            if not conversation.subagent_id:
-                owner = await session.one_or_none(
-                    Conversation,
-                    expressions=[
-                        Conversation["external_id"] == native_session_id,
-                        Conversation["agent_tentacle_id"]
-                        == conversation.agent_tentacle_id,
-                        Conversation["id"] != conversation.id,
-                        Conversation["subagent_id"] == "",
-                    ],
-                    options=[
-                        noload(Conversation["runs"]),
-                        noload(Conversation["messages"]),
-                    ],
+            if existing.native_compaction_id not in {None, native_compaction_id}:
+                raise ValueError(
+                    "Compaction coordinates identify a different native item"
                 )
-            compaction = ExternalCompaction(
-                conversation_id=owner.id if owner is not None else conversation.id,
-                native_session_id=native_session_id,
-                native_compaction_id=native_compaction_id,
-                trigger=trigger,
-                source=source,
-                start_offset=start_offset,
-                end_offset=end_offset,
-                happened_at=happened_at,
-                messages=RelationCollection(messages),
-            )
-            session.add(compaction)
+            existing.native_compaction_id = native_compaction_id
+            add_messages = bool(messages) and not existing.messages
+            if add_messages:
+                existing.messages.extend(messages)
+            if existing.happened_at is None:
+                existing.happened_at = happened_at
+            if existing.trigger == "unknown":
+                existing.trigger = trigger
+            if (
+                add_messages
+                and isinstance(existing, ExternalCompaction)
+                and existing.source == source
+            ):
+                existing.end_offset = end_offset
             await session.commit()
-            return compaction
+            return None
 
     async def latest_model(self, conversation_id: UUID7) -> str | None:
         """Read the last reported model without loading the conversation's history."""
@@ -496,18 +618,18 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         agent_tentacle_id: str,
         subagent_id: str = "",
         parent_conversation_id: UUID7 | None = None,
-        with_history: bool = True,
+        with_runs: bool = True,
         native: bool = False,
     ) -> Conversation:
         """Resolve the conversation owned by `agent_tentacle_id` in `thread_id`,
-        creating it if it does not yet exist. Its `conversation.messages` is the
-        live model history. The owning agent is part of the identity — two agents
-        in the same thread keep separate conversations — so callers must always
+        creating it if it does not yet exist. The owning agent is part of the
+        identity — two agents in the same thread keep separate conversations — so callers must always
         supply it. `subagent_id` narrows to one subagent's own context; empty is
         the agent's long-lived conversation in the thread. A subagent context
         names the conversation that spawned it, and only a subagent context may.
-        `with_history=False` leaves runs and messages unloaded for callers that
-        only need identity, permissions, or the native session's resume id.
+        `with_runs` loads the run relationship, including each run's messages.
+        Disable it when only identity, permissions, or the native resume id is
+        needed. Effective context is loaded through get(..., with_messages=True).
 
         Native ingest sets `native=True` to resolve its uploaded thread's context.
         A native context belongs to one configured agent; another owner is refused.
@@ -544,7 +666,6 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                     Conversation,
                     options=[
                         lazyload(Conversation["runs"]),
-                        lazyload(Conversation["messages"]),
                     ],
                     expressions=expressions,
                 )
@@ -564,38 +685,9 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                     session.add(conversation)
                 await session.flush()
                 await session.commit()
-            if with_history:
+            if with_runs:
                 await conversation.runs
-                await conversation.messages
             return conversation
-
-    async def get(
-        self, conversation_id: UUID7, *, with_history: bool = True
-    ) -> Conversation:
-        """Resolve a conversation by id — one fresh read; raises on an unknown
-        id. This is the by-id path for a run addressed at a pre-ensured
-        conversation (a commissioned accomplice's child context): the caller
-        ensured it and owns any thread/agent validation. `with_history=False`
-        leaves runs and messages unloaded, as on `ensure`."""
-        if not with_history:
-            options = [
-                lazyload(Conversation["runs"]),
-                lazyload(Conversation["messages"]),
-            ]
-        else:
-            options = []
-        async with async_session() as session:
-            conversation = await session.get(
-                Conversation,
-                conversation_id,
-                options=options,
-            )
-            if conversation is None:
-                raise ValueError(f"unknown conversation {conversation_id}")
-            if with_history:
-                await conversation.runs
-                await conversation.messages
-        return conversation
 
     async def link_parent_run(
         self,
@@ -637,21 +729,20 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
     async def for_thread(self, thread_id: UUID7) -> list[Conversation]:
         """The thread's agent conversations, subagents included, each with its runs.
 
-        Both message relations here are lazy="selectin", so the plain query would read
-        every model message the thread ever produced twice over — once under the
-        conversation and once under the run that owns it. Both are dropped: a reader
-        after the messages pages through them with `messages_page`.
+        Run messages are not loaded: a reader after the messages pages through
+        them with `messages_page`.
         """
         async with async_session() as session:
             rows = await session.list(
                 Conversation,
                 limit=None,
                 options=[
-                    noload(Conversation["messages"]),
                     selectinload(Conversation["runs"]).noload(AgentRun["messages"]),
                 ],
                 expressions=[Conversation["thread_id"] == thread_id],
             )
+            for conversation in rows:
+                await conversation.runs
         return list(rows)
 
     async def messages_page(
@@ -901,7 +992,6 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                     conversation.id,
                     options=[
                         noload(Conversation["runs"]),
-                        noload(Conversation["messages"]),
                     ],
                 )
                 if owner is not None:
@@ -929,7 +1019,6 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 expressions=[Conversation["id"] == run.conversation_id],
                 options=[
                     noload(Conversation["runs"]),
-                    noload(Conversation["messages"]),
                 ],
             )
             if reloaded is not None:
@@ -1009,11 +1098,12 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 target.id,
                 options=[
                     noload(Conversation["runs"]),
-                    noload(Conversation["messages"]),
                 ],
             )
             if stored_target is None:
                 raise ValueError(f"unknown conversation {target.id}")
+            if stored_target.revision is not None:
+                raise ValueError("fork target already holds a saved context")
             target_thread = await session.get(Thread, target.thread_id)
             if target_thread is None:
                 raise ValueError(f"unknown thread {target.thread_id}")
@@ -1041,12 +1131,31 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 Conversation,
                 source.id,
                 options=[
-                    noload(Conversation["messages"]),
+                    undefer(Conversation["usage"]),
+                    undefer(Conversation["deferred_tool_requests"]),
                     selectinload(Conversation["runs"]).noload(AgentRun["messages"]),
                 ],
             )
             if origin is None:
                 raise ValueError(f"unknown conversation {source.id}")
+            if origin.revision is not None:
+                if end_offset is not None:
+                    raise ValueError(
+                        "a current context cannot be cut at a transcript offset"
+                    )
+                stored_target.usage = origin.usage
+                stored_target.deferred_tool_requests = origin.deferred_tool_requests
+                stored_target.revision = str(uuid7())
+                await session.execute(
+                    insert(ConversationCompaction).from_select(
+                        ["conversation_id", "compaction_id", "position"],
+                        select(
+                            literal(target.id),
+                            ConversationCompaction["compaction_id"],
+                            ConversationCompaction["position"],
+                        ).where(ConversationCompaction["conversation_id"] == source.id),
+                    )
+                )
             dropped: set[str] = set()
             # Without an end offset the cut is the ledger's last message. With one,
             # it falls after the last chat of a completed turn: bound to one, or
@@ -1188,7 +1297,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         subsequent uploads append to that file. Never mutate the caller's conversation.
         """
         async with self.lock(conversation.key):
-            current = await self.get(conversation.id, with_history=False)
+            current = await self.get(conversation.id, with_runs=False)
             previous_id = current.transcript_file_id
             if previous_id is not None:
                 return await files.append(
@@ -1200,11 +1309,15 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 files.upload(uploaded, owner_id=owner_id) as transcript,
                 async_session() as session,
             ):
-                stored = await session.get(Conversation, conversation.id)
-                if stored is None:
-                    raise ValueError(f"unknown conversation {conversation.id}")
                 session.add(transcript)
                 await session.flush()
+                stored = await session.get(
+                    Conversation,
+                    conversation.id,
+                    options=[lazyload(Conversation["runs"])],
+                )
+                if stored is None:
+                    raise ValueError(f"unknown conversation {conversation.id}")
                 stored.transcript_file_id = transcript.id
                 await session.commit()
             return transcript
@@ -1387,3 +1500,164 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 ThreadMessage.model_validate(thread_message)
                 for thread_message in message.thread_messages
             ]
+
+
+@dataclass
+class ConversationStore(PydanticConversationStore):
+    """Upstream conversation bookkeeping over the shared conversation manager.
+
+    Loading delegates to the manager; record_conversation appends run messages and
+    carryover state through Arcanus. Linked-entry persistence is not implemented,
+    so upstream save, branch, fork, listing, and deletion remain unavailable.
+    """
+
+    manager: ConversationManager
+    conversation_id_adapter: ClassVar[TypeAdapter[UUID7]] = TypeAdapter(UUID7)
+
+    async def load(
+        self,
+        conversation_id: str,
+        *,
+        limit: int | None = None,
+        scope: str | None = None,
+    ) -> Conversation | None:
+        if limit is not None or scope is not None:
+            raise NotImplementedError(
+                "Scoped and windowed conversation loading is not implemented"
+            )
+        identity = self.conversation_id_adapter.validate_python(conversation_id)
+        try:
+            return await self.manager.get(identity, with_runs=False, with_messages=True)
+        except ConversationNotFound:
+            return None
+
+    @validate_call
+    async def record_conversation(
+        self,
+        conversation: PydanticConversation,
+    ) -> list[ModelRequest | ModelResponse]:
+        """Append new run messages and replace carryover state in one transaction.
+
+        Follows upstream load/save bookkeeping, returning the new archive rows
+        instead of wrapping them in ConversationEntry objects. Runs retain their
+        ownership; compaction replacements must be recorded through
+        manager.record_context_compaction before loading or saving the context.
+        This store does not treat an unrecorded rewrite as an implicit branch.
+        Keep the passed conversation to retain its updated revision and cursor.
+        """
+        conversation_id = self.conversation_id_adapter.validate_python(
+            conversation.conversation_id
+        )
+        if conversation.new_message_index is not None and not (
+            0 <= conversation.new_message_index <= len(conversation.messages)
+        ):
+            raise ValueError("new_message_index is outside the conversation history")
+        boundary = stored_boundary(conversation)
+        revision = str(uuid7())
+        saved: list[ModelRequest | ModelResponse] = []
+        links: list[ConversationRun] = []
+        async with async_session() as session:
+            current = await session.get(
+                Conversation,
+                conversation_id,
+                options=[lazyload(Conversation["runs"])],
+            )
+            if current is None or current.revision != conversation.revision:
+                raise ConversationConflict(str(conversation_id))
+            if boundary is None:
+                history = await self.manager.effective_messages(current)
+                if conversation.new_message_index is not None:
+                    history = history[len(history) - conversation.new_message_index :]
+                stored = ModelMessagesTypeAdapter.validate_python(
+                    [vars(message) for message in history]
+                )
+                if conversation.messages[: len(stored)] != stored:
+                    raise ValueError(
+                        "record context compaction before saving rewritten history"
+                    )
+                boundary = len(stored)
+            pending = conversation.messages[boundary:]
+            by_run: dict[str, list[PydanticModelMessage]] = {}
+            for message in pending:
+                if message.run_id is None:
+                    raise ValueError("new conversation messages require a run owner")
+                if message.conversation_id not in (None, str(conversation_id)):
+                    raise ValueError("message belongs to a different conversation")
+                by_run.setdefault(message.run_id, []).append(message)
+            current.usage = conversation.usage
+            current.deferred_tool_requests = conversation.deferred_tool_requests
+            current.revision = revision
+            try:
+                await session.flush()
+            except StaleDataError as error:
+                raise ConversationConflict(str(conversation_id)) from error
+            runs = (
+                {
+                    run.id: run
+                    for run in await session.list(
+                        AgentRun,
+                        limit=None,
+                        expressions=[AgentRun["id"].in_(by_run)],
+                        options=[noload(AgentRun["messages"])],
+                    )
+                }
+                if by_run
+                else {}
+            )
+            for run_id, messages in by_run.items():
+                run = runs.get(run_id)
+                if run is None:
+                    run = AgentRun(
+                        id=run_id,
+                        conversation_id=conversation_id,
+                        started_at=messages[0].timestamp,
+                    )
+                    session.add(run)
+                    links.append(
+                        ConversationRun(conversation_id=conversation_id, run_id=run_id)
+                    )
+                elif run.conversation_id != conversation_id or isinstance(
+                    run, ExternalAgentRun
+                ):
+                    raise ValueError(
+                        "run belongs to a different conversation or harness"
+                    )
+                rows = run.messages.bless([vars(message) for message in messages])
+                for row in rows:
+                    row.conversation_id = str(conversation_id)
+                run.messages.extend(rows)
+                saved.extend(rows)
+            if links:
+                await session.flush()
+                session.add_all(links)
+            await session.commit()
+        conversation.revision = revision
+        mark_stored(conversation, conversation.messages)
+        return saved
+
+    async def read_record(self, conversation_id: str) -> ConversationRecord | None:
+        raise NotImplementedError("Conversation record heads are not persisted yet")
+
+    async def read_records(
+        self, *, scope: str | None = None, limit: int | None = None
+    ) -> list[ConversationRecord]:
+        raise NotImplementedError("Conversation record listing is not implemented")
+
+    async def write_record(
+        self,
+        record: ConversationRecord,
+        *,
+        new_entries: Sequence[ConversationEntry] = (),
+        expected_revision: str | None,
+    ) -> None:
+        raise NotImplementedError("Linked conversation entries are not persisted yet")
+
+    async def delete_record(
+        self, conversation_id: str, *, expected_revision: str
+    ) -> None:
+        raise NotImplementedError(
+            "Revision-checked conversation record deletion is not implemented"
+        )
+
+    async def read_entry(self, entry_id: str) -> ConversationEntry:
+        raise NotImplementedError("Linked conversation entries are not persisted yet")

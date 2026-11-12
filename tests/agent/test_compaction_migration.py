@@ -8,13 +8,10 @@ from unittest.mock import Mock
 import pytest
 from alembic import command
 from alembic.config import Config
-from alembic.operations import Operations
-from alembic.runtime.migration import MigrationContext
-from alembic.script import ScriptDirectory
 from arcanus import RelationCollection
-from arcanus.materia.sqlalchemy import AsyncSession, selectinload
+from arcanus.materia.sqlalchemy import AsyncSession, selectinload, undefer
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
-from sqlalchemy import create_engine as create_sync_engine
+from pydantic_ai.usage import RunUsage
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
@@ -24,7 +21,7 @@ from octomate.config.database import database_settings
 from octomate.database import async_session, create_engine
 from octomate.managers import ConversationManager
 from octomate.schemas.compactions import Compaction, ExternalCompaction
-from octomate.schemas.conversation import ConversationCompaction
+from octomate.schemas.conversation import Conversation
 from octomate.schemas.messages import ModelRequest as StoredModelRequest
 from octomate.schemas.messages import ModelResponse as StoredModelResponse
 from octomate.schemas.thread import MessageBinding, ThreadMessage
@@ -32,6 +29,7 @@ from octomate.schemas.user import UserProfile
 from tests.support.managers import a_thread
 
 PREVIOUS = "792e14ef4f19"
+REVISION = "a1a2d6fe9638"
 
 
 async def test_compaction_migration_preserves_history_on_a_copy(
@@ -96,24 +94,8 @@ async def test_compaction_migration_preserves_history_on_a_copy(
     config = Config(str(module_path.parents[2] / "alembic.ini"))
     monkeypatch.setattr("logging.config.fileConfig", Mock())
 
-    def remove_compaction_storage() -> None:
-        # Remove this branch directly; the sibling ownership migration is irreversible.
-        command.downgrade(config, PREVIOUS)
-        migration = ScriptDirectory.from_config(config).get_revision("1f46faa4d027")
-        assert migration is not None
-        engine = create_sync_engine(f"sqlite:///{target}")
-        try:
-            with (
-                engine.begin() as connection,
-                Operations.context(MigrationContext.configure(connection)),
-            ):
-                migration.module.downgrade()
-        finally:
-            engine.dispose()
-        command.stamp(config, PREVIOUS, purge=True)
-
-    await asyncio.to_thread(command.stamp, config, "head")
-    await asyncio.to_thread(remove_compaction_storage)
+    await asyncio.to_thread(command.stamp, config, REVISION)
+    await asyncio.to_thread(command.downgrade, config, PREVIOUS)
     with (
         sqlite3.connect(source.as_uri() + "?mode=ro", uri=True) as original,
         sqlite3.connect(target) as copied,
@@ -137,10 +119,13 @@ async def test_compaction_migration_preserves_history_on_a_copy(
             ).fetchall()
             for table in tables
         } == before
-    await asyncio.to_thread(command.upgrade, config, "head")
+    await asyncio.to_thread(command.upgrade, config, REVISION)
     await asyncio.to_thread(command.check, config)
     with sqlite3.connect(target) as copied:
         assert copied.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert copied.execute(
+            "SELECT DISTINCT version FROM conversations"
+        ).fetchall() == [(1,)]
         assert {
             table: copied.execute(
                 f'SELECT {columns[table]} FROM "{table}" ORDER BY rowid'
@@ -186,8 +171,8 @@ async def test_compaction_migration_preserves_history_on_a_copy(
             with pytest.raises(IntegrityError, match="ck_model_messages_single_owner"):
                 await session.commit()
         with pytest.raises(RuntimeError, match="compaction-owned messages exist"):
-            await asyncio.to_thread(remove_compaction_storage)
-        await asyncio.to_thread(command.upgrade, config, "head")
+            await asyncio.to_thread(command.downgrade, config, PREVIOUS)
+        await asyncio.to_thread(command.upgrade, config, REVISION)
         async with maker() as session:
             preserved = await session.list(
                 Compaction,
@@ -198,16 +183,33 @@ async def test_compaction_migration_preserves_history_on_a_copy(
             message.id for row in rows for message in row.messages
         ]
         async with maker() as session:
-            for link in await session.list(ConversationCompaction):
-                await session.delete(link)
-            await session.flush()
             for row in rows:
                 await session.delete(row)
+            await session.commit()
+        async with maker() as session:
+            stored = await session.get(Conversation, conversation.id)
+            assert stored is not None
+            stored.usage = RunUsage(requests=3, tool_calls=2)
+            stored.revision = str(uuid7())
+            await session.commit()
+        with pytest.raises(RuntimeError, match="saved conversation usage"):
+            await asyncio.to_thread(command.downgrade, config, PREVIOUS)
+        await asyncio.to_thread(command.check, config)
+        async with maker() as session:
+            stored = await session.get(
+                Conversation,
+                conversation.id,
+                options=[undefer(Conversation["usage"])],
+            )
+            assert stored is not None
+            assert stored.usage == RunUsage(requests=3, tool_calls=2)
+            stored.revision = None
+            stored.usage = RunUsage()
             await session.commit()
     finally:
         await engine.dispose()
 
-    await asyncio.to_thread(remove_compaction_storage)
+    await asyncio.to_thread(command.downgrade, config, PREVIOUS)
     with sqlite3.connect(target) as copied:
         assert (
             copied.execute(

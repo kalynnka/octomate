@@ -235,7 +235,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         conversation_manager: ConversationManager | None = None,
         deferred_resolver: DeferredResolver | None = None,
         description: str | None = None,
-        claims: Mapping[KnownModelName, Claim] | None = None,
+        claims: Mapping[str, Claim] | None = None,
         permission_mode: InklingPermissionMode = "default",
         request_limit: int = 256,
         gateway: bool = True,

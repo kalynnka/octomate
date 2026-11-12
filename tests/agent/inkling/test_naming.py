@@ -18,6 +18,7 @@ from pydantic_ai_harness.step_persistence.conversations import conversation_text
 from pydantic_ai_harness.step_persistence.naming import NamingResult
 
 from octomate import Octomate
+from octomate.managers.conversation import ConversationManager
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling import base as inkling_base
@@ -145,9 +146,9 @@ async def test_new_prompts_name_and_revise_the_session_and_thread(
     assert "user: Investigate the gateway" in naming_requests[0]
     assert "assistant: Expose MCP tools." not in naming_requests[0]
     assert len(conversation.runs) == 1
-    assert conversation_text(conversation.messages) == conversation_text(
-        first.all_messages()
-    )
+    assert conversation_text(
+        await ConversationManager().history(conversation.id)
+    ) == conversation_text(first.all_messages())
 
     await tentacle.run(
         "Old context " * 300 + "Now fix session naming",

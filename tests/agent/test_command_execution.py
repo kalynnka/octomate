@@ -589,7 +589,7 @@ async def test_execution_checks_access_and_selection_after_discovery(
     elif change == "permission":
         agent.permission_modes = (PermissionMode(value="plan", name="Plan"),)
         await app.conversations.set_permission_mode(
-            context.conversation.model_copy(), "plan"
+            replace(context.conversation), "plan"
         )
     elif change == "workspace":
         project = a_project(tmp_path / "project")
