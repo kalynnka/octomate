@@ -1016,6 +1016,80 @@ async def test_restoring_a_snapshot_does_not_run_host_filters(
     assert (restored / "work.txt").read_text() == "unfinished"
 
 
+async def test_carry_preserves_the_owners_uncommitted_work_on_a_new_thread_branch(
+    manager: WorkspaceManager, owner: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mirror = await a_project_mirror(
+        manager, {"readme.md": "hello", ".gitignore": ".env\n"}
+    )
+    monkeypatch.setattr(manager.mirrors, "sync", AsyncMock(return_value=mirror))
+    source = await a_bound_thread(manager)
+    target = await a_bound_thread(manager)
+    opened = await a_workspace(manager, source, owner)
+    path = await manager.materialize(opened, mirror)
+    original_head = await head(path)
+    (path / "readme.md").write_text("unfinished")
+    (path / ".env").write_text("owner secret")
+    peer = await a_user("peer")
+    peer_path = await manager.materialize(
+        await a_workspace(manager, source, peer), mirror
+    )
+    (peer_path / ".env").write_text("peer secret")
+
+    await manager.carry(source, target, owner.id)
+
+    landed = await a_workspace(manager, target, owner)
+    assert (landed.path / "readme.md").read_text() == "unfinished"
+    assert (landed.path / ".env").read_text() == "owner secret"
+    assert await head(landed.path) == original_head
+    assert await branch(landed.path) == f"octomate/thread-{target.id}"
+    assert "readme.md" in await run_git("diff", "--name-only", cwd=landed.path)
+    assert (path / "readme.md").read_text() == "unfinished"
+    assert (peer_path / ".env").read_text() == "peer secret"
+
+
+async def test_carry_ignores_source_git_config(
+    manager: WorkspaceManager, owner: User
+) -> None:
+    mirror = await a_project_mirror(manager, {".gitignore": ".env\n"})
+    source = await a_bound_thread(manager)
+    target = await a_bound_thread(manager)
+    source_path = await manager.materialize(
+        await a_workspace(manager, source, owner), mirror
+    )
+    target_path = await manager.materialize(
+        await a_workspace(manager, target, owner), mirror
+    )
+    (source_path / ".env").write_text("private configuration")
+    (source_path / ".git/config").write_text("deliberately invalid config")
+
+    await manager.carry(source, target, owner.id)
+
+    assert (target_path / ".env").read_text() == "private configuration"
+
+
+async def test_carry_preserves_a_dangling_destination_symlink(
+    manager: WorkspaceManager, owner: User, tmp_path: Path
+) -> None:
+    mirror = await a_project_mirror(manager, {".gitignore": ".env\n"})
+    source = await a_bound_thread(manager)
+    target = await a_bound_thread(manager)
+    source_path = await manager.materialize(
+        await a_workspace(manager, source, owner), mirror
+    )
+    target_path = await manager.materialize(
+        await a_workspace(manager, target, owner), mirror
+    )
+    (source_path / ".env").write_text("private configuration")
+    outside = tmp_path / "outside"
+    (target_path / ".env").symlink_to(outside)
+
+    await manager.carry(source, target, owner.id)
+
+    assert not outside.exists()
+    assert (target_path / ".env").readlink() == outside
+
+
 async def test_snapshots_carry_the_machine_identity(
     manager: WorkspaceManager, owner: User
 ) -> None:

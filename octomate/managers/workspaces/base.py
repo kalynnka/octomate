@@ -31,6 +31,7 @@ from octomate.managers.workspaces.mirrors import (
     run_git,
 )
 from octomate.managers.workspaces.snapshots import SNAPSHOT_PREFIX, Snapshot
+from octomate.managers.workspaces.transfers import copy_ignored
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
 from octomate.schemas.volumes import CacheVolume, MemoryVolume, TreeVolume
@@ -855,10 +856,12 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         landing = await self.resolve(thread.id, project, owner_id)
         mirror = self.mirrors.path(project)
         if origin is not None and await run_git(
-            "ls-remote", str(mirror), tree_ref(origin.id)
+            "ls-remote", str(mirror), tree_ref(origin.id), isolated=True
         ):
             saved = tree_ref(origin.id)
-            subject = await run_git("show", "-s", "--format=%s", saved, cwd=mirror)
+            subject = await run_git(
+                "show", "-s", "--format=%s", saved, cwd=mirror, isolated=True
+            )
             filed = saved
             if subject.strip() == f"{SNAPSHOT_PREFIX}{thread_branch(source.id)}":
                 filed = await run_git(
@@ -870,30 +873,19 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                     "-m",
                     f"{SNAPSHOT_PREFIX}{thread_branch(thread.id)}",
                     cwd=mirror,
+                    isolated=True,
                 )
             await run_git(
-                "update-ref", tree_ref(landing.volume.id), filed.strip(), cwd=mirror
+                "update-ref",
+                tree_ref(landing.volume.id),
+                filed.strip(),
+                cwd=mirror,
+                isolated=True,
             )
         landed = await self.prepare(landing)
         if origin is None or not self.path(origin).is_dir():
             return
-        source_path = self.path(origin)
-        ignored = await run_git(
-            "ls-files",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "--directory",
-            "-z",
-            cwd=source_path,
-        )
-        for name in ignored.split("\0"):
-            if not name or name.endswith("/") or (landed / name).exists():
-                continue
-            (landed / name).parent.mkdir(parents=True, exist_ok=True)
-            await asyncio.to_thread(
-                shutil.copy2, source_path / name, landed / name, follow_symlinks=False
-            )
+        await copy_ignored(self.path(origin), landed)
 
     async def dismiss(self, thread: Thread, owner_id: UUID7) -> bool:
         """Release this owner's tree on their agent's word that the work in it is
