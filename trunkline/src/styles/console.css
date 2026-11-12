@@ -749,6 +749,8 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
 .trk-md .katex-display { margin: 12px 0; padding: 4px 0; overflow-x: auto; overflow-y: hidden; }
 .trk-nav-button { border: 0; border-radius: 0; padding: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .trk-nav-button:focus-visible { outline: 2px solid var(--fg-2); outline-offset: -2px; }
+.trk-channel-toggle:focus-visible { outline: none; }
+.trk-channel-toggle:focus-visible > span:first-of-type { text-decoration: underline; text-underline-offset: 3px; }
 #trk-chatlog [tabindex="-1"]:focus-visible:not(.trk-agent-message) { outline: 2px solid var(--color-accent); outline-offset: 3px; }
 .trk-thread-pick { display: block; width: 100%; }
 .trk-thread-title { color: var(--trk-thread-title-fg); }
@@ -810,7 +812,9 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
   .trk-oauth-copy > :is(svg, .trk-oauth-code) { transition: none; }
   .trk-oauth-copy:is(:active, [data-pressed]) > :is(svg, .trk-oauth-code) { transform: none; }
 }
-.trk-message-actions { display: flex; align-items: center; min-height: 26px; }
+.lt-message-entry { position: relative; }
+.lt-message-entry:has(> .trk-message-actions):not(:last-child) { margin-bottom: 32px; }
+.trk-message-actions { position: absolute; top: calc(100% + 6px); display: flex; align-items: center; }
 .trk-agent-message { display: grid; width: fit-content; grid-template-columns: minmax(0, 1fr); gap: 6px; }
 .trk-agent-label { display: inline-flex; align-items: center; gap: 6px; }
 .trk-agent-icon { display: inline-flex; width: 10px; height: 10px; background: currentColor; mask: no-repeat center / contain; }
@@ -1277,8 +1281,8 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
 /* Short windows tighten the ledger's vertical rhythm instead of scrolling a
    third of a turn per screen. */
 #trk-chatlog {
-  padding: 20px 24px;
-  margin-bottom: 16px;
+  /* Include floating actions, entry motion, and 16px of breathing room in the scroll padding. */
+  padding: 20px 24px 52px;
   row-gap: 14px;
 }
 .trk-ledger-col {
@@ -1293,7 +1297,7 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
 }
 @media (max-height: 640px) {
   #trk-chatlog {
-    padding: 10px 18px;
+    padding: 10px 18px 52px;
     row-gap: 9px;
   }
   .trk-ledger-col {
@@ -1407,7 +1411,7 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
     display: none !important;
   }
   #trk-chatlog {
-    padding: 14px 12px;
+    padding: 14px 12px 52px;
   }
 }
 @media (pointer: coarse) {
