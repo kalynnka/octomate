@@ -74,8 +74,11 @@ async def recorded_context(
     await agent.run(
         "Do the work",
         conversation_address=context.address,
-        conversation_id=context.conversation.id,
-        thread_id=context.conversation.thread_id,
+        conversation=await agent.resolve_conversation(
+            context.conversation.thread_id,
+            conversation_address=context.address,
+            conversation_id=context.conversation.id,
+        ),
     )
     return replace(
         context,
@@ -442,8 +445,11 @@ async def test_fork_copies_history_settings_and_preserves_source(
     await agent.run(
         "Continue",
         conversation_address=target.key.address(context.address.user_id),
-        conversation_id=copied.id,
-        thread_id=target.id,
+        conversation=await agent.resolve_conversation(
+            target.id,
+            conversation_address=target.key.address(context.address.user_id),
+            conversation_id=copied.id,
+        ),
         interactive=False,
     )
     assert FakeCodex.thread_calls[-1].thread_id == "thread-fork"

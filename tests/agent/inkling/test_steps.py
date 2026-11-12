@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic_ai import AgentRunResult, AgentRunResultEvent, RunContext
-from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
+from pydantic_ai.conversation_store import ConversationConflict
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
@@ -16,6 +18,7 @@ from octomate import Octomate
 from octomate.config import ModelConfig, ProvidersConfig
 from octomate.config.agents import InklingConfig
 from octomate.database import async_session
+from octomate.managers.conversation import ConversationManager, ConversationStore
 from octomate.managers.steps import StepStore
 from octomate.providers import ProviderRegistry
 from octomate.schemas.conversation import ChannelAddress, Conversation, ConversationRun
@@ -28,6 +31,7 @@ from octomate.tentacles.inkling.react import (
     ReactState,
     StartTurn,
     build_react_graph,
+    iter_react_graph_events,
 )
 
 pytestmark = pytest.mark.usefixtures("in_memory_engine")
@@ -58,17 +62,29 @@ async def assert_completed_run(
     conversation: Conversation, result: AgentRunResult[InklingOutput]
 ) -> None:
     store = StepStore()
+    restored = await ConversationStore(ConversationManager()).load(str(conversation.id))
+    assert restored is not None
+    assert restored.revision is not None
+    assert restored.revision == result.conversation.revision
+    assert restored.usage == result.usage
+    assert restored.new_message_index == len(result.all_messages())
+    assert restored.deferred_tool_requests == (
+        result.output if isinstance(result.output, DeferredToolRequests) else None
+    )
     record = await store.get_run(run_id=result.run_id)
     assert record is not None
     assert record.conversation_id == str(conversation.id)
     assert record.agent_name == "octomate-inkling"
     assert record.registration_id is not None
     snapshot = await store.latest_snapshot(run_id=result.run_id)
-    assert snapshot is not None
-    assert snapshot.conversation_id == str(conversation.id)
-    assert [message.parts for message in snapshot.messages] == [
-        message.parts for message in result.all_messages()
-    ]
+    if isinstance(result.output, DeferredToolRequests):
+        assert snapshot is None
+    else:
+        assert snapshot is not None
+        assert snapshot.conversation_id == str(conversation.id)
+        assert [message.parts for message in snapshot.messages] == [
+            message.parts for message in result.all_messages()
+        ]
     events = await store.list_events(run_id=result.run_id)
     assert events[0].kind == "run_started"
     assert events[-1].kind == "run_completed"
@@ -90,9 +106,44 @@ async def assert_completed_run(
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-async def test_configured_turns_register_before_tools_and_archive_once(
+async def test_supplied_conversation_must_belong_to_the_agent(
     inkling: InklingTentacle, conversation: Conversation, streaming: bool
 ) -> None:
+    foreign = await inkling.conversations.ensure(
+        conversation.thread_id, agent_tentacle_id="other"
+    )
+    if streaming:
+        async with inkling.run_stream_events(
+            "continue",
+            conversation=foreign,
+            conversation_address=ADDRESS,
+            model=TestModel(),
+        ) as stream:
+            with pytest.raises(ValueError, match="does not belong"):
+                await anext(stream)
+    else:
+        with pytest.raises(ValueError, match="does not belong"):
+            await inkling.run(
+                "continue",
+                conversation=foreign,
+                conversation_address=ADDRESS,
+                model=TestModel(),
+            )
+    assert await StepStore().list_runs() == []
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_configured_turns_register_before_tools_and_archive_once(
+    inkling: InklingTentacle,
+    conversation: Conversation,
+    streaming: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = await inkling.resolve_conversation(
+        conversation.thread_id, conversation_address=ADDRESS
+    )
+    load = AsyncMock(wraps=inkling.conversations.get)
+    monkeypatch.setattr(inkling.conversations, "get", load)
     called: list[str] = []
 
     async def lookup(ctx: RunContext[None]) -> str:
@@ -106,7 +157,7 @@ async def test_configured_turns_register_before_tools_and_archive_once(
         async with inkling.run_stream_events(
             "look up",
             conversation_address=ADDRESS,
-            thread_id=conversation.thread_id,
+            conversation=context,
             output_type=str,
             model=TestModel(call_tools=["lookup"]),
             toolsets=[FunctionToolset([lookup])],
@@ -118,11 +169,12 @@ async def test_configured_turns_register_before_tools_and_archive_once(
         result = await inkling.run(
             "look up",
             conversation_address=ADDRESS,
-            thread_id=conversation.thread_id,
+            conversation=context,
             output_type=str,
             model=TestModel(call_tools=["lookup"]),
             toolsets=[FunctionToolset([lookup])],
         )
+    load.assert_not_awaited()
     assert result is not None
     await assert_completed_run(conversation, result)
     assert called == [result.run_id]
@@ -140,11 +192,16 @@ async def test_configured_turns_register_before_tools_and_archive_once(
     second = await inkling.run(
         "continue",
         conversation_address=ADDRESS,
-        thread_id=conversation.thread_id,
+        conversation=await inkling.resolve_conversation(
+            conversation.thread_id, conversation_address=ADDRESS
+        ),
         output_type=str,
         model=TestModel(call_tools=[]),
     )
     await assert_completed_run(conversation, second)
+    assert second.usage.requests == result.usage.requests + 1
+    assert second.usage.tool_calls == result.usage.tool_calls == 1
+    assert second.conversation.revision != result.conversation.revision
     assert [record.run_id for record in await store.list_runs()] == [
         result.run_id,
         second.run_id,
@@ -165,9 +222,11 @@ async def test_nonstreaming_graph_uses_the_same_store(
         inputs=start,
         state=ReactState(
             conversation_address=ADDRESS,
-            agent_tentacle_id=inkling.id,
-            thread_id=conversation.thread_id,
-            conversation_id=conversation.id,
+            conversation=await inkling.resolve_conversation(
+                conversation.thread_id,
+                conversation_address=ADDRESS,
+                conversation_id=conversation.id,
+            ),
         ),
         deps=ReactDeps(
             agent=inkling.agent,
@@ -223,7 +282,9 @@ async def test_model_failure_preserves_the_registered_run_and_settled_checkpoint
         await inkling.run(
             "go",
             conversation_address=ADDRESS,
-            thread_id=conversation.thread_id,
+            conversation=await inkling.resolve_conversation(
+                conversation.thread_id, conversation_address=ADDRESS
+            ),
             output_type=str,
             model=FunctionModel(stream_function=fail),
             toolsets=[FunctionToolset([lookup])],
@@ -259,13 +320,18 @@ async def test_deferred_resume_registers_a_new_run_in_the_same_conversation(
     first = await inkling.run(
         "ask before proceeding",
         conversation_address=ADDRESS,
-        thread_id=conversation.thread_id,
+        conversation=await inkling.resolve_conversation(
+            conversation.thread_id, conversation_address=ADDRESS
+        ),
         model=TestModel(call_tools=["ask_questions"]),
     )
     assert isinstance(first.output, DeferredToolRequests)
+    await assert_completed_run(conversation, first)
     second = await inkling.run(
         conversation_address=ADDRESS,
-        thread_id=conversation.thread_id,
+        conversation=await inkling.resolve_conversation(
+            conversation.thread_id, conversation_address=ADDRESS
+        ),
         output_type=str,
         deferred_tool_results=DeferredToolResults(
             calls={call.tool_call_id: "proceed" for call in first.output.calls}
@@ -273,6 +339,7 @@ async def test_deferred_resume_registers_a_new_run_in_the_same_conversation(
         model=TestModel(call_tools=[]),
     )
     await assert_completed_run(conversation, second)
+    assert second.usage.requests == first.usage.requests + 1
     assert second.run_id != first.run_id
     store = StepStore()
     assert [record.run_id for record in await store.list_runs()] == [
@@ -300,7 +367,9 @@ async def test_tool_failure_is_recorded_when_the_model_can_continue(
     result = await inkling.run(
         "use the tool",
         conversation_address=ADDRESS,
-        thread_id=conversation.thread_id,
+        conversation=await inkling.resolve_conversation(
+            conversation.thread_id, conversation_address=ADDRESS
+        ),
         output_type=str,
         model=TestModel(call_tools=["broken"]),
         toolsets=[FunctionToolset([broken])],
@@ -318,6 +387,114 @@ async def test_tool_failure_is_recorded_when_the_model_can_continue(
     assert await store.list_unresolved_tool_effects(run_id=result.run_id) == []
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_failed_continuation_saves_usage_without_rearchiving_prior_turns(
+    inkling: InklingTentacle, conversation: Conversation, streaming: bool
+) -> None:
+    first = await inkling.run(
+        "remember",
+        conversation_address=ADDRESS,
+        conversation=await inkling.resolve_conversation(
+            conversation.thread_id, conversation_address=ADDRESS
+        ),
+        output_type=str,
+        model=TestModel(call_tools=[]),
+    )
+    prior = await inkling.conversations.history(conversation.id)
+    requests = 0
+
+    def reply(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal requests
+        requests += 1
+        if requests == 1:
+            return ModelResponse(parts=[ToolCallPart("lookup", {}, "lookup-1")])
+        raise RuntimeError("continuation failed")
+
+    async def stream(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[dict[int, DeltaToolCall]]:
+        reply(messages, info)
+        yield {0: DeltaToolCall(name="lookup", json_args="{}", tool_call_id="lookup-1")}
+
+    def lookup() -> str:
+        return "retained tool result"
+
+    start = StartTurn[InklingOutput, None](user_prompt="continue")
+    state = ReactState(
+        conversation_address=ADDRESS,
+        conversation=await inkling.resolve_conversation(
+            conversation.thread_id,
+            conversation_address=ADDRESS,
+            conversation_id=conversation.id,
+        ),
+    )
+    deps = ReactDeps(
+        agent=inkling.agent,
+        conversation_manager=inkling.conversations,
+        agent_deps=None,
+        capabilities=inkling.capabilities,
+        model=FunctionModel(function=reply, stream_function=stream),
+        toolsets=[FunctionToolset([lookup])],
+        output_type=str,
+    )
+    if streaming:
+        with pytest.raises(RuntimeError, match="continuation failed"):
+            [_ async for _ in iter_react_graph_events(start, state=state, deps=deps)]
+    else:
+        with pytest.raises(RuntimeError, match="continuation failed"):
+            await build_react_graph(start).run(inputs=start, state=state, deps=deps)
+
+    restored = await inkling.conversations.get(
+        conversation.id, with_runs=False, with_messages=True
+    )
+    assert restored.revision != first.conversation.revision
+    assert restored.usage.requests >= first.usage.requests + 1
+    assert restored.usage.tool_calls == first.usage.tool_calls + 1
+    assert [message.id for message in restored.messages[: len(prior)]] == [
+        message.id for message in prior
+    ]
+    assert len(restored.messages) == len(prior) + 3
+    assert "retained tool result" in str(restored.messages[-1])
+    records = await StepStore().list_runs()
+    assert len(records) == 2
+    events = await StepStore().list_events(run_id=records[-1].run_id)
+    assert events[-1].kind == "run_failed"
+
+
+async def test_graph_rejects_a_result_from_a_stale_conversation(
+    inkling: InklingTentacle, conversation: Conversation
+) -> None:
+    async def reply(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        current = await inkling.conversations.get(
+            conversation.id, with_runs=False, with_messages=True
+        )
+        await ConversationStore(inkling.conversations).record_conversation(current)
+        return ModelResponse(parts=[TextPart("stale reply")])
+
+    start = StartTurn[InklingOutput, None](user_prompt="stale prompt")
+    with pytest.raises(ConversationConflict):
+        await build_react_graph(start).run(
+            inputs=start,
+            state=ReactState(
+                conversation_address=ADDRESS,
+                conversation=await inkling.resolve_conversation(
+                    conversation.thread_id,
+                    conversation_address=ADDRESS,
+                    conversation_id=conversation.id,
+                ),
+            ),
+            deps=ReactDeps(
+                agent=inkling.agent,
+                conversation_manager=inkling.conversations,
+                agent_deps=None,
+                capabilities=inkling.capabilities,
+                model=FunctionModel(reply),
+                output_type=str,
+            ),
+        )
+    assert await inkling.conversations.history(conversation.id) == []
+
+
 async def test_subagent_inherits_persistence_and_records_parent_lineage(
     inkling: InklingTentacle, conversation: Conversation
 ) -> None:
@@ -333,8 +510,11 @@ async def test_subagent_inherits_persistence_and_records_parent_lineage(
         result = await inkling.subagent_run(
             "help",
             conversation_address=ADDRESS,
-            thread_id=conversation.thread_id,
-            conversation_id=child.id,
+            conversation=await inkling.resolve_conversation(
+                conversation.thread_id,
+                conversation_address=ADDRESS,
+                conversation_id=child.id,
+            ),
             model=TestModel(call_tools=[]),
         )
         results.append(result)
@@ -343,7 +523,9 @@ async def test_subagent_inherits_persistence_and_records_parent_lineage(
     parent = await inkling.run(
         "delegate",
         conversation_address=ADDRESS,
-        thread_id=conversation.thread_id,
+        conversation=await inkling.resolve_conversation(
+            conversation.thread_id, conversation_address=ADDRESS
+        ),
         output_type=str,
         model=TestModel(call_tools=["delegate"]),
         toolsets=[FunctionToolset([delegate])],

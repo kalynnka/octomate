@@ -147,14 +147,15 @@ def _deps(
     )
 
 
-def _ctx(
+async def _ctx(
     deps: ReactDeps[ScriptedOutput, None],
 ) -> GraphRunContext[ReactState, ReactDeps[ScriptedOutput, None]]:
     return GraphRunContext(
         state=ReactState(
             conversation_address=_key(),
-            agent_tentacle_id="inkling",
-            thread_id=_THREAD,
+            conversation=await deps.conversation_manager.ensure(
+                _THREAD, agent_tentacle_id="inkling", with_runs=False
+            ),
         ),
         deps=deps,
     )
@@ -195,7 +196,7 @@ async def test_start_turn_denies_only_unanswered_calls_on_new_prompt(
     recorder = FakeConversationManager(store={(_THREAD, "inkling", ""): conversation})
     node: StartTurn[ScriptedOutput, None] = StartTurn(user_prompt="hi")
 
-    nxt = await node.run(_ctx(_deps(conversations=recorder)))
+    nxt = await node.run(await _ctx(_deps(conversations=recorder)))
 
     assert isinstance(nxt, RunAgent)
     assert nxt.user_prompt == "hi"
@@ -215,9 +216,9 @@ async def test_start_turn_denies_only_unanswered_calls_on_new_prompt(
 
 async def test_start_turn_without_new_prompt_leaves_deferrals_alone() -> None:
     silent = FakeConversationManager()
-    nxt = await StartTurn[ScriptedOutput, None](user_prompt=None).run(
-        _ctx(_deps(conversations=silent))
-    )
+    ctx = await _ctx(_deps(conversations=silent))
+    silent.ensured.clear()
+    nxt = await StartTurn[ScriptedOutput, None](user_prompt=None).run(ctx)
     assert isinstance(nxt, RunAgent)
     assert silent.ensured == []
     assert nxt.deferred_results is None
@@ -228,12 +229,12 @@ async def test_resume_turn_requires_resolved_calls_or_approvals() -> None:
         deferred_results=DeferredToolResults()
     )
     with pytest.raises(ValueError, match="at least one resolved call or approval"):
-        await node.run(_ctx(_deps()))
+        await node.run(await _ctx(_deps()))
 
     results = DeferredToolResults()
     results.calls["call_ask_1"] = ["Ada"]
     nxt = await ResumeTurn[ScriptedOutput, None](deferred_results=results).run(
-        _ctx(_deps())
+        await _ctx(_deps())
     )
     assert isinstance(nxt, RunAgent)
     assert nxt.deferred_results is results
@@ -248,7 +249,7 @@ async def test_resolve_deferred_resolves_in_process_when_resolver_set() -> None:
     node: ResolveDeferred[ScriptedOutput, None] = ResolveDeferred(
         requests=requests, result=AgentRunResult(requests)
     )
-    nxt = await node.run(_ctx(_deps(resolver=resolver)))
+    nxt = await node.run(await _ctx(_deps(resolver=resolver)))
 
     assert isinstance(nxt, RunAgent)
     # Merged into fresh results rather than passed through: a chain of one is still
@@ -279,9 +280,9 @@ async def test_resolve_deferred_asks_the_chooser_with_the_conversation_as_it_sta
     deps.choose_resolvers = choose
     deps.suspender = StubSuspender()
 
-    await node.run(_ctx(deps))
+    await node.run(await _ctx(deps))
     conversation.permission_mode = "dontAsk"
-    await node.run(_ctx(deps))
+    await node.run(await _ctx(deps))
 
     assert seen == ["bypassPermissions", "dontAsk"]
 
@@ -298,7 +299,7 @@ async def test_resolve_deferred_suspends_when_the_chooser_declines_it() -> None:
     node: ResolveDeferred[ScriptedOutput, None] = ResolveDeferred(
         requests=requests, result=run_result
     )
-    nxt = await node.run(_ctx(deps))
+    nxt = await node.run(await _ctx(deps))
 
     assert isinstance(nxt, End)
     assert nxt.data is run_result
@@ -316,7 +317,7 @@ async def test_resolve_deferred_returns_the_requests_when_nothing_can_answer() -
     node: ResolveDeferred[ScriptedOutput, None] = ResolveDeferred(
         requests=requests, result=run_result
     )
-    nxt = await node.run(_ctx(deps))
+    nxt = await node.run(await _ctx(deps))
 
     assert isinstance(nxt, End)
     assert nxt.data is run_result
@@ -330,7 +331,7 @@ async def test_resolve_deferred_suspends_when_only_suspender_set() -> None:
     node: ResolveDeferred[ScriptedOutput, None] = ResolveDeferred(
         requests=requests, result=run_result
     )
-    nxt = await node.run(_ctx(_deps(suspender=suspender)))
+    nxt = await node.run(await _ctx(_deps(suspender=suspender)))
 
     assert isinstance(nxt, End)
     assert nxt.data is run_result
@@ -343,7 +344,7 @@ async def test_resolve_deferred_requires_a_hook() -> None:
         requests=requests, result=AgentRunResult(requests)
     )
     with pytest.raises(RuntimeError, match="resolver or suspender"):
-        await node.run(_ctx(_deps()))
+        await node.run(await _ctx(_deps()))
 
 
 async def test_suspender_event_is_forwarded_on_stream() -> None:
@@ -359,7 +360,7 @@ async def test_suspender_event_is_forwarded_on_stream() -> None:
     node: ResolveDeferred[ScriptedOutput, None] = ResolveDeferred(
         requests=requests, result=AgentRunResult(requests)
     )
-    nxt = await node.run(_ctx(deps))
+    nxt = await node.run(await _ctx(deps))
     await send.aclose()
 
     assert isinstance(nxt, End)
@@ -377,8 +378,9 @@ async def test_graph_ends_after_immediate_final_response() -> None:
         inputs=start,
         state=ReactState(
             conversation_address=_key(),
-            agent_tentacle_id="inkling",
-            thread_id=_THREAD,
+            conversation=await deps.conversation_manager.ensure(
+                _THREAD, agent_tentacle_id="inkling", with_runs=False
+            ),
         ),
         deps=deps,
     )
@@ -396,8 +398,9 @@ async def test_run_agent_records_new_messages_with_run_name() -> None:
         inputs=start,
         state=ReactState(
             conversation_address=_key(),
-            agent_tentacle_id="inkling",
-            thread_id=_THREAD,
+            conversation=await deps.conversation_manager.ensure(
+                _THREAD, agent_tentacle_id="inkling", with_runs=False
+            ),
         ),
         deps=deps,
     )
@@ -448,14 +451,14 @@ async def test_graph_continues_effective_context_without_reviving_history(
     agent = Agent(
         FunctionModel(function=reply, stream_function=stream), output_type=str
     )
-    state = ReactState(
-        conversation_address=_key(),
-        agent_tentacle_id="inkling",
-        thread_id=conversation.thread_id,
-        conversation_id=conversation.id,
-    )
     deps = ReactDeps(agent=agent, conversation_manager=manager, agent_deps=None)
     for prompt in ("continue", "continue again"):
+        state = ReactState(
+            conversation_address=_key(),
+            conversation=await manager.get(
+                conversation.id, with_runs=False, with_messages=True
+            ),
+        )
         start: StartTurn[str, None] = StartTurn(user_prompt=prompt)
         if streaming:
             async for _ in iter_react_graph_events(start, state=state, deps=deps):
@@ -495,9 +498,7 @@ async def test_a_run_addressed_by_conversation_id_lands_there() -> None:
         inputs=start,
         state=ReactState(
             conversation_address=_key(),
-            agent_tentacle_id="inkling",
-            thread_id=_THREAD,
-            conversation_id=child.id,
+            conversation=child,
         ),
         deps=deps,
     )
@@ -526,8 +527,9 @@ async def test_run_agent_binds_request_sources_and_advances_cursor(
         inputs=start,
         state=ReactState(
             conversation_address=address,
-            agent_tentacle_id="inkling",
-            thread_id=thread.id,
+            conversation=await conversations.ensure(
+                thread.id, agent_tentacle_id="inkling", with_runs=False
+            ),
             source_thread_address=address,
             source_thread_message_ids=[first.id, second.id, trigger.id],
         ),
@@ -611,8 +613,9 @@ async def test_deferred_resume_loop_skips_source_binding(
             StartTurn(user_prompt="please ask"),
             state=ReactState(
                 conversation_address=address,
-                agent_tentacle_id="inkling",
-                thread_id=thread.id,
+                conversation=await conversations.ensure(
+                    thread.id, agent_tentacle_id="inkling", with_runs=False
+                ),
                 source_thread_address=address,
                 source_thread_message_ids=[trigger.id],
             ),
@@ -655,7 +658,7 @@ async def test_run_agent_streaming_sends_every_event_and_requires_result() -> No
     deps.event_send_stream = send
 
     node: RunAgent[ScriptedOutput, None] = RunAgent(user_prompt="hi")
-    nxt = await node.run(_ctx(deps))
+    nxt = await node.run(await _ctx(deps))
     await send.aclose()
 
     assert isinstance(nxt, End)
@@ -682,7 +685,9 @@ async def test_run_agent_streaming_sends_every_event_and_requires_result() -> No
     silent_deps.event_send_stream = silent_send
 
     with pytest.raises(RuntimeError, match="did not yield AgentRunResultEvent"):
-        await RunAgent[ScriptedOutput, None](user_prompt="hi").run(_ctx(silent_deps))
+        await RunAgent[ScriptedOutput, None](user_prompt="hi").run(
+            await _ctx(silent_deps)
+        )
 
 
 async def test_iter_react_graph_events_reraises_graph_error_after_drain() -> None:
@@ -710,8 +715,9 @@ async def test_iter_react_graph_events_reraises_graph_error_after_drain() -> Non
             StartTurn(user_prompt="hi"),
             state=ReactState(
                 conversation_address=_key(),
-                agent_tentacle_id="inkling",
-                thread_id=_THREAD,
+                conversation=await deps.conversation_manager.ensure(
+                    _THREAD, agent_tentacle_id="inkling", with_runs=False
+                ),
             ),
             deps=deps,
         ):

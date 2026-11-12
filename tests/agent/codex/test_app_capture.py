@@ -204,7 +204,11 @@ async def test_driven_app_survives_its_session_and_reuses_the_owned_viewer(
 
         monkeypatch.setattr(tentacle.ink.client._client, "request", resource_request)
         async with tentacle.run_stream_events(
-            "Show the weather", conversation_address=address, thread_id=thread.id
+            "Show the weather",
+            conversation_address=address,
+            conversation=await tentacle.resolve_conversation(
+                thread.id, conversation_address=address
+            ),
         ) as stream:
             events = [event async for event in stream]
 

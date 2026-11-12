@@ -102,7 +102,9 @@ async def inkling_run(octomate: Octomate, thread: Thread, scripted: Scripted) ->
     await tentacle.run(
         "what is this repo?",
         conversation_address=ADDRESS,
-        thread_id=thread.id,
+        conversation=await tentacle.resolve_conversation(
+            thread.id, conversation_address=ADDRESS
+        ),
         output_type=STR_OUTPUT,
     )
 
@@ -190,7 +192,9 @@ async def test_project_file_calls_defer_for_user_approval(tmp_path: Path) -> Non
     result = await tentacle.run(
         "read the instructions",
         conversation_address=ADDRESS,
-        thread_id=thread.id,
+        conversation=await tentacle.resolve_conversation(
+            thread.id, conversation_address=ADDRESS
+        ),
         output_type=STR_OUTPUT,
     )
 

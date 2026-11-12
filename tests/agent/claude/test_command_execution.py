@@ -155,8 +155,11 @@ async def test_driven_compaction_reads_its_summary_from_sdk_history(
         await agent.run(
             "continue",
             conversation_address=context.address,
-            conversation_id=conversation.id,
-            thread_id=conversation.thread_id,
+            conversation=await agent.resolve_conversation(
+                conversation.thread_id,
+                conversation_address=context.address,
+                conversation_id=conversation.id,
+            ),
         )
     async with async_session() as session:
         [stored] = await session.list(
@@ -375,8 +378,11 @@ async def test_completed_compaction_survives_later_stream_failure(
         await agent.run(
             "continue",
             conversation_address=context.address,
-            conversation_id=conversation.id,
-            thread_id=conversation.thread_id,
+            conversation=await agent.resolve_conversation(
+                conversation.thread_id,
+                conversation_address=context.address,
+                conversation_id=conversation.id,
+            ),
         )
 
     client.receive_response.side_effect = messages
@@ -417,8 +423,11 @@ async def test_runs_apply_saved_effort(
         await agent.run(
             "review",
             conversation_address=context.address,
-            conversation_id=conversation.id,
-            thread_id=conversation.thread_id,
+            conversation=await agent.resolve_conversation(
+                conversation.thread_id,
+                conversation_address=context.address,
+                conversation_id=conversation.id,
+            ),
             model=model,
         )
     assert options[-1].effort == ("max" if saved else None)
@@ -712,8 +721,11 @@ async def test_permission_updates_reach_live_client_and_next_run(
     async with agent.run_stream_events(
         "work",
         conversation_address=context.address,
-        conversation_id=conversation.id,
-        thread_id=conversation.thread_id,
+        conversation=await agent.resolve_conversation(
+            conversation.thread_id,
+            conversation_address=context.address,
+            conversation_id=conversation.id,
+        ),
     ) as events:
         await anext(events)
         assert conversation.id in agent.ink.live_clients
@@ -731,8 +743,11 @@ async def test_permission_updates_reach_live_client_and_next_run(
     await agent.run(
         "continue",
         conversation_address=context.address,
-        conversation_id=conversation.id,
-        thread_id=conversation.thread_id,
+        conversation=await agent.resolve_conversation(
+            conversation.thread_id,
+            conversation_address=context.address,
+            conversation_id=conversation.id,
+        ),
     )
     assert options[-1].permission_mode == (mode or agent.default_permission_mode)
 
@@ -754,8 +769,11 @@ async def test_rejected_live_permission_update_does_not_save_the_selection(
     async with agent.run_stream_events(
         "work",
         conversation_address=context.address,
-        conversation_id=conversation.id,
-        thread_id=conversation.thread_id,
+        conversation=await agent.resolve_conversation(
+            conversation.thread_id,
+            conversation_address=context.address,
+            conversation_id=conversation.id,
+        ),
     ) as events:
         await anext(events)
         with pytest.raises(RuntimeError, match="runtime refused"):

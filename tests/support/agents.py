@@ -244,39 +244,37 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        conversation: Conversation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[FakeRunOutput] | None = None,
         model: Model | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
-        message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         instructions: str | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AgentRunResult[FakeRunOutput]:
         session = (
-            self.octomate.gateway.get(conversation_id)
-            if self.octomate is not None and conversation_id is not None
+            self.octomate.gateway.get(conversation.id)
+            if self.octomate is not None
             else None
         )
         self.turns.append(
             RecordedRun(
                 prompt=user_prompt,
-                history=list(message_history or []),
+                history=list(conversation.messages),
                 address=conversation_address,
-                thread_id=thread_id,
+                thread_id=conversation.thread_id,
+                conversation_id=conversation.id,
                 source_thread_address=source_thread_address,
                 source_thread_message_ids=list(source_thread_message_ids or []),
                 run_name=run_name,
                 deferred_results=deferred_tool_results,
                 model=model,
                 effort=effort,
-                conversation_id=conversation_id,
                 interactive=interactive,
                 instructions=instructions,
                 capabilities=list(capabilities or []),
@@ -300,36 +298,34 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        conversation: Conversation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         model: Model | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
-        message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> ReactEventStream[ChannelOutput]:
         session = (
-            self.octomate.gateway.get(conversation_id)
-            if self.octomate is not None and conversation_id is not None
+            self.octomate.gateway.get(conversation.id)
+            if self.octomate is not None
             else None
         )
         self.turns.append(
             RecordedRun(
                 prompt=user_prompt,
-                history=list(message_history or []),
+                history=list(conversation.messages),
                 address=conversation_address,
-                thread_id=thread_id,
+                thread_id=conversation.thread_id,
+                conversation_id=conversation.id,
                 source_thread_address=source_thread_address,
                 source_thread_message_ids=list(source_thread_message_ids or []),
                 run_name=run_name,
                 deferred_results=deferred_tool_results,
                 model=model,
                 effort=effort,
-                conversation_id=conversation_id,
                 capabilities=list(capabilities or []),
                 session=session,
             )

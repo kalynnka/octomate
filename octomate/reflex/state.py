@@ -524,11 +524,6 @@ class ReflexRuntime:
             for route in ctx.deps.available_routes.get(target.channel_id, [])
             if route.agent_id != agent.id
         ]
-        if state.conversation_id is None and thread_id is not None:
-            conversation = await agent.resolve_conversation(
-                thread_id, conversation_address=target.address
-            )
-            state.conversation_id = conversation.id
         session = await ctx.deps.octomate_session(
             agent,
             user_profile=state.user_profile,

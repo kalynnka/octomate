@@ -105,14 +105,17 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             await claim.land(ctx.deps, state.thread, decision)
             state.handoff = None
         runtime = ctx.deps.runtime
+        if thread_id is None:
+            raise ValueError("agent run requires a thread to own its conversation")
+        conversation = await agent.resolve_conversation(
+            thread_id, conversation_address=target_address
+        )
+        state.conversation_id = conversation.id
         session, suspender, capabilities = await runtime.resources(ctx)
         # A summon names the level it hands over at; every other turn runs at the
         # one the conversation was set to.
         effort = decision.effort
-        if effort is None and state.conversation_id is not None:
-            conversation = await ctx.deps.conversation_manager.get(
-                state.conversation_id, with_runs=False
-            )
+        if effort is None:
             effort = await agent.resolve_effort(conversation, model=model)
         if state.user_profile is not None:
             await runtime.prepare_user(
@@ -136,8 +139,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             async with agent.run_stream_events(
                 user_prompt,
                 conversation_address=target_address,
-                thread_id=thread_id,
-                conversation_id=state.conversation_id,
+                conversation=conversation,
                 source_thread_address=state.source_thread_address,
                 source_thread_message_ids=state.source_thread_message_ids,
                 run_name=state.run_name,

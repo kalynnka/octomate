@@ -91,8 +91,11 @@ async def test_plan_updates_live_permissions_and_persists_for_next_run(
     await agent.run(
         "continue",
         conversation_address=context.address,
-        conversation_id=conversation.id,
-        thread_id=conversation.thread_id,
+        conversation=await agent.resolve_conversation(
+            conversation.thread_id,
+            conversation_address=context.address,
+            conversation_id=conversation.id,
+        ),
     )
     assert options[-1].permission_mode == mode
 
@@ -206,8 +209,13 @@ async def test_fork_copies_sdk_transcript_and_resumes_from_destination(
         conversation_address=replace(
             context.address, channel_thread_id=target.channel_thread_id
         ),
-        conversation_id=copied.id,
-        thread_id=target.id,
+        conversation=await agent.resolve_conversation(
+            target.id,
+            conversation_address=replace(
+                context.address, channel_thread_id=target.channel_thread_id
+            ),
+            conversation_id=copied.id,
+        ),
         model=context.model,
     )
     assert options[-1].resume == copied.external_id

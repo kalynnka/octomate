@@ -468,7 +468,12 @@ async def test_a_driven_claude_run_records_where_it_dispatched(
     )
 
     async with tentacle.run_stream_events(
-        "do it", conversation_address=ADDRESS, thread_id=thread.id, run_name="react"
+        "do it",
+        conversation_address=ADDRESS,
+        conversation=await tentacle.resolve_conversation(
+            thread.id, conversation_address=ADDRESS
+        ),
+        run_name="react",
     ) as stream:
         async for _event in stream:
             pass
@@ -507,7 +512,12 @@ async def test_a_driven_codex_run_records_where_it_dispatched() -> None:
 
     async with tentacle:
         async with tentacle.run_stream_events(
-            "do it", conversation_address=ADDRESS, thread_id=thread.id, run_name="react"
+            "do it",
+            conversation_address=ADDRESS,
+            conversation=await tentacle.resolve_conversation(
+                thread.id, conversation_address=ADDRESS
+            ),
+            run_name="react",
         ) as stream:
             async for _event in stream:
                 pass

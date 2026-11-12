@@ -12,15 +12,19 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 from octomate_cli.config import cli_settings
+from pydantic_ai import Conversation as PydanticConversation
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 import octomate.database as database
 from octomate.config.base import OCTOMATE_HOME_ENV
+from octomate.managers.conversation import ConversationStore
 from octomate.models import Base
 from octomate.schemas.base import sqlalchemy_materia
+from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.tentacles.inkling import InklingTentacle
 from tests.support.config import ISOLATED_HOME, without_dotenv
+from tests.support.managers import FakeConversationManager
 
 HISTORY_MIGRATIONS = ScriptDirectory.from_config(
     Config(str(Path(__file__).resolve().parents[1] / "octomate/migrations/alembic.ini"))
@@ -54,6 +58,21 @@ def inkling_session_names(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     naming = AsyncMock()
     monkeypatch.setattr(InklingTentacle, "sync_session_name", naming)
     return naming
+
+
+@pytest.fixture(autouse=True)
+def fake_conversation_store(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Graph-only fakes keep conversation saves in memory; real stores run unchanged."""
+    record = ConversationStore.record_conversation
+
+    async def record_conversation(
+        store: ConversationStore, conversation: PydanticConversation
+    ) -> list[ModelRequest | ModelResponse]:
+        if isinstance(store.manager, FakeConversationManager):
+            return await store.manager.record_conversation(conversation)
+        return await record(store, conversation)
+
+    monkeypatch.setattr(ConversationStore, "record_conversation", record_conversation)
 
 
 @pytest.fixture(scope="session", autouse=True)

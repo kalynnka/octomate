@@ -112,7 +112,15 @@ async def test_inkling_native_model_spans_keep_the_driving_trace(
                 chat_id="test",
                 user_id="test",
             ),
-            thread_id=uuid7(),
+            conversation=await tentacle.resolve_conversation(
+                uuid7(),
+                conversation_address=ChannelAddress(
+                    channel_tentacle_id="test",
+                    chat_type="dm",
+                    chat_id="test",
+                    user_id="test",
+                ),
+            ),
             output_type=str,
         )
 

@@ -881,6 +881,51 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         run.messages.extend(run.messages.bless([vars(m) for m in messages]))
         return await self.persist_run(run)
 
+    async def record_run_metadata(
+        self,
+        run_id: str,
+        *,
+        name: str,
+        model_name: str | None,
+        context_window: int | None,
+        context_used: int | None,
+        permission_mode: AgentPermissionMode | None,
+        cwd: Path | None,
+        returned_calls: set[str],
+    ) -> None:
+        """Complete a stored run's metadata and returned child links without loading its archive."""
+        async with async_session() as session:
+            run = await session.one(
+                AgentRun,
+                expressions=[AgentRun["id"] == run_id],
+                options=[noload(AgentRun["messages"])],
+            )
+            run.name = name
+            run.model_name = model_name
+            run.context_window = context_window
+            run.context_used = context_used
+            run.permission_mode = permission_mode
+            run.cwd = cwd
+            if returned_calls:
+                children = await session.list(
+                    AgentRun,
+                    limit=None,
+                    expressions=[
+                        AgentRun["parent_run_id"].is_(None),
+                        AgentRun["parent_tool_call_id"].in_(returned_calls),
+                        AgentRun["conversation_id"].in_(
+                            select(Conversation["id"]).where(
+                                Conversation["parent_conversation_id"]
+                                == run.conversation_id
+                            )
+                        ),
+                    ],
+                    options=[noload(AgentRun["messages"])],
+                )
+                for child in children:
+                    child.parent_run_id = run_id
+            await session.commit()
+
     async def driven_run(
         self, agent_tentacle_id: str, session_id: str, turn_id: str
     ) -> AgentRun | None:
@@ -1384,8 +1429,12 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         named = name.strip()
         if not named or conversation.name == named:
             return conversation
-        async with async_session() as session:
-            stored = await session.get(Conversation, conversation.id)
+        async with self.lock(conversation.key), async_session() as session:
+            stored = await session.get(
+                Conversation,
+                conversation.id,
+                options=[lazyload(Conversation["runs"])],
+            )
             if stored is None:
                 raise ValueError(f"unknown conversation {conversation.id}")
             stored.name = named

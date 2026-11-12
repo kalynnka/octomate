@@ -205,7 +205,11 @@ async def test_driven_html_reaches_the_owned_viewer_and_channel_card(
     async with (
         tentacle,
         tentacle.run_stream_events(
-            "Draw a chart", conversation_address=KEY, thread_id=thread.id
+            "Draw a chart",
+            conversation_address=KEY,
+            conversation=await tentacle.resolve_conversation(
+                thread.id, conversation_address=KEY
+            ),
         ) as stream,
     ):
         events = [event async for event in stream]

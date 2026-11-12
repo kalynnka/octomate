@@ -435,7 +435,11 @@ async def test_driven_names_are_persisted_and_revised(
                 value={"kind": "sequenced", "asOfSeq": 5, "values": {"title": name}}
             )
             result = await tentacle.run(
-                "work", conversation_address=KEY, thread_id=thread_id
+                "work",
+                conversation_address=KEY,
+                conversation=await tentacle.resolve_conversation(
+                    thread_id, conversation_address=KEY
+                ),
             )
             assert result.output == "done"
             if name and name.strip():
@@ -482,8 +486,9 @@ async def test_driven_child_name_does_not_rename_parent_thread(
         await tentacle.run(
             "work",
             conversation_address=KEY,
-            thread_id=thread_id,
-            conversation_id=child.id,
+            conversation=await tentacle.resolve_conversation(
+                thread_id, conversation_address=KEY, conversation_id=child.id
+            ),
         )
     assert (
         await octomate.conversations.get(child.id, with_runs=False)
@@ -515,7 +520,13 @@ async def test_driven_name_lookup_failure_or_missing_session_keeps_result(
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
     async with tentacle:
-        result = await tentacle.run("work", conversation_address=KEY, thread_id=_THREAD)
+        result = await tentacle.run(
+            "work",
+            conversation_address=KEY,
+            conversation=await tentacle.resolve_conversation(
+                _THREAD, conversation_address=KEY
+            ),
+        )
     assert result.output == "done"
     assert len(conversations.runs) == 1
     if isinstance(lookup, ErrResult) or lookup.value is not None:
@@ -543,7 +554,9 @@ async def test_run_stream_events_creates_session_proxies_events_and_persists(
             async with tentacle.run_stream_events(
                 "fix it",
                 conversation_address=KEY,
-                thread_id=_THREAD,
+                conversation=await tentacle.resolve_conversation(
+                    _THREAD, conversation_address=KEY
+                ),
                 run_name="react",
                 model="deepseek-v4-pro",
                 effort=None if saved_effort else "max",
@@ -624,12 +637,18 @@ async def test_run_reuses_the_stored_session_and_skips_create(
     FakeDeepseekApi.reset(turn_events("again"))
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "deepseek", "")] = FakeConversation(
-        thread_id=_THREAD, external_id="sess-old"
+        agent_tentacle_id="deepseek", thread_id=_THREAD, external_id="sess-old"
     )
     tentacle = _tentacle(conversations)
 
     async with tentacle:
-        result = await tentacle.run("more", conversation_address=KEY, thread_id=_THREAD)
+        result = await tentacle.run(
+            "more",
+            conversation_address=KEY,
+            conversation=await tentacle.resolve_conversation(
+                _THREAD, conversation_address=KEY
+            ),
+        )
 
     assert result.output == "again"
     assert not calls_of("session/create")
@@ -649,7 +668,13 @@ async def test_agent_preset_and_the_chat_cwd_reach_session_create(
     )
 
     async with tentacle:
-        await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
+        await tentacle.run(
+            "go",
+            conversation_address=KEY,
+            conversation=await tentacle.resolve_conversation(
+                _THREAD, conversation_address=KEY
+            ),
+        )
 
     [create_payload] = calls_of("session/create")
     assert create_payload == {
@@ -683,7 +708,13 @@ async def test_without_a_model_the_session_selection_is_left_alone(
     tentacle = _tentacle(conversations)
 
     async with tentacle:
-        await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
+        await tentacle.run(
+            "go",
+            conversation_address=KEY,
+            conversation=await tentacle.resolve_conversation(
+                _THREAD, conversation_address=KEY
+            ),
+        )
 
     assert not calls_of("session/selectModel")
     [run] = conversations.store[(_THREAD, "deepseek", "")].runs
@@ -722,12 +753,18 @@ async def test_the_conversations_posture_overrides_the_configured_one(
     )
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "deepseek", "")] = FakeConversation(
-        thread_id=_THREAD, permission_mode=mode
+        agent_tentacle_id="deepseek", thread_id=_THREAD, permission_mode=mode
     )
     tentacle = _tentacle(conversations)
 
     async with tentacle:
-        await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
+        await tentacle.run(
+            "go",
+            conversation_address=KEY,
+            conversation=await tentacle.resolve_conversation(
+                _THREAD, conversation_address=KEY
+            ),
+        )
 
     [permission_payload] = calls_of("commands/execute")
     assert isinstance(permission_payload, dict)
@@ -748,12 +785,20 @@ async def test_an_unavailable_posture_fails_before_prompting(
     FakeDeepseekApi.reset(turn_events())
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "deepseek", "")] = FakeConversation(
-        thread_id=_THREAD, permission_mode="bypassPermissions"
+        agent_tentacle_id="deepseek",
+        thread_id=_THREAD,
+        permission_mode="bypassPermissions",
     )
     tentacle = _tentacle(conversations)
     async with tentacle:
         with pytest.raises(ValueError, match="not one of deepseek's modes"):
-            await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
+            await tentacle.run(
+                "go",
+                conversation_address=KEY,
+                conversation=await tentacle.resolve_conversation(
+                    _THREAD, conversation_address=KEY
+                ),
+            )
     assert not calls_of("commands/execute")
     assert not calls_of("session/prompt")
 
@@ -769,7 +814,9 @@ async def test_instructions_frame_the_prompt(
         await tentacle.run(
             "work the brief",
             conversation_address=KEY,
-            thread_id=_THREAD,
+            conversation=await tentacle.resolve_conversation(
+                _THREAD, conversation_address=KEY
+            ),
             instructions="You are an accomplice.",
         )
 
@@ -800,7 +847,9 @@ async def test_output_type_is_refused(
             await tentacle.run(
                 "shape this",
                 conversation_address=KEY,
-                thread_id=_THREAD,
+                conversation=await tentacle.resolve_conversation(
+                    _THREAD, conversation_address=KEY
+                ),
                 output_type=dict[str, str],
             )
 
@@ -813,7 +862,11 @@ async def test_slash_text_is_a_normal_prompt_on_the_remote_api(
     tentacle = _tentacle(FakeConversationManager())
     async with tentacle:
         result = await tentacle.run(
-            "/permission workspace-write", conversation_address=KEY, thread_id=_THREAD
+            "/permission workspace-write",
+            conversation_address=KEY,
+            conversation=await tentacle.resolve_conversation(
+                _THREAD, conversation_address=KEY
+            ),
         )
     assert result.output == "normal model response"
     assert not calls_of("session/cancel")
@@ -831,7 +884,13 @@ async def test_a_refused_rpc_becomes_the_runs_failure(
 
     async with tentacle:
         with pytest.raises(AgentRunError, match="no adapters"):
-            await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
+            await tentacle.run(
+                "go",
+                conversation_address=KEY,
+                conversation=await tentacle.resolve_conversation(
+                    _THREAD, conversation_address=KEY
+                ),
+            )
 
 
 async def test_an_unknown_preset_is_refused_not_run_under(
@@ -849,7 +908,13 @@ async def test_an_unknown_preset_is_refused_not_run_under(
 
     async with tentacle:
         with pytest.raises(AgentRunError, match="unknown preset"):
-            await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
+            await tentacle.run(
+                "go",
+                conversation_address=KEY,
+                conversation=await tentacle.resolve_conversation(
+                    _THREAD, conversation_address=KEY
+                ),
+            )
     assert not calls_of("session/prompt")
 
 
@@ -865,7 +930,13 @@ async def test_permission_command_must_match_and_return_a_complete_outcome(
     tentacle = _tentacle(FakeConversationManager())
     async with tentacle:
         with pytest.raises(AgentRunError if unmatched else ValidationError):
-            await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
+            await tentacle.run(
+                "go",
+                conversation_address=KEY,
+                conversation=await tentacle.resolve_conversation(
+                    _THREAD, conversation_address=KEY
+                ),
+            )
     assert not calls_of("session/prompt")
 
 
@@ -893,7 +964,13 @@ async def test_a_mid_turn_stream_error_persists_cancels_and_raises(
 
     async with tentacle:
         with pytest.raises(AgentRunError, match="socket died"):
-            await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
+            await tentacle.run(
+                "go",
+                conversation_address=KEY,
+                conversation=await tentacle.resolve_conversation(
+                    _THREAD, conversation_address=KEY
+                ),
+            )
 
     # The partial turn persisted before the raise, and dsh's live turn was told
     # to stop burning.
@@ -989,7 +1066,13 @@ async def test_driving_covers_runtime_cleanup_before_persistence_and_workspace_e
     monkeypatch.setattr(conversations, "record_agent_run", record)
     async with tentacle:
         with pytest.raises(AgentRunError, match="socket died"):
-            await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
+            await tentacle.run(
+                "go",
+                conversation_address=KEY,
+                conversation=await tentacle.resolve_conversation(
+                    _THREAD, conversation_address=KEY
+                ),
+            )
         assert tentacle.ink.subscribers == {}
         assert tentacle.bridge_contexts == {}
         assert tentacle.driven_sessions == {}
@@ -1027,7 +1110,13 @@ async def test_an_error_turn_raises_dshs_own_message(
 
     async with tentacle:
         with pytest.raises(AgentRunError, match="rate limited"):
-            await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
+            await tentacle.run(
+                "go",
+                conversation_address=KEY,
+                conversation=await tentacle.resolve_conversation(
+                    _THREAD, conversation_address=KEY
+                ),
+            )
 
     assert conversations.runs
     assert not calls_of("session/cancel")
@@ -1068,7 +1157,9 @@ async def test_an_approval_mid_run_bridges_to_a_card_and_back(
         async with tentacle.run_stream_events(
             "dangerous",
             conversation_address=KEY,
-            thread_id=_THREAD,
+            conversation=await tentacle.resolve_conversation(
+                _THREAD, conversation_address=KEY
+            ),
             deferred_suspender=suspender,
         ) as stream:
             return [event async for event in stream]
@@ -1431,7 +1522,13 @@ async def test_starts_its_own_runtime_beside_native_dsh(
         assert tentacle.process is not None
         assert tentacle.ink.client is not None
         assert tentacle.ink.client.base_url == HttpUrl("http://127.0.0.1:3081")
-        result = await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
+        result = await tentacle.run(
+            "go",
+            conversation_address=KEY,
+            conversation=await tentacle.resolve_conversation(
+                _THREAD, conversation_address=KEY
+            ),
+        )
 
     assert result.output == "shared"
     assert len(FakeDeepseekProcess.started) == 1
@@ -1545,10 +1642,20 @@ async def test_detached_run_collects_through_turn_end(
         with anyio.CancelScope() as scope:
             scopes.append(scope)
             if detach in {"cancel", "prompt"}:
-                await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
+                await tentacle.run(
+                    "go",
+                    conversation_address=KEY,
+                    conversation=await tentacle.resolve_conversation(
+                        _THREAD, conversation_address=KEY
+                    ),
+                )
                 return
             async with tentacle.run_stream_events(
-                "go", conversation_address=KEY, thread_id=_THREAD
+                "go",
+                conversation_address=KEY,
+                conversation=await tentacle.resolve_conversation(
+                    _THREAD, conversation_address=KEY
+                ),
             ) as stream:
                 async for _ in stream:
                     observed.set()
@@ -1638,7 +1745,11 @@ async def test_concurrent_run_waits_before_claiming_the_workspace(
 
     async def consume() -> None:
         async with tentacle.run_stream_events(
-            "first", conversation_address=KEY, thread_id=_THREAD
+            "first",
+            conversation_address=KEY,
+            conversation=await tentacle.resolve_conversation(
+                _THREAD, conversation_address=KEY
+            ),
         ) as stream:
             async for _ in stream:
                 first_prompted.set()
@@ -1652,7 +1763,13 @@ async def test_concurrent_run_waits_before_claiming_the_workspace(
             await first_prompted.wait()
         FakeDeepseekApi.turn_script = script
         second = asyncio.create_task(
-            tentacle.run("second", conversation_address=KEY, thread_id=_THREAD)
+            tentacle.run(
+                "second",
+                conversation_address=KEY,
+                conversation=await tentacle.resolve_conversation(
+                    _THREAD, conversation_address=KEY
+                ),
+            )
         )
         try:
             async with asyncio.timeout(2):
@@ -1684,7 +1801,11 @@ async def test_aexit_drains_live_sessions_before_closing_the_mux(
 
     async def consume() -> None:
         async with tentacle.run_stream_events(
-            "go", conversation_address=KEY, thread_id=_THREAD
+            "go",
+            conversation_address=KEY,
+            conversation=await tentacle.resolve_conversation(
+                _THREAD, conversation_address=KEY
+            ),
         ) as stream:
             async for _ in stream:
                 observed.set()

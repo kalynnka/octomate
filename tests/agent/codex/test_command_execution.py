@@ -199,8 +199,11 @@ async def test_runs_apply_saved_effort(
         await agent.run(
             "review",
             conversation_address=context.address,
-            conversation_id=conversation.id,
-            thread_id=conversation.thread_id,
+            conversation=await agent.resolve_conversation(
+                conversation.thread_id,
+                conversation_address=context.address,
+                conversation_id=conversation.id,
+            ),
             model=selected,
         )
     assert FakeCodex.turn_calls[-1].effort == (
@@ -447,8 +450,11 @@ async def test_permission_update_applies_to_next_turn_on_the_same_thread(
     async with agent.run_stream_events(
         "work",
         conversation_address=context.address,
-        conversation_id=conversation.id,
-        thread_id=conversation.thread_id,
+        conversation=await agent.resolve_conversation(
+            conversation.thread_id,
+            conversation_address=context.address,
+            conversation_id=conversation.id,
+        ),
     ) as events:
         try:
             await anext(events)
@@ -475,8 +481,11 @@ async def test_permission_update_applies_to_next_turn_on_the_same_thread(
     await agent.run(
         "continue",
         conversation_address=context.address,
-        conversation_id=conversation.id,
-        thread_id=conversation.thread_id,
+        conversation=await agent.resolve_conversation(
+            conversation.thread_id,
+            conversation_address=context.address,
+            conversation_id=conversation.id,
+        ),
     )
     stored = await agent.conversations.get(conversation.id)
     assert stored.permission_mode == "full_access"
@@ -505,8 +514,11 @@ async def test_permission_update_resets_native_reviewer_on_an_idle_thread(
     await agent.run(
         "work",
         conversation_address=context.address,
-        conversation_id=conversation.id,
-        thread_id=conversation.thread_id,
+        conversation=await agent.resolve_conversation(
+            conversation.thread_id,
+            conversation_address=context.address,
+            conversation_id=conversation.id,
+        ),
     )
     request = agent.ink.client._client.request
     assert isinstance(request, AsyncMock)
@@ -557,8 +569,11 @@ async def test_rejected_codex_permission_update_does_not_save_the_selection(
     await agent.run(
         "work",
         conversation_address=context.address,
-        conversation_id=conversation.id,
-        thread_id=conversation.thread_id,
+        conversation=await agent.resolve_conversation(
+            conversation.thread_id,
+            conversation_address=context.address,
+            conversation_id=conversation.id,
+        ),
     )
     request = agent.ink.client._client.request
     assert isinstance(request, AsyncMock)
@@ -694,8 +709,11 @@ async def test_status_uses_latest_recorded_native_usage(
     await agent.run(
         "review",
         conversation_address=context.address,
-        conversation_id=conversation.id,
-        thread_id=conversation.thread_id,
+        conversation=await agent.resolve_conversation(
+            conversation.thread_id,
+            conversation_address=context.address,
+            conversation_id=conversation.id,
+        ),
     )
     conversation = await agent.conversations.get(conversation.id, with_runs=False)
     if copied_history:
@@ -1030,11 +1048,19 @@ async def test_automatic_compactions_persist_independently_of_the_run_outcome(
     if failed:
         with pytest.raises(AgentRunError, match="model failed"):
             await agent.run(
-                "ask", conversation_address=KEY, thread_id=conversation.thread_id
+                "ask",
+                conversation_address=KEY,
+                conversation=await agent.resolve_conversation(
+                    conversation.thread_id, conversation_address=KEY
+                ),
             )
     else:
         await agent.run(
-            "ask", conversation_address=KEY, thread_id=conversation.thread_id
+            "ask",
+            conversation_address=KEY,
+            conversation=await agent.resolve_conversation(
+                conversation.thread_id, conversation_address=KEY
+            ),
         )
     async with async_session() as session:
         rows = await session.list(
@@ -1087,11 +1113,19 @@ async def test_compaction_content_flushed_at_turn_end_enriches_the_same_record(
     if failed:
         with pytest.raises(AgentRunError, match="model failed"):
             await agent.run(
-                "ask", conversation_address=KEY, thread_id=conversation.thread_id
+                "ask",
+                conversation_address=KEY,
+                conversation=await agent.resolve_conversation(
+                    conversation.thread_id, conversation_address=KEY
+                ),
             )
     else:
         await agent.run(
-            "ask", conversation_address=KEY, thread_id=conversation.thread_id
+            "ask",
+            conversation_address=KEY,
+            conversation=await agent.resolve_conversation(
+                conversation.thread_id, conversation_address=KEY
+            ),
         )
     async with async_session() as session:
         [stored] = await session.list(

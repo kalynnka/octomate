@@ -469,8 +469,11 @@ async def test_a_run_mounts_the_tentacles_for_its_octomate_session(
         inkling.run_stream_events(
             "hello",
             conversation_address=address,
-            thread_id=thread_id,
-            conversation_id=session.conversation_id,
+            conversation=await inkling.resolve_conversation(
+                thread_id,
+                conversation_address=address,
+                conversation_id=session.conversation_id,
+            ),
         ) as stream,
     ):
         async for _event in stream:

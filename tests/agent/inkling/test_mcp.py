@@ -109,6 +109,7 @@ async def test_inkling_calls_todos_through_authenticated_mcp_and_publishes_once(
     inkling = InklingTentacle(
         "inkling", host, auth=host.auth, habitats=host.habitats, agent=agent
     )
+    assert scope.thread_id is not None
     assert scope.conversation_address is not None
     topic = ThreadTopic(ThreadKey.from_address(scope.conversation_address))
     async with (
@@ -119,9 +120,12 @@ async def test_inkling_calls_todos_through_authenticated_mcp_and_publishes_once(
     ):
         result = await inkling.run(
             "Make a plan",
-            thread_id=scope.thread_id,
+            conversation=await inkling.resolve_conversation(
+                scope.thread_id,
+                conversation_address=scope.conversation_address,
+                conversation_id=scope.conversation_id,
+            ),
             conversation_address=scope.conversation_address,
-            conversation_id=scope.conversation_id,
         )
         assert result.output == "Done"
         assert "add_todo" not in offered[0]
@@ -154,6 +158,7 @@ async def test_todo_mcp_rejects_another_users_conversation_and_has_no_owner_argu
     assert alice is not None
     await a_api_key(alice, "alice-token", scopes=["mcp"])
     assert scope.conversation_id is not None
+    assert scope.thread_id is not None
     assert scope.conversation_address is not None
     topic = ThreadTopic(ThreadKey.from_address(scope.conversation_address))
 
@@ -222,14 +227,22 @@ async def test_anonymous_inkling_run_does_not_mount_core_mcp_tools() -> None:
     scope = OctomateSession(channel_routes={}, current_agent_id="inkling")
     result = await inkling.run(
         "Hello",
-        thread_id=uuid7(),
+        conversation=await inkling.resolve_conversation(
+            uuid7(),
+            conversation_address=ChannelAddress(
+                channel_tentacle_id="im",
+                chat_type="dm",
+                chat_id="anonymous",
+                user_id="anonymous",
+            ),
+            conversation_id=scope.conversation_id,
+        ),
         conversation_address=ChannelAddress(
             channel_tentacle_id="im",
             chat_type="dm",
             chat_id="anonymous",
             user_id="anonymous",
         ),
-        conversation_id=scope.conversation_id,
     )
     assert result.output == "Bare agent"
     assert seen == []
@@ -247,15 +260,19 @@ async def test_registered_inkling_run_requires_configured_authentication(
         habitats=host.habitats,
         models={"test": TestModel()},
     )
+    assert scope.thread_id is not None
     assert scope.conversation_address is not None
 
     async with host.gateway.driving(scope):
         with pytest.raises(ValueError, match="require configured authentication"):
             await inkling.run(
                 "Use my tools",
-                thread_id=scope.thread_id,
+                conversation=await inkling.resolve_conversation(
+                    scope.thread_id,
+                    conversation_address=scope.conversation_address,
+                    conversation_id=scope.conversation_id,
+                ),
                 conversation_address=scope.conversation_address,
-                conversation_id=scope.conversation_id,
             )
     assert inkling.api_keys == {}
 
@@ -413,6 +430,7 @@ async def test_mcp_accomplices_link_to_the_run_that_returns_their_tool_result(
         agent=agent,
         permission_mode="bypassPermissions",
     )
+    assert scope.thread_id is not None
     assert scope.conversation_address is not None
     assert scope.conversation_id is not None
     async with served_inkling_mcp(host, monkeypatch), host.gateway.driving(scope):
@@ -423,9 +441,12 @@ async def test_mcp_accomplices_link_to_the_run_that_returns_their_tool_result(
         ):
             await inkling.run(
                 "Delegate the audit",
-                thread_id=scope.thread_id,
+                conversation=await inkling.resolve_conversation(
+                    scope.thread_id,
+                    conversation_address=scope.conversation_address,
+                    conversation_id=scope.conversation_id,
+                ),
                 conversation_address=scope.conversation_address,
-                conversation_id=scope.conversation_id,
             )
 
     parent = await host.conversations.get(scope.conversation_id)

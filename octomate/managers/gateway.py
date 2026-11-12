@@ -197,6 +197,11 @@ class OctomateSession:
     ) -> str:
         agents, thread_id, conversation_address = self.commission_deps()
         agent = agents[child.agent_tentacle_id]
+        conversation = await agent.resolve_conversation(
+            thread_id,
+            conversation_address=conversation_address,
+            conversation_id=child.id,
+        )
         try:
             # The subagent contract (non-interactive, no capabilities,
             # addressed at the pre-ensured child conversation) lives on
@@ -208,8 +213,7 @@ class OctomateSession:
                 agent.subagent_run(
                     prompt,
                     conversation_address=conversation_address,
-                    thread_id=thread_id,
-                    conversation_id=child.id,
+                    conversation=conversation,
                     run_name=run_name,
                     model=model,
                     effort=effort,

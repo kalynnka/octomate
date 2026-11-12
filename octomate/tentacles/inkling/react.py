@@ -17,9 +17,9 @@ from pydantic_ai import (
     AgentRunResult,
     AgentRunResultEvent,
     AgentSpec,
-    RunUsage,
     UsageLimits,
 )
+from pydantic_ai import Conversation as PydanticConversation
 from pydantic_ai.agent.abstract import AgentInstructions, AgentMetadata, AgentRetries
 from pydantic_ai.capabilities import (
     AbstractCapability,
@@ -35,7 +35,6 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserContent,
 )
-from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.models import KnownModelName, Model, ModelRequestContext
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import (
@@ -54,11 +53,10 @@ from pydantic_graph import (
     TypeExpression,
 )
 
-from octomate.managers.conversation import ConversationManager
+from octomate.managers.conversation import ConversationManager, ConversationStore
 from octomate.managers.thread import ThreadManager
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.messages import ModelRequest
-from octomate.schemas.runs import AgentRun as PersistedAgentRun
 from octomate.telemetry import react_logfire
 from octomate.tentacles.deferred import DeferredSuspender
 from octomate.tentacles.inkling.agent import Agent
@@ -71,17 +69,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ReactState:
-    """The react graph holds no history of its own — only the identity needed to
-    fetch the live conversation from the ConversationManager. Every node
-    `ensure()`s the conversation and reads its messages."""
+    """The resolved conversation and chat sources for this invocation."""
 
     conversation_address: ChannelAddress
-    agent_tentacle_id: str
-    thread_id: UUID7
-    # A pre-ensured conversation to run in, by id — the caller that spawned this
-    # run chose the context (e.g. a commissioned accomplice's child conversation).
-    # None resolves the agent's own (thread, agent) conversation as usual.
-    conversation_id: UUID7 | None = None
+    conversation: Conversation
     source_thread_address: ChannelAddress | None = None
     source_thread_message_ids: list[UUID7] = field(default_factory=list)
 
@@ -101,10 +92,16 @@ class RunPersistence:
     async def record(
         self,
         run_id: str,
-        messages: Sequence[PydanticModelMessage],
+        conversation: PydanticConversation,
         *,
         model_name: str | None,
-    ) -> PersistedAgentRun | None:
+    ) -> None:
+        async with self.conversation_manager.lock(self.conversation.key):
+            messages = await ConversationStore(
+                self.conversation_manager
+            ).record_conversation(conversation)
+        if not messages:
+            return
         last_usage = next(
             (
                 message.usage
@@ -113,10 +110,8 @@ class RunPersistence:
             ),
             None,
         )
-        recorded_run = await self.conversation_manager.record_agent_run(
-            self.conversation,
-            run_id=run_id,
-            messages=messages,
+        await self.conversation_manager.record_run_metadata(
+            run_id,
             name=self.run_name,
             model_name=model_name,
             context_window=self.context_window,
@@ -125,15 +120,20 @@ class RunPersistence:
             else None,
             permission_mode=self.permission_mode,
             cwd=self.cwd,
+            returned_calls={
+                part.tool_call_id
+                for message in messages
+                if isinstance(message, ModelRequest)
+                for part in message.parts
+                if isinstance(part, ToolReturnPart)
+            },
         )
         if not self.state.source_thread_message_ids or not self.binds_prompt_sources:
-            return recorded_run
-        if recorded_run is None:
-            raise RuntimeError("prompt-source bindings require a persisted agent run")
+            return
         prompt_request = next(
             (
                 message
-                for message in recorded_run.messages
+                for message in messages
                 if isinstance(message, ModelRequest) and message.role == "user"
             ),
             None,
@@ -148,7 +148,7 @@ class RunPersistence:
             self.state.source_thread_message_ids,
             prompt_request.id,
             kind="request_source",
-            run_id=recorded_run.id,
+            run_id=run_id,
         )
         source_thread = await self.thread_manager.ensure(
             self.state.source_thread_address or self.state.conversation_address
@@ -157,7 +157,6 @@ class RunPersistence:
             source_thread,
             self.state.source_thread_message_ids[-1],
         )
-        return recorded_run
 
 
 @dataclass
@@ -177,14 +176,19 @@ class PersistRunFailure[ReactDepsT](AbstractCapability[ReactDepsT]):
     async def record_failure(self, ctx: RunContext[ReactDepsT]) -> None:
         if self.recorded:
             return
-        messages = ctx.messages[self.previous_message_count :]
-        if not messages:
+        if len(ctx.messages) <= self.previous_message_count:
             return
         if ctx.run_id is None:
             raise RuntimeError("failed agent run has no run_id")
         await self.persistence.record(
             ctx.run_id,
-            messages,
+            PydanticConversation(
+                messages=ctx.messages,
+                usage=ctx.usage,
+                conversation_id=str(self.persistence.conversation.id),
+                revision=self.persistence.conversation.revision,
+                new_message_index=self.previous_message_count,
+            ),
             model_name=ctx.model.model_name,
         )
         self.recorded = True
@@ -248,7 +252,6 @@ class ReactDeps[ReactOutputT, ReactDepsT]:
     instructions: AgentInstructions[ReactDepsT] = None
     model_settings: AgentModelSettings[ReactDepsT] | None = None
     usage_limits: UsageLimits | None = None
-    usage: RunUsage | None = None
     metadata: AgentMetadata[ReactDepsT] | None = None
     output_retries: int | None = None
     infer_name: bool = True
@@ -256,33 +259,6 @@ class ReactDeps[ReactOutputT, ReactDepsT]:
     builtin_tools: Sequence[AgentNativeTool[ReactDepsT]] | None = None
     capabilities: Sequence[AgentCapability[ReactDepsT]] | None = None
     spec: dict[str, Any] | AgentSpec | None = None
-
-
-async def resolve_conversation[ReactOutputT, ReactDepsT](
-    ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]],
-) -> Conversation:
-    """The node's conversation: the pre-ensured one when the run is addressed
-    by id, otherwise the agent's own (thread, agent) conversation."""
-    conversation_id = ctx.state.conversation_id
-    if conversation_id is None:
-        owner = await ctx.deps.conversation_manager.ensure(
-            ctx.state.thread_id,
-            agent_tentacle_id=ctx.state.agent_tentacle_id,
-            with_runs=False,
-        )
-        conversation_id = owner.id
-    conversation = await ctx.deps.conversation_manager.get(
-        conversation_id, with_runs=False, with_messages=True
-    )
-    if ctx.state.conversation_id is not None and (
-        conversation.agent_tentacle_id != ctx.state.agent_tentacle_id
-        or conversation.thread_id != ctx.state.thread_id
-    ):
-        raise ValueError(
-            f"conversation {ctx.state.conversation_id} does not belong to "
-            f"({ctx.state.agent_tentacle_id!r}, {ctx.state.thread_id})"
-        )
-    return conversation
 
 
 @dataclass
@@ -300,7 +276,7 @@ class StartTurn[ReactOutputT, ReactDepsT](
     ) -> RunAgent[ReactOutputT, ReactDepsT]:
         if self.user_prompt is None:
             return RunAgent()
-        conversation = await resolve_conversation(ctx)
+        conversation = ctx.state.conversation
         # A new prompt answers every call the last response still waits on, denied,
         # rather than leaving it unanswered: the history stays whole, so a fork
         # that shares the run can still resume the call.
@@ -378,7 +354,7 @@ class RunAgent[ReactOutputT, ReactDepsT](
             conversation_address=str(ctx.state.conversation_address),
             resumed=self.deferred_results is not None,
         ) as span:
-            conversation = await resolve_conversation(ctx)
+            conversation = ctx.state.conversation
             persistence = RunPersistence(
                 conversation_manager=ctx.deps.conversation_manager,
                 thread_manager=ctx.deps.thread_manager,
@@ -425,15 +401,13 @@ class RunAgent[ReactOutputT, ReactDepsT](
                 result = await ctx.deps.agent.run(
                     self.user_prompt,
                     output_type=ctx.deps.output_type,
-                    message_history=conversation.messages or None,
+                    conversation=conversation,
                     deferred_tool_results=self.deferred_results,
-                    conversation_id=str(conversation.id),
                     model=ctx.deps.model,
                     instructions=ctx.deps.instructions,
                     deps=ctx.deps.agent_deps,
                     model_settings=ctx.deps.model_settings,
                     usage_limits=ctx.deps.usage_limits,
-                    usage=ctx.deps.usage,
                     metadata=ctx.deps.metadata,
                     retries=retries,
                     infer_name=ctx.deps.infer_name,
@@ -450,15 +424,13 @@ class RunAgent[ReactOutputT, ReactDepsT](
             async for event in ctx.deps.agent.stream_events(
                 self.user_prompt,
                 output_type=ctx.deps.output_type,
-                message_history=conversation.messages or None,
+                conversation=conversation,
                 deferred_tool_results=self.deferred_results,
-                conversation_id=str(conversation.id),
                 model=ctx.deps.model,
                 instructions=ctx.deps.instructions,
                 deps=ctx.deps.agent_deps,
                 model_settings=ctx.deps.model_settings,
                 usage_limits=ctx.deps.usage_limits,
-                usage=ctx.deps.usage,
                 metadata=ctx.deps.metadata,
                 output_retries=ctx.deps.output_retries,
                 infer_name=ctx.deps.infer_name,
@@ -491,13 +463,13 @@ class RunAgent[ReactOutputT, ReactDepsT](
             "react.deferred", isinstance(result.output, DeferredToolRequests)
         )
         span.set_attribute("react.new_messages", len(new_messages))
-        if new_messages:
-            # Recording persists the turn, so the next RunAgent's ensure() picks
-            # it up from the manager — no copy in state. Only the prompt turn
-            # binds source messages; deferred resumes carry no new user request.
-            await persistence.record(
-                result.run_id, new_messages, model_name=result.response.model_name
-            )
+        conversation = result.conversation
+        await persistence.record(
+            result.run_id, conversation, model_name=result.response.model_name
+        )
+        if conversation.revision is not None:
+            # Upstream save(result) uses this to advance future result.conversation reads.
+            result._conversation_saved(conversation.revision)
 
         if isinstance(result.output, DeferredToolRequests) and (
             ctx.deps.choose_resolvers is not None or ctx.deps.suspender is not None
@@ -529,7 +501,10 @@ class ResolveDeferred[ReactOutputT, ReactDepsT](
             # Asked here, at the deferral, rather than carried from the start of the
             # run: the conversation decides who answers this, and it can have been
             # told something new since the last time round.
-            resolvers = ctx.deps.choose_resolvers(await resolve_conversation(ctx))
+            ctx.state.conversation = await ctx.deps.conversation_manager.get(
+                ctx.state.conversation.id, with_runs=False, with_messages=True
+            )
+            resolvers = ctx.deps.choose_resolvers(ctx.state.conversation)
             results = DeferredToolResults()
             for resolver in resolvers:
                 answered = await resolver.resolve(self.requests)

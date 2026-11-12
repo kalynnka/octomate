@@ -106,7 +106,9 @@ async def inkling_runner(
         await tentacle.run(
             "Execute the synthetic probe once.",
             conversation_address=ADDRESS,
-            thread_id=thread_id,
+            conversation=await tentacle.resolve_conversation(
+                thread_id, conversation_address=ADDRESS
+            ),
             output_type=output,
         )
         assert outcome is not None, "the native tool never returned a result"
@@ -176,7 +178,9 @@ async def codex_runner(
                 await tentacle.run(
                     "Execute the synthetic probe once.",
                     conversation_address=ADDRESS,
-                    thread_id=thread_id,
+                    conversation=await tentacle.resolve_conversation(
+                        thread_id, conversation_address=ADDRESS
+                    ),
                     interactive=False,
                 )
                 assert state.outcome is not None, (
@@ -239,7 +243,9 @@ async def claude_runner(
                 await tentacle.run(
                     "Execute the synthetic probe once.",
                     conversation_address=ADDRESS,
-                    thread_id=thread_id,
+                    conversation=await tentacle.resolve_conversation(
+                        thread_id, conversation_address=ADDRESS
+                    ),
                     model="claude-sonnet-4-6",
                 )
                 assert state.outcome is not None, (
@@ -338,7 +344,9 @@ async def deepseek_runner(
             await tentacle.run(
                 "Execute the synthetic probe once.",
                 conversation_address=ADDRESS,
-                thread_id=thread_id,
+                conversation=await tentacle.resolve_conversation(
+                    thread_id, conversation_address=ADDRESS
+                ),
                 model="octomate-test:mock",
                 interactive=False,
             )

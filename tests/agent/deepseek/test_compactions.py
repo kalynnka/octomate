@@ -214,9 +214,21 @@ async def test_automatic_driven_compaction_survives_the_enclosing_run(
     async with agent:
         if failed_run:
             with pytest.raises(AgentRunError):
-                await agent.run("work", conversation_address=KEY, thread_id=thread.id)
+                await agent.run(
+                    "work",
+                    conversation_address=KEY,
+                    conversation=await agent.resolve_conversation(
+                        thread.id, conversation_address=KEY
+                    ),
+                )
         else:
-            await agent.run("work", conversation_address=KEY, thread_id=thread.id)
+            await agent.run(
+                "work",
+                conversation_address=KEY,
+                conversation=await agent.resolve_conversation(
+                    thread.id, conversation_address=KEY
+                ),
+            )
     async with async_session() as session:
         [row] = await session.list(
             Compaction, options=[selectinload(Compaction["messages"])]

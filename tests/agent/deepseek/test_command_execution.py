@@ -534,8 +534,11 @@ async def test_dsh_permission_update_reaches_live_run_without_another_prompt(
     async with agent.run_stream_events(
         "work",
         conversation_address=signal.context.address,
-        conversation_id=conversation.id,
-        thread_id=conversation.thread_id,
+        conversation=await agent.resolve_conversation(
+            conversation.thread_id,
+            conversation_address=signal.context.address,
+            conversation_id=conversation.id,
+        ),
     ) as events:
         await anext(events)
         selected = await agent.conversations.get(conversation.id, with_runs=False)
@@ -558,8 +561,11 @@ async def test_dsh_permission_update_reaches_live_run_without_another_prompt(
     await agent.run(
         "continue",
         conversation_address=signal.context.address,
-        conversation_id=conversation.id,
-        thread_id=conversation.thread_id,
+        conversation=await agent.resolve_conversation(
+            conversation.thread_id,
+            conversation_address=signal.context.address,
+            conversation_id=conversation.id,
+        ),
     )
     assert calls_of("commands/execute")[-1] == {
         "args": {

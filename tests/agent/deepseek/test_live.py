@@ -139,7 +139,9 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
         async with tentacle.run_stream_events(
             "Test integration",
             conversation_address=address,
-            thread_id=thread,
+            conversation=await tentacle.resolve_conversation(
+                thread, conversation_address=address
+            ),
             model="octomate-test:mock",
         ) as stream:
             events = [event async for event in stream]
@@ -158,7 +160,9 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
         resumed = await tentacle.run(
             "Continue",
             conversation_address=address,
-            thread_id=thread,
+            conversation=await tentacle.resolve_conversation(
+                thread, conversation_address=address
+            ),
             model="octomate-test:mock",
         )
         assert resumed.output == "Octomate Remote API works"
@@ -255,7 +259,11 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
         monkeypatch.setattr(tentacle, "answer_questions", wait_for_cancel)
         running = asyncio.create_task(
             tentacle.run(
-                "Cancel this turn", conversation_address=address, thread_id=thread
+                "Cancel this turn",
+                conversation_address=address,
+                conversation=await tentacle.resolve_conversation(
+                    thread, conversation_address=address
+                ),
             )
         )
         await asyncio.wait_for(waiting.wait(), 10)
@@ -281,7 +289,11 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
     monkeypatch.setattr(restarted, "answer_questions", answer)
     async with asyncio.timeout(90), restarted:
         result = await restarted.run(
-            "Continue after restart", conversation_address=address, thread_id=thread
+            "Continue after restart",
+            conversation_address=address,
+            conversation=await restarted.resolve_conversation(
+                thread, conversation_address=address
+            ),
         )
         assert result.output == "Octomate Remote API works"
         assert (await conversations.get(conversation.id)).external_id == first_session
