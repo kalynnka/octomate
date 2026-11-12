@@ -6,9 +6,11 @@ from datetime import datetime
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 from arcanus.base import TransmuterProxiedMixin
-from pydantic import UUID7, JsonValue
-from sqlalchemy import JSON, CheckConstraint, ForeignKey, String, Uuid
+from pydantic import UUID7, ConfigDict, JsonValue, TypeAdapter
+from pydantic_ai.messages import ModelRequestPart, ModelResponsePart
+from sqlalchemy import JSON, CheckConstraint, Dialect, ForeignKey, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base, MapperArgs, UTCDateTime
@@ -17,6 +19,31 @@ if TYPE_CHECKING:
     from octomate.models.compactions import Compaction
     from octomate.models.runs import AgentRun
     from octomate.models.thread import ThreadMessage
+
+
+class MessageParts(TypeDecorator[list[ModelRequestPart | ModelResponsePart]]):
+    """Honor upstream's field serializers before parts reach generic JSON encoding."""
+
+    impl: type[JSON] = JSON
+    cache_ok: bool = True
+    adapter: ClassVar[TypeAdapter[list[ModelRequestPart | ModelResponsePart]]] = (
+        TypeAdapter(
+            list[ModelRequestPart | ModelResponsePart],
+            config=ConfigDict(ser_json_bytes="base64", val_json_bytes="base64"),
+        )
+    )
+
+    def process_bind_param(
+        self,
+        value: list[ModelRequestPart | ModelResponsePart] | None,
+        dialect: Dialect,
+    ) -> JsonValue:
+        return None if value is None else self.adapter.dump_python(value, mode="json")
+
+    def process_result_value(
+        self, value: JsonValue, dialect: Dialect
+    ) -> list[ModelRequestPart | ModelResponsePart] | None:
+        return None if value is None else self.adapter.validate_python(value)
 
 
 class ModelMessage(Base, TransmuterProxiedMixin):
@@ -56,7 +83,9 @@ class ModelMessage(Base, TransmuterProxiedMixin):
     )
 
     kind: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    parts: Mapped[JsonValue] = mapped_column(JSON, nullable=False)
+    parts: Mapped[list[ModelRequestPart | ModelResponsePart]] = mapped_column(
+        MessageParts, nullable=False
+    )
     timestamp: Mapped[datetime | None] = mapped_column(
         UTCDateTime, nullable=True, index=True
     )

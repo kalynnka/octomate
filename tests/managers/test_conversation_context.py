@@ -1,6 +1,7 @@
 """Conversation carryover state references the existing run and compaction archive."""
 
 import asyncio
+import json
 from dataclasses import fields
 from decimal import Decimal
 from typing import get_type_hints
@@ -14,17 +15,32 @@ from pydantic_ai import Conversation as PydanticConversation
 from pydantic_ai.conversation import ConversationTypeAdapter
 from pydantic_ai.conversation_store import ConversationConflict
 from pydantic_ai.messages import (
+    AgentInstructionSource,
+    BinaryContent,
+    CapabilityInstructionSource,
     CompactionPart,
+    FilePart,
+    InstructionBaselinePart,
+    InstructionDeltaPart,
+    InstructionDigest,
+    InstructionId,
+    InstructionPart,
     ModelMessagesTypeAdapter,
+    RunInstructionSource,
     TextPart,
     ToolCallPart,
+    ToolsetInstructionSource,
     UserPromptPart,
 )
 from pydantic_ai.messages import ModelRequest as PydanticModelRequest
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 from pydantic_ai_harness.compaction import SummarizingCompaction
-from pydantic_ai_harness.step_persistence import RunRecord, StepPersistence
+from pydantic_ai_harness.step_persistence import (
+    ContinuableSnapshot,
+    RunRecord,
+    StepPersistence,
+)
 from sqlalchemy import delete, event
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.orm.exc import StaleDataError
@@ -50,6 +66,97 @@ async def conversation(in_memory_engine: AsyncEngine) -> Conversation:
     return await ConversationManager().ensure(
         await a_thread(), agent_tentacle_id="inkling"
     )
+
+
+@pytest.mark.parametrize(
+    "instruction_id",
+    [
+        InstructionId(AgentInstructionSource()),
+        InstructionId(ToolsetInstructionSource("gateway")),
+        InstructionId(CapabilityInstructionSource("gateway")),
+        InstructionId(CapabilityInstructionSource("deferred_capabilities")),
+        InstructionId(CapabilityInstructionSource("gateway"), name="policy"),
+        InstructionId(RunInstructionSource(), name="policy"),
+    ],
+)
+async def test_archive_preserves_instruction_identity_like_checkpoints(
+    conversation: Conversation,
+    in_memory_engine: AsyncEngine,
+    instruction_id: InstructionId,
+) -> None:
+    instruction = InstructionPart(content="Keep this policy", id=instruction_id)
+    run_id = str(uuid7())
+    request = ModelRequest(
+        run_id=run_id,
+        parts=[
+            InstructionBaselinePart(
+                instructions=[instruction, InstructionDigest.of(instruction)]
+            ),
+            InstructionDeltaPart(id=instruction_id, content="Updated policy"),
+        ],
+    )
+    manager = ConversationManager()
+    run = await manager.record_agent_run(conversation, run_id, [request])
+    assert run is not None
+    expected = ModelMessagesTypeAdapter.validate_python([vars(request)])
+    steps = StepStore()
+    await steps.save_snapshot(
+        ContinuableSnapshot(run_id=run.id, step_index=1, messages=expected)
+    )
+
+    async with in_memory_engine.connect() as connection:
+        raw = (
+            await connection.exec_driver_sql(
+                "SELECT parts FROM model_messages WHERE id = ?", (request.id.hex,)
+            )
+        ).scalar_one()
+    parts = json.loads(raw)
+    assert parts[0]["instructions"][0]["id"] == str(instruction_id)
+    assert parts[0]["instructions"][1]["id"] == str(instruction_id)
+    assert parts[1]["id"] == str(instruction_id)
+
+    restored = await manager.get(conversation.id, with_runs=False, with_messages=True)
+    snapshot = await steps.latest_snapshot(run_id=run.id)
+    assert snapshot is not None
+    assert (
+        ModelMessagesTypeAdapter.validate_python(
+            [vars(message) for message in restored.messages]
+        )
+        == snapshot.messages
+    )
+
+    updated = InstructionDeltaPart(id=instruction_id, content="Final policy")
+    async with async_session() as session:
+        stored = await session.get(ModelRequest, request.id)
+        assert stored is not None
+        stored.parts = [updated]
+        await session.commit()
+    async with async_session() as session:
+        stored = await session.get(ModelRequest, request.id)
+        assert stored is not None
+        assert stored.parts == [updated]
+
+
+async def test_archive_round_trips_request_and_response_binary_parts(
+    conversation: Conversation,
+) -> None:
+    image = BinaryContent(data=b"\xff\x00\xfe", media_type="image/png")
+    request = ModelRequest(parts=[UserPromptPart([image])])
+    response = ModelResponse(parts=[FilePart(content=image)])
+    manager = ConversationManager()
+    await manager.record_agent_run(conversation, str(uuid7()), [request, response])
+    restored = await manager.get(conversation.id, with_runs=False, with_messages=True)
+    [prompt] = restored.messages[0].parts
+    assert isinstance(prompt, UserPromptPart)
+    assert not isinstance(prompt.content, str)
+    [content] = prompt.content
+    assert isinstance(content, BinaryContent)
+    assert content.data == image.data
+    assert content.media_type == image.media_type
+    [file] = restored.messages[1].parts
+    assert isinstance(file, FilePart)
+    assert file.content.data == image.data
+    assert file.content.media_type == image.media_type
 
 
 async def test_store_loads_effective_context_and_carryover(
