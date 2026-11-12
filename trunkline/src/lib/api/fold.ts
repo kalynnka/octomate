@@ -10,6 +10,7 @@ import type {
   ApiUserProfile,
   CommandStreamEvent,
   ModelResponsePart,
+  ModelRequestPart,
   ThinkingPart,
   ToolCallPart,
   WireDeferredApproval,
@@ -175,6 +176,14 @@ export function nativeQuestionAnswered(
     return answer ? { ...question, answer: answer.answer } : question
   })
   return { ...card, questions, state: questions.every(question => question.answer !== undefined) ? 'answered' : 'waiting' }
+}
+
+export function promptContent(content: Extract<ModelRequestPart, { part_kind: 'user-prompt' }>['content']) {
+  if (typeof content === 'string') return { text: content }
+  return {
+    text: content.map(item => typeof item === 'string' ? item : item.kind === 'text-content' ? item.content ?? '' : '').filter(Boolean).join('\n'),
+    annotations: content.flatMap(item => typeof item !== 'string' && item.kind === 'text-content' && item.metadata?.annotations ? [item.metadata.annotations] : [])[0],
+  }
 }
 
 /** A reply envelope echoes the agent's question; only its answers are user text. */
@@ -490,8 +499,8 @@ export function replayRun(
           if (!part.content) break
           push(
             index < lastWork
-              ? { kind: 'stream', text: part.content, streaming: false, label: botLabel(agent) }
-              : { kind: 'agent', label: botLabel(agent), blocks: [{ type: 'p', text: part.content }] },
+              ? { kind: 'stream', text: part.content, ...(part.provider_details?.annotations && { annotations: part.provider_details?.annotations }), streaming: false, label: botLabel(agent) }
+              : { kind: 'agent', label: botLabel(agent), blocks: [{ type: 'p', text: part.content, ...(part.provider_details?.annotations && { annotations: part.provider_details?.annotations }) }] },
           )
           break
         case 'file':
@@ -572,6 +581,7 @@ export class TurnFold {
         this.closeStream()
         this.streamIndex = index
         this.appendReply(part.content)
+        if (this.streamUid !== null && part.provider_details?.annotations) this.sink.patch(this.streamUid, { annotations: part.provider_details?.annotations })
         break
       case 'thinking': {
         this.closeStream()
@@ -692,7 +702,8 @@ export class TurnFold {
         this.closeStream()
         const timestamp = requests[0]?.timestamp
         const at = timestamp ? new Date(timestamp) : null
-        const text = prompts.map(part => typeof part.content === 'string' ? part.content : part.content.filter(c => typeof c === 'string').join('\n')).join('\n')
+        const contents = prompts.map(part => promptContent(part.content))
+        const text = contents.map(content => content.text).join('\n')
         for (const reply of nativeQuestionReplies(text) ?? []) {
           const card = this.questions.get(reply.callId)
           if (!card) continue
@@ -703,6 +714,7 @@ export class TurnFold {
         this.sink.push({
           kind: 'user', uid: event.enqueue_id, who: this.sender?.name || 'operator', userId: this.sender?.user_id,
           text: promptText(text),
+          ...(contents.length === 1 && contents[0].annotations && { annotations: contents[0].annotations }),
           t: at ? `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}` : '',
         })
         break
@@ -714,6 +726,7 @@ export class TurnFold {
         switch (event.delta.part_delta_kind) {
           case 'text':
             this.appendReply(event.delta.content_delta)
+            if (this.streamUid !== null && event.delta.provider_details?.annotations) this.sink.patch(this.streamUid, { annotations: event.delta.provider_details?.annotations })
             break
           case 'thinking': {
             const part = this.thinkParts.get(event.index)
@@ -735,7 +748,7 @@ export class TurnFold {
           this.closeThink(event.index)
           this.thinkParts.delete(event.index)
         } else if (event.part.part_kind === 'text' && this.streamUid !== null && this.streamIndex === event.index) {
-          this.sink.patch(this.streamUid, { text: event.part.content })
+          this.sink.patch(this.streamUid, { text: event.part.content, ...(event.part.provider_details?.annotations && { annotations: event.part.provider_details?.annotations }) })
           this.closeStream()
         }
         break

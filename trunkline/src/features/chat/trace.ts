@@ -1,8 +1,11 @@
 import type { LedgerItem } from '@/lib/api/types'
+import type { MessageAnnotations } from '@/lib/api/events'
 import type { IconName } from '@/components/Icon'
 
 type ToolItem = Extract<LedgerItem, { kind: 'tool' }>
 export type TraceGroup = { kind: 'trace'; uid: string; items: Extract<LedgerItem, { kind: 'tool' | 'think' }>[]; active: boolean }
+export type ContextRow = { kind: 'context'; uid: string; agentId: string; source: MessageAnnotations['source']; context: MessageAnnotations['contexts'][number]; references: MessageAnnotations['references'] }
+export type AnnotatedMessage = { kind: 'annotated'; uid: string; item: Extract<LedgerItem, { kind: 'user' | 'agent' | 'stream' }>; after: ContextRow[] }
 
 const toolIcon: Record<ToolItem['icon'], IconName> = {
   search: 'search',
@@ -25,11 +28,25 @@ export function toolHeader(item: ToolItem) {
 }
 
 /** Consecutive thinking and calls share a group; results update calls in place. */
-export function traceRows(items: LedgerItem[], running: boolean): (LedgerItem | TraceGroup)[] {
-  const rows: (LedgerItem | TraceGroup)[] = []
+export function traceRows(items: LedgerItem[], running: boolean): (LedgerItem | TraceGroup | ContextRow | AnnotatedMessage)[] {
+  const rows: (LedgerItem | TraceGroup | ContextRow | AnnotatedMessage)[] = []
   for (const item of items) {
     if (item.kind !== 'tool' && item.kind !== 'think') {
-      rows.push(item)
+      const annotations = item.kind === 'agent'
+        ? item.blocks.flatMap(block => block.type === 'p' && block.annotations ? [block.annotations] : [])
+        : (item.kind === 'user' || item.kind === 'stream') && item.annotations ? [item.annotations] : []
+      const contexts = annotations.flatMap((annotation, block) => annotation.contexts
+        .filter(context => !(context.title === 'Opened file' && annotation.references.some(ref => ref.roles.includes('Opened file'))))
+        .map((context, index): ContextRow => ({
+          kind: 'context', uid: `${item.uid}.context.${block}.${index}`, agentId: 'agentId' in item ? item.agentId ?? annotation.source : annotation.source,
+          source: annotation.source, context, references: context.title === 'Memory sources' ? annotation.references.filter(ref => ref.roles.includes('Memory source')) : [],
+        })))
+      const before = contexts.filter(row => row.context.title !== 'Memory sources')
+      const after = contexts.filter(row => row.context.title === 'Memory sources')
+      const message: LedgerItem | AnnotatedMessage = after.length && (item.kind === 'user' || item.kind === 'agent' || item.kind === 'stream')
+        ? { kind: 'annotated', uid: item.uid, item, after } : item
+      if (item.kind === 'user') rows.push(message, ...before)
+      else rows.push(...before, message)
       continue
     }
     let group = rows.at(-1)

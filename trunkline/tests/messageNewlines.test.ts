@@ -5,7 +5,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createServer, type ViteDevServer } from 'vite'
 import type { LedgerItem } from '../src/lib/api/types.ts'
-import type { ThinkingPart } from '../src/lib/api/events.ts'
+import type { MessageAnnotations, ThinkingPart } from '../src/lib/api/events.ts'
 
 let server: ViteDevServer
 let Markdown: typeof import('../src/components/Markdown.tsx').Markdown
@@ -167,9 +167,50 @@ test('an idle turn displays all its text without a stale printing cursor', () =>
   }
 })
 
+test('user messages render quotes and fences without changing code whitespace', () => {
+  const code = 'if True:\n    first()\n\n\n\n    second()\n'
+  const text = `> Quoted\n\nFirst line\nSecond line\n\n\n\n\`\`\`python\n${code}\`\`\`\n\n<script>literal</script>`
+  const item: LedgerItem = { kind: 'user', uid: 'user', t: '12:00', who: 'test', text }
+  const html = renderToStaticMarkup(createElement(LedgerRow, { item, cardMax: '100%' }))
+  assert.ok(html.includes('<blockquote>\n<p>Quoted</p>'))
+  assert.ok(html.includes('<p>First line<br>\nSecond line</p>'))
+  assert.ok(html.includes(`<pre><code class="language-python">${code}</code></pre>`))
+  assert.ok(html.includes('&lt;script&gt;literal&lt;/script&gt;'))
+  assert.ok(!html.includes('<script>'))
+})
+
+for (const kind of ['user', 'agent', 'stream'] as const) {
+  test(`${kind} retains only file references as message chips`, () => {
+    const annotations: MessageAnnotations = {
+      raw: 'Original message', source: 'codex',
+      contexts: [
+        { title: 'IDE context', text: 'Opened src/main.py', rollout_ids: [] },
+        { title: 'Memory sources', text: 'Memory citation', rollout_ids: [] },
+      ],
+      references: [
+        { path: 'src/main.py', roles: ['Active file'], start_line: null, end_line: null, note: null },
+        { path: 'MEMORY.md', roles: ['Memory source'], start_line: 10, end_line: 10, note: 'Relevant memory' },
+      ],
+    }
+    const text = 'Message body.'
+    const item: LedgerItem = kind === 'user'
+      ? { kind, uid: 'message', t: '12:00', who: 'test', text, annotations }
+      : kind === 'agent'
+        ? { kind, uid: 'message', label: 'Codex', blocks: [{ type: 'p', text, annotations }] }
+        : { kind, uid: 'message', text, annotations, streaming: false }
+    const html = renderToStaticMarkup(createElement(LedgerRow, { item, cardMax: '100%' }))
+    const prefix = html.indexOf('data-position="before"')
+    const body = html.indexOf('<p>Message body.</p>')
+    assert.ok(prefix >= 0 && prefix < body)
+    assert.ok(!html.includes('data-position="after"'))
+    assert.ok(html.indexOf('Copy reference: src/main.py') < body)
+    assert.ok(!html.includes('IDE context'))
+    assert.ok(!html.includes('Copy reference: MEMORY.md:10'))
+  })
+}
+
 const text = 'First line\n\nSecond line'
 const items: LedgerItem[] = [
-  { kind: 'user', uid: 'user', t: '12:00', who: 'test', text },
   { kind: 'system', uid: 'system', text },
   { kind: 'notice', uid: 'notice', text },
 ]
