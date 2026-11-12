@@ -45,7 +45,6 @@ def build_inkling(
     model here means what `providers.yaml` says it means.
     """
     from pydantic_ai import AgentCapability
-    from pydantic_ai_harness.step_persistence import StepPersistence
     from pydantic_ai_harness.tool_output_limits import (
         Band,
         Spill,
@@ -56,15 +55,13 @@ def build_inkling(
     from pydantic_ai_harness.warn_on_cache_busts import WarnOnCacheBusts
 
     from octomate.managers.spills import SpillStore
-    from octomate.managers.steps import StepStore
     from octomate.tentacles.inkling.capabilities.ask import AskCapability
-    from octomate.tentacles.inkling.capabilities.history import History
+    from octomate.tentacles.inkling.capabilities.compaction import SummarizingCompaction
     from octomate.tentacles.inkling.capabilities.tools import ToolFailureCapability
     from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 
     capabilities: list[AgentCapability[None]] = [
-        History(),
-        StepPersistence(store=StepStore()),
+        SummarizingCompaction(max_fraction=0.9, keep_messages=20),
         # Observational only: it warns, it never edits a request. A collapsed prompt
         # cache is otherwise invisible — the run still succeeds, just slower and dearer.
         WarnOnCacheBusts(),

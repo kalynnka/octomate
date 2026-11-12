@@ -601,13 +601,14 @@ async def test_checkpoints_preserve_archive_and_compaction_ownership(
     assert archive is not None
     retained = archive.messages[1]
     summary = ArchiveResponse(parts=[CompactionPart(content="summary")])
-    compaction = await manager.record_context_compaction(
+    revision = await manager.record_context_compaction(
         conversation,
         before=list(archive.messages),
         after=[summary, retained],
         trigger="auto",
     )
-    assert compaction is not None
+    assert revision is not None
+    assert summary.compaction_id is not None
     snapshot = ContinuableSnapshot(
         run_id=run.run_id,
         step_index=1,
@@ -633,7 +634,7 @@ async def test_checkpoints_preserve_archive_and_compaction_ownership(
         replacement = await session.get(ArchiveResponse, summary.id)
         assert replacement is not None
         assert replacement.run_id is None
-        assert replacement.compaction_id == compaction.id
+        assert replacement.compaction_id == summary.compaction_id
 
 
 async def test_upstream_step_persistence_uses_the_store_across_runs(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -13,6 +14,9 @@ from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 from octomate_cli.config import cli_settings
 from pydantic_ai import Conversation as PydanticConversation
+from pydantic_ai import RunContext
+from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai_harness.step_persistence import InMemoryStepStore
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
@@ -23,6 +27,7 @@ from octomate.models import Base
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.tentacles.inkling import InklingTentacle
+from octomate.tentacles.inkling.capabilities.persistence import StepPersistence
 from tests.support.config import ISOLATED_HOME, without_dotenv
 from tests.support.managers import FakeConversationManager
 
@@ -73,6 +78,17 @@ def fake_conversation_store(monkeypatch: pytest.MonkeyPatch) -> None:
         return await record(store, conversation)
 
     monkeypatch.setattr(ConversationStore, "record_conversation", record_conversation)
+
+    for_run = StepPersistence.for_run
+
+    async def in_memory_steps[DepsT](
+        capability: StepPersistence[DepsT], ctx: RunContext[DepsT]
+    ) -> AbstractCapability[DepsT]:
+        if isinstance(capability.archive.manager, FakeConversationManager):
+            capability = replace(capability, store=InMemoryStepStore())
+        return await for_run(capability, ctx)
+
+    monkeypatch.setattr(StepPersistence, "for_run", in_memory_steps)
 
 
 @pytest.fixture(scope="session", autouse=True)

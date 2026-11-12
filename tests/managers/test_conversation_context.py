@@ -42,7 +42,6 @@ from octomate.schemas.conversation import (
 )
 from octomate.schemas.messages import ModelMessage, ModelRequest, ModelResponse
 from octomate.schemas.runs import AgentRun
-from octomate.tentacles.inkling.capabilities.history import History
 from tests.support.managers import a_thread
 
 
@@ -70,10 +69,19 @@ async def test_store_loads_effective_context_and_carryover(
         approvals=[ToolCallPart("confirm", {}, "approval-1")]
     )
     await store.record_conversation(context)
+    messages = context.messages
+    cursor = context.new_message_index
+    previous_revision = context.revision
     summary = ModelRequest(parts=[CompactionPart(content="summary")])
-    await manager.record_context_compaction(
+    revision = await manager.record_context_compaction(
         context, before=list(run.messages), after=[summary], trigger="auto"
     )
+    assert revision is not None
+    assert revision != previous_revision
+    assert context.messages is messages
+    assert [message.id for message in context.messages] == [run.messages[0].id]
+    assert context.new_message_index == cursor
+    assert context.revision == previous_revision
 
     loaded = await store.load(str(conversation.id))
     assert loaded is not None
@@ -81,7 +89,7 @@ async def test_store_loads_effective_context_and_carryover(
     assert loaded.new_message_index == 1
     assert loaded.usage == context.usage
     assert loaded.deferred_tool_requests == context.deferred_tool_requests
-    assert loaded.revision != context.revision
+    assert loaded.revision == revision
     assert not loaded.runs.loaded
     assert await store.load(str(uuid7())) is None
     with pytest.raises(ValidationError):
@@ -463,10 +471,7 @@ async def test_upstream_runs_save_messages_and_usage_once(
         TestModel(),
         deps_type=type(None),
         tools=[lookup],
-        capabilities=[
-            History(),
-            *([StepPersistence(store=StepStore())] if registered else []),
-        ],
+        capabilities=[StepPersistence(store=StepStore())] if registered else [],
     )
     first = await agent.run(
         "look it up",
@@ -492,7 +497,11 @@ async def test_upstream_runs_save_messages_and_usage_once(
     before = restored.usage
     assert before.tool_calls == 1
     assert restored.new_message_index == len(first.all_messages())
-    second = await agent.run("continue", conversation=restored)
+    # This test mounts upstream persistence without Inkling's ORM boundary.
+    upstream = ConversationTypeAdapter.validate_python(
+        ConversationTypeAdapter.dump_python(restored)
+    )
+    second = await agent.run("continue", conversation=upstream)
     assert second.conversation.revision == restored.revision
     assert second.conversation.new_message_index == len(first.all_messages())
     assert second.conversation.usage.requests > before.requests
@@ -550,14 +559,16 @@ async def test_compaction_and_fork_share_rows_and_lifetime_usage(
     stale = await manager.get(conversation.id, with_runs=False, with_messages=True)
     summary = ModelRequest(parts=[UserPromptPart("retained summary")])
     after = [summary, *run.messages[-2:]]
-    compaction = await manager.record_context_compaction(
+    revision = await manager.record_context_compaction(
         loaded, before=list(run.messages), after=after, trigger="manual"
     )
-    assert compaction is not None
+    assert revision is not None
     assert loaded.revision == stale.revision
+    assert revision != loaded.revision
     with pytest.raises(ConversationConflict):
         await store.record_conversation(stale)
     restored = await manager.get(conversation.id, with_runs=False, with_messages=True)
+    assert restored.revision == revision
     assert [m.id for m in restored.messages] == [m.id for m in after]
     assert restored.usage == usage
     assert restored.new_message_index == 3
@@ -717,7 +728,7 @@ async def test_stale_save_rolls_back_messages_and_deleted_owners_are_rejected(
 ) -> None:
     manager = ConversationManager()
     store = ConversationStore(manager)
-    agent = Agent(TestModel(), deps_type=type(None), capabilities=[History()])
+    agent = Agent(TestModel(), deps_type=type(None))
     loaded = await manager.get(conversation.id, with_runs=False, with_messages=True)
     stale = await agent.run("stale prompt", conversation=loaded)
     winner = await agent.run("winning prompt", conversation=loaded)
@@ -746,7 +757,7 @@ async def test_serialized_context_appends_once_and_rejects_unrecorded_rewrites(
 ) -> None:
     manager = ConversationManager()
     store = ConversationStore(manager)
-    agent = Agent(TestModel(), deps_type=type(None), capabilities=[History()])
+    agent = Agent(TestModel(), deps_type=type(None))
     first = await agent.run(
         "remember",
         conversation=await manager.get(
@@ -860,7 +871,7 @@ async def test_upstream_summary_survives_storage_and_continuation(
     assert await store.record_conversation(restored) == []
     assert restored.messages[0].id == summary.id
     assert restored.messages[0].parts == compacted[0].parts
-    agent = Agent(TestModel(), deps_type=type(None), capabilities=[History()])
+    agent = Agent(TestModel(), deps_type=type(None))
     result = await agent.run("continue", conversation=restored)
     await store.record_conversation(result.conversation)
     continued = await manager.get(conversation.id, with_runs=False, with_messages=True)

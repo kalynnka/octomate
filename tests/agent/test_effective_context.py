@@ -38,9 +38,11 @@ async def test_context_read_query_count_does_not_grow_with_compactions(
             after: list[ModelRequest | ModelResponse] = [
                 ModelRequest(parts=[SystemPromptPart(f"summary {index}")])
             ]
-            await manager.record_context_compaction(
+            revision = await manager.record_context_compaction(
                 conversation, before=effective, after=after, trigger="auto"
             )
+            assert revision is not None
+            conversation.revision = revision
             effective = after
 
         queries = Mock()
@@ -80,15 +82,14 @@ async def test_rewrites_preserve_archive_owners_and_append_later_messages(
     original = list(run.messages)
     summary = ModelRequest(parts=[SystemPromptPart("summary")])
     # The last response was generated after the rewrite within the same run.
-    compacted = await manager.record_context_compaction(
+    revision = await manager.record_context_compaction(
         conversation,
         before=original[:3],
         after=[summary, original[2]],
         trigger="auto",
     )
-    assert compacted is not None
-    assert compacted.membership_complete
-    assert compacted.native_compaction_id is None
+    assert revision is not None
+    conversation.revision = revision
     effective = await manager.effective_messages(conversation)
     assert [message.id for message in effective] == [
         summary.id,
@@ -100,6 +101,9 @@ async def test_rewrites_preserve_archive_owners_and_append_later_messages(
         message.id for message in (await ConversationManager().history(archived.id))
     ] == [message.id for message in original]
     async with async_session() as session:
+        compacted = await session.one(Compaction)
+        assert compacted.membership_complete
+        assert compacted.native_compaction_id is None
         stored = await session.get(ModelRequest, original[2].id)
         assert stored is not None
         assert stored.run_id == run.id
@@ -118,13 +122,13 @@ async def test_rewrites_preserve_archive_owners_and_append_later_messages(
     )
     assert later is not None
     next_summary = ModelRequest(parts=[SystemPromptPart("updated summary")])
-    second = await manager.record_context_compaction(
+    revision = await manager.record_context_compaction(
         conversation,
         before=effective,
         after=[effective[1], next_summary, effective[2]],
         trigger="auto",
     )
-    assert second is not None
+    assert revision is not None
     assert [
         message.id for message in await manager.effective_messages(conversation)
     ] == [
@@ -141,7 +145,7 @@ async def test_rewrites_preserve_archive_owners_and_append_later_messages(
         )
         assert [(link.compaction_id, link.position) for link in links] == [
             (compacted.id, 0),
-            (second.id, 1),
+            (next_summary.compaction_id, 1),
         ]
 
 

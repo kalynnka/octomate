@@ -318,13 +318,14 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         after: list[ModelRequest | ModelResponse],
         trigger: CompactionTrigger,
         happened_at: AwareDatetime | None = None,
-    ) -> Compaction | None:
+    ) -> str | None:
         """Persist an exact history rewrite after its original run messages exist.
 
         Retained inputs keep their ids and ownership. New replacement messages
         belong to the compaction, whose two ordered stages include every input
         and output message. A later suffix already archived by the run is allowed.
-        The revision advances atomically; get(..., with_messages=True) before continuing.
+        Return the saved revision, or None for unchanged membership. The supplied
+        conversation keeps its runtime context and persistence cursor.
         """
         before_ids = [message.id for message in before]
         after_ids = [message.id for message in after]
@@ -344,6 +345,8 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 expressions=[Conversation["id"] == conversation.id],
                 options=[lazyload(Conversation["runs"])],
             )
+            if current.revision != conversation.revision:
+                raise ConversationConflict(str(conversation.id))
             effective = await self.effective_messages(conversation)
             if [message.id for message in effective[: len(before)]] != before_ids:
                 raise ValueError(
@@ -398,7 +401,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 )
             )
             await session.commit()
-            return compaction
+            return current.revision
 
     async def record_driven_compaction(
         self,
@@ -1683,6 +1686,48 @@ class ConversationStore(PydanticConversationStore):
         conversation.revision = revision
         mark_stored(conversation, conversation.messages)
         return saved
+
+    @validate_call
+    async def record_compaction(
+        self,
+        conversation: PydanticConversation,
+        *,
+        after: list[PydanticModelMessage],
+        trigger: CompactionTrigger,
+    ) -> None:
+        """Record an accepted rewrite of an already archived context.
+
+        Resolve retained objects to their existing rows only when a rewrite occurs.
+        Copies with changed parts are new compaction-owned messages. Advance the
+        supplied conversation's revision and cursor for the remaining run.
+        """
+        identity = self.conversation_id_adapter.validate_python(
+            conversation.conversation_id
+        )
+        current = await self.manager.get(identity, with_runs=False, with_messages=True)
+        if current.revision != conversation.revision:
+            raise ConversationConflict(str(identity))
+        retained = {
+            id(message): row
+            for message, row in zip(
+                conversation.messages, current.messages, strict=True
+            )
+        }
+        replacements: list[ModelRequest | ModelResponse] = []
+        for message in after:
+            row = retained.get(id(message))
+            if row is None:
+                schema = ModelRequest if message.kind == "request" else ModelResponse
+                row = schema.model_validate({**vars(message), "run_id": None})
+            replacements.append(row)
+        revision = await self.manager.record_context_compaction(
+            current, before=current.messages, after=replacements, trigger=trigger
+        )
+        if revision is None:
+            return
+        conversation.messages = after
+        conversation.revision = revision
+        mark_stored(conversation, after)
 
     async def read_record(self, conversation_id: str) -> ConversationRecord | None:
         raise NotImplementedError("Conversation record heads are not persisted yet")

@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextlib import nullcontext
+from itertools import pairwise
 from unittest.mock import AsyncMock
 
 import pytest
 from pydantic_ai import AgentRunResult, AgentRunResultEvent, RunContext
 from pydantic_ai.conversation_store import ConversationConflict
-from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.messages import (
+    CompactionPart,
+    ModelMessage,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
@@ -21,11 +31,14 @@ from octomate.database import async_session
 from octomate.managers.conversation import ConversationManager, ConversationStore
 from octomate.managers.steps import StepStore
 from octomate.providers import ProviderRegistry
+from octomate.schemas.compactions import Compaction, CompactionMembership
 from octomate.schemas.conversation import ChannelAddress, Conversation, ConversationRun
+from octomate.schemas.messages import ModelResponse as StoredModelResponse
 from octomate.schemas.runs import AgentRun
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.base import InklingOutput
 from octomate.tentacles.inkling.build import build_inkling
+from octomate.tentacles.inkling.capabilities.compaction import SummarizingCompaction
 from octomate.tentacles.inkling.react import (
     ReactDeps,
     ReactState,
@@ -78,7 +91,11 @@ async def assert_completed_run(
     assert record.registration_id is not None
     snapshot = await store.latest_snapshot(run_id=result.run_id)
     if isinstance(result.output, DeferredToolRequests):
-        assert snapshot is None
+        interrupted = await store.latest_snapshot(
+            run_id=result.run_id, include_interrupted=True
+        )
+        assert interrupted is not None
+        assert interrupted.state == "interrupted"
     else:
         assert snapshot is not None
         assert snapshot.conversation_id == str(conversation.id)
@@ -298,7 +315,7 @@ async def test_model_failure_preserves_the_registered_run_and_settled_checkpoint
         requests - 1
     )
     snapshot = await store.latest_snapshot(run_id=record.run_id)
-    assert (snapshot is not None) == after_tool
+    assert snapshot is not None
     assert await store.list_unresolved_tool_effects(run_id=record.run_id) == []
     async with async_session() as session:
         assert await session.count(AgentRun) == 1
@@ -537,3 +554,337 @@ async def test_subagent_inherits_persistence_and_records_parent_lineage(
     record = await StepStore().get_run(run_id=result.run_id)
     assert record is not None
     assert record.parent_run_id == parent.run_id
+
+
+@pytest.fixture
+def summarizing(inkling: InklingTentacle) -> SummarizingCompaction[None]:
+    capability = next(
+        cap for cap in inkling.capabilities if isinstance(cap, SummarizingCompaction)
+    )
+    strategy = SummarizingCompaction[None](
+        model=TestModel(custom_output_text="The earlier work is summarized."),
+        max_messages=2,
+        keep_messages=1,
+        preserve_first_user_message=False,
+    )
+    inkling.capabilities[inkling.capabilities.index(capability)] = strategy
+    return strategy
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_compaction_archives_originals_and_continues_from_summary(
+    inkling: InklingTentacle,
+    conversation: Conversation,
+    summarizing: SummarizingCompaction[None],
+    streaming: bool,
+) -> None:
+    first = await inkling.run(
+        "old question " * 200,
+        conversation=conversation,
+        conversation_address=ADDRESS,
+        output_type=str,
+        model=TestModel(call_tools=[], custom_output_text="old answer " * 200),
+    )
+    loaded = await inkling.resolve_conversation(
+        conversation.thread_id, conversation_address=ADDRESS
+    )
+    original_ids = [message.id for message in loaded.messages]
+    received: list[ModelMessage] = []
+
+    def reply(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        received.extend(messages)
+        return ModelResponse(parts=[TextPart("continued")])
+
+    async def stream_reply(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str]:
+        received.extend(messages)
+        yield "continued"
+
+    model = FunctionModel(reply, stream_function=stream_reply)
+    result: AgentRunResult[InklingOutput] | None = None
+    if streaming:
+        async with inkling.run_stream_events(
+            "continue",
+            conversation=loaded,
+            conversation_address=ADDRESS,
+            output_type=str,
+            model=model,
+        ) as stream:
+            async for event in stream:
+                if isinstance(event, AgentRunResultEvent):
+                    result = event.result
+    else:
+        result = await inkling.run(
+            "continue",
+            conversation=loaded,
+            conversation_address=ADDRESS,
+            output_type=str,
+            model=model,
+        )
+    assert result is not None
+    assert any(isinstance(part, CompactionPart) for part in received[0].parts)
+    assert len(received) == 1
+    assert result.usage.requests == first.usage.requests + 2
+    restored = await inkling.resolve_conversation(
+        conversation.thread_id, conversation_address=ADDRESS
+    )
+    assert restored.usage == result.usage
+    assert restored.revision == result.conversation.revision
+    assert restored.new_message_index == len(result.all_messages())
+    assert [m.parts for m in restored.messages] == [
+        m.parts for m in result.all_messages()
+    ]
+    assert restored.messages[0].run_id is None
+    assert restored.messages[0].compaction_id is not None
+    archive = await inkling.conversations.history(conversation.id)
+    assert [m.id for m in archive[:2]] == original_ids
+    assert len(archive) == 4
+    assert not any(isinstance(p, CompactionPart) for m in archive for p in m.parts)
+    async with async_session() as session:
+        [compaction] = await session.list(Compaction)
+        assert compaction.trigger == "auto"
+        assert compaction.membership_complete
+        assert await session.count(CompactionMembership) == 6
+    snapshot = await StepStore().latest_snapshot(run_id=result.run_id)
+    assert snapshot is not None
+    assert [m.parts for m in snapshot.messages] == [m.parts for m in restored.messages]
+
+    summarizing.max_messages = 100
+    received.clear()
+    third = await inkling.run(
+        "next turn",
+        conversation=restored,
+        conversation_address=ADDRESS,
+        output_type=str,
+        model=model,
+    )
+    assert any(isinstance(part, CompactionPart) for part in received[0].parts)
+    assert not any(
+        isinstance(p, UserPromptPart) and "old question" in str(p.content)
+        for m in received
+        for p in m.parts
+    )
+    assert third.usage.requests == result.usage.requests + 1
+
+
+async def test_multiple_compactions_keep_independent_membership_and_tool_pairs(
+    inkling: InklingTentacle,
+    conversation: Conversation,
+    summarizing: SummarizingCompaction[None],
+) -> None:
+    calls = 0
+    observed: list[list[ModelMessage]] = []
+
+    async def reply(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str | dict[int, DeltaToolCall]]:
+        nonlocal calls
+        observed.append(list(messages))
+        calls += 1
+        if calls <= 3:
+            yield {
+                0: DeltaToolCall(
+                    name="lookup", json_args="{}", tool_call_id=f"lookup-{calls}"
+                )
+            }
+        else:
+            yield "finished"
+
+    async def lookup() -> str:
+        return "large tool result " * 500
+
+    result = await inkling.run(
+        "long original request " * 200,
+        conversation=conversation,
+        conversation_address=ADDRESS,
+        output_type=str,
+        model=FunctionModel(stream_function=reply),
+        toolsets=[FunctionToolset([lookup])],
+    )
+    async with async_session() as session:
+        compactions = await session.list(Compaction, limit=None)
+        assert len(compactions) == 3
+        memberships = await session.list(CompactionMembership, limit=None)
+        for previous, current in pairwise(compactions):
+            after_ids = {
+                m.model_message_id
+                for m in memberships
+                if m.compaction_id == previous.id and m.stage == "after"
+            }
+            before_ids = {
+                m.model_message_id
+                for m in memberships
+                if m.compaction_id == current.id and m.stage == "before"
+            }
+            assert after_ids <= before_ids
+        run = await session.get(AgentRun, result.run_id)
+        assert run is not None
+        assert len(run.messages) == 8
+        assert all(m.run_id == result.run_id for m in run.messages)
+    for request in observed:
+        call_ids = {
+            p.tool_call_id
+            for m in request
+            for p in m.parts
+            if isinstance(p, ToolCallPart)
+        }
+        return_ids = {
+            p.tool_call_id
+            for m in request
+            for p in m.parts
+            if isinstance(p, ToolReturnPart)
+        }
+        assert call_ids == return_ids
+    restored = await inkling.resolve_conversation(
+        conversation.thread_id, conversation_address=ADDRESS
+    )
+    assert restored.usage == result.usage
+    assert restored.usage.requests == 7
+    assert [m.parts for m in restored.messages] == [
+        m.parts for m in result.all_messages()
+    ]
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "conflict"])
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_compacted_run_preserves_failures_and_revision_checks(
+    inkling: InklingTentacle,
+    conversation: Conversation,
+    summarizing: SummarizingCompaction[None],
+    outcome: str,
+    streaming: bool,
+) -> None:
+    first = await inkling.run(
+        "old question " * 200,
+        conversation=conversation,
+        conversation_address=ADDRESS,
+        output_type=str,
+        model=TestModel(call_tools=[], custom_output_text="old answer " * 200),
+    )
+    loaded = await inkling.resolve_conversation(
+        conversation.thread_id, conversation_address=ADDRESS
+    )
+
+    async def reply(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        assert any(isinstance(p, CompactionPart) for m in messages for p in m.parts)
+        if outcome == "failure":
+            raise RuntimeError("model failed after compaction")
+        if outcome == "conflict":
+            current = await inkling.resolve_conversation(
+                conversation.thread_id, conversation_address=ADDRESS
+            )
+            await ConversationStore(inkling.conversations).record_conversation(current)
+        return ModelResponse(parts=[TextPart("continued")])
+
+    async def stream_reply(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str]:
+        await reply(messages, info)
+        yield "continued"
+
+    start = StartTurn[InklingOutput, None](user_prompt="continue")
+    state = ReactState(conversation_address=ADDRESS, conversation=loaded)
+    deps = ReactDeps(
+        agent=inkling.agent,
+        conversation_manager=inkling.conversations,
+        agent_deps=None,
+        capabilities=inkling.capabilities,
+        model=FunctionModel(reply, stream_function=stream_reply),
+        output_type=str,
+    )
+    expected = (
+        pytest.raises(RuntimeError, match="model failed after compaction")
+        if outcome == "failure"
+        else pytest.raises(ConversationConflict)
+        if outcome == "conflict"
+        else nullcontext()
+    )
+    with expected:
+        if streaming:
+            async for _ in iter_react_graph_events(start, state=state, deps=deps):
+                pass
+        else:
+            await build_react_graph(start).run(inputs=start, state=state, deps=deps)
+    restored = await inkling.resolve_conversation(
+        conversation.thread_id, conversation_address=ADDRESS
+    )
+    assert any(
+        isinstance(p, CompactionPart) for m in restored.messages for p in m.parts
+    )
+    archive = await inkling.conversations.history(conversation.id)
+    assert len(archive) == (4 if outcome == "success" else 3)
+    assert restored.usage.requests >= first.usage.requests + 1
+    async with async_session() as session:
+        assert await session.count(Compaction) == 1
+
+
+async def test_rejected_summary_does_not_record_a_compaction(
+    inkling: InklingTentacle,
+    conversation: Conversation,
+    summarizing: SummarizingCompaction[None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = await inkling.run(
+        "old question " * 20,
+        conversation=conversation,
+        conversation_address=ADDRESS,
+        output_type=str,
+        model=TestModel(call_tools=[], custom_output_text="old answer " * 20),
+    )
+    summarizing.model = TestModel(custom_output_text="a much larger summary " * 2000)
+    record = AsyncMock(wraps=ConversationStore.record_compaction)
+    monkeypatch.setattr(ConversationStore, "record_compaction", record)
+    result = await inkling.run(
+        "continue",
+        conversation=await inkling.resolve_conversation(
+            conversation.thread_id, conversation_address=ADDRESS
+        ),
+        conversation_address=ADDRESS,
+        output_type=str,
+        model=TestModel(call_tools=[], custom_output_text="continued"),
+    )
+    record.assert_not_awaited()
+    assert result.usage.requests == first.usage.requests + 2
+    assert not any(
+        isinstance(p, CompactionPart) for m in result.all_messages() for p in m.parts
+    )
+    async with async_session() as session:
+        assert await session.count(Compaction) == 0
+
+
+async def test_compaction_archives_unsaved_input_before_replacing_it(
+    inkling: InklingTentacle,
+    conversation: Conversation,
+    summarizing: SummarizingCompaction[None],
+) -> None:
+    first = await inkling.run(
+        "old question " * 200,
+        conversation=conversation,
+        conversation_address=ADDRESS,
+        output_type=str,
+        model=TestModel(call_tools=[], custom_output_text="old answer " * 200),
+    )
+    loaded = await inkling.resolve_conversation(
+        conversation.thread_id, conversation_address=ADDRESS
+    )
+    pending = StoredModelResponse(
+        run_id=first.run_id, parts=[TextPart("unsaved continuation")]
+    )
+    loaded.messages.append(pending)
+    result = await inkling.run(
+        "continue",
+        conversation=loaded,
+        conversation_address=ADDRESS,
+        output_type=str,
+        model=TestModel(call_tools=[], custom_output_text="continued"),
+    )
+    archive = await inkling.conversations.history(conversation.id)
+    assert [m.parts for m in archive[:3]] == [m.parts for m in loaded.messages]
+    assert len(archive) == 5
+    restored = await inkling.resolve_conversation(
+        conversation.thread_id, conversation_address=ADDRESS
+    )
+    assert [m.parts for m in restored.messages] == [
+        m.parts for m in result.all_messages()
+    ]
