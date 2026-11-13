@@ -1,27 +1,23 @@
-"""Thread workspaces: the trees a run happens in, kept as volumes in each user's
-root, and their lifecycle from open to save to release."""
+"""Compose thread workspaces from logical volumes and their host storage."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import tempfile
 import uuid
-from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass, field
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import overload
 
-import anyio
 from pydantic import UUID7
 
 from octomate.config.mirrors import GitIdentity
 from octomate.config.workspaces import WorkspacesConfig
+from octomate.habitat.base import Attachment
 from octomate.managers.base import Manager
 from octomate.managers.project import ProjectManager
+from octomate.managers.storages import HostDirectoryManager
 from octomate.managers.volumes import VolumeManager
 from octomate.managers.workspaces.mirrors import (
     GitCommandError,
@@ -32,93 +28,12 @@ from octomate.managers.workspaces.snapshots import SNAPSHOT_PREFIX, Snapshot
 from octomate.managers.workspaces.transfers import copy_ignored
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
-from octomate.schemas.volumes import GitVolume, Volume
-from octomate.schemas.volumes.backings import HostDirectory
+from octomate.schemas.volumes import GitVolume, UnregisteredProjectError, Volume
+from octomate.schemas.volumes.storage import HostDirectory
+from octomate.schemas.workspaces import Workspace
 from octomate.telemetry import workspace_logfire
 
 logger = logging.getLogger(__name__)
-
-
-class UnregisteredProjectError(PermissionError):
-    """An unregistered sender asked to work in a project. A project's tree lives in
-    a registered user's root, so an unregistered sender may only chat."""
-
-
-@dataclass
-class Workspace(ABC):
-    """A run's directory and identity; volumes own its content lifecycle."""
-
-    path: Path  # Absolute host path, known before the directory is prepared.
-    thread_id: UUID7
-
-    @property
-    @abstractmethod
-    def owner_id(self) -> UUID7 | None:
-        """The registered owner, or None for an unregistered chat."""
-
-
-@dataclass
-class TreeWorkspace(Workspace, ABC):
-    """A tree volume in a registered user's root: a fork of a mirror, checked out
-    on the thread's own branch.
-
-    The volume's row outlives its folder. Releasing a tree deletes the folder and
-    keeps the row, so the next fork lands at the same path — which is what lets a
-    harness resume a session it keyed by its working directory.
-    """
-
-    volume: GitVolume
-    root: Path = field(
-        kw_only=True
-    )  # The owner's host directory containing all volumes.
-
-    @property
-    def owner_id(self) -> UUID7:
-        return self.volume.owner_id
-
-
-@dataclass
-class ProjectWorkspace(TreeWorkspace):
-    """This user's own checkout of the thread's project.
-
-    A thread runs here rather than in `project.root`, so two threads on one
-    project, or two users in one thread, cannot walk over each other's uncommitted
-    work — and the root stays the person's, untouched by anything an agent does.
-    """
-
-    project: Project
-
-
-@dataclass
-class ChatWorkspace(TreeWorkspace):
-    """The tree a registered user's run in no project happens in: a fork of the
-    empty repository, its folder gone when the run ends.
-
-    A tree rather than a bare directory, so a run in no project is a run like any
-    other — it may write, unpack and script inside its own tree. Forking nothing is
-    what makes that affordable: an empty repository costs a `git init`'s worth of
-    disk, and binding to a project stops meaning "you may write now" and starts
-    meaning "your work is kept now".
-
-    Its row is a tree with no project, kept like any other, so the path is the same
-    on every turn even though the folder is not: both runtimes key a resumable
-    session by the directory it ran in.
-    """
-
-
-@dataclass
-class UnregisteredWorkspace(Workspace):
-    """Where an unregistered sender's run happens: an empty temporary directory,
-    with no git and no volume, gone when the run ends.
-
-    An unregistered sender has no root to hold a volume, so they may only chat.
-    The path is the thread's, so a runtime that keys its session by working
-    directory can still resume the conversation.
-    """
-
-    @property
-    def owner_id(self) -> None:
-        return None
 
 
 class WorkspaceManager(Manager):
@@ -157,7 +72,7 @@ class WorkspaceManager(Manager):
         volumes: VolumeManager | None = None,
         mirrors: MirrorManager | None = None,
         config: WorkspacesConfig | None = None,
-        volumes_dir: Path = Path(".octomate/volumes"),
+        volumes_dir: Path | None = None,
     ) -> None:
         # A workspace is a project-bound thread's, so the registry that says which
         # project and the mirrors that say where are what this works through. Its
@@ -171,11 +86,16 @@ class WorkspaceManager(Manager):
         )
         self.mirrors = mirrors if mirrors is not None else MirrorManager()
         self.config = config if config is not None else WorkspacesConfig()
-        # Resolved once, here: a volume path leaves this manager to become a
-        # subprocess's cwd and a `GIT_INDEX_FILE` beside it, and the default is
-        # relative to wherever Octomate was started.
-        self.volumes_dir = volumes_dir.resolve()
-        self.backings: dict[Path, HostDirectory] = {}
+        if volumes_dir is not None:
+            self.volumes.host_directories.root = volumes_dir.resolve()
+
+    @property
+    def host_directories(self) -> HostDirectoryManager:
+        return self.volumes.host_directories
+
+    @property
+    def volumes_dir(self) -> Path:
+        return self.host_directories.root
 
     @property
     def identity(self) -> GitIdentity:
@@ -185,46 +105,15 @@ class WorkspaceManager(Manager):
         return self.mirrors.config.identity
 
     def root(self, owner_id: UUID7) -> Path:
-        """The one host directory a habitat may attach for this owner.
+        """The owner's storage directory; attachments select individual host directories.
 
         Resolving it creates neither files nor database rows.
         """
         return self.volumes_dir / str(owner_id)
 
     def path(self, volume: Volume) -> Path:
-        """Where this volume's folder lives in its owner's root. Derived from the
-        row's identity, never stored, so the store can change without a
-        migration."""
-        return (
-            self.root(volume.owner_id) / (volume.usage or volume.kind) / str(volume.id)
-        )
-
-    @overload
-    async def resolve(
-        self,
-        thread_id: UUID7,
-        project: Project,
-        owner_id: UUID7 | None,
-        ref: str | None = None,
-    ) -> ProjectWorkspace: ...
-
-    @overload
-    async def resolve(
-        self,
-        thread_id: UUID7,
-        project: None,
-        owner_id: UUID7,
-        ref: None = None,
-    ) -> ChatWorkspace: ...
-
-    @overload
-    async def resolve(
-        self,
-        thread_id: UUID7,
-        project: Project | None,
-        owner_id: UUID7 | None,
-        ref: str | None = None,
-    ) -> Workspace: ...
+        """The recorded host location, independent of the current allocation root."""
+        return volume.storage.path
 
     async def resolve(
         self,
@@ -239,58 +128,30 @@ class WorkspaceManager(Manager):
         project workspaces. This writes or stamps a registered volume row; use
         `volumes.find` and `path` for read-only inspection.
         """
-        if owner_id is None:
-            if project is not None:
-                raise UnregisteredProjectError(
-                    f"project {project.name!r} needs a registered user"
-                )
-            path = (
-                Path(tempfile.gettempdir()) / "octomate-unregistered" / str(thread_id)
-            ).resolve()
-            return UnregisteredWorkspace(path, thread_id)
-        if project is None:
-            volume = await self.volumes.tree(owner_id, thread_id, None)
-            return ChatWorkspace(
-                self.path(volume),
-                thread_id,
-                volume,
-                root=self.root(owner_id),
+        if owner_id is None and project is not None:
+            raise UnregisteredProjectError(
+                f"project {project.name!r} needs a registered user"
             )
-        volume = await self.volumes.tree(owner_id, thread_id, project.id, ref)
-        return ProjectWorkspace(
-            self.path(volume),
-            thread_id,
-            volume,
-            project,
-            root=self.root(owner_id),
+        volume = (
+            await self.volumes.tree(
+                owner_id, thread_id, project.id if project else None, ref
+            )
+            if owner_id is not None
+            else None
         )
-
-    @overload
-    def open(
-        self,
-        thread_id: UUID7,
-        project: Project,
-        owner_id: UUID7 | None,
-        ref: str | None = None,
-    ) -> AbstractAsyncContextManager[ProjectWorkspace]: ...
-
-    @overload
-    def open(
-        self,
-        thread_id: UUID7,
-        project: None,
-        owner_id: UUID7,
-        ref: None = None,
-    ) -> AbstractAsyncContextManager[ChatWorkspace]: ...
-
-    @overload
-    def open(
-        self,
-        thread_id: UUID7,
-        project: Project | None,
-        owner_id: UUID7 | None,
-        ref: str | None = None,
-    ) -> AbstractAsyncContextManager[Workspace]: ...
+        storage = (
+            volume.storage
+            if volume is not None
+            else self.host_directories.temporary(thread_id)
+        )
+        return Workspace(
+            thread_id=thread_id,
+            project=project,
+            volumes={"work": volume},
+            attachments={"work": Attachment(storage, storage.path)},
+            mirrors={"work": self.mirrors.path(project)} if volume is not None else {},
+            identity=self.identity,
+        )
 
     @asynccontextmanager
     async def open(
@@ -305,41 +166,30 @@ class WorkspaceManager(Manager):
         async with self.enter(workspace):
             yield workspace
 
-    def backing(self, path: Path) -> HostDirectory:
+    def storage(self, path: Path) -> HostDirectory:
         """Share a directory's lock and active uses across resolved workspace views."""
-        path = path.absolute()
-        if path not in self.backings:
-            self.backings[path] = HostDirectory(path)
-        return self.backings[path]
+        return self.host_directories.get(path)
 
     @asynccontextmanager
-    async def enter[WorkspaceT: Workspace](
-        self, workspace: WorkspaceT
-    ) -> AsyncGenerator[WorkspaceT]:
-        """Adapt the current workspace view to the volume-owned lifecycle."""
-        backing = self.backing(workspace.path)
-        if isinstance(workspace, ProjectWorkspace | ChatWorkspace):
-            if isinstance(workspace, ProjectWorkspace):
-                mirror = self.mirrors.path(workspace.project)
-                if not workspace.path.is_dir():
-                    mirror = await self.mirrors.sync(workspace.project)
-            else:
-                mirror = await self.mirrors.create()
-            async with workspace.volume(backing, mirror=mirror, identity=self.identity):
-                yield workspace
-            return
-        if not isinstance(workspace, UnregisteredWorkspace):
-            raise TypeError(f"Unsupported workspace: {type(workspace).__name__}")
-        async with backing.use(ephemeral=True) as path:
-            await anyio.Path(path).mkdir(parents=True, exist_ok=True)
+    async def enter(self, workspace: Workspace) -> AsyncGenerator[Workspace]:
+        """Prepare the working tree's source, then enter the volume composition."""
+        if isinstance(workspace.volume, GitVolume):
+            if workspace.project is None:
+                await self.mirrors.create()
+            elif not workspace.path.is_dir():
+                await self.mirrors.sync(workspace.project)
+        async with workspace():
             yield workspace
 
-    async def prepare(self, workspace: ProjectWorkspace) -> Path:
+    async def prepare(self, workspace: Workspace) -> Path:
         """Prepare a persistent project tree for a handoff outside an invocation."""
+        volume = workspace.volume
+        if workspace.project is None or not isinstance(volume, GitVolume):
+            raise ValueError("A project handoff requires a Git working volume")
         if workspace.path.is_dir():
             return workspace.path
         mirror = await self.mirrors.sync(workspace.project)
-        return await workspace.volume.materialize(self.backing(workspace.path), mirror)
+        return await volume.materialize(mirror)
 
     async def save(self, thread: Thread, owner_id: UUID7) -> None:
         """Leave this owner's finished turn where losing their tree cannot cost it:
@@ -368,7 +218,6 @@ class WorkspaceManager(Manager):
         volume = await self.volumes.find(owner_id, thread.id, project.id)
         if volume is not None:
             await volume.checkpoint(
-                self.backing(self.path(volume)),
                 self.mirrors.path(project),
                 self.identity,
             )
@@ -432,7 +281,7 @@ class WorkspaceManager(Manager):
                 path = self.path(volume)
                 if not path.is_dir():
                     continue
-                if self.backing(path).uses or volume.last_used_at > cutoff:
+                if self.storage(path).uses or volume.last_used_at > cutoff:
                     kept_busy += 1
                     continue
                 if not await self.saved(volume):
@@ -444,7 +293,7 @@ class WorkspaceManager(Manager):
                         volume.thread_id,
                     )
                     continue
-                await self.backing(self.path(volume)).release()
+                await self.storage(self.path(volume)).release()
                 released.append(volume.id)
             span.set_attribute("released", len(released))
             span.set_attribute("kept_busy", kept_busy)
@@ -507,6 +356,9 @@ class WorkspaceManager(Manager):
         await self.save(source, owner_id)
         origin = await self.volumes.find(owner_id, source.id, project.id)
         landing = await self.resolve(thread.id, project, owner_id)
+        volume = landing.volume
+        if not isinstance(volume, GitVolume):
+            raise ValueError("A project handoff requires a Git working volume")
         mirror = self.mirrors.path(project)
         if origin is not None and await run_git(
             "ls-remote", str(mirror), origin.snapshot_ref, isolated=True
@@ -524,13 +376,13 @@ class WorkspaceManager(Manager):
                     "-p",
                     f"{saved}^",
                     "-m",
-                    f"{SNAPSHOT_PREFIX}{landing.volume.branch}",
+                    f"{SNAPSHOT_PREFIX}{volume.branch}",
                     cwd=mirror,
                     isolated=True,
                 )
             await run_git(
                 "update-ref",
-                landing.volume.snapshot_ref,
+                volume.snapshot_ref,
                 filed.strip(),
                 cwd=mirror,
                 isolated=True,
@@ -561,7 +413,7 @@ class WorkspaceManager(Manager):
             if (
                 volume is None
                 or not self.path(volume).is_dir()
-                or self.backing(self.path(volume)).uses
+                or self.storage(self.path(volume)).uses
             ):
                 return False
             if not await self.saved(volume):
@@ -572,6 +424,6 @@ class WorkspaceManager(Manager):
                     thread.id,
                 )
                 return False
-            await self.backing(self.path(volume)).release()
+            await self.storage(self.path(volume)).release()
             span.set_attribute("released", True)
             return True

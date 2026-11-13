@@ -6,8 +6,17 @@ from datetime import UTC, datetime
 from typing import ClassVar
 
 from arcanus.base import TransmuterProxiedMixin
-from pydantic import UUID7
-from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Index, String, Uuid, text
+from pydantic import UUID7, JsonValue
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    String,
+    Uuid,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 from uuid_utils.compat import uuid7
 
@@ -16,7 +25,7 @@ from octomate.types.volumes import VolumeKind, VolumeUsage
 
 
 class Volume(Base, TransmuterProxiedMixin):
-    """An application-owned volume; backing and attachments have separate lifetimes."""
+    """An application-owned volume; storage and attachments have separate lifetimes."""
 
     __tablename__ = "volumes"
     __table_args__ = (
@@ -61,6 +70,11 @@ class Volume(Base, TransmuterProxiedMixin):
         nullable=False,
         index=True,
         comment="The registered user who owns this logical volume.",
+    )
+    storage: Mapped[JsonValue] = mapped_column(
+        JSON,
+        nullable=False,
+        comment="Storage description: kind and storage location, excluding runtime locks, active uses and habitat destinations.",
     )
     kind: Mapped[VolumeKind] = mapped_column(
         String,

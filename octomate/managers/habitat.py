@@ -21,7 +21,7 @@ from octomate.config.habitat import (
 from octomate.habitat import Habitat, ManagedHabitat, NativeHabitat
 from octomate.habitat import HabitatError as HabitatError
 from octomate.habitat.sbx import SbxHabitat
-from octomate.managers.workspaces.base import TreeWorkspace, WorkspaceManager
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import (
     HabitatTopic,
     Impulse,
@@ -37,25 +37,22 @@ from octomate.schemas.habitat import (
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
 from octomate.schemas.volumes import Volume
-from octomate.schemas.volumes.backings import Backing
+from octomate.schemas.volumes.storage import Storage
+from octomate.schemas.workspaces import Workspace
 
 
 @dataclass(frozen=True, kw_only=True)
 class Invocation:
     """Core-authorized resources, valid only inside the core's owning contexts.
 
-    Core prepares the backing and acquires any habitat before constructing this
+    Core prepares the storage and acquires any habitat before yielding this
     value. Adapters borrow them for the call; core owns their lifetime and the
     cleanup required on completion, failure, or cancellation.
     """
 
     id: UUID7  # Allocated by core before acquisition, shared with lifecycle events.
     conversation_id: UUID7
-    thread_id: UUID7
-    volume: Volume | None  # Unregistered chats have no logical volume record.
-    backing: Backing  # Prepared storage, borrowed for the duration of this call.
-    root: Path | None  # Owner's host root for habitat path translation.
-    project: Project | None
+    workspace: Workspace  # Prepared volume composition, owned by core for this call.
     habitat: Habitat  # Prepared environment, owned by core for this call.
 
     def __post_init__(self) -> None:
@@ -67,12 +64,28 @@ class Invocation:
 
     @property
     def owner_id(self) -> UUID7 | None:
-        return self.volume.owner_id if self.volume is not None else None
+        return self.workspace.owner_id
+
+    @property
+    def storage(self) -> Storage:
+        return self.workspace.attachment.storage
 
     @property
     def cwd(self) -> Path | PurePosixPath:
-        """The harness's working directory; `backing.path` remains host-side."""
-        return self.habitat.path(self.backing.path, root=self.root)
+        """The harness's working directory; `storage.path` remains host-side."""
+        return self.workspace.cwd
+
+    @property
+    def thread_id(self) -> UUID7:
+        return self.workspace.thread_id
+
+    @property
+    def project(self) -> Project | None:
+        return self.workspace.project
+
+    @property
+    def volume(self) -> Volume | None:
+        return self.workspace.volume
 
 
 @dataclass
@@ -97,8 +110,8 @@ class HabitatManager:
     @asynccontextmanager
     async def invoke(
         self,
-        workspaces: WorkspaceManager,
         *,
+        workspaces: WorkspaceManager,
         thread: Thread,
         conversation_id: UUID7,
         owner_id: UUID7 | None,
@@ -117,13 +130,7 @@ class HabitatManager:
                 yield Invocation(
                     id=invocation_id,
                     conversation_id=conversation_id,
-                    thread_id=thread.id,
-                    volume=workspace.volume
-                    if isinstance(workspace, TreeWorkspace)
-                    else None,
-                    backing=workspaces.backing(workspace.path),
-                    root=workspaces.root(owner_id) if owner_id is not None else None,
-                    project=project,
+                    workspace=workspace,
                     habitat=habitat,
                 )
         finally:

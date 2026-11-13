@@ -1,4 +1,4 @@
-"""Volume registration is shared, persistent, and independent of host directories."""
+"""Volume registration persists locations without creating their contents."""
 
 import asyncio
 from datetime import UTC, datetime
@@ -12,7 +12,9 @@ from octomate import Octomate
 from octomate.database import async_session
 from octomate.managers.volumes import VolumeManager
 from octomate.managers.workspaces import WorkspaceManager
+from octomate.managers.workspaces.mirrors import MirrorManager
 from octomate.schemas.volumes import GitVolume, Volume
+from octomate.schemas.volumes.storage import HostDirectory
 from tests.support.managers import a_project, a_registry, a_thread
 from tests.support.users import a_user
 
@@ -38,6 +40,7 @@ async def test_lookup_does_not_touch_activity_but_acquisition_does(
     owner = await a_user()
     before = datetime(2025, 1, 1, tzinfo=UTC)
     original = GitVolume(
+        storage=HostDirectory(Path("storage") / str(uuid7())),
         owner_id=owner.id,
         usage="tree",
         thread_id=await a_thread(),
@@ -80,12 +83,57 @@ async def test_shared_registry_serializes_allocation_across_workspace_managers(
         second.resolve(thread_id, None, owner.id),
     )
 
+    assert resolved[0].volume is not None
+    assert resolved[1].volume is not None
     assert resolved[0].volume.id == resolved[1].volume.id
     assert resolved[0].path == resolved[1].path
     assert not resolved[0].path.exists()
     async with async_session() as session:
         assert await session.count(Volume) == 1
     assert Octomate(workspaces=first).volumes is volumes
+
+
+async def test_reloaded_volumes_share_active_storage_lifetime(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    owner = await a_user()
+    thread_id = await a_thread()
+    volumes = VolumeManager()
+    first = await volumes.tree(owner.id, thread_id, None)
+    mirror = await MirrorManager().create()
+
+    async with first(mirror=mirror) as path:
+        (path / "work").write_text("retained")
+        second = await volumes.find(owner.id, thread_id, None)
+        assert second is not None
+        assert second.storage is first.storage
+        assert second.storage.uses == 1
+        async with second(mirror=mirror):
+            assert first.storage.uses == 2
+            assert (path / "work").read_text() == "retained"
+        assert first.storage.uses == 1
+    assert first.storage.uses == 0
+    assert not path.exists()
+
+
+async def test_recorded_storage_survives_allocation_root_changes(
+    in_memory_engine: AsyncEngine, tmp_path: Path
+) -> None:
+    owner = await a_user()
+    volumes = VolumeManager()
+    original = await volumes.tree(owner.id, await a_thread(), None)
+    original_path = original.storage.path
+    volumes.host_directories.root = tmp_path / "new-root"
+    assert original.thread_id is not None
+
+    reused = await volumes.tree(owner.id, original.thread_id, None)
+    fresh = await volumes.tree(owner.id, await a_thread("fresh"), None)
+
+    assert reused.storage.path == original_path
+    assert reused.storage is original.storage
+    assert fresh.storage.path.is_relative_to(volumes.host_directories.root)
+    assert not original_path.exists()
+    assert not fresh.storage.path.exists()
 
 
 async def test_scopes_and_retention_queries_preserve_volume_identity(
@@ -101,7 +149,11 @@ async def test_scopes_and_retention_queries_preserve_volume_identity(
     project_tree = await volumes.tree(alice.id, thread_id, project.id)
     chat_tree = await volumes.tree(alice.id, thread_id, None)
     peer_tree = await volumes.tree(bob.id, thread_id, None)
-    directory = Volume(owner_id=alice.id, usage="cache")
+    directory = Volume(
+        storage=HostDirectory(Path("storage") / str(uuid7())),
+        owner_id=alice.id,
+        usage="cache",
+    )
     async with async_session() as session:
         session.add(directory)
         await session.commit()

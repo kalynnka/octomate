@@ -892,7 +892,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             conversation_address=conversation_address,
             conversation_id=conversation_id,
         )
-        workspace = invocation.backing.path
+        workspace = invocation.storage.path
         if invocation.project is not None:
             capabilities.extend(self.workspace_capabilities(workspace))
         graph_deps = ReactDeps(

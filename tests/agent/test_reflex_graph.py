@@ -36,7 +36,6 @@ from octomate.managers.gateway import GatewayManager, OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
-from octomate.managers.workspaces.base import UnregisteredProjectError
 from octomate.managers.workspaces.mirrors import run_git
 from octomate.nerve import Nerve
 from octomate.reflex import (
@@ -79,6 +78,7 @@ from octomate.schemas.triage import (
     SchemeDecision,
 )
 from octomate.schemas.user import UserProfile
+from octomate.schemas.volumes import GitVolume, UnregisteredProjectError
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.channel import ChannelOutput, ChannelSurfaces
 from tests.support.agents import FakeAgent, RecordedRun
@@ -2433,6 +2433,7 @@ async def test_a_dismiss_releases_the_workspace_once_the_turn_is_saved(
     assert isinstance(result, ReflexResult)
     assert not workspace.path.exists()
     mirror = workspaces.mirrors.path(project)
+    assert isinstance(workspace.volume, GitVolume)
     assert await run_git(
         "show", f"{workspace.volume.snapshot_ref}:work.md", cwd=mirror
     ) == ("done")
@@ -2710,9 +2711,9 @@ async def test_react_prepares_each_senders_project_workspace(
     first, second = [turn.invocation for turn in agent.turns]
     assert first.owner_id == alice.id
     assert second.owner_id == bob.id
-    assert first.backing.path != second.backing.path
-    assert first.backing.path.is_dir()
-    assert second.backing.path.is_dir()
+    assert first.storage.path != second.storage.path
+    assert first.storage.path.is_dir()
+    assert second.storage.path.is_dir()
     assert bool(agent.turns[0].session) is gateway
     assert bool(agent.turns[1].session) is gateway
 

@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.database import async_session
-from octomate.managers.workspaces.base import UnregisteredProjectError
 from octomate.reflex.nodes.awake import Awake
 from octomate.reflex.nodes.react import React
 from octomate.reflex.nodes.teleport import Teleport
@@ -23,7 +22,7 @@ from octomate.schemas.awakes import SummonSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import AgentRouteKey, SummonDecision
 from octomate.schemas.user import UserProfile
-from octomate.schemas.volumes import GitVolume
+from octomate.schemas.volumes import GitVolume, UnregisteredProjectError
 from octomate.tentacles.channel import ChannelOutput
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle

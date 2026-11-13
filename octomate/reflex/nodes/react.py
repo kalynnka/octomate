@@ -113,7 +113,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 raise ValueError("React requires a resolved thread and conversation")
             async with (
                 agent.habitats.invoke(
-                    ctx.deps.workspaces,
+                    workspaces=ctx.deps.workspaces,
                     thread=state.thread,
                     conversation_id=state.conversation_id,
                     owner_id=state.user_profile.user_id if state.user_profile else None,

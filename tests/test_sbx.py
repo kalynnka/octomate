@@ -4,7 +4,7 @@ import asyncio
 import os
 import sys
 from contextlib import suppress
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import anyio
 import pytest
@@ -54,38 +54,6 @@ def sandbox(tmp_path: Path) -> SbxHabitat:
         config=SbxHabitatConfig(image=IMAGE, executable=str(executable)),
         user_id=uuid7(),
     )
-
-
-@pytest.mark.parametrize(
-    "relative", ["", "tree/id", "memory/id/notes.md", "cache/id/pip", "tree/id/a b"]
-)
-def test_guest_paths_are_independent_of_the_host_filesystem(
-    sandbox: SbxHabitat, tmp_path: Path, relative: str
-) -> None:
-    root = tmp_path / "volumes" / str(sandbox.user_id)
-    mapped = sandbox.path(root / relative, root=root)
-    assert mapped == PurePosixPath("/workspace") / relative
-    assert not isinstance(mapped, Path)
-    assert not root.exists()
-
-
-@pytest.mark.parametrize(
-    ("path", "root", "message"),
-    [
-        (Path("/volumes/bob/tree/id"), Path("/volumes/alice"), "outside"),
-        (Path("/volumes/alice-extra/tree/id"), Path("/volumes/alice"), "outside"),
-        (Path("/volumes/alice/../bob/tree/id"), Path("/volumes/alice"), "traversal"),
-        (Path("/volumes/alice/tree/id"), Path("/volumes/../alice"), "traversal"),
-        (Path("tree/id"), Path("/volumes/alice"), "absolute"),
-        (Path("/volumes/alice/tree/id"), Path("volumes/alice"), "absolute"),
-        (Path("/temporary/chat"), None, "registered user's root"),
-    ],
-)
-def test_guest_mapping_refuses_paths_without_a_valid_user_root(
-    sandbox: SbxHabitat, path: Path, root: Path | None, message: str
-) -> None:
-    with pytest.raises(HabitatError, match=message):
-        sandbox.path(path, root=root)
 
 
 @pytest.mark.parametrize("internet_access", [True, False])

@@ -1,4 +1,4 @@
-"""Logical volumes: persisted identity and policy, independent of their backing."""
+"""Logical volumes: persisted identity, storage location, and content lifecycle."""
 
 from __future__ import annotations
 
@@ -19,11 +19,15 @@ from uuid_utils.compat import uuid7
 from octomate.config.mirrors import GitIdentity
 from octomate.models import volumes as volume_models
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.schemas.volumes.backings import Backing
+from octomate.schemas.volumes.storage import HostDirectory
 from octomate.telemetry import volume_logfire
 from octomate.types.volumes import VolumeKind, VolumeUsage
 
 logger = logging.getLogger(__name__)
+
+
+class UnregisteredProjectError(PermissionError):
+    """Project volumes require a registered owner; unregistered senders may chat."""
 
 
 @sqlalchemy_materia.bless(volume_models.Volume)
@@ -31,7 +35,8 @@ class Volume(BaseTransmuter):
     """A logical volume whose identity outlives any local directory or attachment.
 
     Operations change this transmuter directly. The caller's session owns
-    persistence; paths, mounts and active uses belong to the runtime.
+    persistence, including the storage location. Mounts and active uses remain
+    runtime state.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -39,6 +44,9 @@ class Volume(BaseTransmuter):
     id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
     owner_id: UUID7 = Field(
         frozen=True, description="The registered user who owns this logical volume."
+    )
+    storage: HostDirectory = Field(
+        description="Storage location and its resolved runtime handle; only kind and path are persisted."
     )
     kind: VolumeKind = Field(
         default="directory",
@@ -87,9 +95,9 @@ class Volume(BaseTransmuter):
         return self
 
     @asynccontextmanager
-    async def __call__(self, backing: Backing) -> AsyncGenerator[Path]:
+    async def __call__(self) -> AsyncGenerator[Path]:
         """Prepare the directory and retain or release its contents on exit."""
-        async with backing.use(ephemeral=self.ephemeral) as path:
+        async with self.storage.acquire(ephemeral=self.ephemeral) as path:
             await anyio.Path(path).mkdir(parents=True, exist_ok=True)
             yield path
 
@@ -111,7 +119,7 @@ class GitVolume(Volume):
 
     @property
     def snapshot_ref(self) -> str:
-        """Stable private snapshot identity, preserved when backing is reclaimed."""
+        """Stable private snapshot identity, preserved when storage is reclaimed."""
         return f"refs/octomate/trees/{self.id}"
 
     @property
@@ -124,7 +132,6 @@ class GitVolume(Volume):
     @asynccontextmanager
     async def __call__(
         self,
-        backing: Backing,
         *,
         mirror: Path | None = None,
         identity: GitIdentity | None = None,
@@ -137,8 +144,8 @@ class GitVolume(Volume):
         if mirror is None:
             raise ValueError("A Git volume requires a source mirror")
         identity = identity if identity is not None else GitIdentity()
-        async with backing.use(ephemeral=self.ephemeral) as path:
-            await self.materialize(backing, mirror)
+        async with self.storage.acquire(ephemeral=self.ephemeral) as path:
+            await self.materialize(mirror)
             save = True
             try:
                 yield path
@@ -147,15 +154,15 @@ class GitVolume(Volume):
                 raise
             finally:
                 if save and not self.ephemeral:
-                    await self.checkpoint(backing, mirror, identity)
+                    await self.checkpoint(mirror, identity)
 
-    async def materialize(self, backing: Backing, mirror: Path) -> Path:
+    async def materialize(self, mirror: Path) -> Path:
         """Export only authorized history and this volume's snapshot atomically."""
         # The legacy workspace package imports this schema during initialization.
         from octomate.managers.workspaces.dependencies import install
         from octomate.managers.workspaces.mirrors import MirrorManager
 
-        path = backing.path
+        path = self.storage.path
         # Outside the lock, so a turn waiting on another turn's fork is time this
         # span accounts for. From the far end the wait and a slow fork look the
         # same, and they want opposite fixes.
@@ -166,7 +173,7 @@ class GitVolume(Volume):
             kind=self.kind,
             path=str(path),
         ) as span:
-            async with backing.lock:
+            async with self.storage.lock:
                 if path.is_dir():
                     # Where every turn after a thread's first arrives. Saying so is
                     # what leaves the forks findable among them.
@@ -308,15 +315,13 @@ class GitVolume(Volume):
             )
             await run_git("reset", cwd=workspace, isolated=True)
 
-    async def checkpoint(
-        self, backing: Backing, mirror: Path, identity: GitIdentity
-    ) -> None:
+    async def checkpoint(self, mirror: Path, identity: GitIdentity) -> None:
         """Import a validated snapshot; retain the working tree when capture fails."""
         # The legacy workspace package imports this schema during initialization.
         from octomate.managers.workspaces.mirrors import GitCommandError
         from octomate.managers.workspaces.snapshots import Snapshot
 
-        path = backing.path
+        path = self.storage.path
         with volume_logfire.span(
             "volume.save",
             thread_id=str(self.thread_id),
@@ -328,7 +333,7 @@ class GitVolume(Volume):
                 return
             try:
                 async with (
-                    backing.lock,
+                    self.storage.lock,
                     Snapshot.capture(path, identity) as snapshot,
                 ):
                     await snapshot.save(

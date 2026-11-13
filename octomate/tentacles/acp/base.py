@@ -348,7 +348,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         )
         if sender is None or invocation.owner_id is None:
             raise ValueError("Outbound ACP requires a registered user")
-        backing = invocation.backing
+        storage = invocation.storage
         updates: asyncio.Queue[
             StreamEvent | ActionBatchEvent | ActionBatchAnsweredEvent | None
         ] = asyncio.Queue()
@@ -409,7 +409,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             if conversation.external_id is None:
                 native = await client.new_session(
                     schema.NewSessionRequest(
-                        cwd=str(backing.path), mcp_servers=[*mcp_servers]
+                        cwd=str(storage.path), mcp_servers=[*mcp_servers]
                     )
                 )
                 session_id = native.session_id
@@ -424,13 +424,13 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                     acp.AGENT_METHODS["session_load"],
                     schema.LoadSessionRequest(
                         session_id=session_id,
-                        cwd=str(backing.path),
+                        cwd=str(storage.path),
                         mcp_servers=[*mcp_servers],
                     ),
                     schema.LoadSessionResponse,
                 )
                 native = NativeAcpSession(
-                    provider, str(backing.path), session_id, response
+                    provider, str(storage.path), session_id, response
                 )
             selected_model = await native.select_model(client.connection, model)
             await native.select_effort(client.connection, effort)
@@ -448,7 +448,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                         client,
                         conversation,
                         request,
-                        backing.path,
+                        storage.path,
                         address,
                         sender,
                         source_address,

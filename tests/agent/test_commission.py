@@ -458,4 +458,4 @@ async def test_commission_inherits_the_parent_owner_in_a_project(
     assert turn.session is None
     assert turn.invocation.owner_id == owner.id
     assert turn.invocation.thread_id == thread.id
-    assert turn.invocation.backing.path.is_dir()
+    assert turn.invocation.storage.path.is_dir()

@@ -9,7 +9,6 @@ from pydantic_ai.tools import DeferredToolResults
 from pydantic_graph import BaseNode, End, GraphRunContext
 
 from octomate.capabilities.harness.events import ReflexPhaseChangedEvent
-from octomate.managers.workspaces.base import UnregisteredProjectError
 from octomate.nerve import Impulse
 from octomate.reflex.crossing import announce_crossing, open_crossing
 from octomate.reflex.nodes.react import React
@@ -25,6 +24,7 @@ from octomate.reflex.suspender import TeleportRequest
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import Thread, ThreadKey
+from octomate.schemas.volumes import UnregisteredProjectError
 from octomate.telemetry import reflex_logfire
 
 

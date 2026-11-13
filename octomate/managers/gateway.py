@@ -200,7 +200,7 @@ class OctomateSession:
             async with (
                 asyncio.timeout(commission_timeout),
                 agent.habitats.invoke(
-                    self.workspaces,
+                    workspaces=self.workspaces,
                     thread=thread,
                     conversation_id=child.id,
                     owner_id=self.user_profile.user_id if self.user_profile else None,

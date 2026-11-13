@@ -853,7 +853,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         if thread is None or context.conversation is None:
             raise ValueError("A runtime command requires a conversation")
         return self.habitats.invoke(
-            self.workspaces,
+            workspaces=self.workspaces,
             thread=thread,
             conversation_id=context.conversation.id,
             owner_id=context.user_id,
@@ -1098,7 +1098,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 conversation_id=conversation.id,
                 api_key_id=api_key.key.id if api_key is not None else None,
                 mcp_bearer=api_key.token if api_key is not None else None,
-                cwd=str(invocation.backing.path),
+                cwd=str(invocation.storage.path),
                 approval_mode=ApprovalMode.auto_review
                 if permission_mode == "auto_review"
                 else ApprovalMode.deny_all
@@ -1790,8 +1790,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         # writes to it, so for Codex the directory is the whole of running inside a
         # project — and the workspace is what makes that boundary this run's rather
         # than everyone's checkout.
-        backing = invocation.backing
-        run_cwd = str(backing.path)
+        storage = invocation.storage
+        run_cwd = str(storage.path)
 
         async with contextlib.AsyncExitStack() as resources:
             resources.enter_context(
@@ -1891,7 +1891,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                     continue
                 artifacts = await self.capture_html(
                     notification,
-                    workspace=backing.path,
+                    workspace=storage.path,
                     session=session,
                     address=conversation_address,
                     thread_id=conversation.thread_id,

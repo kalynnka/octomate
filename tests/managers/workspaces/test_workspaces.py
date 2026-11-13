@@ -37,11 +37,6 @@ from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import snapshots
 from octomate.managers.workspaces.base import (
-    ChatWorkspace,
-    ProjectWorkspace,
-    TreeWorkspace,
-    UnregisteredProjectError,
-    UnregisteredWorkspace,
     WorkspaceManager,
 )
 from octomate.managers.workspaces.dependencies import install
@@ -53,7 +48,9 @@ from octomate.managers.workspaces.mirrors import (
 from octomate.nerve import Nerve
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import User
-from octomate.schemas.volumes import GitVolume
+from octomate.schemas.volumes import GitVolume, UnregisteredProjectError
+from octomate.schemas.volumes.storage import HostDirectory
+from octomate.schemas.workspaces import Workspace
 from tests.support.dependencies import Probe, probing, runs
 from tests.support.managers import a_project, a_registry, a_thread
 from tests.support.users import a_user
@@ -126,7 +123,7 @@ async def a_chat_thread() -> Thread:
 
 async def a_workspace(
     manager: WorkspaceManager, thread: Thread, owner: User, ref: str | None = None
-) -> ProjectWorkspace:
+) -> Workspace:
     """The handle a run is given before anything is forked: its row is written,
     its folder is not."""
     project = manager.projects.get("inky")
@@ -134,19 +131,22 @@ async def a_workspace(
     return await manager.resolve(thread.id, project, owner.id, ref)
 
 
+def git_volume(workspace: Workspace) -> GitVolume:
+    volume = workspace.volume
+    assert isinstance(volume, GitVolume)
+    return volume
+
+
 async def materialize(
-    manager: WorkspaceManager, workspace: TreeWorkspace, mirror: Path
+    manager: WorkspaceManager, workspace: Workspace, mirror: Path
 ) -> Path:
-    """Exercise the logical volume against the manager's shared backing."""
-    return await workspace.volume.materialize(manager.backing(workspace.path), mirror)
+    """Exercise the logical volume against the manager's shared storage."""
+    return await git_volume(workspace).materialize(mirror)
 
 
-async def checkpoint_volume(
-    manager: WorkspaceManager, workspace: ProjectWorkspace
-) -> None:
+async def checkpoint_volume(manager: WorkspaceManager, workspace: Workspace) -> None:
     """Checkpoint with the same mirror and identity the invocation selects."""
-    await workspace.volume.checkpoint(
-        manager.backing(workspace.path),
+    await git_volume(workspace).checkpoint(
         manager.mirrors.path(workspace.project),
         manager.identity,
     )
@@ -231,7 +231,7 @@ async def test_a_workspace_is_an_independent_repository_on_the_threads_branch(
     assert (
         workspace
         == (
-            tmp_path / "volumes" / str(owner.id) / "tree" / str(opened.volume.id)
+            tmp_path / "volumes" / str(owner.id) / "tree" / str(git_volume(opened).id)
         ).resolve()
     )
     assert (workspace / "readme.md").read_text() == "hello"
@@ -291,18 +291,18 @@ async def test_two_users_in_one_thread_get_their_own_trees_and_refs(
 
     await manager.save(thread, owner.id)
 
-    assert mine.volume.id != theirs.volume.id
+    assert git_volume(mine).id != git_volume(theirs).id
     assert mine.path != theirs.path
     assert not (theirs.path / "work.md").exists()
-    assert await saved(mirror, mine.volume)
-    assert not await saved(mirror, theirs.volume)
+    assert await saved(mirror, git_volume(mine))
+    assert not await saved(mirror, git_volume(theirs))
 
     await a_turn(theirs.path, {"work.md": "theirs"})
     await manager.save(thread, other.id)
 
-    show = ("show", f"{mine.volume.snapshot_ref}:work.md")
+    show = ("show", f"{git_volume(mine).snapshot_ref}:work.md")
     assert await run_git(*show, cwd=mirror) == "mine"
-    show = ("show", f"{theirs.volume.snapshot_ref}:work.md")
+    show = ("show", f"{git_volume(theirs).snapshot_ref}:work.md")
     assert await run_git(*show, cwd=mirror) == "theirs"
 
 
@@ -332,7 +332,7 @@ async def test_releasing_removes_the_workspace_and_leaves_the_mirror(
     workspace = await materialize(manager, opened, mirror)
     (workspace / "work.md").write_text("done")
 
-    await manager.backing(manager.path(opened.volume)).release()
+    await manager.storage(manager.path(git_volume(opened))).release()
 
     assert not workspace.exists()
     assert (mirror / "readme.md").read_text() == "hello"
@@ -350,17 +350,17 @@ async def test_releasing_keeps_the_row_so_the_tree_comes_back_at_its_path(
     await materialize(manager, opened, mirror)
     await manager.save(thread, owner.id)
 
-    await manager.backing(manager.path(opened.volume)).release()
+    await manager.storage(manager.path(git_volume(opened))).release()
     reopened = await a_workspace(manager, thread, owner)
 
     assert not opened.path.exists()
-    assert reopened.volume.id == opened.volume.id
+    assert git_volume(reopened).id == git_volume(opened).id
     assert reopened.path == opened.path
     async with async_session() as session:
         rows = await session.list(
             GitVolume, limit=None, expressions=[GitVolume["thread_id"] == thread.id]
         )
-    assert [row.id for row in rows] == [opened.volume.id]
+    assert [row.id for row in rows] == [git_volume(opened).id]
 
 
 async def test_releasing_a_workspace_that_is_not_there_is_no_work(
@@ -369,7 +369,7 @@ async def test_releasing_a_workspace_that_is_not_there_is_no_work(
     # Pruning a tree whose folder is gone, and releasing one twice, both arrive here.
     opened = await a_workspace(manager, await a_bound_thread(manager), owner)
 
-    await manager.backing(manager.path(opened.volume)).release()
+    await manager.storage(manager.path(git_volume(opened))).release()
 
 
 async def test_a_fork_that_fails_leaves_nothing_behind(
@@ -392,7 +392,7 @@ async def test_what_a_killed_fork_left_is_never_a_workspace(
     # fork of this volume reclaims it rather than building on it.
     mirror = await a_project_mirror(manager, {"readme.md": "hello"})
     opened = await a_workspace(manager, await a_bound_thread(manager), owner)
-    abandoned = opened.path.with_name(f".{opened.volume.id}.forking")
+    abandoned = opened.path.with_name(f".{git_volume(opened).id}.forking")
     abandoned.mkdir(parents=True)
     (abandoned / "half.md").write_text("copied before the power went")
 
@@ -411,7 +411,7 @@ async def test_two_materializations_of_one_tree_serialize(
     opened = await a_workspace(manager, await a_bound_thread(manager), owner)
     await materialize(manager, opened, mirror)
 
-    lock = manager.backing(opened.path).lock
+    lock = manager.storage(opened.path).lock
     await lock.acquire()
     second = asyncio.create_task(materialize(manager, opened, mirror))
     for _ in range(5):
@@ -429,11 +429,15 @@ async def test_a_workspace_path_is_absolute_from_a_relative_directory(
     # started, and a tree is handed to processes started elsewhere.
     monkeypatch.chdir(tmp_path)
     manager = WorkspaceManager()
-    volume = GitVolume(usage="tree", owner_id=uuid7(), thread_id=uuid7())
-
-    assert manager.path(volume) == (
-        tmp_path / ".octomate/volumes" / str(volume.owner_id) / "tree" / str(volume.id)
+    volume = GitVolume(
+        storage=HostDirectory(Path("storage") / str(uuid7())),
+        usage="tree",
+        owner_id=uuid7(),
+        thread_id=uuid7(),
     )
+
+    assert manager.path(volume) == volume.storage.path
+    assert manager.path(volume).is_absolute()
 
 
 async def test_the_sweep_works_from_the_default_relative_directory(
@@ -456,7 +460,7 @@ async def test_the_sweep_works_from_the_default_relative_directory(
     await a_turn(await materialize(manager, opened, mirror), {"work.md": "done"})
     await manager.save(thread, owner.id)
 
-    assert await manager.prune(idle=0.0) == [opened.volume.id]
+    assert await manager.prune(idle=0.0) == [git_volume(opened).id]
 
 
 async def a_turn(workspace: Path, files: dict[str, str]) -> None:
@@ -482,7 +486,7 @@ async def test_a_turn_leaves_its_work_on_the_trees_ref(
 
     await manager.save(thread, owner.id)
 
-    ref = opened.volume.snapshot_ref
+    ref = git_volume(opened).snapshot_ref
     assert await run_git("show", f"{ref}:work.md", cwd=mirror) == "done"
     # And the mirror's own branch is not where it landed.
     assert not (mirror / "work.md").exists()
@@ -540,7 +544,7 @@ async def test_a_workspace_comes_back_on_the_branch_the_agent_made(
     await manager.save(thread, owner.id)
     left = await head(workspace)
 
-    await manager.backing(manager.path(opened.volume)).release()
+    await manager.storage(manager.path(git_volume(opened))).release()
     resumed = await materialize(manager, opened, mirror)
 
     assert await branch(resumed) == "feat/theirs"
@@ -564,7 +568,7 @@ async def test_a_detached_head_comes_back_detached(
     await manager.save(thread, owner.id)
     left = await head(workspace)
 
-    await manager.backing(manager.path(opened.volume)).release()
+    await manager.storage(manager.path(git_volume(opened))).release()
     resumed = await materialize(manager, opened, mirror)
 
     assert await branch(resumed) == "HEAD"
@@ -584,7 +588,7 @@ async def test_a_turn_that_changed_nothing_still_names_the_ref(
 
     await manager.save(thread, owner.id)
 
-    assert await saved(mirror, opened.volume)
+    assert await saved(mirror, git_volume(opened))
     assert await commit_count(workspace) == 1
 
 
@@ -603,7 +607,7 @@ async def test_a_released_workspace_comes_back_with_its_work(
     await manager.save(thread, owner.id)
     left = await head(workspace)
 
-    await manager.backing(manager.path(opened.volume)).release()
+    await manager.storage(manager.path(git_volume(opened))).release()
     resumed = await materialize(manager, opened, mirror)
 
     assert (resumed / "work.md").read_text() == "done"
@@ -631,7 +635,7 @@ async def test_a_modified_file_comes_back_modified(
     (workspace / "gone.md").unlink()
     await manager.save(thread, owner.id)
 
-    await manager.backing(manager.path(opened.volume)).release()
+    await manager.storage(manager.path(git_volume(opened))).release()
     resumed = await materialize(manager, opened, mirror)
 
     assert (resumed / "readme.md").read_text() == "changed"
@@ -648,13 +652,13 @@ async def test_a_resumed_thread_keeps_going_from_where_it_was(
     opened = await a_workspace(manager, thread, owner)
     await a_turn(await materialize(manager, opened, mirror), {"work.md": "first"})
     await manager.save(thread, owner.id)
-    await manager.backing(manager.path(opened.volume)).release()
+    await manager.storage(manager.path(git_volume(opened))).release()
 
     resumed = await materialize(manager, opened, mirror)
     await a_turn(resumed, {"work.md": "second"})
     await manager.save(thread, owner.id)
 
-    ref = opened.volume.snapshot_ref
+    ref = git_volume(opened).snapshot_ref
     assert await run_git("show", f"{ref}:work.md", cwd=mirror) == "second"
     # Two turns, two saves, a prune in between, and the repository the agent works
     # in has exactly the one commit its mirror was forked with.
@@ -711,7 +715,9 @@ async def test_peer_snapshot_objects_are_absent_even_by_hash(
     mine = await a_workspace(manager, thread, owner)
     await a_turn(await materialize(manager, mine, mirror), {"secret.md": "private"})
     await manager.save(thread, owner.id)
-    private = (await run_git("rev-parse", mine.volume.snapshot_ref, cwd=mirror)).strip()
+    private = (
+        await run_git("rev-parse", git_volume(mine).snapshot_ref, cwd=mirror)
+    ).strip()
     blob = (await run_git("rev-parse", f"{private}:secret.md", cwd=mirror)).strip()
     if packed:
         await run_git("repack", "-ad", cwd=mirror)
@@ -729,17 +735,17 @@ async def test_peer_snapshot_objects_are_absent_even_by_hash(
         if file.is_file()
     )
     await a_turn(path, {"bob.md": "bob's private work"})
-    await manager.save(thread, peer.owner_id)
+    await manager.save(thread, git_volume(peer).owner_id)
     peer_snapshot = (
-        await run_git("rev-parse", peer.volume.snapshot_ref, cwd=mirror)
+        await run_git("rev-parse", git_volume(peer).snapshot_ref, cwd=mirror)
     ).strip()
-    await manager.backing(manager.path(mine.volume)).release()
+    await manager.storage(manager.path(git_volume(mine))).release()
 
     restored = await materialize(manager, mine, mirror)
 
     assert (restored / "secret.md").read_text() == "private"
     assert not (restored / "bob.md").exists()
-    assert await manager.saved(mine.volume)
+    assert await manager.saved(git_volume(mine))
     with pytest.raises(GitCommandError):
         await run_git("cat-file", "-e", peer_snapshot, cwd=restored)
 
@@ -771,7 +777,9 @@ async def test_mirror_replace_refs_cannot_export_private_history(
     mine = await a_workspace(manager, thread, owner)
     await a_turn(await materialize(manager, mine, mirror), {"secret.md": "private"})
     await manager.save(thread, owner.id)
-    private = (await run_git("rev-parse", mine.volume.snapshot_ref, cwd=mirror)).strip()
+    private = (
+        await run_git("rev-parse", git_volume(mine).snapshot_ref, cwd=mirror)
+    ).strip()
     await run_git("replace", "HEAD", private, cwd=mirror)
 
     peer = await a_workspace(manager, thread, await a_user("bob"))
@@ -821,7 +829,7 @@ async def test_base_ref_cannot_request_a_peer_snapshot(
     mine = await a_workspace(manager, thread, owner)
     await a_turn(await materialize(manager, mine, mirror), {"secret.md": "private"})
     await manager.save(thread, owner.id)
-    ref = mine.volume.snapshot_ref
+    ref = git_volume(mine).snapshot_ref
     if by_hash:
         ref = (await run_git("rev-parse", ref, cwd=mirror)).strip()
     peer = await a_workspace(manager, thread, await a_user("bob"), ref)
@@ -877,7 +885,7 @@ async def test_saving_never_runs_workspace_git_commands(
 
     assert not marker.exists()
     assert (
-        await run_git("show", f"{opened.volume.snapshot_ref}:work.txt", cwd=mirror)
+        await run_git("show", f"{git_volume(opened).snapshot_ref}:work.txt", cwd=mirror)
         == "unfinished"
     )
 
@@ -903,7 +911,7 @@ async def test_redirected_git_data_cannot_be_saved_or_pruned(
 
     await checkpoint_volume(manager, opened)
 
-    assert not await saved(mirror, opened.volume)
+    assert not await saved(mirror, git_volume(opened))
     assert await manager.prune(idle=0.0) == []
     assert (path / "work.txt").read_text() == "unfinished"
 
@@ -933,7 +941,7 @@ async def test_a_forged_saved_marker_cannot_discard_unimported_work(
 
     assert await manager.prune(idle=0.0) == []
     assert (path / "work.txt").read_text() == "only in this tree"
-    assert not await saved(mirror, opened.volume)
+    assert not await saved(mirror, git_volume(opened))
 
 
 async def test_capture_preserves_staged_files_and_records_symlinks_without_following(
@@ -955,7 +963,7 @@ async def test_capture_preserves_staged_files_and_records_symlinks_without_follo
 
     await checkpoint_volume(manager, opened)
 
-    ref = opened.volume.snapshot_ref
+    ref = git_volume(opened).snapshot_ref
     assert (path / ".git/index").read_bytes() == original_index
     assert await head(path) == original_head
     assert await run_git("show", f"{ref}:staged.local", cwd=mirror) == "staged"
@@ -985,7 +993,7 @@ async def test_capture_ignores_local_config_and_inherited_git_environment(
 
     assert not redirected.exists()
     assert (
-        await run_git("show", f"{opened.volume.snapshot_ref}:work.txt", cwd=mirror)
+        await run_git("show", f"{git_volume(opened).snapshot_ref}:work.txt", cwd=mirror)
         == "unfinished"
     )
 
@@ -997,7 +1005,7 @@ async def test_corrupt_returned_objects_do_not_replace_the_saved_snapshot(
     opened = await a_workspace(manager, await a_bound_thread(manager), owner)
     path = await materialize(manager, opened, mirror)
     await checkpoint_volume(manager, opened)
-    original = await saved(mirror, opened.volume)
+    original = await saved(mirror, git_volume(opened))
     (path / "work.txt").write_text("unfinished")
     await run_git("add", "-A", cwd=path)
     await run_git(*IDENTITY, "commit", "-m", "new work", cwd=path)
@@ -1008,7 +1016,7 @@ async def test_corrupt_returned_objects_do_not_replace_the_saved_snapshot(
 
     await checkpoint_volume(manager, opened)
 
-    assert await saved(mirror, opened.volume) == original
+    assert await saved(mirror, git_volume(opened)) == original
     assert await manager.prune(idle=0.0) == []
     assert (path / "work.txt").read_text() == "unfinished"
 
@@ -1025,7 +1033,7 @@ async def test_restoring_a_snapshot_does_not_run_host_filters(
     (path / ".gitattributes").write_text("*.txt filter=attack\n")
     (path / "work.txt").write_text("unfinished")
     await checkpoint_volume(manager, opened)
-    await manager.backing(manager.path(opened.volume)).release()
+    await manager.storage(manager.path(git_volume(opened))).release()
     marker = tmp_path / "executed"
     command = tmp_path / "attack"
     command.write_text(f'#!/bin/sh\nprintf invoked > "{marker}"\ncat\n')
@@ -1124,7 +1132,7 @@ async def test_snapshots_carry_the_machine_identity(
 
     await manager.save(thread, owner.id)
 
-    ref = opened.volume.snapshot_ref
+    ref = git_volume(opened).snapshot_ref
     author = await run_git("show", "-s", "--format=%an <%ae>", ref, cwd=mirror)
     assert author.strip() == "octomate <octomate@example.com>"
 
@@ -1144,7 +1152,7 @@ async def test_snapshots_carry_the_configured_identity(
 
     await manager.save(thread, owner.id)
 
-    ref = opened.volume.snapshot_ref
+    ref = git_volume(opened).snapshot_ref
     author = await run_git("show", "-s", "--format=%an <%ae>", ref, cwd=mirror)
     assert author.strip() == "Lu Hui <lu@example.com>"
 
@@ -1167,8 +1175,8 @@ async def test_nothing_a_turn_saves_reaches_the_upstream(
 
     await manager.save(thread, owner.id)
 
-    assert await saved(mirror, opened.volume)
-    assert not await saved(upstream, opened.volume)
+    assert await saved(mirror, git_volume(opened))
+    assert not await saved(upstream, git_volume(opened))
 
 
 async def test_a_workspace_the_mirror_already_has_is_pruned(
@@ -1181,11 +1189,11 @@ async def test_a_workspace_the_mirror_already_has_is_pruned(
     await a_turn(workspace, {"work.md": "done"})
     await manager.save(thread, owner.id)
 
-    assert await manager.prune(idle=0.0) == [opened.volume.id]
+    assert await manager.prune(idle=0.0) == [git_volume(opened).id]
 
     assert not workspace.exists()
     # And what it held is still the tree's, waiting in the mirror.
-    ref = opened.volume.snapshot_ref
+    ref = git_volume(opened).snapshot_ref
     assert await run_git("show", f"{ref}:work.md", cwd=mirror) == "done"
 
 
@@ -1199,9 +1207,9 @@ async def test_a_tree_idle_past_the_window_is_released(
     await materialize(manager, opened, mirror)
     await manager.save(thread, owner.id)
 
-    await age(opened.volume, 7200.0)
+    await age(git_volume(opened), 7200.0)
 
-    assert await manager.prune(idle=3600.0) == [opened.volume.id]
+    assert await manager.prune(idle=3600.0) == [git_volume(opened).id]
     assert not opened.path.exists()
 
 
@@ -1215,7 +1223,7 @@ async def test_opening_a_tree_marks_it_used(
     opened = await a_workspace(manager, thread, owner)
     await materialize(manager, opened, mirror)
     await manager.save(thread, owner.id)
-    await age(opened.volume, 7200.0)
+    await age(git_volume(opened), 7200.0)
 
     await a_workspace(manager, thread, owner)
 
@@ -1237,7 +1245,7 @@ async def test_a_dismissed_workspace_is_saved_and_then_released(
     assert await manager.dismiss(thread, owner.id)
 
     assert not workspace.exists()
-    ref = opened.volume.snapshot_ref
+    ref = git_volume(opened).snapshot_ref
     assert await run_git("show", f"{ref}:work.md", cwd=mirror) == "done"
 
 
@@ -1389,12 +1397,17 @@ async def test_a_thread_in_no_project_forks_an_empty_workspace(
     thread_id = await a_thread(str(uuid7()))
     workspace = await manager.resolve(thread_id, None, owner.id)
 
-    assert isinstance(workspace, ChatWorkspace)
-    assert workspace.volume.project_id is None
+    assert isinstance(workspace.volume, GitVolume)
+    assert workspace.project is None
+    assert git_volume(workspace).project_id is None
     assert (
         workspace.path
         == (
-            tmp_path / "volumes" / str(owner.id) / "tree" / str(workspace.volume.id)
+            tmp_path
+            / "volumes"
+            / str(owner.id)
+            / "tree"
+            / str(git_volume(workspace).id)
         ).resolve()
     )
     # Known before anything is forked, which is what lets a runtime be told where it
@@ -1438,21 +1451,21 @@ async def test_the_sweep_leaves_a_chat_workspace_alone(
         assert chat.path.is_dir()
 
 
-async def test_active_project_backing_cannot_be_reclaimed(
+async def test_active_project_storage_cannot_be_reclaimed(
     manager: WorkspaceManager, owner: User
 ) -> None:
     thread = await a_bound_thread(manager)
     workspace = await a_workspace(manager, thread, owner)
-    backing = manager.backing(workspace.path)
+    storage = manager.storage(workspace.path)
     async with manager.enter(workspace):
         (workspace.path / "work.md").write_text("in use")
         assert await manager.prune(idle=0) == []
         assert not await manager.dismiss(thread, owner.id)
         with pytest.raises(RuntimeError, match="while it is in use"):
-            await backing.release()
+            await storage.release()
         assert (workspace.path / "work.md").read_text() == "in use"
     assert await manager.dismiss(thread, owner.id)
-    assert not backing.path.exists()
+    assert not storage.path.exists()
 
 
 async def test_leaving_a_chat_workspace_discards_it(
@@ -1470,7 +1483,7 @@ async def test_leaving_a_chat_workspace_discards_it(
     assert not workspace.path.exists()
 
     async with manager.open(thread_id, None, owner.id) as second:
-        assert second.volume.id == workspace.volume.id
+        assert git_volume(second).id == git_volume(workspace).id
         assert second.path == workspace.path
         assert not (second.path / "scratch.txt").exists()
 
@@ -1551,7 +1564,7 @@ async def test_an_unregistered_chat_runs_in_a_temporary_directory(
     thread_id = uuid7()
     workspace = await manager.resolve(thread_id, None, None)
 
-    assert isinstance(workspace, UnregisteredWorkspace)
+    assert workspace.volume is None
     assert (
         workspace.path
         == (
@@ -1598,7 +1611,9 @@ async def test_leaving_a_project_workspace_keeps_it(
     assert (workspace.path / "work.md").read_text() == "done"
     assert (workspace.path / "readme.md").read_text() == "hello"
     assert (
-        await run_git("show", f"{workspace.volume.snapshot_ref}:work.md", cwd=mirror)
+        await run_git(
+            "show", f"{git_volume(workspace).snapshot_ref}:work.md", cwd=mirror
+        )
         == "done"
     )
 
@@ -1608,6 +1623,7 @@ async def test_project_exit_checkpoints_a_failed_run(
 ) -> None:
     thread = await a_bound_thread(manager)
     workspace = await a_workspace(manager, thread, owner)
+    assert workspace.project is not None
     (workspace.project.root / "readme.md").write_text("hello")
     await manager.prepare(workspace)
     (workspace.path / "work.md").write_text("unfinished")
@@ -1615,7 +1631,7 @@ async def test_project_exit_checkpoints_a_failed_run(
         async with manager.enter(workspace):
             raise RuntimeError("provider failed")
     assert (workspace.path / "work.md").read_text() == "unfinished"
-    assert await manager.saved(workspace.volume)
+    assert await manager.saved(git_volume(workspace))
 
 
 async def test_project_exit_keeps_work_when_the_checkpoint_fails(
@@ -1623,12 +1639,13 @@ async def test_project_exit_keeps_work_when_the_checkpoint_fails(
 ) -> None:
     thread = await a_bound_thread(manager)
     workspace = await a_workspace(manager, thread, owner)
+    assert workspace.project is not None
     (workspace.project.root / "readme.md").write_text("hello")
     async with manager.enter(workspace):
         (workspace.path / "work.md").write_text("unfinished")
         shutil.rmtree(manager.mirrors.path(workspace.project))
     assert (workspace.path / "work.md").read_text() == "unfinished"
-    assert not await manager.saved(workspace.volume)
+    assert not await manager.saved(git_volume(workspace))
     assert "could not be saved" in caplog.text
 
 
@@ -1637,6 +1654,7 @@ async def test_checkpoint_skips_unchanged_work_but_keeps_branch_changes(
 ) -> None:
     thread = await a_bound_thread(manager)
     workspace = await a_workspace(manager, thread, owner)
+    assert workspace.project is not None
     (workspace.project.root / "readme.md").write_text("hello")
     git = AsyncMock(wraps=snapshots.run_git)
     monkeypatch.setattr(snapshots, "run_git", git)
@@ -1648,7 +1666,7 @@ async def test_checkpoint_skips_unchanged_work_but_keeps_branch_changes(
     await run_git("checkout", "-b", "renamed", cwd=workspace.path)
     await manager.save(thread, owner.id)
     assert sum(call.args[0] == "fetch" for call in git.await_args_list) == 2
-    await manager.backing(manager.path(workspace.volume)).release()
+    await manager.storage(manager.path(git_volume(workspace))).release()
     await manager.prepare(workspace)
     assert await branch(workspace.path) == "renamed"
     assert (workspace.path / "work.md").read_text() == "unfinished"
@@ -1673,12 +1691,15 @@ async def test_context_cancellation_preserves_projects_and_releases_chat_claims(
             scope.cancel()
             await checkpoint()
     if kind == "project":
-        assert isinstance(workspace, ProjectWorkspace)
+        assert isinstance(workspace.volume, GitVolume)
+        assert workspace.project is not None
         assert (workspace.path / "work.md").read_text() == "unfinished"
-        assert not await manager.saved(workspace.volume)
+        assert not await manager.saved(git_volume(workspace))
     else:
         assert not workspace.path.exists()
-    assert all(not backing.uses for backing in manager.backings.values())
+    assert all(
+        not storage.uses for storage in manager.host_directories.directories.values()
+    )
 
 
 @pytest.mark.parametrize("overlapping", [False, True])
@@ -1704,8 +1725,10 @@ async def test_failed_chat_entry_releases_only_its_own_claim(
                 pytest.fail("a failed volume was entered")
         if overlapping:
             assert first.path.is_dir()
-            assert manager.backing(first.path).uses == 1
-    assert all(not backing.uses for backing in manager.backings.values())
+            assert manager.storage(first.path).uses == 1
+    assert all(
+        not storage.uses for storage in manager.host_directories.directories.values()
+    )
     assert not failed.path.exists()
 
 
@@ -1721,12 +1744,12 @@ async def test_a_resumed_workspace_can_be_pruned_again(
     opened = await a_workspace(manager, thread, owner)
     await a_turn(await materialize(manager, opened, mirror), {"work.md": "done"})
     await manager.save(thread, owner.id)
-    await manager.backing(manager.path(opened.volume)).release()
+    await manager.storage(manager.path(git_volume(opened))).release()
 
     await materialize(manager, opened, mirror)
 
-    assert await manager.saved(opened.volume)
-    assert await manager.prune(idle=0.0) == [opened.volume.id]
+    assert await manager.saved(git_volume(opened))
+    assert await manager.prune(idle=0.0) == [git_volume(opened).id]
 
 
 async def test_a_fork_in_progress_is_not_a_workspace_to_prune(
@@ -1740,7 +1763,7 @@ async def test_a_fork_in_progress_is_not_a_workspace_to_prune(
     staging = workspace.with_name(f".{uuid7()}.forking")
     staging.mkdir()
 
-    assert await manager.prune(idle=0.0) == [opened.volume.id]
+    assert await manager.prune(idle=0.0) == [git_volume(opened).id]
 
     assert staging.exists()
 
@@ -1784,7 +1807,7 @@ async def test_a_named_ref_is_where_the_workspace_starts(
 
     workspace = await materialize(manager, opened, mirror)
 
-    assert opened.volume.base_ref == "feat/theirs"
+    assert git_volume(opened).base_ref == "feat/theirs"
     assert (workspace / "theirs.md").read_text() == "wip"
     # Started there, but still on the thread's own branch: where the work begins
     # and whose branch it lands on are separate questions.

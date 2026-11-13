@@ -641,6 +641,7 @@ class FakeVolumeManager(VolumeManager):
     """Volume records for graph tests without database persistence."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.store: dict[tuple[UUID7, UUID7, UUID7 | None], GitVolume] = {}
 
     async def find(
@@ -657,7 +658,12 @@ class FakeVolumeManager(VolumeManager):
     ) -> GitVolume:
         key = (owner_id, thread_id, project_id)
         if key not in self.store:
+            volume_id = uuid7()
             self.store[key] = GitVolume(
+                id=volume_id,
+                storage=self.host_directories.get(
+                    self.host_directories.root / str(owner_id) / "tree" / str(volume_id)
+                ),
                 usage="tree",
                 owner_id=owner_id,
                 thread_id=thread_id,

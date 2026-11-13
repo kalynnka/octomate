@@ -6,18 +6,45 @@ from pathlib import Path
 import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
 from octomate.schemas.volumes import GitVolume, Volume
+from octomate.schemas.volumes.storage import HostDirectory
 from tests.support.managers import a_project, a_registry, a_thread
 from tests.support.users import a_user
 
 migration = import_module(
     "octomate.migrations.versions.2026_11_13_0047-d5553eabfc92_separate_logical_volume_kind_and_usage"
 )
+
+
+storage_migration = import_module(
+    "octomate.migrations.versions.2026_11_13_2105-afaf6db24028_persist_volume_storage_locations"
+)
+
+
+async def test_storage_migration_round_trip(in_memory_engine: AsyncEngine) -> None:
+    def round_trip(connection: Connection) -> None:
+        with Operations.context(MigrationContext.configure(connection)):
+            storage_migration.downgrade()
+            assert "storage" not in {
+                column["name"] for column in inspect(connection).get_columns("volumes")
+            }
+            storage_migration.upgrade()
+        storage = next(
+            column
+            for column in inspect(connection).get_columns("volumes")
+            if column["name"] == "storage"
+        )
+        assert not storage["nullable"]
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+
+    async with in_memory_engine.begin() as connection:
+        await connection.run_sync(round_trip)
 
 
 async def test_legacy_volumes_preserve_data_and_paths_in_both_directions(
@@ -29,27 +56,43 @@ async def test_legacy_volumes_preserve_data_and_paths_in_both_directions(
     await a_registry(project)
     records = [
         GitVolume(
+            storage=HostDirectory(Path("storage") / str(uuid7())),
             owner_id=owner.id,
             usage="tree",
             thread_id=thread_id,
             project_id=project.id,
             base_ref="refs/heads/feature",
         ),
-        GitVolume(owner_id=owner.id, usage="tree", thread_id=thread_id, ephemeral=True),
-        Volume(owner_id=owner.id, usage="cache"),
-        Volume(owner_id=owner.id, usage="memory"),
+        GitVolume(
+            storage=HostDirectory(Path("storage") / str(uuid7())),
+            owner_id=owner.id,
+            usage="tree",
+            thread_id=thread_id,
+            ephemeral=True,
+        ),
+        Volume(
+            storage=HostDirectory(Path("storage") / str(uuid7())),
+            owner_id=owner.id,
+            usage="cache",
+        ),
+        Volume(
+            storage=HostDirectory(Path("storage") / str(uuid7())),
+            owner_id=owner.id,
+            usage="memory",
+        ),
     ]
     async with async_session() as session:
         session.add_all(records)
         await session.commit()
 
     def round_trip(connection: Connection) -> None:
-        before = (
-            connection.execute(text("SELECT * FROM volumes ORDER BY id"))
-            .mappings()
-            .all()
-        )
         with Operations.context(MigrationContext.configure(connection)):
+            storage_migration.downgrade()
+            before = (
+                connection.execute(text("SELECT * FROM volumes ORDER BY id"))
+                .mappings()
+                .all()
+            )
             migration.downgrade()
             legacy = (
                 connection.execute(text("SELECT * FROM volumes ORDER BY id"))
@@ -81,11 +124,21 @@ async def test_downgrade_rejects_loss_without_changing_data(
 ) -> None:
     owner = await a_user()
     if case == "git_cache":
-        volume = GitVolume(owner_id=owner.id, usage="cache")
+        volume = GitVolume(
+            storage=HostDirectory(Path("storage") / str(uuid7())),
+            owner_id=owner.id,
+            usage="cache",
+        )
     elif case == "plain_tree":
-        volume = Volume(owner_id=owner.id, usage="tree", thread_id=await a_thread())
+        volume = Volume(
+            storage=HostDirectory(Path("storage") / str(uuid7())),
+            owner_id=owner.id,
+            usage="tree",
+            thread_id=await a_thread(),
+        )
     else:
         volume = Volume(
+            storage=HostDirectory(Path("storage") / str(uuid7())),
             owner_id=owner.id,
             usage="cache" if case == "ephemeral_cache" else None,
             ephemeral=case == "ephemeral_cache",
@@ -114,7 +167,13 @@ async def test_upgrade_refuses_unknown_legacy_kinds_before_dropping_the_table(
 ) -> None:
     owner = await a_user()
     async with async_session() as session:
-        session.add(Volume(owner_id=owner.id, usage="memory"))
+        session.add(
+            Volume(
+                storage=HostDirectory(Path("storage") / str(uuid7())),
+                owner_id=owner.id,
+                usage="memory",
+            )
+        )
         await session.commit()
 
     def reject(connection: Connection) -> None:

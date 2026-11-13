@@ -756,7 +756,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         if thread is None or context.conversation is None:
             raise ValueError("A runtime command requires a conversation")
         return self.habitats.invoke(
-            self.workspaces,
+            workspaces=self.workspaces,
             thread=thread,
             conversation_id=context.conversation.id,
             owner_id=context.user_id,
@@ -1144,9 +1144,9 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             prompt_id = event.prompt_id
             return {}
 
-        backing = invocation.backing
+        storage = invocation.storage
         project = invocation.project
-        run_cwd = str(backing.path)
+        run_cwd = str(storage.path)
         octomate_session = self.octomate.gateway.get(conversation.id)
         # The turn's server, mounted in process with the session closed over —
         # identity by closure, nothing on the wire names it. Its tools take the

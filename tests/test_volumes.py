@@ -16,6 +16,7 @@ from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.project import Project
 from octomate.schemas.user import User
 from octomate.schemas.volumes import GitVolume, Volume
+from octomate.schemas.volumes.storage import HostDirectory
 from octomate.types.volumes import VolumeUsage
 from tests.support.managers import a_project, a_thread
 from tests.support.users import a_user
@@ -46,18 +47,25 @@ async def test_user_root_and_volume_paths_do_not_create_rows_or_directories(
     assert root != manager.root(bob.id)
     volumes = (
         GitVolume(
+            storage=HostDirectory(Path("storage") / str(uuid7())),
             usage="tree",
             owner_id=alice.id,
             thread_id=await a_thread(),
             project_id=project.id,
         ),
-        Volume(usage="memory", owner_id=alice.id),
-        Volume(usage="cache", owner_id=alice.id),
+        Volume(
+            storage=HostDirectory(Path("storage") / str(uuid7())),
+            usage="memory",
+            owner_id=alice.id,
+        ),
+        Volume(
+            storage=HostDirectory(Path("storage") / str(uuid7())),
+            usage="cache",
+            owner_id=alice.id,
+        ),
     )
     for volume in volumes:
-        assert manager.path(volume) == root / (volume.usage or volume.kind) / str(
-            volume.id
-        )
+        assert manager.path(volume) == volume.storage.path
         assert not manager.path(volume).is_relative_to(manager.root(bob.id))
     async with async_session() as session:
         assert await session.count(Volume) == 0
@@ -68,15 +76,29 @@ async def test_each_kind_loads_back_as_itself(project: Project) -> None:
     owner = await a_user()
     thread_id = await a_thread()
     tree = GitVolume(
+        storage=HostDirectory(Path("storage") / str(uuid7())),
         usage="tree",
         owner_id=owner.id,
         thread_id=thread_id,
         project_id=project.id,
         base_ref="refs/heads/main",
     )
-    chat_tree = GitVolume(usage="tree", owner_id=owner.id, thread_id=thread_id)
-    memory = Volume(usage="memory", owner_id=owner.id)
-    cache = Volume(usage="cache", owner_id=owner.id)
+    chat_tree = GitVolume(
+        storage=HostDirectory(Path("storage") / str(uuid7())),
+        usage="tree",
+        owner_id=owner.id,
+        thread_id=thread_id,
+    )
+    memory = Volume(
+        storage=HostDirectory(Path("storage") / str(uuid7())),
+        usage="memory",
+        owner_id=owner.id,
+    )
+    cache = Volume(
+        storage=HostDirectory(Path("storage") / str(uuid7())),
+        usage="cache",
+        owner_id=owner.id,
+    )
     await add(tree, chat_tree, memory, cache)
 
     # A filtered read, not `session.get`: Arcanus answers `get` on the base with
@@ -108,11 +130,26 @@ async def test_one_memory_and_one_cache_per_owner(
 ) -> None:
     alice, bob = await a_user("alice"), await a_user("bob")
     await add(
-        Volume(usage=usage, owner_id=alice.id), Volume(usage=usage, owner_id=bob.id)
+        Volume(
+            storage=HostDirectory(Path("storage") / str(uuid7())),
+            usage=usage,
+            owner_id=alice.id,
+        ),
+        Volume(
+            storage=HostDirectory(Path("storage") / str(uuid7())),
+            usage=usage,
+            owner_id=bob.id,
+        ),
     )
 
     with pytest.raises(IntegrityError):
-        await add(Volume(usage=usage, owner_id=alice.id))
+        await add(
+            Volume(
+                storage=HostDirectory(Path("storage") / str(uuid7())),
+                usage=usage,
+                owner_id=alice.id,
+            )
+        )
 
 
 async def test_one_tree_per_owner_thread_and_project(project: Project) -> None:
@@ -127,6 +164,7 @@ async def test_one_tree_per_owner_thread_and_project(project: Project) -> None:
     await add(
         *(
             GitVolume(
+                storage=HostDirectory(Path("storage") / str(uuid7())),
                 usage="tree",
                 owner_id=owner.id,
                 thread_id=thread_id,
@@ -140,6 +178,7 @@ async def test_one_tree_per_owner_thread_and_project(project: Project) -> None:
     with pytest.raises(IntegrityError):
         await add(
             GitVolume(
+                storage=HostDirectory(Path("storage") / str(uuid7())),
                 usage="tree",
                 owner_id=alice.id,
                 thread_id=thread_id,
@@ -147,7 +186,14 @@ async def test_one_tree_per_owner_thread_and_project(project: Project) -> None:
             )
         )
     with pytest.raises(IntegrityError):
-        await add(GitVolume(usage="tree", owner_id=alice.id, thread_id=thread_id))
+        await add(
+            GitVolume(
+                storage=HostDirectory(Path("storage") / str(uuid7())),
+                usage="tree",
+                owner_id=alice.id,
+                thread_id=thread_id,
+            )
+        )
 
 
 async def test_an_owner_with_volumes_cannot_be_deleted(
@@ -156,7 +202,13 @@ async def test_an_owner_with_volumes_cannot_be_deleted(
     """The row goes after its folder, and the owner after the row; a cascade
     would drop the row while the folder is still on disk."""
     owner: User = await a_user()
-    await add(Volume(usage="memory", owner_id=owner.id))
+    await add(
+        Volume(
+            storage=HostDirectory(Path("storage") / str(uuid7())),
+            usage="memory",
+            owner_id=owner.id,
+        )
+    )
 
     async with async_session() as session:
         loaded = await session.get(User, owner.id)
@@ -171,9 +223,17 @@ async def test_unscoped_volumes_round_trip_without_a_directory(
 ) -> None:
     owner = await a_user()
     volumes = [
-        Volume(owner_id=owner.id),
-        GitVolume(owner_id=owner.id, base_ref="refs/tags/start"),
-        GitVolume(owner_id=owner.id),
+        Volume(
+            storage=HostDirectory(Path("storage") / str(uuid7())), owner_id=owner.id
+        ),
+        GitVolume(
+            storage=HostDirectory(Path("storage") / str(uuid7())),
+            owner_id=owner.id,
+            base_ref="refs/tags/start",
+        ),
+        GitVolume(
+            storage=HostDirectory(Path("storage") / str(uuid7())), owner_id=owner.id
+        ),
     ]
     await add(*volumes)
 
@@ -190,9 +250,21 @@ async def test_usage_uniqueness_applies_across_content_kinds(
     in_memory_engine: AsyncEngine,
 ) -> None:
     owner = await a_user()
-    await add(GitVolume(owner_id=owner.id, usage="memory"))
+    await add(
+        GitVolume(
+            storage=HostDirectory(Path("storage") / str(uuid7())),
+            owner_id=owner.id,
+            usage="memory",
+        )
+    )
     with pytest.raises(IntegrityError):
-        await add(Volume(owner_id=owner.id, usage="memory"))
+        await add(
+            Volume(
+                storage=HostDirectory(Path("storage") / str(uuid7())),
+                owner_id=owner.id,
+                usage="memory",
+            )
+        )
 
 
 async def test_workspace_runtime_refuses_an_existing_plain_tree(
@@ -200,7 +272,12 @@ async def test_workspace_runtime_refuses_an_existing_plain_tree(
 ) -> None:
     owner = await a_user()
     thread_id = await a_thread()
-    volume = Volume(owner_id=owner.id, usage="tree", thread_id=thread_id)
+    volume = Volume(
+        storage=HostDirectory(Path("storage") / str(uuid7())),
+        owner_id=owner.id,
+        usage="tree",
+        thread_id=thread_id,
+    )
     await add(volume)
     manager = WorkspaceManager()
     with pytest.raises(TypeError, match="requires a Git working volume"):
@@ -212,19 +289,34 @@ async def test_workspace_runtime_refuses_an_existing_plain_tree(
 @pytest.mark.parametrize("field", ["thread_id", "project_id"])
 def test_only_working_tree_usage_accepts_associations(field: str) -> None:
     with pytest.raises(ValidationError, match="Only working-tree volumes"):
-        Volume.model_validate({"owner_id": uuid7(), field: uuid7()})
+        Volume.model_validate(
+            {
+                "owner_id": uuid7(),
+                "storage": HostDirectory(Path("storage")),
+                field: uuid7(),
+            }
+        )
 
 
 def test_working_tree_usage_requires_a_thread() -> None:
     with pytest.raises(ValidationError, match="requires a thread"):
-        GitVolume(owner_id=uuid7(), usage="tree")
+        GitVolume(
+            storage=HostDirectory(Path("storage") / str(uuid7())),
+            owner_id=uuid7(),
+            usage="tree",
+        )
 
 
 async def test_database_rejects_associations_without_usage(
     in_memory_engine: AsyncEngine,
 ) -> None:
     owner = await a_user()
-    volume = GitVolume(owner_id=owner.id, usage="tree", thread_id=await a_thread())
+    volume = GitVolume(
+        storage=HostDirectory(Path("storage") / str(uuid7())),
+        owner_id=owner.id,
+        usage="tree",
+        thread_id=await a_thread(),
+    )
     await add(volume)
     with pytest.raises(IntegrityError):
         async with in_memory_engine.begin() as connection:
@@ -240,13 +332,18 @@ async def test_loaded_volume_owns_activity_and_git_reference_policy(
     owner = await a_user()
     before = datetime(2025, 1, 1, tzinfo=UTC)
     tree = GitVolume(
+        storage=HostDirectory(Path("storage") / str(uuid7())),
         owner_id=owner.id,
         usage="tree",
         thread_id=await a_thread(),
         project_id=project.id,
         last_used_at=before,
     )
-    independent = GitVolume(owner_id=owner.id, last_used_at=before)
+    independent = GitVolume(
+        storage=HostDirectory(Path("storage") / str(uuid7())),
+        owner_id=owner.id,
+        last_used_at=before,
+    )
     await add(tree, independent)
 
     async with async_session() as session:

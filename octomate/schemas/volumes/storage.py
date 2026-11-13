@@ -1,4 +1,4 @@
-"""Volume backing contracts and the host-directory implementation."""
+"""Volume storage contracts and the host-directory implementation."""
 
 from __future__ import annotations
 
@@ -6,17 +6,20 @@ import asyncio
 import shutil
 from collections.abc import AsyncGenerator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import field
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 import anyio
+from pydantic import ConfigDict, Field
+from pydantic.dataclasses import dataclass as pydantic_dataclass
+from pydantic.json_schema import SkipJsonSchema
 
 
-class Backing(Protocol):
+class Storage(Protocol):
     """Storage exposed as a service-local directory for volume operations.
 
-    Callers share one backing per location so concurrent uses coordinate their
+    Callers share one storage object per location so concurrent uses coordinate their
     lifetime. Habitat destination paths and access modes belong to attachments.
     """
 
@@ -35,28 +38,33 @@ class Backing(Protocol):
         """Number of active uses retaining the contents."""
         ...
 
-    def use(self, *, ephemeral: bool) -> AbstractAsyncContextManager[Path]:
+    def acquire(self, *, ephemeral: bool) -> AbstractAsyncContextManager[Path]:
         """Retain contents until exit; reclaim temporary contents after last use."""
         ...
 
     async def release(self) -> None:
-        """Remove inactive contents; refuse while the backing is still in use."""
+        """Remove inactive contents; refuse while the storage is still in use."""
         ...
 
 
-@dataclass
+@pydantic_dataclass(config=ConfigDict(arbitrary_types_allowed=True))
 class HostDirectory:
-    """One host directory, shared by all overlapping uses of that backing."""
+    """Persisted host location with runtime coordination excluded from serialization."""
 
     path: Path  # Absolute host path; habitat destinations are separate.
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
-    uses: int = field(default=0, init=False)  # Uses currently retaining the contents.
+    kind: Literal["host-directory"] = field(default="host-directory", kw_only=True)
+    lock: SkipJsonSchema[asyncio.Lock] = Field(
+        default_factory=asyncio.Lock, exclude=True, init=False
+    )
+    uses: SkipJsonSchema[int] = Field(
+        default=0, exclude=True, init=False
+    )  # Active uses; never persisted.
 
     def __post_init__(self) -> None:
         self.path = self.path.absolute()
 
     async def claim(self, *, ephemeral: bool) -> None:
-        """Retain this backing, clearing abandoned temporary contents first."""
+        """Retain this storage, clearing abandoned temporary contents first."""
         async with self.lock:
             if ephemeral and not self.uses and self.path.exists():
                 await asyncio.to_thread(shutil.rmtree, self.path)
@@ -72,7 +80,7 @@ class HostDirectory:
                 await asyncio.to_thread(shutil.rmtree, self.path)
 
     @asynccontextmanager
-    async def use(self, *, ephemeral: bool) -> AsyncGenerator[Path]:
+    async def acquire(self, *, ephemeral: bool) -> AsyncGenerator[Path]:
         """Balance a claim through preparation failures, exceptions and cancellation."""
         await self.claim(ephemeral=ephemeral)
         try:

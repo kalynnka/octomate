@@ -537,7 +537,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         if thread is None or context.conversation is None:
             raise ValueError("A runtime command requires a conversation")
         return self.habitats.invoke(
-            self.workspaces,
+            workspaces=self.workspaces,
             thread=thread,
             conversation_id=context.conversation.id,
             owner_id=context.user_id,
@@ -597,7 +597,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             )
             if (
                 await self.conversations.latest_cwd(conversation.id)
-                != invocation.backing.path
+                != invocation.storage.path
             ):
                 raise ValueError(
                     "DeepSeek cannot resume a session in a different or unverified workspace"
@@ -1102,8 +1102,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         if isinstance(instructions, str) and instructions:
             prompt_text = f"{tagged('instructions', instructions)}\n\n{prompt_text}"
 
-        backing = invocation.backing
-        run_cwd = str(backing.path)
+        storage = invocation.storage
+        run_cwd = str(storage.path)
 
         with deepseek_logfire.span(
             "DeepseekTentacle {agent_id} {run_name} [{conversation_address}]",
@@ -1127,7 +1127,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 if (
                     session_id
                     and await self.conversations.latest_cwd(conversation.id)
-                    != backing.path
+                    != storage.path
                 ):
                     raise ValueError(
                         "DeepSeek cannot resume a session in a different or unverified workspace"
