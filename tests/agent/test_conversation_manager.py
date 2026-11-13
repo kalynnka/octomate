@@ -9,7 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 import sqlalchemy.exc
-from pydantic import UUID7
+from pydantic import UUID7, ValidationError
 from pydantic_ai.messages import (
     ModelRequest as RawModelRequest,
 )
@@ -135,6 +135,39 @@ async def test_native_claims_serialize_across_configured_agents() -> None:
     assert sum(isinstance(result, ValueError) for result in outcomes) == 1
     async with async_session() as session:
         assert await session.count(Conversation) == 1
+
+
+@pytest.mark.parametrize("external", [False, True])
+@pytest.mark.parametrize(("context_window", "context_used"), [(0, None), (None, -1)])
+async def test_run_recording_rejects_invalid_context_without_persisting(
+    external: bool, context_window: int | None, context_used: int | None
+) -> None:
+    manager = ConversationManager()
+    conversation = await manager.ensure(await a_thread(), agent_tentacle_id="agent")
+    run_id = str(uuid7())
+    messages = [RawModelResponse(parts=[TextPart("done")])]
+    record = (
+        manager.record_external_run(
+            conversation,
+            run_id,
+            messages,
+            native_session_id="native",
+            context_window=context_window,
+            context_used=context_used,
+        )
+        if external
+        else manager.record_agent_run(
+            conversation,
+            run_id,
+            messages,
+            context_window=context_window,
+            context_used=context_used,
+        )
+    )
+    with pytest.raises(ValidationError, match="greater_than"):
+        await record
+    async with async_session() as session:
+        assert await session.get(AgentRun, run_id) is None
 
 
 @pytest.mark.parametrize("external", [False, True])

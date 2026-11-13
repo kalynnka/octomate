@@ -166,6 +166,94 @@ async def test_driven_compaction_accepts_later_content_without_replacing_identit
     assert not (await manager.get(conversation.id)).runs
 
 
+@pytest.mark.parametrize("external", [False, True])
+@pytest.mark.parametrize("count", [2, 100])
+async def test_compaction_metadata_enrichment_is_persisted_in_one_batch(
+    in_memory_engine: AsyncEngine, external: bool, count: int
+) -> None:
+    manager = ConversationManager()
+    conversation = await manager.ensure(await a_thread(), agent_tentacle_id="agent")
+    originals: list[ModelRequest | ModelResponse] = [
+        ModelRequest(
+            parts=[UserPromptPart(str(index))], metadata={"source": "original"}
+        )
+        if index % 2
+        else ModelResponse(
+            parts=[TextPart(str(index))], metadata={"source": "original"}
+        )
+        for index in range(count)
+    ]
+    compaction_type = ExternalCompaction if external else Compaction
+    compaction = compaction_type(
+        conversation_id=conversation.id,
+        native_session_id="session",
+        native_compaction_id="compact",
+        trigger="manual",
+        messages=RelationCollection(originals),
+    )
+    async with async_session() as session:
+        session.add(compaction)
+        await session.commit()
+    observed = [
+        ModelRequest(parts=message.parts, metadata={"native_item_ids": [str(index)]})
+        if isinstance(message, ModelRequest)
+        else ModelResponse(
+            parts=message.parts, metadata={"native_item_ids": [str(index)]}
+        )
+        for index, message in enumerate(originals)
+    ]
+    queries = Mock()
+    for expected_updates in (1, 0):
+        queries.reset_mock()
+        event.listen(in_memory_engine.sync_engine, "before_cursor_execute", queries)
+        try:
+            if external:
+                await manager.record_external_compaction(
+                    conversation,
+                    native_session_id="session",
+                    native_compaction_id="compact",
+                    source="transcript.jsonl",
+                    start_offset=10,
+                    end_offset=20,
+                    happened_at=datetime(2026, 11, 6, tzinfo=UTC),
+                    messages=observed,
+                )
+            else:
+                await manager.record_driven_compaction(
+                    conversation,
+                    native_session_id="session",
+                    native_compaction_id="compact",
+                    trigger="manual",
+                    happened_at=None,
+                    messages=observed,
+                )
+        finally:
+            event.remove(in_memory_engine.sync_engine, "before_cursor_execute", queries)
+        assert (
+            sum(
+                call.args[2].startswith("UPDATE model_messages")
+                for call in queries.call_args_list
+            )
+            == expected_updates
+        )
+    async with async_session() as session:
+        stored = await session.get(
+            Compaction, compaction.id, options=[selectinload(Compaction["messages"])]
+        )
+        assert await session.count(ModelMessage) == count
+    assert type(stored) is compaction_type
+    assert stored is not None
+    assert [message.id for message in stored.messages] == [m.id for m in originals]
+    for index, message in enumerate(stored.messages):
+        assert message.parts == originals[index].parts
+        assert message.metadata == {
+            "source": "original",
+            "native_item_ids": [str(index)],
+        }
+        assert message.run_id is None
+        assert message.compaction_id == compaction.id
+
+
 async def test_driven_compactions_are_deduplicated_by_native_session_and_item(
     in_memory_engine: AsyncEngine,
 ) -> None:

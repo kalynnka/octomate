@@ -35,17 +35,14 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.usage import RequestUsage, RunUsage
 from sqlalchemy import (
-    JSON,
     Select,
     and_,
-    case,
     delete,
     func,
     insert,
     literal,
     or_,
     select,
-    update,
 )
 from sqlalchemy.orm.exc import StaleDataError
 from uuid_utils.compat import uuid7
@@ -773,26 +770,8 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 options=[selectinload(Compaction["messages"])] if messages else [],
             )
             if existing is not None:
-                metadata = existing.enrich_messages(messages) if messages else {}
-                if metadata:
-                    # Arcanus 0.1.4 assignment misses the metadata -> meta alias.
-                    await session.execute(
-                        update(ModelMessage)
-                        .where(ModelMessage["id"].in_(metadata))
-                        .values(
-                            {
-                                ModelResponse["metadata"]: case(
-                                    *(
-                                        (
-                                            ModelMessage["id"] == id_,
-                                            literal(value, type_=JSON),
-                                        )
-                                        for id_, value in metadata.items()
-                                    )
-                                )
-                            }
-                        )
-                    )
+                if messages:
+                    existing.enrich_messages(messages)
                 if existing.trigger == "unknown":
                     existing.trigger = trigger
                 if existing.happened_at is None:
@@ -949,25 +928,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
             existing.native_compaction_id = native_compaction_id
             add_messages = bool(messages) and not existing.messages
             if messages:
-                metadata = existing.enrich_messages(messages)
-                if metadata:
-                    await session.execute(
-                        update(ModelMessage)
-                        .where(ModelMessage["id"].in_(metadata))
-                        .values(
-                            {
-                                ModelResponse["metadata"]: case(
-                                    *(
-                                        (
-                                            ModelMessage["id"] == id_,
-                                            literal(value, type_=JSON),
-                                        )
-                                        for id_, value in metadata.items()
-                                    )
-                                )
-                            }
-                        )
-                    )
+                existing.enrich_messages(messages)
             if existing.happened_at is None:
                 existing.happened_at = happened_at
             if existing.trigger == "unknown":
@@ -1271,18 +1232,20 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
             raise ValueError("Run is registered to a different conversation")
         elif parent_run_id not in (None, run.parent_run_id):
             raise ValueError("Run is registered with a different parent")
-        run.name = name
-        run.model_name = model_name
-        run.context_window = context_window
-        run.context_used = context_used
-        run.permission_mode = permission_mode
-        run.cwd = cwd
-        run.native_session_id = external_id
-        run.native_turn_id = native_turn_id
-        run.parent_tool_call_id = parent_tool_call_id
-        run.revalidate()
-        # Arcanus collection mutations validate raw payloads despite their narrower annotations.
-        run.messages.extend([vars(m) for m in messages])  # pyright: ignore[reportArgumentType]
+        run.absorb(
+            type(run).Update(
+                name=name,
+                model_name=model_name,
+                context_window=context_window,
+                context_used=context_used,
+                permission_mode=permission_mode,
+                cwd=cwd,
+                native_session_id=external_id,
+                native_turn_id=native_turn_id,
+                parent_tool_call_id=parent_tool_call_id,
+            )
+        )
+        run.messages.extend([vars(m) for m in messages])
         return await self.persist_run(run)
 
     async def record_run_metadata(
@@ -1385,9 +1348,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         if driven is not None:
             return None
         async with async_session() as session:
-            stored = await session.one_or_none(
-                AgentRun, expressions=[AgentRun["id"] == run_id]
-            )
+            stored = await session.get(AgentRun, run_id)
             if stored is not None and not isinstance(stored, ExternalAgentRun):
                 return None
             if stored is not None:
@@ -1397,25 +1358,26 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                     return None
 
             run = stored or ExternalAgentRun(id=run_id, conversation_id=conversation.id)
-            run.conversation_id = conversation.id
-            run.native_session_id = native_session_id
-            run.native_turn_id = run_id
-            run.parent_run_id = parent_run_id
-            run.parent_tool_call_id = parent_tool_call_id
-
-            run.name = name
-            run.model_name = model_name
-            run.context_window = context_window
-            run.context_used = context_used
-            run.permission_mode = permission_mode
-            run.cwd = cwd
-
-            run.started_at = messages[0].timestamp if messages else None
-            run.source = source
-            run.start_offset = start_offset
-            run.end_offset = end_offset
-            run.last_line_uuid = last_line_uuid
-            run.revalidate()
+            run.absorb(
+                ExternalAgentRun.Update(
+                    conversation_id=conversation.id,
+                    native_session_id=native_session_id,
+                    native_turn_id=run_id,
+                    parent_run_id=parent_run_id,
+                    parent_tool_call_id=parent_tool_call_id,
+                    name=name,
+                    model_name=model_name,
+                    context_window=context_window,
+                    context_used=context_used,
+                    permission_mode=permission_mode,
+                    cwd=cwd,
+                    started_at=messages[0].timestamp if messages else None,
+                    source=source,
+                    start_offset=start_offset,
+                    end_offset=end_offset,
+                    last_line_uuid=last_line_uuid,
+                )
+            )
 
             # The relationship has no delete-orphan cascade; clear() only detaches.
             if run.messages:
@@ -1423,7 +1385,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                     delete(ModelMessage).where(ModelMessage["run_id"] == run.id)
                 )
                 run.messages.clear()
-            run.messages.extend([vars(message) for message in messages])  # pyright: ignore[reportArgumentType]
+            run.messages.extend([vars(message) for message in messages])
 
             if stored is not None:
                 owner = await session.get(

@@ -25,7 +25,6 @@ from octomate.models.compactions import ExternalCompaction as ExternalCompaction
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.types.compactions import CompactionStage, CompactionTrigger
-from octomate.types.json import JsonObject
 
 
 class NativeContext(BaseModel):
@@ -95,16 +94,13 @@ class Compaction(BaseTransmuter):
     def __gt__(self, other: Compaction) -> bool:
         return (self.recorded_at, self.id) > (other.recorded_at, other.id)
 
-    def enrich_messages(
-        self, messages: list[ModelRequest | ModelResponse]
-    ) -> dict[UUID7, JsonObject]:
+    def enrich_messages(self, messages: list[ModelRequest | ModelResponse]) -> None:
         """Add content once; later observations may supply its native references."""
         if not self.messages:
             self.messages.extend(messages)
-            return {}
+            return
         if self.membership_complete or len(self.messages) != len(messages):
-            return {}
-        metadata: dict[UUID7, JsonObject] = {}
+            return
         for stored, observed in zip(self.messages, messages, strict=True):
             if (
                 stored.kind != observed.kind
@@ -115,8 +111,7 @@ class Compaction(BaseTransmuter):
             if observed.metadata:
                 merged = {**(stored.metadata or {}), **observed.metadata}
                 if merged != stored.metadata:
-                    metadata[stored.id] = merged
-        return metadata
+                    stored.metadata = merged
 
 
 @sqlalchemy_materia.bless(ExternalCompactionModel)
