@@ -33,6 +33,10 @@ class NativeContext(BaseModel):
 
     last_item_id: str
     replacement_ids: list[str]
+    item_aliases: dict[str, str] = Field(
+        default_factory=dict,
+        description="Driven item IDs mapped to equivalent transcript IDs at this boundary.",
+    )
 
 
 class NativeMessage(BaseModel):

@@ -33,7 +33,7 @@ from octomate.tentacles.codex.ingest import CodexHookIngest
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer, TailState
 from octomate.tentacles.codex.transcript import CompactedItem, rollout_line_adapter
 from octomate.tentacles.locks import SessionLocks
-from octomate.types.json import JsonObject
+from octomate.types.json import JsonObject, JsonValue
 from tests.support.managers import a_loaded_thread, a_thread
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
@@ -612,7 +612,7 @@ async def test_a_legacy_driven_flag_does_not_suppress_ingestion() -> None:
     await tailer.shutdown()
 
 
-def event(second: int, kind: str, **payload: str) -> dict[str, object]:
+def event(second: int, kind: str, **payload: JsonValue) -> dict[str, object]:
     return {
         "timestamp": f"2026-07-16T10:00:{second:02d}Z",
         "type": "event_msg",
@@ -1213,7 +1213,7 @@ async def test_replacement_history_reuses_archive_identities(
             messages=[
                 ModelRequest(
                     parts=[UserPromptPart("same text")],
-                    metadata={"native_item_ids": ["user-item"]},
+                    metadata={"native_item_ids": ["app-server-user-item"]},
                 ),
                 ModelResponse(
                     parts=[TextPart("same text")], provider_response_id="answer-item"
@@ -1254,6 +1254,13 @@ async def test_replacement_history_reuses_archive_identities(
                 },
             },
         },
+        event(
+            2,
+            "item_completed",
+            thread_id=SESSION_ID,
+            turn_id=TURN_ID,
+            item={"type": "UserMessage", "id": "app-server-user-item"},
+        ),
         {
             "timestamp": "2026-07-16T10:00:03Z",
             "type": "response_item",

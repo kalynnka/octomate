@@ -11,10 +11,95 @@ from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
 from octomate.managers.conversation import ConversationManager
-from octomate.schemas.compactions import Compaction, CompactionMembership
+from octomate.schemas.compactions import (
+    Compaction,
+    CompactionMembership,
+    NativeContext,
+)
 from octomate.schemas.messages import ModelRequest
 from octomate.types.compactions import CompactionRewrite
 from tests.support.managers import a_thread
+
+
+@pytest.mark.parametrize("split", [False, True])
+async def test_native_aliases_preserve_message_identity_and_require_whole_messages(
+    in_memory_engine: AsyncEngine, split: bool
+) -> None:
+    manager = ConversationManager()
+    source = await manager.ensure(await a_thread("source"), agent_tentacle_id="codex")
+    messages = [
+        ModelRequest(
+            parts=[UserPromptPart("same prompt")],
+            metadata={"native_item_ids": [identity]},
+        )
+        for identity in ("driven-a", "driven-b")
+    ]
+    if split:
+        messages[0].parts = [*messages[0].parts, *messages.pop().parts]
+        messages[0].metadata = {"native_item_ids": ["driven-a", "driven-b"]}
+    run = await manager.record_agent_run(
+        source, str(uuid7()), messages, external_id="native"
+    )
+    assert run is not None
+    archive = {
+        message.id: (
+            message.run_id,
+            message.compaction_id,
+            message.parts,
+            message.metadata,
+        )
+        for message in run.messages
+    }
+    compaction = await manager.record_driven_compaction(
+        source,
+        native_session_id="native",
+        native_compaction_id="compaction",
+        trigger="manual",
+        happened_at=None,
+        messages=[
+            ModelRequest(
+                parts=[UserPromptPart("summary")],
+                metadata={
+                    "native_item_ids": ["summary"],
+                    "compaction_context": NativeContext(
+                        last_item_id="transcript-b",
+                        replacement_ids=["summary", "transcript-b"],
+                        item_aliases={
+                            "driven-a": "transcript-a",
+                            "driven-b": "transcript-b",
+                        },
+                    ).model_dump(mode="json"),
+                },
+            )
+        ],
+    )
+    assert compaction is not None
+    child = await manager.ensure(await a_thread("child"), agent_tentacle_id="codex")
+    await manager.fork(source, child, external_id="child-session")
+    for _ in range(2):
+        await manager.record_native_memberships(source, "native")
+        async with async_session() as session:
+            stored = await session.get(Compaction, compaction.id)
+            assert stored is not None
+            assert stored.membership_complete is not split
+            assert await session.count(CompactionMembership) == (0 if split else 4)
+        assert {
+            message.id: (
+                message.run_id,
+                message.compaction_id,
+                message.parts,
+                message.metadata,
+            )
+            for message in await manager.history(source.id)
+        } == archive
+        if not split:
+            expected = [compaction.messages[0].id, run.messages[-1].id]
+            assert [
+                message.id for message in await manager.effective_messages(source)
+            ] == expected
+            assert [
+                message.id for message in await manager.effective_messages(child)
+            ] == expected
 
 
 @pytest.mark.parametrize("count", [1, 3])

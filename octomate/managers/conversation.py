@@ -518,6 +518,8 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                     and message.provider_response_id
                 ):
                     refs = [message.provider_response_id]
+                if boundary.item_aliases:
+                    refs = [boundary.item_aliases.get(ref, ref) for ref in refs]
                 sources[message.id] = refs
                 for ref in refs:
                     identities.setdefault(ref, []).append(message)

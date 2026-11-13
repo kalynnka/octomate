@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
@@ -12,6 +13,7 @@ from pydantic import (
     ConfigDict,
     Field,
     TypeAdapter,
+    ValidationError,
     model_validator,
 )
 from pydantic_ai.messages import CompactionPart, UserPromptPart
@@ -94,7 +96,11 @@ class CompactedItem(BaseModel):
     )
 
     def to_messages(
-        self, timestamp: AwareDatetime, *, last_item_id: str | None = None
+        self,
+        timestamp: AwareDatetime,
+        *,
+        last_item_id: str | None = None,
+        item_aliases: dict[str, str] | None = None,
     ) -> list[ModelRequest | ModelResponse]:
         """Normalize created summaries/checkpoints; retained messages keep their owner."""
         metadata = codex_metadata()
@@ -108,10 +114,17 @@ class CompactedItem(BaseModel):
                     break
                 replacements.append(identity)
             else:
+                referenced = {last_item_id, *replacements}
                 metadata = {
                     **metadata,
                     "compaction_context": NativeContext(
-                        last_item_id=last_item_id, replacement_ids=replacements
+                        last_item_id=last_item_id,
+                        replacement_ids=replacements,
+                        item_aliases={
+                            alias: identity
+                            for alias, identity in (item_aliases or {}).items()
+                            if identity in referenced
+                        },
                     ).model_dump(mode="json"),
                 }
         checkpoints = [
@@ -251,11 +264,80 @@ class UserMessageItem(BaseModel):
     """
 
     type: Literal["message"]
+    id: str | None = None
     role: Literal["user"]
     content: list[UserMessageContent]
     metadata: UserMessageMetadata = Field(
         alias="internal_chat_message_metadata_passthrough"
     )
+
+
+class CompletedUserMessageItem(BaseModel):
+    """The app-server identity of a prompt already written to the rollout."""
+
+    type: Literal["UserMessage"]
+    id: str
+
+
+class UserMessageCompletedEvent(BaseModel):
+    """A prompt completion scoped to its native session and turn."""
+
+    type: Literal["item_completed"]
+    thread_id: str
+    turn_id: str
+    item: CompletedUserMessageItem
+
+
+@dataclass
+class UserMessageIdentities:
+    """Pair source occurrences, including repeated text, without importing a turn."""
+
+    turn_id: str | None = None
+    pending: list[str] = field(default_factory=list)
+    aliases: dict[str, str] = field(default_factory=dict)
+
+    def consume(self, line: RolloutLine, thread_id: str) -> None:
+        kind = payload_type(line)
+        if line.type == "event_msg" and kind in {
+            "task_started",
+            "task_complete",
+            "turn_aborted",
+        }:
+            turn_id = line.payload.get("turn_id")
+            self.turn_id = (
+                turn_id if kind == "task_started" and isinstance(turn_id, str) else None
+            )
+            self.pending.clear()
+            return
+        if line.type == "response_item" and line.payload.get("role") == "user":
+            try:
+                item = UserMessageItem.model_validate(line.payload)
+            except ValidationError:
+                self.pending.clear()
+                return
+            if (
+                item.id is not None
+                and item.metadata.turn_id == self.turn_id
+                and len(item.metadata.content_item_kinds) == len(item.content)
+                and "user.text" in item.metadata.content_item_kinds
+            ):
+                self.pending.append(item.id)
+            else:
+                self.pending.clear()
+            return
+        if line.type == "event_msg" and kind == "user_message":
+            return
+        if not self.pending:
+            return
+        pending, self.pending = self.pending, []
+        if line.type != "event_msg" or kind != "item_completed" or len(pending) != 1:
+            return
+        try:
+            event = UserMessageCompletedEvent.model_validate(line.payload)
+        except ValidationError:
+            return
+        if event.thread_id == thread_id and event.turn_id == self.turn_id:
+            self.aliases[event.item.id] = pending[0]
 
 
 class ThreadSpawnMetadata(BaseModel):

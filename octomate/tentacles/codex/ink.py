@@ -83,6 +83,7 @@ from octomate.tentacles.codex.schemas import (
 from octomate.tentacles.codex.transcript import (
     CompactedItem,
     CompactionCompletedEvent,
+    UserMessageIdentities,
     context_item_id,
     is_injected_message,
     rollout_line_adapter,
@@ -215,6 +216,7 @@ class CodexInk:
         current_turn: str | None = None
         pending: tuple[CompactedItem, datetime, str | None] | None = None
         last_item_id: str | None = None
+        identities = UserMessageIdentities()
         for raw in b64decode(response.data_base64, validate=True).splitlines():
             try:
                 line = rollout_line_adapter.validate_json(raw)
@@ -224,6 +226,7 @@ class CodexInk:
                 verified = line.payload.get("id") == thread_id
             if not verified:
                 continue
+            identities.consume(line, thread_id)
             if line.type == "response_item" and not is_injected_message(line.payload):
                 last_item_id = context_item_id(line.payload)
             if line.type == "event_msg" and line.payload.get("type") == "task_started":
@@ -257,7 +260,11 @@ class CodexInk:
                 continue
             if completed.item.id == item_id and pending is not None:
                 try:
-                    return pending[0].to_messages(pending[1], last_item_id=pending[2])
+                    return pending[0].to_messages(
+                        pending[1],
+                        last_item_id=pending[2],
+                        item_aliases=identities.aliases,
+                    )
                 except ValidationError:
                     logger.debug(
                         "session %s: skipping malformed compaction content", thread_id

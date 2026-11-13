@@ -69,6 +69,7 @@ from octomate.tentacles.codex.transcript import (
     RolloutLine,
     SessionMetadata,
     TurnPermissions,
+    UserMessageIdentities,
     UserMessageItem,
     context_item_id,
     is_injected_message,
@@ -208,6 +209,9 @@ class SubagentTail:
     own_turns_started: bool = False
     last_item_id: str | None = None
     compactions_pending: bool = False
+    message_identities: UserMessageIdentities = field(
+        default_factory=UserMessageIdentities
+    )
     linked_call_ids: set[str] = field(default_factory=set)
 
 
@@ -236,6 +240,9 @@ class TailState:
     open_turn: OpenTurn | None = None
     last_item_id: str | None = None
     compactions_pending: bool = False
+    message_identities: UserMessageIdentities = field(
+        default_factory=UserMessageIdentities
+    )
     subagents: dict[str, SubagentTail] = field(default_factory=dict)
     subagent_calls: dict[str, list[SubagentCall]] = field(default_factory=dict)
     classified_rollouts: set[Path] = field(default_factory=set)
@@ -437,6 +444,7 @@ class CodexTranscriptTailer:
         *,
         visualizations: list[HtmlSnapshot] | None = None,
     ) -> None:
+        state.message_identities.consume(line, state.session_id)
         if line.type == "response_item" and not is_injected_message(line.payload):
             state.last_item_id = context_item_id(line.payload)
         if line.type == "compacted":
@@ -614,6 +622,7 @@ class CodexTranscriptTailer:
         start: int,
         end: int,
     ) -> None:
+        tail.message_identities.consume(line, tail.thread_id)
         if line.type == "response_item" and not is_injected_message(line.payload):
             tail.last_item_id = context_item_id(line.payload)
         if line.type == "compacted":
@@ -708,7 +717,11 @@ class CodexTranscriptTailer:
                 if native_compaction_id is not None
                 else (tail or state).last_item_id
             )
-            messages = item.to_messages(line.timestamp, last_item_id=before)
+            messages = item.to_messages(
+                line.timestamp,
+                last_item_id=before,
+                item_aliases=(tail or state).message_identities.aliases,
+            )
         except ValidationError:
             logger.debug("skipping malformed Codex compaction")
             return

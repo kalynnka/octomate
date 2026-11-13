@@ -24,6 +24,7 @@ from openai_codex.models import InitializeResponse
 from pydantic_ai.messages import CompactionPart
 
 from octomate.config.agents import CodexConfig as AgentCodexConfig
+from octomate.schemas.compactions import NativeMessage
 from octomate.tentacles.codex.client import SharedCodex
 from octomate.tentacles.codex.ink import CodexInk
 from octomate.types.json import JsonObject
@@ -114,6 +115,7 @@ async def test_compaction_content_is_read_from_the_runtime_and_matched_exactly(
                 "replacement_history": [
                     {
                         "type": "message",
+                        "id": "prompt-transcript-id",
                         "role": "user",
                         "content": [
                             {"type": "input_text", "text": "Retained original"}
@@ -154,6 +156,32 @@ async def test_compaction_content_is_read_from_the_runtime_and_matched_exactly(
         )
     if case == "malformed":
         records[2]["payload"] = {"replacement_history": []}
+    records[1:1] = [
+        {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "prior"}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "prompt-transcript-id",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Retained original"}],
+                "internal_chat_message_metadata_passthrough": {
+                    "turn_id": "prior",
+                    "content_item_kinds": ["user.text"],
+                },
+            },
+        },
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "thread_id": "thread-a",
+                "turn_id": "prior",
+                "item": {"type": "UserMessage", "id": "prompt-app-server-id"},
+            },
+        },
+        {"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "prior"}},
+    ]
     raw = "\n".join(
         json.dumps({"timestamp": "2026-11-06T00:00:00Z", **record})
         for record in records
@@ -170,6 +198,10 @@ async def test_compaction_content_is_read_from_the_runtime_and_matched_exactly(
         return
     assert len(messages) == 2
     assert messages[0].message_text == "Readable résumé"
+    boundary = NativeMessage.model_validate(messages[0].metadata).compaction_context
+    assert boundary is not None
+    assert boundary.last_item_id == "prompt-transcript-id"
+    assert boundary.item_aliases == {"prompt-app-server-id": "prompt-transcript-id"}
     part = messages[1].parts[0]
     assert isinstance(part, CompactionPart)
     assert part.provider_details == {"encrypted_content": "opaque-checkpoint"}
