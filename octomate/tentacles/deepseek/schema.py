@@ -102,6 +102,15 @@ class DisabledPluginPatch(TypedDict):
     disabled: Literal[True]
 
 
+class PresetIsolation(TypedDict):
+    profileContext: Literal[True]
+
+
+class PresetRegistryPatch(TypedDict):
+    id: Literal["agent-preset-registry"]
+    isolate: PresetIsolation
+
+
 class DrivenConfigPatch(
     RootModel[
         list[
@@ -114,7 +123,8 @@ class DrivenConfigPatch(
                 | SandboxedBackendPatch
                 | ApprovalPatch
                 | PermissionPatch
-                | DisabledPluginPatch,
+                | DisabledPluginPatch
+                | PresetRegistryPatch,
                 Field(discriminator="id"),
             ]
         ]

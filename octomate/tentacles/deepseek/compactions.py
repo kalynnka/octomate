@@ -14,6 +14,7 @@ from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.tentacles.deepseek.adapter import deepseek_metadata
 from octomate.tentacles.deepseek.wire import (
     ContentBlock,
+    SessionAssistantFrame,
     SessionEvent,
     UserMessageData,
     text_of,
@@ -35,7 +36,7 @@ class CompactionSummary(BaseModel):
 class MessageProvenance(BaseModel):
     """The existing event metadata needed to map native surface identities."""
 
-    events: list[SessionEvent] = Field(default_factory=list)
+    events: list[SessionEvent | SessionAssistantFrame] = Field(default_factory=list)
 
 
 class SurfaceMessage(NamedTuple):
@@ -199,10 +200,21 @@ class DeepseekCompactions:
             message = row.messages[0]
             events = MessageProvenance.model_validate(message.metadata or {}).events
             summary_event = next(
-                (event for event in events if event.type == "compaction/summary"), None
+                (
+                    event
+                    for event in events
+                    if isinstance(event, SessionEvent)
+                    and event.type == "compaction/summary"
+                ),
+                None,
             )
             checkpoint = next(
-                (event for event in events if event.type == "user/message"), None
+                (
+                    event
+                    for event in events
+                    if isinstance(event, SessionEvent) and event.type == "user/message"
+                ),
+                None,
             )
             if summary_event is None or checkpoint is None:
                 return
@@ -221,18 +233,32 @@ class DeepseekCompactions:
         if any(run.native_session_id != self.session_id for run in conversation.runs):
             return
         archive: list[SurfaceMessage] = []
+        injected: set[int] = set()
         for run in conversation.runs:
             for message in run.messages:
                 events = MessageProvenance.model_validate(message.metadata or {}).events
+                injected.update(
+                    event.seq
+                    for event in events
+                    if isinstance(event, SessionEvent)
+                    and event.type == "user/message"
+                    and UserMessageData.model_validate(event.data).source.kind
+                    not in {"user", "user-question-reply", "compact-checkpoint"}
+                )
                 seqs = sorted(
                     {
                         event.seq
                         for event in events
-                        if event.type in {"assistant/message", "tool/result"}
-                        or (
-                            event.type == "user/message"
-                            and UserMessageData.model_validate(event.data).source.kind
-                            in {"user", "user-question-reply"}
+                        if isinstance(event, SessionEvent)
+                        and (
+                            event.type in {"assistant/message", "tool/result"}
+                            or (
+                                event.type == "user/message"
+                                and UserMessageData.model_validate(
+                                    event.data
+                                ).source.kind
+                                in {"user", "user-question-reply"}
+                            )
                         )
                     }
                 )
@@ -246,7 +272,11 @@ class DeepseekCompactions:
             while cursor < len(archive) and archive[cursor].seqs[-1] < boundary.seq:
                 effective.append(archive[cursor])
                 cursor += 1
-            shadowed = set(boundary.shadowed_seqs)
+            # Injected context is archived as provenance, not normalized messages.
+            shadowed_seqs = [
+                seq for seq in boundary.shadowed_seqs if seq not in injected
+            ]
+            shadowed = set(shadowed_seqs)
             indices = [
                 index
                 for index, item in enumerate(effective)
@@ -257,7 +287,7 @@ class DeepseekCompactions:
             start, stop = indices[0], indices[-1] + 1
             if [
                 seq for item in effective[start:stop] for seq in item.seqs
-            ] != boundary.shadowed_seqs:
+            ] != shadowed_seqs:
                 break
             before = [item.message_id for item in effective]
             effective[start:stop] = [boundary.checkpoint]

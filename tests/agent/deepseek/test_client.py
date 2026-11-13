@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, patch
 
@@ -180,23 +181,46 @@ async def test_authentication_transport_error_does_not_expose_the_token() -> Non
     assert caught.value.__suppress_context__
 
 
-@pytest.mark.parametrize(
-    ("status", "message"),
-    [(401, "requires authentication"), (404, "cannot serve the required Remote API")],
-)
-async def test_a_reachable_unsupported_harness_is_not_treated_as_absent(
-    status: int, message: str
-) -> None:
+async def test_readiness_still_requires_authentication() -> None:
     client = DeepseekApiClient(
         HttpUrl(BASE_URL),
         httpx.AsyncClient(
             base_url=BASE_URL,
-            transport=httpx.MockTransport(lambda request: httpx.Response(status)),
+            transport=httpx.MockTransport(lambda request: httpx.Response(401)),
         ),
     )
     async with client:
-        with pytest.raises(RuntimeError, match=message):
+        with pytest.raises(RuntimeError, match="requires authentication"):
             await client.answering()
+
+
+@pytest.mark.parametrize("status", [200, 404])
+async def test_unavailable_readiness_probe_warns_and_allows_connection(
+    status: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger="octomate.tentacles.deepseek.client")
+    response = {
+        "type": "server-response",
+        "rpcId": "probe",
+        "result": {
+            "ok": False,
+            "error": {
+                "code": "gateway/definition-unavailable",
+                "message": "strict definition was withdrawn",
+            },
+        },
+    }
+    async with DeepseekApiClient(
+        HttpUrl(BASE_URL),
+        httpx.AsyncClient(
+            base_url=BASE_URL,
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(status, json=response)
+            ),
+        ),
+    ) as client:
+        assert await client.answering()
+    assert "continuing with model discovery and the Remote connection" in caplog.text
 
 
 @pytest.mark.parametrize(

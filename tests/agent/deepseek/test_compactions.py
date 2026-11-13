@@ -22,7 +22,12 @@ from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.deepseek.adapter import DeepseekRunAccumulator
 from octomate.tentacles.deepseek.compactions import DeepseekCompactions
 from octomate.tentacles.deepseek.ink import TurnFrame
-from octomate.tentacles.deepseek.wire import CommandExecutionValue, SessionEvent
+from octomate.tentacles.deepseek.wire import (
+    AssistantStreamChunk,
+    CommandExecutionValue,
+    SessionAssistantFrame,
+    SessionEvent,
+)
 from octomate.types.json import JsonObject
 from tests.agent.deepseek.test_native_ingest import (
     LOG_LABEL,
@@ -184,6 +189,22 @@ async def test_driven_command_compaction_has_summary_without_a_model_run(
         accumulator = DeepseekRunAccumulator()
         accumulator.begin("first")
         for raw in turn_events(1, 0, "first", "one"):
+            if raw["type"] == "assistant/message":
+                list(
+                    accumulator.consume_assistant_stream(
+                        SessionAssistantFrame(
+                            type="assistant-stream",
+                            frame=AssistantStreamChunk(
+                                type="chunk",
+                                attempt_id=str(uuid7()),
+                                revision=0,
+                                index=0,
+                                time=0,
+                                chunk={"type": "text-delta", "text": "one"},
+                            ),
+                        )
+                    )
+                )
             list(accumulator.consume(session_event("sess-1", raw)))
         await app.conversations.record_agent_run(
             conversation, str(uuid7()), accumulator.messages, external_id="sess-1"
@@ -492,6 +513,46 @@ async def test_unmapped_or_noncontiguous_surface_stays_unknown(
         assert await session.count(CompactionMembership) == 0
     with pytest.raises(ValueError, match="every compaction to be linked"):
         await app.conversations.effective_messages(conversation)
+
+
+@pytest.mark.parametrize("retain_answer", [True, False])
+async def test_injected_context_does_not_make_retained_answers_shadowed(
+    in_memory_engine: AsyncEngine, retain_answer: bool
+) -> None:
+    app = Octomate()
+    _, tailer = wired(app)
+    records = turn_events(1, 0, "first", "one")
+    records[2]["seq"] = 3
+    records[3]["seq"] = 4
+    records.insert(
+        2,
+        ev(
+            2,
+            "user/message",
+            {
+                "content": [{"type": "text", "text": "Current time"}],
+                "source": {"kind": "time-context"},
+            },
+        ),
+    )
+    await stream_events(
+        tailer,
+        app.nerve,
+        [
+            *records,
+            *compaction_events(shadowed=[1, 2] if retain_answer else [1, 2, 3]),
+        ],
+    )
+    conversation = await native_conversation(app)
+    assert len(await app.conversations.history(conversation.id)) == 2
+    async with async_session() as session:
+        [row] = await session.list(Compaction)
+    assert row.membership_complete
+    effective = await app.conversations.effective_messages(conversation)
+    assert [message.message_text for message in effective] == [
+        "<summary>Earlier work summarized</summary>",
+        *(["one"] if retain_answer else []),
+    ]
 
 
 async def test_consecutive_prompts_keep_distinct_surface_identities(

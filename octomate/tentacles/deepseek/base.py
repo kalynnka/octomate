@@ -775,8 +775,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
 
     async def __aenter__(self) -> DeepseekTentacle:
         await self.ink.__aenter__()
-        # start_process leaves the client verified (settings/describe answered);
-        # the mux socket must then be open before anything prompts, so a run's
+        # The mux socket must be open before anything prompts, so a run's
         # first frames cannot outrun the subscribed baseline. A failed
         # handshake is a broken harness, not weather: fail the start rather
         # than retrying.
