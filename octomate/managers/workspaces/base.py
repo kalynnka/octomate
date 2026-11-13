@@ -21,9 +21,9 @@ from pydantic import UUID7
 
 from octomate.config.mirrors import GitIdentity
 from octomate.config.workspaces import WorkspacesConfig
-from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.project import ProjectManager
+from octomate.managers.volumes import VolumeManager
 from octomate.managers.workspaces.dependencies import install
 from octomate.managers.workspaces.mirrors import (
     GitCommandError,
@@ -165,6 +165,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         self,
         *,
         projects: ProjectManager | None = None,
+        volumes: VolumeManager | None = None,
         mirrors: MirrorManager | None = None,
         config: WorkspacesConfig | None = None,
         volumes_dir: Path = Path(".octomate/volumes"),
@@ -176,6 +177,9 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         # manager would keep its own sync locks — so a manager built without them
         # is one nobody has handed to a host yet.
         self.projects = projects if projects is not None else ProjectManager()
+        self.volumes: VolumeManager = (
+            volumes if volumes is not None else VolumeManager()
+        )
         self.mirrors = mirrors if mirrors is not None else MirrorManager()
         self.config = config if config is not None else WorkspacesConfig()
         # Resolved once, here: a volume path leaves this manager to become a
@@ -209,58 +213,6 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         return (
             self.root(volume.owner_id) / (volume.usage or volume.kind) / str(volume.id)
         )
-
-    async def find(
-        self, owner_id: UUID7, thread_id: UUID7, project_id: UUID7 | None
-    ) -> GitVolume | None:
-        """This owner's tree for this thread and project, if one was ever opened."""
-        async with async_session() as session:
-            volume = await session.one_or_none(
-                Volume,
-                expressions=[
-                    Volume["usage"] == "tree",
-                    Volume["owner_id"] == owner_id,
-                    Volume["thread_id"] == thread_id,
-                    Volume["project_id"].is_(None)
-                    if project_id is None
-                    else Volume["project_id"] == project_id,
-                ],
-            )
-        if volume is not None and not isinstance(volume, GitVolume):
-            raise TypeError("The workspace runtime requires a Git working volume")
-        return volume
-
-    async def tree(
-        self,
-        owner_id: UUID7,
-        thread_id: UUID7,
-        project_id: UUID7 | None,
-        ref: str | None = None,
-    ) -> GitVolume:
-        """This owner's tree for this thread and project, its row written now when
-        there is none, and stamped as used either way.
-
-        The row comes first and the folder later, when the run enters the
-        workspace. `ref` is where a first fork starts, kept on the row; a tree that
-        already has a row keeps the ref it was opened with.
-        """
-        async with self.lock(thread_id):
-            volume = await self.find(owner_id, thread_id, project_id)
-            async with async_session() as session:
-                if volume is None:
-                    volume = GitVolume(
-                        usage="tree",
-                        owner_id=owner_id,
-                        thread_id=thread_id,
-                        project_id=project_id,
-                        base_ref=ref,
-                        ephemeral=project_id is None,
-                    )
-                else:
-                    volume.touch()
-                session.add(volume)
-                await session.commit()
-            return volume
 
     @overload
     async def resolve(
@@ -300,7 +252,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
 
         Unregistered senders receive a temporary chat path and cannot resolve
         project workspaces. This writes or stamps a registered volume row; use
-        `find` and `path` for read-only inspection.
+        `volumes.find` and `path` for read-only inspection.
         """
         if owner_id is None:
             if project is not None:
@@ -312,14 +264,14 @@ class WorkspaceManager(Manager, Locks[UUID7]):
             ).resolve()
             return UnregisteredWorkspace(path, thread_id)
         if project is None:
-            volume = await self.tree(owner_id, thread_id, None)
+            volume = await self.volumes.tree(owner_id, thread_id, None)
             return ChatWorkspace(
                 self.path(volume),
                 thread_id,
                 volume,
                 root=self.root(owner_id),
             )
-        volume = await self.tree(owner_id, thread_id, project.id, ref)
+        volume = await self.volumes.tree(owner_id, thread_id, project.id, ref)
         return ProjectWorkspace(
             self.path(volume),
             thread_id,
@@ -651,7 +603,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         project = await self.projects.of(thread)
         if project is None:
             return
-        volume = await self.find(owner_id, thread.id, project.id)
+        volume = await self.volumes.find(owner_id, thread.id, project.id)
         if volume is not None:
             await self.checkpoint(
                 ProjectWorkspace(
@@ -753,17 +705,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         kept_busy = kept_unsaved = 0
         cutoff = datetime.now(UTC) - timedelta(seconds=idle)
         with workspace_logfire.span("workspace.prune", idle=idle) as span:
-            async with async_session() as session:
-                # Chat trees are their run's to throw away, and are never saved
-                # anywhere a resume could restore them from.
-                trees = await session.list(
-                    GitVolume,
-                    limit=None,
-                    expressions=[
-                        GitVolume["usage"] == "tree",
-                        GitVolume["project_id"].is_not(None),
-                    ],
-                )
+            trees = await self.volumes.project_trees()
             for volume in trees:
                 path = self.path(volume)
                 if not path.is_dir():
@@ -801,13 +743,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
             except ValueError:
                 unowned.append(path)
         if named:
-            async with async_session() as session:
-                owned = await session.list(
-                    Volume,
-                    limit=None,
-                    expressions=[Volume["id"].in_(list(named))],
-                )
-            owned_ids = {volume.id for volume in owned}
+            owned_ids = await self.volumes.owned(list(named))
             unowned += [path for key, path in named.items() if key not in owned_ids]
         for path in unowned:
             logger.warning("%s has no volume row; leaving it", path)
@@ -847,7 +783,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         if project is None:
             return
         await self.save(source, owner_id)
-        origin = await self.find(owner_id, source.id, project.id)
+        origin = await self.volumes.find(owner_id, source.id, project.id)
         landing = await self.resolve(thread.id, project, owner_id)
         mirror = self.mirrors.path(project)
         if origin is not None and await run_git(
@@ -899,7 +835,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
             project = await self.projects.of(thread)
             if project is None:
                 return False
-            volume = await self.find(owner_id, thread.id, project.id)
+            volume = await self.volumes.find(owner_id, thread.id, project.id)
             if volume is None or not self.path(volume).is_dir():
                 return False
             if not await self.saved(volume):

@@ -279,7 +279,7 @@ async def test_a_native_session_lands_on_its_project_only_where_it_is_served(
 
     available = availability == "available"
     assert stored.project_id == (project.id if available else None)
-    volume = await app.workspaces.find(
+    volume = await app.volumes.find(
         case.owner_id, stored.id, project.id if available else None
     )
     assert volume is not None

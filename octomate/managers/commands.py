@@ -292,7 +292,7 @@ class CommandManager(Manager):
                     and surface.active_agent_tentacle_id == agent.id
                 )
                 project = await thread.project
-                volume = await self.workspaces.find(
+                volume = await self.workspaces.volumes.find(
                     context.user_id,
                     thread.id,
                     project.id if project is not None else None,

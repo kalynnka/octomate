@@ -37,6 +37,7 @@ from octomate.managers.oauth import OAuthManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
+from octomate.managers.volumes import VolumeManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.mcp.base import KnownBearers
 from octomate.mcp.gateway import served_session
@@ -248,6 +249,11 @@ class Octomate(FastAPI):
         asks — session attribution, the console, dispatch — wants the registry
         rather than anything to do with workspaces."""
         return self.workspaces.projects
+
+    @property
+    def volumes(self) -> VolumeManager:
+        """The volume registry shared with workspace preparation."""
+        return self.workspaces.volumes
 
     @property
     def mirrors(self) -> MirrorManager:

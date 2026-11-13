@@ -304,9 +304,7 @@ async def test_summon_validates_project_access_and_ref_before_binding(
         assert thread is not None
         assert thread.project_id is not None
         assert profile.user_id is not None
-        volume = await host.workspaces.find(
-            profile.user_id, thread.id, thread.project_id
-        )
+        volume = await host.volumes.find(profile.user_id, thread.id, thread.project_id)
         assert volume is not None
         workspace = host.workspaces.path(volume)
         assert (workspace / "task.txt").read_text() == "project work"

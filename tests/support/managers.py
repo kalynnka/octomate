@@ -31,6 +31,7 @@ from octomate.managers.gateway import OctomateSession
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager, message_text_from_segments
 from octomate.managers.user import UserManager
+from octomate.managers.volumes import VolumeManager
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import Nerve
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -636,6 +637,36 @@ class FakeActionManager:
         self.marked.append((batch_id, status, completed))
 
 
+class FakeVolumeManager(VolumeManager):
+    """Volume records for graph tests without database persistence."""
+
+    def __init__(self) -> None:
+        self.store: dict[tuple[UUID7, UUID7, UUID7 | None], GitVolume] = {}
+
+    async def find(
+        self, owner_id: UUID7, thread_id: UUID7, project_id: UUID7 | None
+    ) -> GitVolume | None:
+        return self.store.get((owner_id, thread_id, project_id))
+
+    async def tree(
+        self,
+        owner_id: UUID7,
+        thread_id: UUID7,
+        project_id: UUID7 | None,
+        ref: str | None = None,
+    ) -> GitVolume:
+        key = (owner_id, thread_id, project_id)
+        if key not in self.store:
+            self.store[key] = GitVolume(
+                usage="tree",
+                owner_id=owner_id,
+                thread_id=thread_id,
+                project_id=project_id,
+                base_ref=ref,
+            )
+        return self.store[key]
+
+
 class RecordingWorkspaceManager(WorkspaceManager):
     """A workspace manager that records the threads a finished turn asked it to
     save, instead of saving them.
@@ -646,32 +677,8 @@ class RecordingWorkspaceManager(WorkspaceManager):
     """
 
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(volumes=FakeVolumeManager())
         self.saved: list[UUID7] = []
-        self.volumes: dict[tuple[UUID7, UUID7, UUID7 | None], GitVolume] = {}
-
-    async def find(
-        self, owner_id: UUID7, thread_id: UUID7, project_id: UUID7 | None
-    ) -> GitVolume | None:
-        return self.volumes.get((owner_id, thread_id, project_id))
-
-    async def tree(
-        self,
-        owner_id: UUID7,
-        thread_id: UUID7,
-        project_id: UUID7 | None,
-        ref: str | None = None,
-    ) -> GitVolume:
-        key = (owner_id, thread_id, project_id)
-        if key not in self.volumes:
-            self.volumes[key] = GitVolume(
-                usage="tree",
-                owner_id=owner_id,
-                thread_id=thread_id,
-                project_id=project_id,
-                base_ref=ref,
-            )
-        return self.volumes[key]
 
     async def save(self, thread: Thread, owner_id: UUID7) -> None:
         self.saved.append(thread.id)

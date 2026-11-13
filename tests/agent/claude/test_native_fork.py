@@ -200,7 +200,7 @@ async def test_a_native_session_forks_into_a_session_this_tentacle_drives(
     [(session_id, directory, staged)] = forked_from
     assert session_id == SESSION_ID
     assert staged == WHOLE
-    volume = await octomate.workspaces.find(sender.user_id, landed.id, None)
+    volume = await octomate.volumes.find(sender.user_id, landed.id, None)
     assert volume is not None
     assert directory == str(octomate.workspaces.path(volume))
     assert not (transcripts_dir(Path(directory)) / f"{SESSION_ID}.jsonl").exists()

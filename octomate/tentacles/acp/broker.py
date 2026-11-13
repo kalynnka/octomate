@@ -438,7 +438,7 @@ class AcpBroker:
         sessions: list[schema.SessionInfo] = []
         for thread in rows:
             project = await app.projects.of(thread)
-            volume = await app.workspaces.find(
+            volume = await app.volumes.find(
                 owner_id, thread.id, project.id if project is not None else None
             )
             if volume is None:

@@ -542,7 +542,7 @@ async def test_reflex_owns_dispatch_and_history(
         item["params"] for item in messages if item.get("method") == "session/new"
     )
     assert sender.user_id is not None
-    volume = await app.workspaces.find(sender.user_id, thread.id, thread.project_id)
+    volume = await app.volumes.find(sender.user_id, thread.id, thread.project_id)
     assert volume is not None
     assert new["cwd"] == str(app.workspaces.path(volume))
     [mcp] = new["mcpServers"]

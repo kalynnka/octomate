@@ -62,6 +62,8 @@ async def volume_for(
         thread = await session.get(Thread, thread_id)
         assert thread is not None
         project = await workspaces.projects.of(thread)
-    volume = await workspaces.find(owner_id, thread_id, project.id if project else None)
+    volume = await workspaces.volumes.find(
+        owner_id, thread_id, project.id if project else None
+    )
     assert volume is not None
     return volume

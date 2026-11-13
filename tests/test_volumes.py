@@ -204,7 +204,7 @@ async def test_workspace_runtime_refuses_an_existing_plain_tree(
     await add(volume)
     manager = WorkspaceManager()
     with pytest.raises(TypeError, match="requires a Git working volume"):
-        await manager.tree(owner.id, thread_id, None)
+        await manager.volumes.tree(owner.id, thread_id, None)
     manager.path(volume).mkdir(parents=True)
     assert await manager.report_unowned() == 0
 

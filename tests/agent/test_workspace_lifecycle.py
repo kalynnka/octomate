@@ -217,7 +217,7 @@ async def test_workspace_operations_leave_the_other_senders_tree_untouched(
         )
         assert isinstance(await node.run(context), End)
         assert state.thread.id != own.thread_id
-        carried = await deps.workspaces.find(
+        carried = await deps.workspaces.volumes.find(
             state.user_profile.user_id, state.thread.id, project.id
         )
         assert carried is not None
@@ -225,12 +225,14 @@ async def test_workspace_operations_leave_the_other_senders_tree_untouched(
             deps.workspaces.path(carried) / "work.txt"
         ).read_text() == "Alice's unfinished work"
         assert (
-            await deps.workspaces.find(other_user.id, state.thread.id, project.id)
+            await deps.workspaces.volumes.find(
+                other_user.id, state.thread.id, project.id
+            )
             is None
         )
     assert (other.path / "work.txt").read_text() == "Bob's unfinished work"
     assert (
-        await deps.workspaces.find(
+        await deps.workspaces.volumes.find(
             state.user_profile.user_id, own.thread_id, project.id
         )
         is not None

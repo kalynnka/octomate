@@ -101,7 +101,7 @@ async def command_context(
         model = surface.active_model
         permission_mode = conversation.permission_mode or agent.default_permission_mode
         project = await thread.project
-        volume = await workspaces.find(
+        volume = await workspaces.volumes.find(
             user.id, thread.id, project.id if project is not None else None
         )
         cwd = workspaces.path(volume) if volume is not None else None
