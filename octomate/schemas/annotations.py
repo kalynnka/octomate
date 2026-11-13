@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel, Field
+from pydantic.json_schema import SkipJsonSchema
 
 
 class FileReference(BaseModel):
@@ -51,3 +52,8 @@ class MessageAnnotations(BaseModel):
                 path=path, roles=[role], start_line=start, end_line=end, note=note
             )
         )
+
+
+InternalMessageAnnotations = SkipJsonSchema[
+    MessageAnnotations
+]  # Harness context, omitted from tool schemas.

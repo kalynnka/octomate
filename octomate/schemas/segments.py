@@ -12,7 +12,7 @@ from pydantic_ai import BinaryContent
 from pydantic_ai.messages import UserContent
 from typing_extensions import TypedDict
 
-from octomate.schemas.annotations import MessageAnnotations
+from octomate.schemas.annotations import InternalMessageAnnotations
 from octomate.types.json import JsonObject, JsonValue
 
 
@@ -20,7 +20,7 @@ class TextData(TypedDict):
     """The text of a text segment."""
 
     text: str
-    annotations: NotRequired[MessageAnnotations]
+    annotations: NotRequired[InternalMessageAnnotations]
 
 
 class AtData(BaseModel):
@@ -59,7 +59,7 @@ class MarkdownData(TypedDict):
     """The markdown of a markdown segment."""
 
     text: str
-    annotations: NotRequired[MessageAnnotations]
+    annotations: NotRequired[InternalMessageAnnotations]
 
 
 class ReplyData(TypedDict):
