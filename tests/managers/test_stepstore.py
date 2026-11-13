@@ -560,15 +560,27 @@ async def test_checkpoint_queries_do_not_grow_per_message(
     statements = Mock()
     event.listen(in_memory_engine.sync_engine, "before_cursor_execute", statements)
     try:
-        for size in (1, 200):
+        for size in (1, 1000):
             messages: list[ModelMessage] = [
                 ModelResponse(parts=[TextPart(str(index))]) for index in range(size)
             ]
+            checkpoint = ContinuableSnapshot(
+                run_id=run.run_id,
+                step_index=1,
+                messages=messages,
+                idempotency_key=str(size),
+            )
+            statements.reset_mock()
+            await store.save_snapshot(checkpoint)
+            assert statements.call_count == 4
+            statements.reset_mock()
+            await store.save_snapshot(checkpoint)
+            assert statements.call_count == 1
             statements.reset_mock()
             await store.save_snapshot(
-                ContinuableSnapshot(run_id=run.run_id, step_index=1, messages=messages)
+                replace(checkpoint, idempotency_key=f"{size}-reuse")
             )
-            assert statements.call_count <= 4
+            assert statements.call_count == 3
             statements.reset_mock()
             snapshot = await store.latest_snapshot(run_id=run.run_id)
             assert snapshot is not None

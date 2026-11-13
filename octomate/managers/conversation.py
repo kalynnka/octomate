@@ -39,6 +39,7 @@ from sqlalchemy import (
     Select,
     and_,
     case,
+    delete,
     func,
     insert,
     literal,
@@ -211,6 +212,26 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
     async def effective_messages(
         self, conversation: Conversation, *, pending: tuple[UUID7, ...] = ()
     ) -> list[ModelRequest | ModelResponse]:
+        """Load only the bodies remaining after replaying complete compactions."""
+        message_ids = await self.effective_message_ids(conversation, pending=pending)
+        if not message_ids:
+            return []
+        async with async_session() as session:
+            # Arcanus resolves the abstract query anchor through its concrete mappings.
+            rows = cast(
+                Sequence[ModelRequest | ModelResponse],
+                await session.list(
+                    ModelMessage,
+                    limit=None,
+                    expressions=[ModelMessage["id"].in_(message_ids)],
+                ),
+            )
+        by_id = {message.id: message for message in rows}
+        return [by_id[message_id] for message_id in message_ids]
+
+    async def effective_message_ids(
+        self, conversation: Conversation, *, pending: tuple[UUID7, ...] = ()
+    ) -> list[UUID7]:
         """Replay complete, ordered rewrites over the run archive.
 
         Each input must match the effective prefix at that boundary. Later run
@@ -248,26 +269,27 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 raise IncompleteCompactionContext(
                     "effective context requires every compaction to be linked"
                 )
-            links = await session.list(
-                ConversationCompaction,
-                limit=None,
-                expressions=[
-                    ConversationCompaction["conversation_id"] == conversation.id,
-                    ConversationCompaction["compaction_id"].not_in(pending),
-                ],
-                order_bys=[ConversationCompaction["position"]],
-            )
-            if any(
-                link.position != index for index, link in enumerate(links)
-            ) or await session.scalar(
-                select(
-                    select(Compaction["id"])
-                    .where(
-                        Compaction["id"].in_(linked),
-                        Compaction["membership_complete"].is_(False),
+            links = (
+                await session.execute(
+                    select(
+                        ConversationCompaction["compaction_id"],
+                        ConversationCompaction["position"],
+                        Compaction["membership_complete"],
                     )
-                    .exists()
+                    .join(
+                        Compaction,
+                        Compaction["id"] == ConversationCompaction["compaction_id"],
+                    )
+                    .where(
+                        ConversationCompaction["conversation_id"] == conversation.id,
+                        ConversationCompaction["compaction_id"].not_in(pending),
+                    )
+                    .order_by(ConversationCompaction["position"])
                 )
+            ).all()
+            if any(
+                position != index or not complete
+                for index, (_, position, complete) in enumerate(links)
             ):
                 raise IncompleteCompactionContext(
                     "effective context requires complete, ordered compactions"
@@ -287,28 +309,30 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 ).all()
             )
             members = (
-                await session.list(
-                    CompactionMembership,
-                    limit=None,
-                    expressions=[CompactionMembership["compaction_id"].in_(linked)],
-                    order_bys=[
+                await session.execute(
+                    select(
+                        CompactionMembership["compaction_id"],
+                        CompactionMembership["stage"],
+                        CompactionMembership["model_message_id"],
+                    )
+                    .where(CompactionMembership["compaction_id"].in_(linked))
+                    .order_by(
                         CompactionMembership["compaction_id"],
                         CompactionMembership["stage"],
                         CompactionMembership["position"],
-                    ],
+                    )
                 )
                 if links
                 else []
             )
             stages: dict[UUID7, dict[CompactionStage, list[UUID7]]] = {
-                link.compaction_id: {"before": [], "after": []} for link in links
+                compaction_id: {"before": [], "after": []}
+                for compaction_id, _, _ in links
             }
-            for member in members:
-                stages[member.compaction_id][member.stage].append(
-                    member.model_message_id
-                )
-            for link in links:
-                before = stages[link.compaction_id]["before"]
+            for compaction_id, stage, message_id in members:
+                stages[compaction_id][stage].append(message_id)
+            for compaction_id, _, _ in links:
+                before = stages[compaction_id]["before"]
                 if (
                     not before
                     or len(before) > len(message_ids)
@@ -317,20 +341,8 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                     raise IncompleteCompactionContext(
                         "compaction input does not match the effective context"
                     )
-                message_ids.extendleft(reversed(stages[link.compaction_id]["after"]))
-            if not message_ids:
-                return []
-            # Arcanus resolves the abstract query anchor through its concrete mappings.
-            rows = cast(
-                Sequence[ModelRequest | ModelResponse],
-                await session.list(
-                    ModelMessage,
-                    limit=None,
-                    expressions=[ModelMessage["id"].in_(message_ids)],
-                ),
-            )
-        by_id = {message.id: message for message in rows}
-        return [by_id[message_id] for message_id in message_ids]
+                message_ids.extendleft(reversed(stages[compaction_id]["after"]))
+            return list(message_ids)
 
     async def record_context_compaction(
         self,
@@ -355,9 +367,10 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         after_ids = [message.id for message in after]
         if before_ids == after_ids:
             return None
+        inputs = set(before_ids)
         if (
             not before_ids
-            or len(set(before_ids)) != len(before_ids)
+            or len(inputs) != len(before_ids)
             or len(set(after_ids)) != len(after_ids)
         ):
             raise ValueError(
@@ -371,14 +384,12 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
             )
             if current.revision != conversation.revision:
                 raise ConversationConflict(str(conversation.id))
-            effective = await self.effective_messages(conversation)
-            if [message.id for message in effective[: len(before)]] != before_ids:
+            effective = await self.effective_message_ids(conversation)
+            if effective[: len(before)] != before_ids:
                 raise ValueError(
                     "compaction input does not match the effective context"
                 )
-            replacements = [
-                message for message in after if message.id not in before_ids
-            ]
+            replacements = [message for message in after if message.id not in inputs]
             if any(
                 message.run_id is not None or message.compaction_id is not None
                 for message in replacements
@@ -603,19 +614,20 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 limit=None,
                 expressions=[ConversationCompaction["compaction_id"].in_(compactions)],
             )
-            members = await session.list(
-                CompactionMembership,
-                limit=None,
-                expressions=[CompactionMembership["compaction_id"].in_(compactions)],
-                order_bys=[CompactionMembership["position"]],
+            members = await session.execute(
+                select(
+                    CompactionMembership["compaction_id"],
+                    CompactionMembership["stage"],
+                    CompactionMembership["model_message_id"],
+                )
+                .where(CompactionMembership["compaction_id"].in_(compactions))
+                .order_by(CompactionMembership["position"])
             )
             stored: dict[UUID7, dict[CompactionStage, list[UUID7]]] = {
                 id_: {"before": [], "after": []} for id_ in compactions
             }
-            for member in members:
-                stored[member.compaction_id][member.stage].append(
-                    member.model_message_id
-                )
+            for compaction_id, stage, message_id in members:
+                stored[compaction_id][stage].append(message_id)
             effective = deque(
                 await session.scalars(
                     select(ModelMessage["id"])
@@ -1269,7 +1281,8 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         run.native_turn_id = native_turn_id
         run.parent_tool_call_id = parent_tool_call_id
         run.revalidate()
-        run.messages.extend(run.messages.bless([vars(m) for m in messages]))
+        # Arcanus collection mutations validate raw payloads despite their narrower annotations.
+        run.messages.extend([vars(m) for m in messages])  # pyright: ignore[reportArgumentType]
         return await self.persist_run(run)
 
     async def record_run_metadata(
@@ -1357,78 +1370,66 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         parent_run_id: str | None = None,
         parent_tool_call_id: str | None = None,
     ) -> ExternalAgentRun | None:
-        """Persist a turn of a native runtime's session as the
-        `external` variant. `cwd` is the directory the turn ran in, as the hook or
-        the transcript reported it. `native_session_id` doubles as the
-        conversation's resumable handle (`external_id`).
+        """Reserve or complete a native turn without duplicating a driven run.
 
-        A turn already recorded by the driven runtime keeps its original run and
-        messages. Its owning agent, session and turn IDs let ingest skip the replay
-        without copying it into the native ledger or saving transcript coordinates on it.
+        Empty input reserves its identity without changing an existing run.
+        A stored end_offset marks a completed transcript; replay returns None.
+        Completing an unfinished run replaces provisional messages atomically.
 
-        The byte range is what marks a turn finished. A run carrying `end_offset` was
-        assembled from the transcript and is final, so recording it again — a recovery
-        overlapping a live tail, or a resume re-covering committed bytes — is a no-op
-        returning `None` rather than a primary-key collision. That guard belongs here,
-        at the durable sink: a caller's in-memory guard only knows the runs *it* wrote,
-        never one another tailer already committed.
-
-        Omitting messages reserves a run identity without changing an existing run.
-        Native hooks use this so the transcript remains the only message writer.
-
-        Completing a reserved run fills its messages in transcript order while
-        preserving its identity. Older incomplete imports may contain provisional
-        messages; the completed transcript replaces those in the same commit.
+        The native session becomes the conversation's resumable external_id;
+        cwd records the directory reported by the hook or transcript.
         """
         driven = await self.driven_run(
             conversation.agent_tentacle_id, native_session_id, run_id
         )
         if driven is not None:
             return None
-        run = ExternalAgentRun(
-            id=run_id,
-            conversation_id=conversation.id,
-            native_turn_id=run_id,
-            name=name,
-            model_name=model_name,
-            context_window=context_window,
-            context_used=context_used,
-            permission_mode=permission_mode,
-            cwd=cwd,
-            parent_run_id=parent_run_id,
-            parent_tool_call_id=parent_tool_call_id,
-            started_at=messages[0].timestamp if messages else None,
-            messages=[vars(m) for m in messages],  # pyright: ignore[reportArgumentType]
-            native_session_id=native_session_id,
-            source=source,
-            start_offset=start_offset,
-            end_offset=end_offset,
-            last_line_uuid=last_line_uuid,
-        )
         async with async_session() as session:
             stored = await session.one_or_none(
                 AgentRun, expressions=[AgentRun["id"] == run_id]
             )
+            if stored is not None and not isinstance(stored, ExternalAgentRun):
+                return None
             if stored is not None:
                 if not messages and end_offset is None:
-                    return stored if isinstance(stored, ExternalAgentRun) else None
-                if (
-                    not isinstance(stored, ExternalAgentRun)
-                    or stored.end_offset is not None
-                ):
+                    return stored
+                if stored.end_offset is not None:
                     return None
-                # `model_messages.run_id` is NOT NULL, so the sketch's messages are
-                # deleted rather than left behind by the merged collection.
-                sketch = list(stored.messages)
-                run = await session.merge(run)
-                for message in sketch:
-                    await session.delete(message)
+
+            run = stored or ExternalAgentRun(id=run_id, conversation_id=conversation.id)
+            run.conversation_id = conversation.id
+            run.native_session_id = native_session_id
+            run.native_turn_id = run_id
+            run.parent_run_id = parent_run_id
+            run.parent_tool_call_id = parent_tool_call_id
+
+            run.name = name
+            run.model_name = model_name
+            run.context_window = context_window
+            run.context_used = context_used
+            run.permission_mode = permission_mode
+            run.cwd = cwd
+
+            run.started_at = messages[0].timestamp if messages else None
+            run.source = source
+            run.start_offset = start_offset
+            run.end_offset = end_offset
+            run.last_line_uuid = last_line_uuid
+            run.revalidate()
+
+            # The relationship has no delete-orphan cascade; clear() only detaches.
+            if run.messages:
+                await session.execute(
+                    delete(ModelMessage).where(ModelMessage["run_id"] == run.id)
+                )
+                run.messages.clear()
+            run.messages.extend([vars(message) for message in messages])  # pyright: ignore[reportArgumentType]
+
+            if stored is not None:
                 owner = await session.get(
                     Conversation,
                     conversation.id,
-                    options=[
-                        noload(Conversation["runs"]),
-                    ],
+                    options=[noload(Conversation["runs"])],
                 )
                 if owner is not None:
                     owner.external_id = native_session_id
@@ -1482,6 +1483,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                             )
                         ),
                     ],
+                    options=[noload(AgentRun["messages"])],
                 )
                 for child in children:
                     child.parent_run_id = run.id

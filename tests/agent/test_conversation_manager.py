@@ -31,6 +31,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
 from octomate.managers import ConversationManager, ThreadManager, UserManager
+from octomate.models.messages import ModelMessage as MessageModel
 from octomate.nerve import Nerve
 from octomate.schemas.conversation import Conversation, ConversationKey
 from octomate.schemas.messages import ModelResponse
@@ -510,16 +511,22 @@ async def test_tool_results_link_only_unbound_children_of_their_conversation(
         parts=[ToolReturnPart("commission", "Report", tool_call_id="same-call")]
     )
     parent_run_id = str(uuid7())
-    if external:
-        await manager.record_external_run(
-            parent,
-            run_id=parent_run_id,
-            messages=[result],
-            native_session_id="native-session",
-            end_offset=42,
-        )
-    else:
-        await manager.record_agent_run(parent, parent_run_id, [result])
+    loaded_messages = Mock()
+    event.listen(MessageModel, "load", loaded_messages, propagate=True)
+    try:
+        if external:
+            await manager.record_external_run(
+                parent,
+                run_id=parent_run_id,
+                messages=[result],
+                native_session_id="native-session",
+                end_offset=42,
+            )
+        else:
+            await manager.record_agent_run(parent, parent_run_id, [result])
+    finally:
+        event.remove(MessageModel, "load", loaded_messages)
+    loaded_messages.assert_not_called()
 
     async with async_session() as session:
         stored = [await session.get(AgentRun, run.id) for run in child_runs]
@@ -1503,3 +1510,72 @@ async def test_empty_run_reservation_never_replaces_transcript_messages() -> Non
         m.id for m in (await ConversationManager().history(stored.id))
     ] == message_ids
     assert stored.runs[0].end_offset == 100
+
+
+@pytest.mark.parametrize("count", [1, 100])
+@pytest.mark.parametrize("provisional", [False, True])
+async def test_completing_native_runs_does_not_query_each_new_message(
+    in_memory_engine: AsyncEngine, count: int, provisional: bool
+) -> None:
+    manager = ConversationManager()
+    conversation = await manager.ensure(await a_thread(), agent_tentacle_id="claude")
+    reserved = await manager.record_external_run(
+        conversation,
+        "turn",
+        [
+            RawModelRequest(parts=[UserPromptPart(f"provisional {index}")])
+            for index in range(count)
+        ]
+        if provisional
+        else [],
+        native_session_id="session",
+    )
+    assert reserved is not None
+    untouched = await manager.record_external_run(
+        conversation,
+        "untouched",
+        [RawModelRequest(parts=[UserPromptPart("another run")])],
+        native_session_id="session",
+        end_offset=50,
+    )
+    assert untouched is not None
+    queries = Mock()
+    event.listen(in_memory_engine.sync_engine, "before_cursor_execute", queries)
+    try:
+        completed = await manager.record_external_run(
+            conversation,
+            "turn",
+            [RawModelResponse(parts=[TextPart(str(index))]) for index in range(count)],
+            native_session_id="session",
+            end_offset=100,
+            model_name="completed-model",
+            context_used=42,
+        )
+    finally:
+        event.remove(in_memory_engine.sync_engine, "before_cursor_execute", queries)
+    assert (
+        sum(call.args[2].startswith("SELECT") for call in queries.call_args_list) == 4
+    )
+    deletes = [
+        call for call in queries.call_args_list if call.args[2].startswith("DELETE")
+    ]
+    assert len(deletes) == int(provisional)
+    if provisional:
+        assert not deletes[0].args[5]  # One set-based DELETE, not per-row executemany.
+    assert completed is not None
+    assert completed.id == reserved.id
+    restored = await manager.get(conversation.id)
+    runs = {run.id: run for run in restored.runs}
+    assert [message.id for message in runs[untouched.id].messages] == [
+        message.id for message in untouched.messages
+    ]
+    run = runs[reserved.id]
+    assert run.model_name == "completed-model"
+    assert run.context_used == 42
+    assert [message.message_text for message in run.messages] == [
+        str(index) for index in range(count)
+    ]
+    assert all(message.run_id == reserved.id for message in run.messages)
+    assert not {message.id for message in reserved.messages}.intersection(
+        message.id for message in run.messages
+    )

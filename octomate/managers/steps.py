@@ -14,7 +14,7 @@ from pydantic_ai_harness.step_persistence import (
     StepEvent,
     ToolEffectRecord,
 )
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.dialects.postgresql import Insert as PostgresInsert
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import Insert as SqliteInsert
@@ -160,17 +160,17 @@ class StepStore(Manager):
                 return
             assert stored.seq is not None
             contents: dict[str, bytes] = {}
-            members: list[SnapshotMembership] = []
+            members: list[dict[str, int | str]] = []
             for position, message in enumerate(snapshot.messages):
                 content = message_adapter.dump_json(message)
                 digest = sha256(content).hexdigest()
                 contents[digest] = content
                 members.append(
-                    SnapshotMembership(
-                        snapshot_seq=stored.seq,
-                        position=position,
-                        message_sha256=digest,
-                    )
+                    {
+                        "snapshot_seq": stored.seq,
+                        "position": position,
+                        "message_sha256": digest,
+                    }
                 )
             if contents:
                 known = set(
@@ -194,7 +194,7 @@ class StepStore(Manager):
                         ).on_conflict_do_nothing(index_elements=["sha256"]),
                         missing,
                     )
-                session.add_all(members)
+                await session.execute(insert(SnapshotMembership), members)
             await session.commit()
 
     async def latest_snapshot(

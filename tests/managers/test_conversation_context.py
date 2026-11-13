@@ -9,7 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 from arcanus.materia.sqlalchemy import AsyncSession, lazyload
-from pydantic import TypeAdapter, ValidationError
+from pydantic import UUID7, TypeAdapter, ValidationError
 from pydantic_ai import Agent, AgentRunResult, DeferredToolRequests, RunContext
 from pydantic_ai import Conversation as PydanticConversation
 from pydantic_ai.conversation import ConversationTypeAdapter
@@ -796,13 +796,13 @@ async def test_compaction_flush_rejects_a_competing_save(
     )
     assert run is not None
     summary = ModelRequest(parts=[CompactionPart(content="replacement")])
-    effective_messages = manager.effective_messages
+    effective_message_ids = manager.effective_message_ids
     revision = str(uuid7())
 
     async def competing_save(
         current: Conversation,
-    ) -> list[ModelRequest | ModelResponse]:
-        messages = await effective_messages(current)
+    ) -> list[UUID7]:
+        messages = await effective_message_ids(current)
         async with async_session() as session:
             winner = await session.one(
                 Conversation,
@@ -813,7 +813,7 @@ async def test_compaction_flush_rejects_a_competing_save(
             await session.commit()
         return messages
 
-    monkeypatch.setattr(manager, "effective_messages", competing_save)
+    monkeypatch.setattr(manager, "effective_message_ids", competing_save)
     with pytest.raises(StaleDataError):
         await manager.record_context_compaction(
             conversation, before=list(run.messages), after=[summary], trigger="auto"
@@ -823,7 +823,7 @@ async def test_compaction_flush_rejects_a_competing_save(
         assert await session.count(CompactionMembership) == 0
         assert await session.count(ConversationCompaction) == 0
         assert await session.get(ModelRequest, summary.id) is None
-    assert [message.id for message in await effective_messages(conversation)] == [
+    assert await effective_message_ids(conversation) == [
         message.id for message in run.messages
     ]
     restored = await manager.get(conversation.id, with_runs=False)

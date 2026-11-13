@@ -11,6 +11,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
 from octomate.managers import ConversationManager
+from octomate.models.compactions import CompactionMembership as MembershipModel
 from octomate.models.messages import ModelMessage as ModelMessageModel
 from octomate.schemas.compactions import Compaction, CompactionMembership
 from octomate.schemas.conversation import ConversationCompaction
@@ -47,20 +48,58 @@ async def test_context_read_query_count_does_not_grow_with_compactions(
 
         queries = Mock()
         loaded_messages = Mock()
+        loaded_members = Mock()
         event.listen(in_memory_engine.sync_engine, "before_cursor_execute", queries)
         event.listen(ModelMessageModel, "load", loaded_messages, propagate=True)
+        event.listen(MembershipModel, "load", loaded_members)
         try:
             restored = await manager.effective_messages(conversation)
         finally:
             event.remove(in_memory_engine.sync_engine, "before_cursor_execute", queries)
             event.remove(ModelMessageModel, "load", loaded_messages)
+            event.remove(MembershipModel, "load", loaded_members)
         assert [message.id for message in restored] == [
             message.id for message in effective
         ]
         assert loaded_messages.call_count == len(effective)
+        loaded_members.assert_not_called()
         query_counts.append(queries.call_count)
 
-    assert query_counts == [6, 6]
+    assert query_counts == [5, 5]
+
+
+@pytest.mark.parametrize("count", [10, 1000])
+async def test_record_compaction_validates_ids_without_loading_message_bodies(
+    in_memory_engine: AsyncEngine, count: int
+) -> None:
+    manager = ConversationManager()
+    conversation = await manager.ensure(await a_thread(), agent_tentacle_id="inkling")
+    run = await manager.record_agent_run(
+        conversation,
+        str(uuid7()),
+        [ModelRequest(parts=[UserPromptPart(str(index))]) for index in range(count)],
+    )
+    assert run is not None
+    before = list(run.messages)
+    summary = ModelRequest(parts=[SystemPromptPart("summary")])
+    after = [summary, *before[-5:]]
+    queries = Mock()
+    loaded_messages = Mock()
+    event.listen(in_memory_engine.sync_engine, "before_cursor_execute", queries)
+    event.listen(ModelMessageModel, "load", loaded_messages, propagate=True)
+    try:
+        revision = await manager.record_context_compaction(
+            conversation, before=before, after=after, trigger="auto"
+        )
+    finally:
+        event.remove(in_memory_engine.sync_engine, "before_cursor_execute", queries)
+        event.remove(ModelMessageModel, "load", loaded_messages)
+    assert revision is not None
+    loaded_messages.assert_not_called()
+    assert queries.call_count == 10
+    assert [
+        message.id for message in await manager.effective_messages(conversation)
+    ] == [message.id for message in after]
 
 
 async def test_rewrites_preserve_archive_owners_and_append_later_messages(
