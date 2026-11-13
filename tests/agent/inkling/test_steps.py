@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import nullcontext
+from copy import copy
 from itertools import pairwise
 from unittest.mock import AsyncMock
 
@@ -23,6 +24,7 @@ from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import FunctionToolset
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import ModelConfig, ProvidersConfig
@@ -31,14 +33,19 @@ from octomate.database import async_session
 from octomate.managers.conversation import ConversationManager, ConversationStore
 from octomate.managers.steps import StepStore
 from octomate.providers import ProviderRegistry
+from octomate.schemas.commands import CommandContext, CommandInvocation, CommandResult
 from octomate.schemas.compactions import Compaction, CompactionMembership
 from octomate.schemas.conversation import ChannelAddress, Conversation, ConversationRun
 from octomate.schemas.messages import ModelResponse as StoredModelResponse
 from octomate.schemas.runs import AgentRun
+from octomate.schemas.segments import TextSegment
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.base import InklingOutput
 from octomate.tentacles.inkling.build import build_inkling
-from octomate.tentacles.inkling.capabilities.compaction import SummarizingCompaction
+from octomate.tentacles.inkling.capabilities.compaction import (
+    CompactOnRequest,
+    SummarizingCompaction,
+)
 from octomate.tentacles.inkling.react import (
     ReactDeps,
     ReactState,
@@ -568,7 +575,242 @@ def summarizing(inkling: InklingTentacle) -> SummarizingCompaction[None]:
         preserve_first_user_message=False,
     )
     inkling.capabilities[inkling.capabilities.index(capability)] = strategy
+    requested = next(
+        cap for cap in inkling.capabilities if isinstance(cap, CompactOnRequest)
+    )
+    requested.strategy = strategy
     return strategy
+
+
+async def test_compact_command_persists_context_and_usage_without_a_run(
+    inkling: InklingTentacle,
+    conversation: Conversation,
+    summarizing: SummarizingCompaction[None],
+) -> None:
+    await inkling.run(
+        "old question " * 200,
+        conversation=conversation,
+        conversation_address=ADDRESS,
+        output_type=str,
+        model=TestModel(call_tools=[], custom_output_text="old answer " * 200),
+    )
+    loaded = await inkling.resolve_conversation(
+        conversation.thread_id, conversation_address=ADDRESS
+    )
+    original_ids = [message.id for message in loaded.messages]
+    usage = copy(loaded.usage)
+    summary_input: list[ModelMessage] = []
+
+    def summarize(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        summary_input.extend(messages)
+        return ModelResponse(parts=[TextPart("The unfinished work is summarized.")])
+
+    async def stream_summary(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str]:
+        summary_input.extend(messages)
+        yield "The unfinished work is summarized."
+
+    summarizing.model = FunctionModel(summarize, stream_function=stream_summary)
+    summarizing.max_messages = 10000
+    context = CommandContext(
+        agent_id=inkling.id,
+        user_id=uuid7(),
+        address=ADDRESS,
+        cwd=None,
+        conversation=conversation,
+        model="test",
+    )
+    [descriptor] = (await inkling.probe_commands(context)).descriptors
+    assert descriptor.name == "compact"
+    assert descriptor.argument_hint == "[focus]"
+    assert descriptor.requires_conversation
+    assert not descriptor.accepts_attachments
+    [outcome] = [
+        event
+        async for event in inkling.execute_command(
+            context,
+            CommandInvocation(command_id=descriptor.id, arguments="unfinished work"),
+        )
+    ]
+    assert isinstance(outcome, CommandResult)
+    assert any("unfinished work" in str(message.parts) for message in summary_input)
+    restored = await inkling.resolve_conversation(
+        conversation.thread_id, conversation_address=ADDRESS
+    )
+    assert any(
+        isinstance(p, CompactionPart) for m in restored.messages for p in m.parts
+    )
+    assert restored.revision != loaded.revision
+    assert restored.usage.requests == usage.requests + 1
+    assert restored.new_message_index == len(restored.messages)
+    assert [
+        m.id for m in await inkling.conversations.history(conversation.id)
+    ] == original_ids
+    async with async_session() as session:
+        [compaction] = await session.list(Compaction)
+        assert compaction.trigger == "manual"
+        assert compaction.membership_complete
+        assert await session.count(AgentRun) == 1
+    assert len(await StepStore().list_runs()) == 1
+
+    received: list[ModelMessage] = []
+
+    def reply(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        received.extend(messages)
+        return ModelResponse(parts=[TextPart("continued")])
+
+    async def stream_reply(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str]:
+        received.extend(messages)
+        yield "continued"
+
+    await inkling.run(
+        "continue",
+        conversation=restored,
+        conversation_address=ADDRESS,
+        output_type=str,
+        model=FunctionModel(reply, stream_function=stream_reply),
+    )
+    assert any(isinstance(p, CompactionPart) for m in received for p in m.parts)
+    assert not any(
+        isinstance(p, UserPromptPart) and "old question" in str(p.content)
+        for m in received
+        for p in m.parts
+    )
+
+
+async def test_compact_command_with_empty_context_does_not_create_history(
+    inkling: InklingTentacle,
+    conversation: Conversation,
+) -> None:
+    context = CommandContext(
+        agent_id=inkling.id,
+        user_id=uuid7(),
+        address=ADDRESS,
+        cwd=None,
+        conversation=conversation,
+    )
+    [outcome] = [
+        event
+        async for event in inkling.execute_command(
+            context, CommandInvocation(command_id="builtin:compact")
+        )
+    ]
+    assert isinstance(outcome, CommandResult)
+    [segment] = outcome.segments
+    assert isinstance(segment, TextSegment)
+    assert segment.data["text"] == "No context compaction was needed."
+    restored = await inkling.resolve_conversation(
+        conversation.thread_id, conversation_address=ADDRESS
+    )
+    assert restored.revision == conversation.revision
+    assert not restored.messages
+    async with async_session() as session:
+        assert await session.count(Compaction) == 0
+        assert await session.count(AgentRun) == 0
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("automatic", [False, True])
+async def test_requested_compaction_persists_once_and_keeps_tool_pairs(
+    inkling: InklingTentacle,
+    conversation: Conversation,
+    summarizing: SummarizingCompaction[None],
+    streaming: bool,
+    automatic: bool,
+) -> None:
+    await inkling.run(
+        "old question " * 200,
+        conversation=conversation,
+        conversation_address=ADDRESS,
+        output_type=str,
+        model=TestModel(call_tools=[], custom_output_text="old answer " * 200),
+    )
+    summarizing.max_messages = 4 if automatic else 10000
+    summarizing.keep_messages = 2
+    calls = 0
+
+    def reply(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            assert any(tool.name == "compact_context" for tool in info.function_tools)
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "compact_context",
+                        {"focus": "unfinished work"},
+                        tool_call_id="compact-call",
+                    )
+                ]
+            )
+        assert any(isinstance(p, CompactionPart) for m in messages for p in m.parts)
+        assert any(
+            isinstance(p, ToolReturnPart) and p.tool_call_id == "compact-call"
+            for m in messages
+            for p in m.parts
+        )
+        return ModelResponse(parts=[TextPart("continued")])
+
+    async def stream_reply(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str | dict[int, DeltaToolCall]]:
+        [part] = reply(messages, info).parts
+        if isinstance(part, ToolCallPart):
+            yield {
+                0: DeltaToolCall(
+                    name=part.tool_name,
+                    json_args=part.args_as_json_str(),
+                    tool_call_id=part.tool_call_id,
+                )
+            }
+        else:
+            assert isinstance(part, TextPart)
+            yield part.content
+
+    loaded = await inkling.resolve_conversation(
+        conversation.thread_id, conversation_address=ADDRESS
+    )
+    model = FunctionModel(reply, stream_function=stream_reply)
+    result: AgentRunResult[InklingOutput] | None = None
+    if streaming:
+        async with inkling.run_stream_events(
+            "compact yourself",
+            conversation=loaded,
+            conversation_address=ADDRESS,
+            output_type=str,
+            model=model,
+        ) as stream:
+            async for event in stream:
+                if isinstance(event, AgentRunResultEvent):
+                    result = event.result
+    else:
+        result = await inkling.run(
+            "compact yourself",
+            conversation=loaded,
+            conversation_address=ADDRESS,
+            output_type=str,
+            model=model,
+        )
+    assert result is not None
+    assert calls == 2
+    restored = await inkling.resolve_conversation(
+        conversation.thread_id, conversation_address=ADDRESS
+    )
+    assert restored.usage.requests == loaded.usage.requests + 3
+    assert restored.usage.tool_calls == loaded.usage.tool_calls + 1
+    async with async_session() as session:
+        [compaction] = await session.list(Compaction)
+        assert compaction.trigger == "auto"
+        assert compaction.membership_complete
+    snapshot = await StepStore().latest_snapshot(run_id=result.run_id)
+    assert snapshot is not None
+    assert [m.parts for m in snapshot.messages] == [m.parts for m in restored.messages]
+    assert [m.parts for m in result.all_messages()] == [
+        m.parts for m in restored.messages
+    ]
 
 
 @pytest.mark.parametrize("streaming", [False, True])

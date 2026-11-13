@@ -26,7 +26,7 @@ from pydantic_ai.conversation_store import (
 )
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.messages import ModelMessagesTypeAdapter, ToolReturnPart
-from pydantic_ai.usage import RequestUsage
+from pydantic_ai.usage import RequestUsage, RunUsage
 from sqlalchemy import (
     Select,
     and_,
@@ -318,6 +318,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         after: list[ModelRequest | ModelResponse],
         trigger: CompactionTrigger,
         happened_at: AwareDatetime | None = None,
+        usage: RunUsage | None = None,
     ) -> str | None:
         """Persist an exact history rewrite after its original run messages exist.
 
@@ -326,6 +327,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         and output message. A later suffix already archived by the run is allowed.
         Return the saved revision, or None for unchanged membership. The supplied
         conversation keeps its runtime context and persistence cursor.
+        When supplied, cumulative usage is saved with the rewrite in the same transaction.
         """
         before_ids = [message.id for message in before]
         after_ids = [message.id for message in after]
@@ -370,6 +372,8 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 messages=RelationCollection(replacements),
             )
             current.revision = str(uuid7())
+            if usage is not None:
+                current.usage = usage
             await session.flush()
             position = await session.count(
                 ConversationCompaction,
@@ -1721,7 +1725,11 @@ class ConversationStore(PydanticConversationStore):
                 row = schema.model_validate({**vars(message), "run_id": None})
             replacements.append(row)
         revision = await self.manager.record_context_compaction(
-            current, before=current.messages, after=replacements, trigger=trigger
+            current,
+            before=current.messages,
+            after=replacements,
+            trigger=trigger,
+            usage=conversation.usage,
         )
         if revision is None:
             return

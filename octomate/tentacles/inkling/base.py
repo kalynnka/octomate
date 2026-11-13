@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, ClassVar, Self, get_args, overload
 
 import anyio
 from httpx import URL
+from opentelemetry.trace import get_tracer
 from pydantic import UUID7, TypeAdapter
 from pydantic_ai import (
     AgentCapability,
@@ -34,6 +35,7 @@ from pydantic_ai.agent.abstract import (
     RunOutputDataT,
 )
 from pydantic_ai.capabilities import LocalWorkspace, Toolset
+from pydantic_ai.conversation import ConversationTypeAdapter
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import ModelRequest, UserContent, UserPromptPart
 from pydantic_ai.models import KnownModelName, Model
@@ -41,6 +43,7 @@ from pydantic_ai.output import OutputSpec
 from pydantic_ai.settings import ModelSettings, ThinkingEffort, merge_model_settings
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset, ApprovalRequiredToolset
+from pydantic_ai_harness.compaction import compact_now
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, Shell
@@ -49,11 +52,20 @@ from pydantic_ai_harness.step_persistence.naming import generate_name
 from rich.style import Style
 
 from octomate.config.agents import AgentRouteModelName, InklingConfig
-from octomate.managers.conversation import ConversationManager
+from octomate.managers.conversation import ConversationManager, ConversationStore
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH
+from octomate.schemas.commands import (
+    CommandCatalog,
+    CommandContext,
+    CommandDescriptor,
+    CommandError,
+    CommandInvocation,
+    CommandOutcome,
+    CommandResult,
+)
 from octomate.schemas.conversation import ChannelAddress, Conversation
-from octomate.schemas.segments import MessageSegment
+from octomate.schemas.segments import MessageSegment, TextSegment
 from octomate.schemas.triage import Claim
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import inkling_logfire
@@ -64,6 +76,7 @@ from octomate.tentacles.agent import (
 from octomate.tentacles.deferred import DeferredSuspender
 from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.capabilities import UserScopedCapability
+from octomate.tentacles.inkling.capabilities.compaction import SummarizingCompaction
 from octomate.tentacles.inkling.deferred import (
     DeclineResolver,
     DeferredResolver,
@@ -204,6 +217,105 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         """Inkling resumes the copied Octomate history without an external session."""
         if conversation.external_id is not None:
             raise ValueError("Inkling conversations cannot have an external session id")
+
+    async def probe_commands(self, context: CommandContext) -> CommandCatalog:
+        return CommandCatalog(
+            context=context,
+            status="ready",
+            descriptors={
+                CommandDescriptor(
+                    id="builtin:compact",
+                    name="compact",
+                    description="Summarize older context while retaining recent messages.",
+                    argument_hint="[focus]",
+                    accepts_attachments=False,
+                    unavailable_reason=None
+                    if any(
+                        isinstance(cap, SummarizingCompaction)
+                        for cap in self.capabilities
+                    )
+                    else "Summarizing compaction is not configured for this agent.",
+                )
+            },
+        )
+
+    async def execute_command(
+        self,
+        context: CommandContext,
+        invocation: CommandInvocation,
+        *,
+        deferred_suspender: DeferredSuspender | None = None,
+        capabilities: Sequence[AgentCapability[None]] | None = None,
+    ) -> AsyncGenerator[CommandOutcome | ReactStreamEvent[InklingOutput], None]:
+        if invocation.command_id != "builtin:compact":
+            yield CommandError(status="unknown", message="Unknown Inkling command.")
+            return
+        if invocation.attachments:
+            yield CommandError(
+                status="unsupported", message="/compact does not accept attachments."
+            )
+            return
+        if context.conversation is None:
+            yield CommandError(
+                status="unavailable",
+                message="/compact requires an existing conversation.",
+            )
+            return
+        if (
+            context.agent_id != self.id
+            or context.conversation.agent_tentacle_id != self.id
+        ):
+            raise ValueError("command context does not belong to this agent")
+        strategy = next(
+            (
+                cap
+                for cap in self.capabilities
+                if isinstance(cap, SummarizingCompaction)
+            ),
+            None,
+        )
+        if strategy is None:
+            yield CommandError(
+                status="unavailable",
+                message="Summarizing compaction is not configured for this agent.",
+            )
+            return
+        selected = self.resolve_model(context.model)
+        if selected is None:
+            raise ValueError("Compaction requires a model")
+        loaded = await self.conversations.get(
+            context.conversation.id, with_runs=False, with_messages=True
+        )
+        # The summary agent consumes message values, not ORM relationships.
+        conversation = ConversationTypeAdapter.validate_python(
+            {**vars(loaded), "messages": [vars(message) for message in loaded.messages]}
+        )
+        compacted = await compact_now(
+            strategy,
+            conversation.messages,
+            model=self.models[selected],
+            focus=invocation.arguments or None,
+            usage=conversation.usage,
+            conversation_id=conversation.conversation_id,
+            tracer=get_tracer("octomate.inkling"),
+            tokenizer=strategy.tokenizer,
+        )
+        changed = compacted != conversation.messages
+        if changed:
+            await ConversationStore(self.conversations).record_compaction(
+                conversation, after=compacted, trigger="manual"
+            )
+        yield CommandResult(
+            segments=[
+                TextSegment(
+                    data={
+                        "text": "Conversation context compacted."
+                        if changed
+                        else "No context compaction was needed."
+                    }
+                )
+            ]
+        )
 
     description: str = (
         "General assistant for conversation, questions, writing, analysis, and "
