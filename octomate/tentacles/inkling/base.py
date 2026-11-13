@@ -71,7 +71,6 @@ from octomate.capabilities.harness.react import (
 from octomate.config.agents import AgentRouteModelName, InklingConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.habitat import Invocation
-from octomate.managers.workspaces.base import ProjectWorkspace
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -893,8 +892,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             conversation_address=conversation_address,
             conversation_id=conversation_id,
         )
-        workspace = invocation.workspace.path
-        if isinstance(invocation.workspace, ProjectWorkspace):
+        workspace = invocation.backing.path
+        if invocation.project is not None:
             capabilities.extend(self.workspace_capabilities(workspace))
         graph_deps = ReactDeps(
             agent=self.agent,

@@ -44,6 +44,7 @@ from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision, TeleportDecision
+from octomate.schemas.volumes.backings import HostDirectory
 from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import base as claude_base
@@ -51,7 +52,6 @@ from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.transcript import transcripts_dir
 from octomate.types.json import JsonObject
-from octomate.volumes import HostDirectory
 from tests.support.invocations import invocation_for
 from tests.support.managers import (
     FakeConversation,

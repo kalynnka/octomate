@@ -1,15 +1,47 @@
-"""Host-directory backing and shared active-use accounting for logical volumes."""
+"""Volume backing contracts and the host-directory implementation."""
 
 from __future__ import annotations
 
 import asyncio
 import shutil
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 import anyio
+
+
+class Backing(Protocol):
+    """Storage exposed as a service-local directory for volume operations.
+
+    Callers share one backing per location so concurrent uses coordinate their
+    lifetime. Habitat destination paths and access modes belong to attachments.
+    """
+
+    @property
+    def path(self) -> Path:
+        """Absolute service-local path, distinct from its habitat destination."""
+        ...
+
+    @property
+    def lock(self) -> AbstractAsyncContextManager[None]:
+        """Serialize changes to the contents and their active-use accounting."""
+        ...
+
+    @property
+    def uses(self) -> int:
+        """Number of active uses retaining the contents."""
+        ...
+
+    def use(self, *, ephemeral: bool) -> AbstractAsyncContextManager[Path]:
+        """Retain contents until exit; reclaim temporary contents after last use."""
+        ...
+
+    async def release(self) -> None:
+        """Remove inactive contents; refuse while the backing is still in use."""
+        ...
 
 
 @dataclass

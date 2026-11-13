@@ -1,6 +1,6 @@
 """Prepared resources for tests that call a tentacle without the core graph."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from pydantic import UUID7
@@ -10,6 +10,7 @@ from octomate.database import async_session
 from octomate.habitat import NativeHabitat
 from octomate.managers.habitat import Invocation
 from octomate.managers.workspaces import WorkspaceManager
+from octomate.managers.workspaces.base import TreeWorkspace
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread
 from octomate.schemas.volumes import GitVolume
@@ -24,7 +25,7 @@ async def invocation_for(
     thread_id: UUID7,
     conversation_id: UUID7 | None = None,
     owner_id: UUID7 | None = None,
-) -> AsyncIterator[Invocation]:
+) -> AsyncGenerator[Invocation]:
     conversation = await agent.resolve_conversation(
         thread_id,
         conversation_address=conversation_address,
@@ -50,7 +51,11 @@ async def invocation_for(
         yield Invocation(
             id=uuid7(),
             conversation_id=conversation.id,
-            workspace=workspace,
+            thread_id=thread_id,
+            volume=workspace.volume if isinstance(workspace, TreeWorkspace) else None,
+            backing=agent.workspaces.backing(workspace.path),
+            root=agent.workspaces.root(owner_id) if owner_id is not None else None,
+            project=project,
             habitat=NativeHabitat(),
         )
 

@@ -33,8 +33,8 @@ from octomate.managers.workspaces.transfers import copy_ignored
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
 from octomate.schemas.volumes import GitVolume, Volume
+from octomate.schemas.volumes.backings import HostDirectory
 from octomate.telemetry import workspace_logfire
-from octomate.volumes import HostDirectory
 
 logger = logging.getLogger(__name__)
 

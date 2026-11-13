@@ -12,12 +12,13 @@ from octomate.habitat import Habitat, HabitatError, NativeHabitat
 from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import Invocation
 from octomate.managers.workspaces.base import (
-    ProjectWorkspace,
     TreeWorkspace,
     UnregisteredProjectError,
     WorkspaceManager,
 )
 from octomate.schemas.thread import ThreadKey
+from octomate.schemas.volumes import GitVolume
+from octomate.schemas.volumes.backings import HostDirectory
 from tests.support.managers import a_project, a_registry, a_thread
 from tests.support.users import a_user
 
@@ -35,13 +36,17 @@ async def test_native_invocation_borrows_the_owners_chat_workspace(
         invocation = Invocation(
             id=uuid7(),
             conversation_id=uuid7(),
-            workspace=workspace,
+            thread_id=workspace.thread_id,
+            volume=workspace.volume if isinstance(workspace, TreeWorkspace) else None,
+            backing=workspaces.backing(workspace.path),
+            root=workspace.root if isinstance(workspace, TreeWorkspace) else None,
+            project=None,
             habitat=habitat,
         )
         assert invocation.owner_id == owner_id
         assert invocation.thread_id == thread_id
-        assert invocation.workspace is workspace
-        assert invocation.workspace.path.is_dir()
+        assert invocation.backing is workspaces.backing(workspace.path)
+        assert invocation.backing.path.is_dir()
         assert invocation.habitat is habitat
         assert invocation.cwd == workspace.path
         assert isinstance(invocation.cwd, Path)
@@ -49,7 +54,7 @@ async def test_native_invocation_borrows_the_owners_chat_workspace(
             assert workspace.root == workspaces.root(workspace.owner_id)
 
     await habitat.stop()
-    assert not invocation.workspace.path.exists()
+    assert not invocation.backing.path.exists()
 
 
 async def test_native_invocation_keeps_the_project_workspace_owner(
@@ -64,7 +69,11 @@ async def test_native_invocation_keeps_the_project_workspace_owner(
         invocation = Invocation(
             id=uuid7(),
             conversation_id=uuid7(),
-            workspace=workspace,
+            thread_id=workspace.thread_id,
+            volume=workspace.volume,
+            backing=workspaces.backing(workspace.path),
+            root=workspace.root,
+            project=project,
             habitat=NativeHabitat(),
         )
         assert invocation.owner_id == workspace.volume.owner_id == owner.id
@@ -90,7 +99,11 @@ async def test_invocation_borrows_the_habitat_without_managing_its_lifetime(
         invocation = Invocation(
             id=uuid7(),
             conversation_id=uuid7(),
-            workspace=workspace,
+            thread_id=workspace.thread_id,
+            volume=workspace.volume,
+            backing=workspaces.backing(workspace.path),
+            root=workspace.root,
+            project=None,
             habitat=habitat,
         )
         assert invocation.habitat is habitat
@@ -109,22 +122,31 @@ async def test_project_guest_cwd_is_known_before_materialization(
 ) -> None:
     owner = await a_user()
     project = a_project(tmp_path / "project")
-    workspaces = WorkspaceManager(
-        projects=await a_registry(project), volumes_dir=tmp_path / "volumes"
+    volume = GitVolume(
+        owner_id=owner.id,
+        usage="tree",
+        thread_id=await a_thread(),
+        project_id=project.id,
     )
-    workspace = await workspaces.resolve(await a_thread(), project, owner.id)
+    root = tmp_path / "volumes" / str(owner.id)
+    backing = HostDirectory(root / "tree" / str(volume.id))
+    assert volume.thread_id is not None
     invocation = Invocation(
         id=uuid7(),
         conversation_id=uuid7(),
-        workspace=workspace,
+        thread_id=volume.thread_id,
+        volume=volume,
+        backing=backing,
+        root=root,
+        project=project,
         habitat=SbxHabitat(
             config=SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64),
             user_id=owner.id,
         ),
     )
-    assert workspace.root == workspaces.root(owner.id)
-    assert invocation.cwd == PurePosixPath("/workspace/tree") / str(workspace.volume.id)
-    assert not workspace.root.exists()
+    assert invocation.backing is backing
+    assert invocation.cwd == PurePosixPath("/workspace/tree") / str(volume.id)
+    assert not root.exists()
 
 
 @pytest.mark.parametrize("registered", [False, True])
@@ -136,13 +158,18 @@ async def test_invocation_rejects_an_unregistered_or_different_habitat_owner(
         config=SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64),
         user_id=uuid7(),
     )
-    workspace = await WorkspaceManager().resolve(await a_thread(), None, owner_id)
+    workspaces = WorkspaceManager()
+    workspace = await workspaces.resolve(await a_thread(), None, owner_id)
     message = "owners do not match" if registered else "registered user"
     with pytest.raises(ValueError, match=message):
         Invocation(
             id=uuid7(),
             conversation_id=uuid7(),
-            workspace=workspace,
+            thread_id=workspace.thread_id,
+            volume=workspace.volume if isinstance(workspace, TreeWorkspace) else None,
+            backing=workspaces.backing(workspace.path),
+            root=workspace.root if isinstance(workspace, TreeWorkspace) else None,
+            project=None,
             habitat=habitat,
         )
 
@@ -165,9 +192,9 @@ async def test_core_prepares_and_releases_native_chat(
         assert invocation.thread_id == thread.id
         assert invocation.conversation_id == conversation_id
         assert isinstance(invocation.habitat, NativeHabitat)
-        assert invocation.cwd == invocation.workspace.path
-        assert invocation.workspace.path.is_dir()
-    assert not invocation.workspace.path.exists()
+        assert invocation.cwd == invocation.backing.path
+        assert invocation.backing.path.is_dir()
+    assert not invocation.backing.path.exists()
 
 
 async def test_core_isolates_two_owners_in_a_shared_thread(
@@ -192,11 +219,11 @@ async def test_core_isolates_two_owners_in_a_shared_thread(
         ) as second,
     ):
         assert first.id != second.id
-        assert first.workspace.path != second.workspace.path
-        (first.workspace.path / "alice.txt").write_text("private work")
-        assert not (second.workspace.path / "alice.txt").exists()
-    assert not first.workspace.path.exists()
-    assert not second.workspace.path.exists()
+        assert first.backing.path != second.backing.path
+        (first.backing.path / "alice.txt").write_text("private work")
+        assert not (second.backing.path / "alice.txt").exists()
+    assert not first.backing.path.exists()
+    assert not second.backing.path.exists()
 
 
 @pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])
@@ -213,7 +240,7 @@ async def test_core_releases_chat_on_failure_and_cancellation(
             owner_id=None,
         ) as invocation:
             raise error()
-    assert not invocation.workspace.path.exists()
+    assert not invocation.backing.path.exists()
 
 
 async def test_core_refuses_anonymous_project_and_managed_dispatch(
@@ -265,6 +292,8 @@ async def test_core_checkpoints_an_empty_project_without_a_git_index(
         conversation_id=uuid7(),
         owner_id=(await a_user()).id,
     ) as invocation:
-        (invocation.workspace.path / ".git" / "index").unlink(missing_ok=True)
-    assert isinstance(invocation.workspace, ProjectWorkspace)
-    assert await app.workspaces.saved(invocation.workspace.volume)
+        (invocation.backing.path / ".git" / "index").unlink(missing_ok=True)
+    assert isinstance(invocation.volume, GitVolume)
+    assert invocation.project is not None
+    assert invocation.project.id == project.id
+    assert await app.workspaces.saved(invocation.volume)

@@ -12,7 +12,7 @@ from uuid_utils.compat import uuid7
 from octomate.database import async_session
 from octomate.managers.workspaces.mirrors import MirrorManager, run_git
 from octomate.schemas.volumes import GitVolume, Volume
-from octomate.volumes import HostDirectory
+from octomate.schemas.volumes.backings import HostDirectory
 from tests.support.users import a_user
 
 

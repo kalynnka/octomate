@@ -45,6 +45,7 @@ from octomate.schemas.deferred import (
     DeferredApproval,
     DeferredQuestion,
 )
+from octomate.schemas.volumes.backings import HostDirectory
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.deepseek import base as deepseek_base
 from octomate.tentacles.deepseek.client import DeepseekApiClient
@@ -57,7 +58,6 @@ from octomate.tentacles.deepseek.wire import (
     StreamErrorFrame,
 )
 from octomate.types.json import JsonObject, JsonValue
-from octomate.volumes import HostDirectory
 from tests.support.invocations import invocation_for
 from tests.support.managers import (
     FakeConversation,
@@ -444,7 +444,7 @@ async def test_driven_names_are_persisted_and_revised(
                     monkeypatch.setattr(
                         octomate.conversations,
                         "latest_cwd",
-                        AsyncMock(return_value=invocation.workspace.path),
+                        AsyncMock(return_value=invocation.backing.path),
                     )
                 result = await tentacle.run(
                     "work", conversation_address=KEY, invocation=invocation
@@ -672,7 +672,7 @@ async def test_run_reuses_the_stored_session_and_skips_create(
         monkeypatch.setattr(
             conversations,
             "latest_cwd",
-            AsyncMock(return_value=invocation.workspace.path),
+            AsyncMock(return_value=invocation.backing.path),
         )
         result = await tentacle.run(
             "more", conversation_address=KEY, invocation=invocation
@@ -1967,7 +1967,7 @@ async def test_shared_thread_cannot_resume_dsh_in_the_previous_owners_tree(
             await agent.run("start", conversation_address=KEY, invocation=initial)
         assert (
             await app.conversations.latest_cwd(initial.conversation_id)
-            == initial.workspace.path
+            == initial.backing.path
         )
         FakeDeepseekApi.calls.clear()
         async with invocation_for(
@@ -1977,5 +1977,5 @@ async def test_shared_thread_cannot_resume_dsh_in_the_previous_owners_tree(
                 await agent.run(
                     "continue", conversation_address=KEY, invocation=subsequent
                 )
-        assert subsequent.workspace.path != initial.workspace.path
+        assert subsequent.backing.path != initial.backing.path
         assert calls_of("session/prompt") == []

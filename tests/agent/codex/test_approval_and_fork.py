@@ -86,7 +86,7 @@ async def recorded_context(
     return replace(
         context,
         conversation=await agent.conversations.get(context.conversation.id),
-        cwd=invocation.workspace.path,
+        cwd=invocation.backing.path,
     )
 
 

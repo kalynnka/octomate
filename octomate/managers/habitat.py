@@ -21,7 +21,7 @@ from octomate.config.habitat import (
 from octomate.habitat import Habitat, ManagedHabitat, NativeHabitat
 from octomate.habitat import HabitatError as HabitatError
 from octomate.habitat.sbx import SbxHabitat
-from octomate.managers.workspaces.base import TreeWorkspace, Workspace, WorkspaceManager
+from octomate.managers.workspaces.base import TreeWorkspace, WorkspaceManager
 from octomate.nerve import (
     HabitatTopic,
     Impulse,
@@ -34,21 +34,28 @@ from octomate.schemas.habitat import (
     HabitatStatus,
     InvocationScope,
 )
+from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
+from octomate.schemas.volumes import Volume
+from octomate.schemas.volumes.backings import Backing
 
 
 @dataclass(frozen=True, kw_only=True)
 class Invocation:
     """Core-authorized resources, valid only inside the core's owning contexts.
 
-    Core prepares the workspace and acquires any habitat before constructing this
+    Core prepares the backing and acquires any habitat before constructing this
     value. Adapters borrow them for the call; core owns their lifetime and the
     cleanup required on completion, failure, or cancellation.
     """
 
     id: UUID7  # Allocated by core before acquisition, shared with lifecycle events.
     conversation_id: UUID7
-    workspace: Workspace
+    thread_id: UUID7
+    volume: Volume | None  # Unregistered chats have no logical volume record.
+    backing: Backing  # Prepared storage, borrowed for the duration of this call.
+    root: Path | None  # Owner's host root for habitat path translation.
+    project: Project | None
     habitat: Habitat  # Prepared environment, owned by core for this call.
 
     def __post_init__(self) -> None:
@@ -56,25 +63,16 @@ class Invocation:
             if self.owner_id is None:
                 raise ValueError("Habitat execution requires a registered user")
             if self.habitat.user_id != self.owner_id:
-                raise ValueError("Habitat and workspace owners do not match")
+                raise ValueError("Habitat and volume owners do not match")
 
     @property
     def owner_id(self) -> UUID7 | None:
-        return self.workspace.owner_id
-
-    @property
-    def thread_id(self) -> UUID7:
-        return self.workspace.thread_id
+        return self.volume.owner_id if self.volume is not None else None
 
     @property
     def cwd(self) -> Path | PurePosixPath:
-        """The harness's working directory; `workspace.path` remains host-side."""
-        return self.habitat.path(
-            self.workspace.path,
-            root=self.workspace.root
-            if isinstance(self.workspace, TreeWorkspace)
-            else None,
-        )
+        """The harness's working directory; `backing.path` remains host-side."""
+        return self.habitat.path(self.backing.path, root=self.root)
 
 
 @dataclass
@@ -119,7 +117,13 @@ class HabitatManager:
                 yield Invocation(
                     id=invocation_id,
                     conversation_id=conversation_id,
-                    workspace=workspace,
+                    thread_id=thread.id,
+                    volume=workspace.volume
+                    if isinstance(workspace, TreeWorkspace)
+                    else None,
+                    backing=workspaces.backing(workspace.path),
+                    root=workspaces.root(owner_id) if owner_id is not None else None,
+                    project=project,
                     habitat=habitat,
                 )
         finally:

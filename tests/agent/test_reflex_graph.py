@@ -2710,9 +2710,9 @@ async def test_react_prepares_each_senders_project_workspace(
     first, second = [turn.invocation for turn in agent.turns]
     assert first.owner_id == alice.id
     assert second.owner_id == bob.id
-    assert first.workspace.path != second.workspace.path
-    assert first.workspace.path.is_dir()
-    assert second.workspace.path.is_dir()
+    assert first.backing.path != second.backing.path
+    assert first.backing.path.is_dir()
+    assert second.backing.path.is_dir()
     assert bool(agent.turns[0].session) is gateway
     assert bool(agent.turns[1].session) is gateway
 

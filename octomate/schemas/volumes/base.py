@@ -19,9 +19,9 @@ from uuid_utils.compat import uuid7
 from octomate.config.mirrors import GitIdentity
 from octomate.models import volumes as volume_models
 from octomate.schemas.base import sqlalchemy_materia
+from octomate.schemas.volumes.backings import Backing
 from octomate.telemetry import volume_logfire
 from octomate.types.volumes import VolumeKind, VolumeUsage
-from octomate.volumes import HostDirectory
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ class Volume(BaseTransmuter):
         return self
 
     @asynccontextmanager
-    async def __call__(self, backing: HostDirectory) -> AsyncGenerator[Path]:
+    async def __call__(self, backing: Backing) -> AsyncGenerator[Path]:
         """Prepare the directory and retain or release its contents on exit."""
         async with backing.use(ephemeral=self.ephemeral) as path:
             await anyio.Path(path).mkdir(parents=True, exist_ok=True)
@@ -124,7 +124,7 @@ class GitVolume(Volume):
     @asynccontextmanager
     async def __call__(
         self,
-        backing: HostDirectory,
+        backing: Backing,
         *,
         mirror: Path | None = None,
         identity: GitIdentity | None = None,
@@ -149,7 +149,7 @@ class GitVolume(Volume):
                 if save and not self.ephemeral:
                     await self.checkpoint(backing, mirror, identity)
 
-    async def materialize(self, backing: HostDirectory, mirror: Path) -> Path:
+    async def materialize(self, backing: Backing, mirror: Path) -> Path:
         """Export only authorized history and this volume's snapshot atomically."""
         # The legacy workspace package imports this schema during initialization.
         from octomate.managers.workspaces.dependencies import install
@@ -309,7 +309,7 @@ class GitVolume(Volume):
             await run_git("reset", cwd=workspace, isolated=True)
 
     async def checkpoint(
-        self, backing: HostDirectory, mirror: Path, identity: GitIdentity
+        self, backing: Backing, mirror: Path, identity: GitIdentity
     ) -> None:
         """Import a validated snapshot; retain the working tree when capture fails."""
         # The legacy workspace package imports this schema during initialization.

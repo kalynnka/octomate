@@ -82,6 +82,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
+from octomate.schemas.volumes.backings import HostDirectory
 from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import base as codex_base
@@ -96,7 +97,6 @@ from octomate.tentacles.slack.feelers.questions import SlackAskQuestionFeeler
 from octomate.tentacles.slack.ink import SlackInk
 from octomate.tentacles.slack.schema import SlackOutboundMessage
 from octomate.types.json import JsonObject
-from octomate.volumes import HostDirectory
 from tests.support.channels import FakeChannelTentacle, RecordingTimeline, carried
 from tests.support.invocations import invocation_for
 from tests.support.managers import (

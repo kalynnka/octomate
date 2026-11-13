@@ -87,7 +87,6 @@ from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEve
 from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.managers.habitat import Invocation
-from octomate.managers.workspaces.base import ProjectWorkspace
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
 from octomate.nerve import Impulse
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -1145,9 +1144,9 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             prompt_id = event.prompt_id
             return {}
 
-        workspace = invocation.workspace
-        project = workspace.project if isinstance(workspace, ProjectWorkspace) else None
-        run_cwd = str(workspace.path)
+        backing = invocation.backing
+        project = invocation.project
+        run_cwd = str(backing.path)
         octomate_session = self.octomate.gateway.get(conversation.id)
         # The turn's server, mounted in process with the session closed over —
         # identity by closure, nothing on the wire names it. Its tools take the
