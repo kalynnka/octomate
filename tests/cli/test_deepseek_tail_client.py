@@ -5,7 +5,12 @@ process is still writing."""
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
+from unittest.mock import AsyncMock
+
 import pytest
+from octomate_cli.streaming import deepseek
 from octomate_cli.streaming.deepseek import (
     DshCompatibilityError,
     DshHistoryClient,
@@ -14,7 +19,11 @@ from octomate_cli.streaming.deepseek import (
     session_origin,
     shippable,
 )
+from octomate_protocol.deepseek import RemoteItem, RemoteSessionFollow
 from pydantic import JsonValue
+from websockets.asyncio.server import ServerConnection, serve
+from websockets.exceptions import ConnectionClosedError
+from websockets.frames import Close
 
 DSH_URL = "http://127.0.0.1:3080"
 SESSION_ID = "session-native-0001"
@@ -74,6 +83,96 @@ class PagingGateway(DshHistoryClient):
         ]
         page: list[JsonValue] = list(window[-self.page_size :])
         return {"records": page, "hasMore": len(window) > len(page)}
+
+
+async def test_snapshot_larger_than_one_mebibyte_reads_every_record() -> None:
+    records = [
+        entry(seq, "assistant/chunk", {"chunk": {"text": "x" * 2600}})
+        for seq in range(643)
+    ]
+    snapshot: dict[str, JsonValue] = {
+        "type": "snapshot",
+        "cursor": len(records) - 1,
+        "records": list(records),
+        "hasMore": False,
+    }
+    message = RemoteItem(
+        type="item", stream_id=SESSION_ID, value=snapshot
+    ).model_dump_json(by_alias=True)
+    assert len(message.encode()) > 2**20
+
+    async def gateway(websocket: ServerConnection) -> None:
+        request = RemoteSessionFollow.model_validate_json(await websocket.recv())
+        assert request.stream_id == SESSION_ID
+        await websocket.send(message)
+        await websocket.wait_closed()
+
+    async with asyncio.timeout(5), serve(gateway, "127.0.0.1", 0) as host:
+        port = next(iter(host.sockets)).getsockname()[1]
+        client = DshHistoryClient(f"http://127.0.0.1:{port}")
+        entries = await asyncio.to_thread(new_entries, client, SESSION_ID, 0)
+
+    assert entries == records
+
+
+@pytest.mark.parametrize("code", [1002, 1003, 1007, 1009])
+@pytest.mark.parametrize("echoed", [False, True])
+async def test_local_protocol_close_surfaces_without_retry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, code: int, echoed: bool
+) -> None:
+    frame = Close(code, "local protocol failure")
+    closed = ConnectionClosedError(
+        frame if echoed else None, frame, False if echoed else None
+    )
+    stream = AsyncMock(side_effect=[closed, True])
+    sleep = AsyncMock()
+    monkeypatch.setattr(deepseek, "stream_session", stream)
+    monkeypatch.setattr(deepseek.asyncio, "sleep", sleep)
+
+    with pytest.raises(ConnectionClosedError, match="local protocol failure"):
+        await deepseek.run_tail(
+            "ws://octomate.example/stream",
+            SESSION_ID,
+            tmp_path / "session",
+            str(tmp_path),
+            "test-token",
+            DSH_URL,
+        )
+
+    stream.assert_awaited_once()
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("received", "sent"),
+    [
+        (None, None),
+        (None, Close(1011, "keepalive ping timeout")),
+        (Close(1011, ""), None),
+    ],
+)
+async def test_transient_connection_close_retries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    received: Close | None,
+    sent: Close | None,
+) -> None:
+    stream = AsyncMock(side_effect=[ConnectionClosedError(received, sent), True])
+    sleep = AsyncMock()
+    monkeypatch.setattr(deepseek, "stream_session", stream)
+    monkeypatch.setattr(deepseek.asyncio, "sleep", sleep)
+
+    await deepseek.run_tail(
+        "ws://octomate.example/stream",
+        SESSION_ID,
+        tmp_path / "session",
+        str(tmp_path),
+        "test-token",
+        DSH_URL,
+    )
+
+    assert stream.await_count == 2
+    sleep.assert_awaited_once_with(2.0)
 
 
 def test_new_entries_pages_back_to_the_cursor(
