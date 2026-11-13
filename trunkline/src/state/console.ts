@@ -290,6 +290,7 @@ export const replayView = () => {
 
 export interface ConsoleActions {
   selectThread(chId: string, thId: string, direction?: 'up' | 'down'): Promise<void>
+  resumeLiveUpdates(): Promise<void>
   refreshThreadProject(thId: string): Promise<void>
   loadOlder(): void
   onChatScroll(scrollTop: number): void
@@ -759,7 +760,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         socket.close()
         return
       }
-      // Closed by the relay: the next open of the thread watches it afresh.
+      // Release the watch so opening the thread or returning to the tab can reconnect.
       void socket.closed.then(() => {
         if (viewing === watching) viewing = undefined
       })
@@ -1017,6 +1018,10 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   }
 
   const actions: ConsoleActions = {
+    async resumeLiveUpdates() {
+      const { selThreadId, ntOn } = get()
+      if (selThreadId && !ntOn) await watchOpen(selThreadId)
+    },
     async refreshThreadProject(thId: string) {
       const queryKey = ['thread-detail', thId]
       if (!queryClient.getQueryState(queryKey) && get().selThreadId !== thId) return

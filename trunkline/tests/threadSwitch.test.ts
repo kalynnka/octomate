@@ -515,6 +515,38 @@ test('a failed connection releases the watch so the thread can be opened again',
   assert.deepEqual(LiveSocket.opened.map(socket => socket.closed), [true, false])
 })
 
+test('resuming live updates reconnects only the lost watch and preserves the open conversation', async () => {
+  const id = 'resuming-watch'
+  const read = mock.method(api, 'getThreadDetail', async () => ({ ...detail, key: id }))
+  const actions = useConsole.getState().actions
+  await actions.selectThread('codex', id)
+  await actions.resumeLiveUpdates()
+  assert.equal(LiveSocket.opened.length, 1)
+  const old = LiveSocket.last()
+  old.close()
+  await tick()
+  useConsole.setState({ composer: 'Unsent draft', ledgerN: 80, open: { tool: true } })
+  const before = useConsole.getState()
+  await Promise.all([actions.resumeLiveUpdates(), actions.resumeLiveUpdates()])
+  assert.equal(useConsole.getState(), before)
+  assert.equal(read.mock.callCount(), 1)
+  assert.equal(LiveSocket.opened.length, 2)
+  assert.deepEqual(LiveSocket.opened.map(socket => socket.closed), [true, false])
+  LiveSocket.last().deliver({ event_kind: 'run_started', address: {
+    channel_tentacle_id: 'codex', chat_type: 'thread', chat_id: id, user_id: 'owner', channel_thread_id: null, shared: false,
+  } }, result, { event_kind: 'run_ended', thread_message_id: 'reply' })
+  assert.deepEqual(useConsole.getState().live.filter(item => item.kind === 'stream').map(item => item.text), ['Hello back'])
+  assert.equal(useConsole.getState().running, false)
+})
+
+test('resuming live updates leaves a draft with no saved thread alone', async () => {
+  useConsole.setState({ selThreadId: 'new-thread', ntOn: true, composer: 'Unsent draft' })
+  const before = useConsole.getState()
+  await before.actions.resumeLiveUpdates()
+  assert.equal(useConsole.getState(), before)
+  assert.equal(LiveSocket.opened.length, 0)
+})
+
 test('a superseded connection cannot resume watching when the reader returns', async () => {
   mock.method(api, 'getThreadDetail', async (id: string) => ({ ...detail, key: id }))
   const actions = useConsole.getState().actions

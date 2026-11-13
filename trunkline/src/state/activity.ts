@@ -67,6 +67,14 @@ function syncActivity() {
   })
 }
 
+/** Resume a retry immediately when the tab returns from the background. */
+export function resumeActivity() {
+  if (!retry) return
+  clearTimeout(retry)
+  retry = undefined
+  syncActivity()
+}
+
 /** Use the channel status wording without trailing ellipses, tool arguments, or thoughts. */
 export function activityText(event: WireEvent): string | undefined {
   switch (event.event_kind) {

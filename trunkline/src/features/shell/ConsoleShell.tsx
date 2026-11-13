@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/Button'
+import { TextSwap } from '@/components/TextSwap'
 import { useConsole } from '@/state/console'
 import { followAddress } from '@/state/url'
 import { watchThreads } from '@/state/threads'
+import { resumeActivity } from '@/state/activity'
 import { ThreadsSidebar } from '@/features/threads/ThreadsSidebar'
 import { ControlRail } from '@/features/control/ControlRail'
 import { ReviewPanel } from '@/features/review/ReviewPanel'
@@ -12,9 +14,40 @@ import { StatusBar } from './StatusBar'
 
 export function ConsoleShell() {
   const [threadListError, setThreadListError] = useState<string | null>(null)
-  useEffect(() => watchThreads(setThreadListError), [])
+  const [reconnecting, setReconnecting] = useState(false)
+  const [connectionAttempt, setConnectionAttempt] = useState(0)
   const actions = useConsole((s) => s.actions)
-  const { applyViewport, closeOverlays, cyclePermissionMode } = actions
+  const { applyViewport, closeOverlays, cyclePermissionMode, resumeLiveUpdates } = actions
+  useEffect(() => {
+    let disconnected = true
+    let stop: (() => void) | undefined
+    const resume = () => {
+      if (document.visibilityState !== 'visible') return
+      if (disconnected) {
+        stop?.()
+        disconnected = false
+        setReconnecting(true)
+        stop = watchThreads(message => {
+          disconnected = true
+          setReconnecting(false)
+          setThreadListError(message)
+        }, () => {
+          setReconnecting(false)
+          setThreadListError(null)
+        })
+      }
+      resumeActivity()
+      void resumeLiveUpdates()
+    }
+    resume()
+    document.addEventListener('visibilitychange', resume)
+    window.addEventListener('focus', resume)
+    return () => {
+      document.removeEventListener('visibilitychange', resume)
+      window.removeEventListener('focus', resume)
+      stop?.()
+    }
+  }, [resumeLiveUpdates, connectionAttempt])
   const overlayOpen = useConsole(
     (s) => !s.sbFold || (!s.mgmtSec && (s.mgmtOpen || (s.traceOn === true && !s.pvOpen))),
   )
@@ -66,16 +99,20 @@ export function ConsoleShell() {
       }}
     >
       {threadListError && (
-        <div className="trk-thread-list-alert" role="alert">
-          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
-            <path d="M12 9v4M12 17h.01" />
+        <div className="trk-thread-list-alert lt-fade-in" role={reconnecting ? 'status' : 'alert'}>
+          <svg className={reconnecting ? 'lt-spin' : undefined} aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            {reconnecting ? <path d="M20 12a8 8 0 1 1-8-8" /> : <>
+              <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+              <path d="M12 9v4M12 17h.01" />
+            </>}
           </svg>
           <div className="trk-thread-list-alert-copy">
-            <strong>{threadListError}</strong>
-            <span>Reload to resume thread-list updates.</span>
+            <strong><TextSwap>{reconnecting ? 'Reconnecting…' : threadListError}</TextSwap></strong>
+            <span>{reconnecting ? 'Restoring thread-list updates.' : 'Reconnect to resume live updates.'}</span>
           </div>
-          <Button onClick={() => window.location.reload()} style={{ flexShrink: 0 }}>Reload</Button>
+          <Button disabled={reconnecting} onClick={() => setConnectionAttempt(attempt => attempt + 1)} style={{ flexShrink: 0 }}>
+            {reconnecting ? 'Connecting…' : 'Reconnect'}
+          </Button>
         </div>
       )}
       <div className="trk-shell-row" style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative' }}>
