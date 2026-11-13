@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 from arcanus.materia.sqlalchemy import selectinload
+from claude_agent_sdk import UserMessage
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
@@ -11,6 +12,7 @@ from octomate import Octomate
 from octomate.database import async_session
 from octomate.schemas.compactions import Compaction, ExternalCompaction
 from octomate.schemas.thread import ThreadKey
+from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
 from octomate.types.compactions import CompactionTrigger
 from octomate.types.json import JsonObject
@@ -152,3 +154,79 @@ async def test_boundary_without_summary_still_persists_without_a_run(
     assert row.trigger == "manual"
     assert not row.messages
     assert not await runs_of(app)
+
+
+@pytest.mark.parametrize("retained", [[], ["u-p1", "a2"], ["missing"]])
+@pytest.mark.parametrize("references", ["uuids", "allUuids"])
+async def test_retained_transcript_uuids_preserve_existing_messages(
+    in_memory_engine: AsyncEngine, retained: list[str], references: str
+) -> None:
+    app = Octomate()
+    tailer = ClaudeTranscriptTailer(
+        app.conversations, app.threads, agent_tentacle_id="claude"
+    )
+    boundary_id, summary_id = str(uuid7()), str(uuid7())
+    boundary = prompt_record("compact", "", 5)
+    boundary.pop("message")
+    boundary.pop("promptSource")
+    boundary.pop("promptId")
+    boundary.update(
+        type="system",
+        subtype="compact_boundary",
+        level="info",
+        uuid=boundary_id,
+        compactMetadata={
+            "trigger": "manual",
+            "preservedMessages": {
+                "allUuids": ["unseen"],
+                "anchorUuid": summary_id,
+                references: [*retained, "stop-notice"],
+            },
+        },
+    )
+    summary = prompt_record("compact", "summary", 6)
+    summary.pop("promptSource")
+    summary.update(uuid=summary_id, parentUuid=boundary_id, isCompactSummary=True)
+    notice = {**boundary, "uuid": "stop-notice", "subtype": "stop_hook_summary"}
+    notice.pop("compactMetadata")
+    records = [*TURN_ONE, notice, boundary, summary, *TURN_TWO]
+    await stream_in(tailer, app.nerve, records)
+    async with async_session() as session:
+        [row] = await session.list(
+            Compaction, options=[selectinload(Compaction["messages"])]
+        )
+    owner = await app.conversations.get(row.conversation_id)
+    archive = await app.conversations.history(owner.id)
+    assert len(archive) == 6
+    assert row.membership_complete is (retained != ["missing"])
+    if row.membership_complete:
+        expected = [
+            row.messages[0].id,
+            *([archive[0].id, archive[3].id] if retained else []),
+            archive[4].id,
+            archive[5].id,
+        ]
+        assert [
+            message.id for message in await app.conversations.effective_messages(owner)
+        ] == expected
+        child = await app.conversations.ensure(
+            await a_thread("child"), agent_tentacle_id="claude"
+        )
+        await app.conversations.fork(owner, child, external_id="child-session")
+        assert [
+            message.id for message in await app.conversations.effective_messages(child)
+        ] == expected
+    await stream_in(tailer, app.nerve, records)
+    assert [message.id for message in await app.conversations.history(owner.id)] == [
+        message.id for message in archive
+    ]
+
+
+def test_sdk_summary_cannot_replace_the_prompt_identity() -> None:
+    accumulator = ClaudeRunAccumulator()
+    accumulator.begin("original")
+    list(accumulator.consume(UserMessage(content="summary", uuid="summary")))
+    assert accumulator.messages[0].metadata is None
+    list(accumulator.consume(UserMessage(content="original", uuid="prompt")))
+    list(accumulator.consume(UserMessage(content="original", uuid="later")))
+    assert accumulator.messages[0].metadata == {"native_item_ids": ["prompt"]}

@@ -107,7 +107,13 @@ class ClaudeInk:
         part = UserPromptPart(content)
         if boundary.timestamp is not None:
             part.timestamp = boundary.timestamp
-        return [ModelRequest(parts=[part], timestamp=boundary.timestamp)]
+        return [
+            ModelRequest(
+                parts=[part],
+                timestamp=boundary.timestamp,
+                metadata={"native_item_ids": [summary.uuid]},
+            )
+        ]
 
     async def stream(
         self,

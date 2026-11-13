@@ -106,6 +106,12 @@ class ModelMessage(BaseTransmuter, ABC):
         materializes as a concrete sibling (`ModelRequest`/`ModelResponse`) via the
         polymorphic adapter, so the base itself is never instantiated."""
 
+    def __lt__(self, other: ModelMessage | ModelRequest | ModelResponse) -> bool:
+        return self.id < other.id
+
+    def __gt__(self, other: ModelMessage | ModelRequest | ModelResponse) -> bool:
+        return self.id > other.id
+
 
 @sqlalchemy_materia.bless(ModelRequestModel)
 @arcanus_dataclass(config=dataclass_config)
@@ -127,6 +133,12 @@ class ModelRequest(Transmuter, PydanticModelRequest):
     thread_messages: RelationCollection[
         ThreadMessage | ThreadCommand | ThreadArtifact
     ] = Relationships()
+
+    def __lt__(self, other: ModelMessage | ModelRequest | ModelResponse) -> bool:
+        return self.id < other.id
+
+    def __gt__(self, other: ModelMessage | ModelRequest | ModelResponse) -> bool:
+        return self.id > other.id
 
     @model_validator(mode="after")
     def _derive_message_fields(self) -> Self:
@@ -179,6 +191,12 @@ class ModelResponse(Transmuter, PydanticModelResponse):
     thread_messages: RelationCollection[
         ThreadMessage | ThreadCommand | ThreadArtifact
     ] = Relationships()
+
+    def __lt__(self, other: ModelMessage | ModelRequest | ModelResponse) -> bool:
+        return self.id < other.id
+
+    def __gt__(self, other: ModelMessage | ModelRequest | ModelResponse) -> bool:
+        return self.id > other.id
 
     @model_validator(mode="after")
     def _derive_message_fields(self) -> Self:

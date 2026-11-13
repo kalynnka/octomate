@@ -134,6 +134,16 @@ class ConversationCompaction(BaseTransmuter):
         description="Zero-based compaction order in this conversation; None when the order has not been established.",
     )
 
+    def __lt__(self, other: ConversationCompaction) -> bool:
+        return (self.position if self.position is not None else -1) < (
+            other.position if other.position is not None else -1
+        )
+
+    def __gt__(self, other: ConversationCompaction) -> bool:
+        return (self.position if self.position is not None else -1) > (
+            other.position if other.position is not None else -1
+        )
+
 
 @sqlalchemy_materia.bless(ConversationModel)
 @arcanus_dataclass(kw_only=True)

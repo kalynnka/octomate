@@ -1193,3 +1193,136 @@ async def test_malformed_compactions_and_notifications_create_no_records(
     )
     async with async_session() as session:
         assert await session.count(ExternalCompaction) == 0
+
+
+@pytest.mark.parametrize("driven", [False, True])
+@pytest.mark.parametrize("retained", ["user-item", "answer-item", "missing-item"])
+async def test_replacement_history_reuses_archive_identities(
+    impulses: ObjectSendStream[Impulse], driven: bool, retained: str
+) -> None:
+    app = Octomate()
+    if driven:
+        owner = await app.conversations.ensure(
+            await a_thread(), agent_tentacle_id="codex"
+        )
+        await app.conversations.record_agent_run(
+            owner,
+            run_id=TURN_ID,
+            native_turn_id=TURN_ID,
+            external_id=SESSION_ID,
+            messages=[
+                ModelRequest(
+                    parts=[UserPromptPart("same text")],
+                    metadata={"native_item_ids": ["user-item"]},
+                ),
+                ModelResponse(
+                    parts=[TextPart("same text")], provider_response_id="answer-item"
+                ),
+            ],
+        )
+        await app.conversations.record_driven_compaction(
+            owner,
+            native_session_id=SESSION_ID,
+            native_compaction_id="compact-item",
+            trigger="manual",
+            happened_at=None,
+            messages=CompactedItem(
+                message="",
+                replacement_history=[
+                    {
+                        "type": "compaction",
+                        "id": "checkpoint",
+                        "encrypted_content": "opaque",
+                    }
+                ],
+            ).to_messages(datetime(2026, 7, 16, 10, 0, 4, tzinfo=UTC)),
+        )
+    records = [
+        event(0, "task_started", turn_id=TURN_ID),
+        event(1, "user_message", message="same text"),
+        {
+            "timestamp": "2026-07-16T10:00:02Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "user-item",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "same text"}],
+                "internal_chat_message_metadata_passthrough": {
+                    "turn_id": TURN_ID,
+                    "content_item_kinds": ["user.text"],
+                },
+            },
+        },
+        {
+            "timestamp": "2026-07-16T10:00:03Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "answer-item",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "same text"}],
+            },
+        },
+        {
+            "timestamp": "2026-07-16T10:00:04Z",
+            "type": "compacted",
+            "payload": {
+                "message": "",
+                "replacement_history": [
+                    {
+                        "type": "compaction",
+                        "id": "checkpoint",
+                        "encrypted_content": "opaque",
+                    },
+                    {
+                        "type": "message",
+                        "role": "user" if retained == "user-item" else "assistant",
+                        "id": retained,
+                        "content": [{"type": "input_text", "text": "same text"}],
+                    },
+                ],
+            },
+        },
+        {
+            "timestamp": "2026-07-16T10:00:05Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "thread_id": SESSION_ID,
+                "turn_id": TURN_ID,
+                "item": {"type": "ContextCompaction", "id": "compact-item"},
+            },
+        },
+        event(6, "task_complete", turn_id=TURN_ID),
+    ]
+    await streamed_runs(impulses, records)
+    async with async_session() as session:
+        [row] = await session.list(
+            Compaction, options=[selectinload(Compaction["messages"])]
+        )
+    owner = await app.conversations.get(row.conversation_id)
+    archive = await app.conversations.history(owner.id)
+    assert len(archive) == 2
+    assert row.membership_complete is (retained != "missing-item"), (
+        row.native_compaction_id,
+        [(message.kind, message.metadata) for message in [*archive, *row.messages]],
+    )
+    if row.membership_complete:
+        expected = [row.messages[0].id, archive[retained == "answer-item"].id]
+        assert [
+            message.id for message in await app.conversations.effective_messages(owner)
+        ] == expected
+        child = await app.conversations.ensure(
+            await a_thread("child"), agent_tentacle_id="codex"
+        )
+        await app.conversations.fork(owner, child, external_id="child-session")
+        assert [
+            message.id for message in await app.conversations.effective_messages(child)
+        ] == expected
+    await streamed_runs(impulses, records)
+    assert [message.id for message in await app.conversations.history(owner.id)] == [
+        message.id for message in archive
+    ]
+    async with async_session() as session:
+        assert await session.count(Compaction) == 1

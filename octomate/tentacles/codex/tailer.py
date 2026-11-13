@@ -47,6 +47,7 @@ from octomate.managers.files import FileManager
 from octomate.managers.thread import ThreadManager
 from octomate.nerve import Impulse
 from octomate.schemas.artifacts import HtmlArtifact
+from octomate.schemas.compactions import NativeMessage
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import (
@@ -68,6 +69,8 @@ from octomate.tentacles.codex.transcript import (
     SessionMetadata,
     TurnPermissions,
     UserMessageItem,
+    context_item_id,
+    is_injected_message,
     payload_type,
     rollout_line_adapter,
     session_metadata_adapter,
@@ -88,6 +91,7 @@ class PendingCompaction:
     line: RolloutLine
     start: int  # Inclusive byte offset of the replacement record.
     end: int  # Exclusive byte offset of the replacement record.
+    last_item_id: str | None
 
 
 @dataclass
@@ -117,7 +121,7 @@ class OpenTurn:
     visualizations: dict[int, list[HtmlSnapshot]] = field(
         default_factory=dict
     )  # Snapshots keyed by their model message position.
-    unpaired_prompts: list[tuple[str, str]] = field(
+    unpaired_prompts: list[tuple[str, str, int]] = field(
         default_factory=list
     )  # Source representation and text awaiting their counterpart in a mixed rollout.
 
@@ -148,11 +152,17 @@ class OpenTurn:
             return None
         if not text:
             return None
-        for index, (source, previous) in enumerate(self.unpaired_prompts):
+        for index, (source, previous, position) in enumerate(self.unpaired_prompts):
             if source != line.type and previous == text:
                 self.unpaired_prompts.pop(index)
+                identity = context_item_id(line.payload)
+                if identity is not None and position < len(self.messages):
+                    self.messages[position].metadata = {
+                        **(self.messages[position].metadata or {}),
+                        "native_item_ids": [identity],
+                    }
                 return None
-        self.unpaired_prompts.append((line.type, text))
+        self.unpaired_prompts.append((line.type, text, len(self.messages)))
         return text
 
 
@@ -185,6 +195,8 @@ class SubagentTail:
     recorded: set[str] = field(default_factory=set)
     open_turn: OpenTurn | None = None
     own_turns_started: bool = False
+    last_item_id: str | None = None
+    compactions_pending: bool = False
     linked_call_ids: set[str] = field(default_factory=set)
 
 
@@ -211,6 +223,8 @@ class TailState:
     cwd: str = ""  # from the rollout's session metadata
     source: str | None = None
     open_turn: OpenTurn | None = None
+    last_item_id: str | None = None
+    compactions_pending: bool = False
     subagents: dict[str, SubagentTail] = field(default_factory=dict)
     subagent_calls: dict[str, list[SubagentCall]] = field(default_factory=dict)
     classified_rollouts: set[Path] = field(default_factory=set)
@@ -412,6 +426,8 @@ class CodexTranscriptTailer:
         *,
         visualizations: list[HtmlSnapshot] | None = None,
     ) -> None:
+        if line.type == "response_item" and not is_injected_message(line.payload):
+            state.last_item_id = context_item_id(line.payload)
         if line.type == "compacted":
             await self.record_compaction(state, line, start, end)
             return
@@ -472,7 +488,12 @@ class CodexTranscriptTailer:
                 else f"{turn.turn_id}:{start}",
                 text=prompt,
                 timestamp=line.timestamp,
-                metadata=codex_metadata(),
+                metadata={
+                    **codex_metadata(),
+                    "native_item_ids": [context_item_id(line.payload)]
+                    if context_item_id(line.payload)
+                    else [],
+                },
             )
             return
         if line.type == "response_item" and turn.native is not None:
@@ -582,6 +603,8 @@ class CodexTranscriptTailer:
         start: int,
         end: int,
     ) -> None:
+        if line.type == "response_item" and not is_injected_message(line.payload):
+            tail.last_item_id = context_item_id(line.payload)
         if line.type == "compacted":
             if tail.own_turns_started:
                 await self.record_compaction(state, line, start, end, tail=tail)
@@ -618,7 +641,12 @@ class CodexTranscriptTailer:
                 ModelRequest(
                     parts=[UserPromptPart(content=prompt, timestamp=line.timestamp)],
                     timestamp=line.timestamp,
-                    metadata=codex_metadata(),
+                    metadata={
+                        **codex_metadata(),
+                        "native_item_ids": [context_item_id(line.payload)]
+                        if context_item_id(line.payload)
+                        else [],
+                    },
                 )
             )
             return
@@ -651,11 +679,17 @@ class CodexTranscriptTailer:
         *,
         tail: SubagentTail | None = None,
         native_compaction_id: str | None = None,
+        last_item_id: str | None = None,
     ) -> None:
         """Capture summary/checkpoint content without changing the archived turn."""
         try:
             item = CompactedItem.model_validate(line.payload)
-            messages = item.to_messages(line.timestamp)
+            before = (
+                last_item_id
+                if native_compaction_id is not None
+                else (tail or state).last_item_id
+            )
+            messages = item.to_messages(line.timestamp, last_item_id=before)
         except ValidationError:
             logger.debug("skipping malformed Codex compaction")
             return
@@ -672,11 +706,27 @@ class CodexTranscriptTailer:
             happened_at=line.timestamp,
             messages=messages,
         )
+        (tail or state).compactions_pending = True
+        if native_compaction_id is None and messages:
+            context = NativeMessage.model_validate(
+                messages[0].metadata or {}
+            ).compaction_context
+            (tail or state).last_item_id = (
+                context.replacement_ids[-1]
+                if context is not None and context.replacement_ids
+                else None
+            )
         turn = tail.open_turn if tail is not None else state.open_turn
+        if turn is None:
+            await self.conversation_manager.record_native_memberships(
+                conversation,
+                tail.thread_id if tail else state.session_id,
+            )
+            (tail or state).compactions_pending = False
         if turn is not None:
             turn.compacted = True
             if native_compaction_id is None:
-                turn.compaction = PendingCompaction(line, start, end)
+                turn.compaction = PendingCompaction(line, start, end, before)
 
     async def identify_compaction(
         self,
@@ -704,6 +754,7 @@ class CodexTranscriptTailer:
             pending.end,
             tail=tail,
             native_compaction_id=event.item.id,
+            last_item_id=pending.last_item_id,
         )
         turn.compaction = None
 
@@ -770,6 +821,11 @@ class CodexTranscriptTailer:
                 if run is None:
                     return
                 tail.recorded.add(turn.turn_id)
+                if tail.compactions_pending:
+                    await self.conversation_manager.record_native_memberships(
+                        conversation, tail.thread_id
+                    )
+                    tail.compactions_pending = False
                 if call is not None:
                     tail.linked_call_ids.add(call.parent_tool_call_id)
                 logger.info(
@@ -786,6 +842,11 @@ class CodexTranscriptTailer:
         turn = state.open_turn
         state.open_turn = None
         if turn is None or turn.native is None:
+            if state.compactions_pending and state.conversation is not None:
+                await self.conversation_manager.record_native_memberships(
+                    state.conversation, state.session_id
+                )
+                state.compactions_pending = False
             return
         for message in reversed(turn.messages):
             if isinstance(message, ModelResponse):
@@ -801,6 +862,11 @@ class CodexTranscriptTailer:
             and not turn.has_response_items
         ):
             await turn.native.settle(turn.turn_id)
+            if state.compactions_pending:
+                await self.conversation_manager.record_native_memberships(
+                    conversation, state.session_id
+                )
+                state.compactions_pending = False
             return
         with codex_logfire.span(
             "codex.tailer.commit_turn {turn_id} [{session_id}]",
@@ -835,6 +901,11 @@ class CodexTranscriptTailer:
                 span.set_attribute("committed", run is not None)
                 if run is not None:
                     await self.capture_html(state, turn, run)
+                if state.compactions_pending:
+                    await self.conversation_manager.record_native_memberships(
+                        conversation, state.session_id
+                    )
+                    state.compactions_pending = False
                 await turn.native.close(run, run_id=turn.turn_id, answer=turn.answer)
                 logger.info(
                     "session %s: turn %s synced — %d messages, bytes %d-%d",
@@ -1060,7 +1131,12 @@ class CodexTranscriptTailer:
                         provider_response_id=response_id
                         if isinstance(response_id, str)
                         else None,
-                        metadata=codex_metadata(),
+                        metadata={
+                            **codex_metadata(),
+                            "native_item_ids": [context_item_id(payload)]
+                            if context_item_id(payload)
+                            else [],
+                        },
                     )
                 )
                 yield PartStartEvent(index=turn.part_index, part=part)
@@ -1119,7 +1195,12 @@ class CodexTranscriptTailer:
                         parts=[part],
                         timestamp=line.timestamp,
                         provider_name=CODEX_PROVIDER_NAME,
-                        metadata=codex_metadata(),
+                        metadata={
+                            **codex_metadata(),
+                            "native_item_ids": [context_item_id(payload)]
+                            if context_item_id(payload)
+                            else [],
+                        },
                     )
                 )
                 yield PartStartEvent(index=turn.part_index, part=part)
@@ -1174,6 +1255,9 @@ class CodexTranscriptTailer:
                     timestamp=line.timestamp,
                     provider_name=CODEX_PROVIDER_NAME,
                     provider_response_id=call_id,
-                    metadata=codex_metadata(),
+                    metadata={
+                        **codex_metadata(),
+                        "native_item_ids": ["call:" + call_id, "return:" + call_id],
+                    },
                 )
             )

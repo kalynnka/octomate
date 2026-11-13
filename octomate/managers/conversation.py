@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
+from operator import attrgetter
 from pathlib import Path
 from typing import ClassVar, Literal, TypeVar, cast
 
@@ -25,16 +26,25 @@ from pydantic_ai.conversation_store import (
     ConversationStore as PydanticConversationStore,
 )
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
-from pydantic_ai.messages import ModelMessagesTypeAdapter, ToolReturnPart
+from pydantic_ai.messages import (
+    ModelMessagesTypeAdapter,
+    NativeToolCallPart,
+    NativeToolReturnPart,
+    ThinkingPart,
+    ToolReturnPart,
+)
 from pydantic_ai.usage import RequestUsage, RunUsage
 from sqlalchemy import (
+    JSON,
     Select,
     and_,
+    case,
     func,
     insert,
     literal,
     or_,
     select,
+    update,
 )
 from sqlalchemy.orm.exc import StaleDataError
 from uuid_utils.compat import uuid7
@@ -46,6 +56,7 @@ from octomate.schemas.compactions import (
     Compaction,
     CompactionMembership,
     ExternalCompaction,
+    NativeMessage,
 )
 from octomate.schemas.conversation import (
     Conversation,
@@ -90,6 +101,10 @@ def own_runs(thread_id: UUID7) -> Select[tuple[str]]:
 
 class ConversationNotFound(ValueError):
     """The requested conversation no longer exists or was never created."""
+
+
+class IncompleteCompactionContext(ValueError):
+    """Native provenance cannot yet establish the effective context."""
 
 
 class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]):
@@ -194,7 +209,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
             )
 
     async def effective_messages(
-        self, conversation: Conversation
+        self, conversation: Conversation, *, pending: tuple[UUID7, ...] = ()
     ) -> list[ModelRequest | ModelResponse]:
         """Replay complete, ordered rewrites over the run archive.
 
@@ -202,10 +217,14 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         messages follow its replacement; unknown membership or order cannot be
         replayed safely and is refused rather than reviving the archive. Only
         message ids are replayed; bodies are loaded for the final context.
+
+        Native adapters may exclude their pending boundaries while proving the
+        next rewrite. Agent context reads never exclude a boundary.
         """
         async with async_session() as session:
             linked = select(ConversationCompaction["compaction_id"]).where(
-                ConversationCompaction["conversation_id"] == conversation.id
+                ConversationCompaction["conversation_id"] == conversation.id,
+                ConversationCompaction["compaction_id"].not_in(pending),
             )
             exists, unlinked = (
                 await session.execute(
@@ -216,6 +235,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                         select(Compaction["id"])
                         .where(
                             Compaction["conversation_id"] == conversation.id,
+                            Compaction["id"].not_in(pending),
                             Compaction["id"].not_in(linked),
                         )
                         .exists(),
@@ -225,14 +245,15 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
             if not exists:
                 raise ConversationNotFound(f"unknown conversation {conversation.id}")
             if unlinked:
-                raise ValueError(
+                raise IncompleteCompactionContext(
                     "effective context requires every compaction to be linked"
                 )
             links = await session.list(
                 ConversationCompaction,
                 limit=None,
                 expressions=[
-                    ConversationCompaction["conversation_id"] == conversation.id
+                    ConversationCompaction["conversation_id"] == conversation.id,
+                    ConversationCompaction["compaction_id"].not_in(pending),
                 ],
                 order_bys=[ConversationCompaction["position"]],
             )
@@ -248,7 +269,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                     .exists()
                 )
             ):
-                raise ValueError(
+                raise IncompleteCompactionContext(
                     "effective context requires complete, ordered compactions"
                 )
             message_ids = deque(
@@ -293,7 +314,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                     or len(before) > len(message_ids)
                     or any(message_ids.popleft() != message_id for message_id in before)
                 ):
-                    raise ValueError(
+                    raise IncompleteCompactionContext(
                         "compaction input does not match the effective context"
                     )
                 message_ids.extendleft(reversed(stages[link.compaction_id]["after"]))
@@ -420,7 +441,8 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                     Compaction["conversation_id"].in_(
                         select(Conversation["id"]).where(
                             Conversation["agent_tentacle_id"]
-                            == conversation.agent_tentacle_id
+                            == conversation.agent_tentacle_id,
+                            Conversation["subagent_id"] == conversation.subagent_id,
                         )
                     ),
                     Compaction["native_session_id"] == native_session_id,
@@ -428,6 +450,117 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 options=[selectinload(Compaction["messages"])],
             )
             return list(rows)
+
+    async def session_run_ids(
+        self, conversation: Conversation, native_session_id: str
+    ) -> set[str]:
+        """Read native-session ownership without hydrating the archived messages."""
+        async with async_session() as session:
+            return set(
+                await session.scalars(
+                    select(AgentRun["id"])
+                    .select_from(Conversation)
+                    .join(Conversation["runs"])
+                    .where(
+                        Conversation["id"] == conversation.id,
+                        AgentRun["native_session_id"] == native_session_id,
+                    )
+                )
+            )
+
+    async def record_native_memberships(
+        self,
+        conversation: Conversation,
+        native_session_id: str,
+    ) -> None:
+        """Complete proven replacements; missing or split source identities stay unknown."""
+        records = await self.native_compactions(conversation, native_session_id)
+        pending = [row for row in records if not row.membership_complete]
+        if not pending or any(
+            row.conversation_id != pending[0].conversation_id for row in pending
+        ):
+            return
+        owner = await self.get(pending[0].conversation_id, with_runs=False)
+        try:
+            context = await self.effective_messages(
+                owner, pending=tuple(row.id for row in pending)
+            )
+        except IncompleteCompactionContext:
+            return
+        rewrites: list[CompactionRewrite] = []
+        for row in sorted(pending):
+            if not row.messages or row.native_compaction_id is None:
+                break
+            boundary = NativeMessage.model_validate(
+                row.messages[0].metadata or {}
+            ).compaction_context
+            if boundary is None:
+                break
+            if len(set(boundary.replacement_ids)) != len(boundary.replacement_ids):
+                break
+            identities: dict[str, list[ModelRequest | ModelResponse]] = {}
+            sources: dict[UUID7, list[str]] = {}
+            cutoff: int | None = None
+            for index, message in enumerate([*context, *row.messages]):
+                refs = NativeMessage.model_validate(
+                    message.metadata or {}
+                ).native_item_ids
+                if not refs:
+                    refs = [
+                        ("call:" if isinstance(part, NativeToolCallPart) else "return:")
+                        + part.tool_call_id
+                        for part in message.parts
+                        if isinstance(part, NativeToolCallPart | NativeToolReturnPart)
+                    ]
+                if (
+                    not refs
+                    and isinstance(message, ModelResponse)
+                    and message.provider_response_id
+                ):
+                    refs = [message.provider_response_id]
+                sources[message.id] = refs
+                for ref in refs:
+                    identities.setdefault(ref, []).append(message)
+                if boundary.last_item_id in refs and index < len(context):
+                    cutoff = index + 1
+            if cutoff is None or any(
+                ref not in identities for ref in boundary.replacement_ids
+            ):
+                break
+            if any(
+                len(messages) > 1
+                and not all(
+                    isinstance(part, ThinkingPart)
+                    for message in messages
+                    for part in message.parts
+                )
+                for messages in identities.values()
+            ):
+                break
+            before = context[:cutoff]
+            allowed = {message.id for message in [*before, *row.messages]}
+            selected = set(boundary.replacement_ids)
+            after = list(
+                {
+                    message.id: message
+                    for ref in boundary.replacement_ids
+                    for message in identities[ref]
+                }.values()
+            )
+            if any(
+                message.id not in allowed or not set(sources[message.id]) <= selected
+                for message in after
+            ):
+                break
+            rewrites.append(
+                CompactionRewrite(
+                    row.id,
+                    [message.id for message in before],
+                    [message.id for message in after],
+                )
+            )
+            context[:cutoff] = after
+        await self.record_compaction_memberships(owner, rewrites)
 
     async def record_compaction_memberships(
         self, conversation: Conversation, rewrites: list[CompactionRewrite]
@@ -444,32 +577,38 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         if len(set(ids)) != len(ids):
             raise ValueError("compaction identities must be unique")
         async with self.lock(conversation.key), async_session() as session:
+            inherited = select(ConversationCompaction["compaction_id"]).where(
+                ConversationCompaction["conversation_id"] == conversation.id
+            )
             compactions = {
                 row.id: row
                 for row in await session.list(
                     Compaction,
                     limit=None,
                     expressions=[
-                        Compaction["id"].in_(ids),
-                        Compaction["conversation_id"] == conversation.id,
+                        or_(Compaction["id"].in_(ids), Compaction["id"].in_(inherited)),
                     ],
                 )
             }
-            if len(compactions) != len(ids):
+            if any(
+                id_ not in compactions
+                or compactions[id_].conversation_id != conversation.id
+                for id_ in ids
+            ):
                 raise ValueError("membership must belong to the owning conversation")
             links = await session.list(
                 ConversationCompaction,
                 limit=None,
-                expressions=[ConversationCompaction["compaction_id"].in_(ids)],
+                expressions=[ConversationCompaction["compaction_id"].in_(compactions)],
             )
             members = await session.list(
                 CompactionMembership,
                 limit=None,
-                expressions=[CompactionMembership["compaction_id"].in_(ids)],
+                expressions=[CompactionMembership["compaction_id"].in_(compactions)],
                 order_bys=[CompactionMembership["position"]],
             )
             stored: dict[UUID7, dict[CompactionStage, list[UUID7]]] = {
-                id_: {"before": [], "after": []} for id_ in ids
+                id_: {"before": [], "after": []} for id_ in compactions
             }
             for member in members:
                 stored[member.compaction_id][member.stage].append(
@@ -494,7 +633,36 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 )
             ):
                 replacements[owner].add(message_id)
-            positions = {id_: position for position, id_ in enumerate(ids)}
+            prefix = sorted(
+                link
+                for link in links
+                if link.conversation_id == conversation.id
+                and link.compaction_id not in ids
+            )
+            for position, link in enumerate(prefix):
+                if (
+                    link.position != position
+                    or not compactions[link.compaction_id].membership_complete
+                ):
+                    raise ValueError(
+                        "prior compactions require complete, ordered membership"
+                    )
+                prior = stored[link.compaction_id]
+                if (
+                    not prior["before"]
+                    or len(prior["before"]) > len(effective)
+                    or any(
+                        effective.popleft() != message_id
+                        for message_id in prior["before"]
+                    )
+                ):
+                    raise ValueError(
+                        "compaction input does not match the effective context"
+                    )
+                effective.extendleft(reversed(prior["after"]))
+            positions = {
+                id_: len(prefix) + position for position, id_ in enumerate(ids)
+            }
             for rewrite in rewrites:
                 before, after = rewrite.before, rewrite.after
                 if (
@@ -535,6 +703,8 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 row.membership_complete = True
             owned: set[UUID7] = set()
             for link in links:
+                if link.compaction_id not in positions:
+                    continue
                 position = positions[link.compaction_id]
                 if link.position is not None and link.position != position:
                     raise ValueError("completed compaction order is immutable")
@@ -589,8 +759,26 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 options=[selectinload(Compaction["messages"])] if messages else [],
             )
             if existing is not None:
-                if messages and not existing.messages:
-                    existing.messages.extend(messages)
+                metadata = existing.enrich_messages(messages) if messages else {}
+                if metadata:
+                    # Arcanus 0.1.4 assignment misses the metadata -> meta alias.
+                    await session.execute(
+                        update(ModelMessage)
+                        .where(ModelMessage["id"].in_(metadata))
+                        .values(
+                            {
+                                ModelResponse["metadata"]: case(
+                                    *(
+                                        (
+                                            ModelMessage["id"] == id_,
+                                            literal(value, type_=JSON),
+                                        )
+                                        for id_, value in metadata.items()
+                                    )
+                                )
+                            }
+                        )
+                    )
                 if existing.trigger == "unknown":
                     existing.trigger = trigger
                 if existing.happened_at is None:
@@ -698,6 +886,9 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 session.add(compaction)
                 await session.commit()
                 return compaction
+            matches = sorted(
+                matches, key=attrgetter("membership_complete"), reverse=True
+            )
             existing = matches[0]
             links = (
                 await session.list(
@@ -743,8 +934,26 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 )
             existing.native_compaction_id = native_compaction_id
             add_messages = bool(messages) and not existing.messages
-            if add_messages:
-                existing.messages.extend(messages)
+            if messages:
+                metadata = existing.enrich_messages(messages)
+                if metadata:
+                    await session.execute(
+                        update(ModelMessage)
+                        .where(ModelMessage["id"].in_(metadata))
+                        .values(
+                            {
+                                ModelResponse["metadata"]: case(
+                                    *(
+                                        (
+                                            ModelMessage["id"] == id_,
+                                            literal(value, type_=JSON),
+                                        )
+                                        for id_, value in metadata.items()
+                                    )
+                                )
+                            }
+                        )
+                    )
             if existing.happened_at is None:
                 existing.happened_at = happened_at
             if existing.trigger == "unknown":

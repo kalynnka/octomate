@@ -83,6 +83,8 @@ from octomate.tentacles.codex.schemas import (
 from octomate.tentacles.codex.transcript import (
     CompactedItem,
     CompactionCompletedEvent,
+    context_item_id,
+    is_injected_message,
     rollout_line_adapter,
 )
 from octomate.types.json import JsonObject
@@ -211,7 +213,8 @@ class CodexInk:
             return []
         verified = False
         current_turn: str | None = None
-        pending: tuple[CompactedItem, datetime] | None = None
+        pending: tuple[CompactedItem, datetime, str | None] | None = None
+        last_item_id: str | None = None
         for raw in b64decode(response.data_base64, validate=True).splitlines():
             try:
                 line = rollout_line_adapter.validate_json(raw)
@@ -221,17 +224,28 @@ class CodexInk:
                 verified = line.payload.get("id") == thread_id
             if not verified:
                 continue
+            if line.type == "response_item" and not is_injected_message(line.payload):
+                last_item_id = context_item_id(line.payload)
             if line.type == "event_msg" and line.payload.get("type") == "task_started":
                 value = line.payload.get("turn_id")
                 current_turn = value if isinstance(value, str) else None
                 pending = None
-            if current_turn != turn_id:
-                continue
             if line.type == "compacted":
                 try:
-                    pending = CompactedItem.model_validate(line.payload), line.timestamp
+                    pending = (
+                        CompactedItem.model_validate(line.payload),
+                        line.timestamp,
+                        last_item_id,
+                    )
                 except ValidationError:
                     pending = None
+                if pending is not None:
+                    replacement = pending[0].replacement_history
+                    last_item_id = (
+                        context_item_id(replacement[-1]) if replacement else None
+                    )
+                continue
+            if current_turn != turn_id:
                 continue
             if line.type != "event_msg" or line.payload.get("type") != "item_completed":
                 continue
@@ -243,7 +257,7 @@ class CodexInk:
                 continue
             if completed.item.id == item_id and pending is not None:
                 try:
-                    return pending[0].to_messages(pending[1])
+                    return pending[0].to_messages(pending[1], last_item_id=pending[2])
                 except ValidationError:
                     logger.debug(
                         "session %s: skipping malformed compaction content", thread_id

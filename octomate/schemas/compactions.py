@@ -8,6 +8,7 @@ from arcanus import BaseTransmuter, Identity, RelationCollection, Relationships
 from pydantic import (
     UUID7,
     AwareDatetime,
+    BaseModel,
     ConfigDict,
     Field,
     TypeAdapter,
@@ -24,6 +25,21 @@ from octomate.models.compactions import ExternalCompaction as ExternalCompaction
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.types.compactions import CompactionStage, CompactionTrigger
+from octomate.types.json import JsonObject
+
+
+class NativeContext(BaseModel):
+    """Source references at a completed boundary, without another content copy."""
+
+    last_item_id: str
+    replacement_ids: list[str]
+
+
+class NativeMessage(BaseModel):
+    """Identity metadata shared by the transcript and driven projections."""
+
+    native_item_ids: list[str] = Field(default_factory=list)
+    compaction_context: NativeContext | None = None
 
 
 @sqlalchemy_materia.bless(CompactionModel)
@@ -68,6 +84,35 @@ class Compaction(BaseTransmuter):
     messages: RelationCollection[ModelRequest | ModelResponse] = Relationships(
         description="Messages created or rewritten by this compaction; retained messages keep their original owner.",
     )
+
+    def __lt__(self, other: Compaction) -> bool:
+        return (self.recorded_at, self.id) < (other.recorded_at, other.id)
+
+    def __gt__(self, other: Compaction) -> bool:
+        return (self.recorded_at, self.id) > (other.recorded_at, other.id)
+
+    def enrich_messages(
+        self, messages: list[ModelRequest | ModelResponse]
+    ) -> dict[UUID7, JsonObject]:
+        """Add content once; later observations may supply its native references."""
+        if not self.messages:
+            self.messages.extend(messages)
+            return {}
+        if self.membership_complete or len(self.messages) != len(messages):
+            return {}
+        metadata: dict[UUID7, JsonObject] = {}
+        for stored, observed in zip(self.messages, messages, strict=True):
+            if (
+                stored.kind != observed.kind
+                or stored.message_text != observed.message_text
+                or (stored.message_text is None and stored.parts != observed.parts)
+            ):
+                continue
+            if observed.metadata:
+                merged = {**(stored.metadata or {}), **observed.metadata}
+                if merged != stored.metadata:
+                    metadata[stored.id] = merged
+        return metadata
 
 
 @sqlalchemy_materia.bless(ExternalCompactionModel)
@@ -125,3 +170,9 @@ class CompactionMembership(BaseTransmuter):
     model_message_id: UUID7 = Field(
         description="Referenced archive message; its run or compaction ownership is unchanged and deletion is blocked while referenced.",
     )
+
+    def __lt__(self, other: CompactionMembership) -> bool:
+        return self.position < other.position
+
+    def __gt__(self, other: CompactionMembership) -> bool:
+        return self.position > other.position

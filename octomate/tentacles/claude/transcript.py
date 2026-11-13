@@ -20,6 +20,7 @@ from pydantic import (
     TypeAdapter,
 )
 
+from octomate.schemas.compactions import NativeContext
 from octomate.types.compactions import CompactionTrigger
 from octomate.types.json import JsonObject
 
@@ -53,6 +54,10 @@ class CompactSummaryAnchor(TranscriptSchema):
     anchor_uuid: str | None = Field(
         default=None, validation_alias=AliasChoices("anchor_uuid", "anchorUuid")
     )
+    uuids: list[str] | None = None
+    all_uuids: list[str] | None = Field(
+        default=None, validation_alias=AliasChoices("all_uuids", "allUuids")
+    )
 
 
 class CompactMetadata(TranscriptSchema):
@@ -67,6 +72,27 @@ class CompactMetadata(TranscriptSchema):
         default=None,
         validation_alias=AliasChoices("preserved_segment", "preservedSegment"),
     )
+
+    def context(
+        self, summary_uuid: str, last_item_id: str | None, omitted: set[str]
+    ) -> NativeContext | None:
+        """Use the explicit retained UUID list; a partial anchor is not a full list."""
+        if last_item_id is None:
+            return None
+        retained: list[str] = []
+        if self.preserved_messages is not None:
+            anchor = self.preserved_messages
+            if anchor.anchor_uuid != summary_uuid:
+                return None
+            ids = anchor.uuids if anchor.uuids is not None else anchor.all_uuids
+            if ids is None:
+                return None
+            retained = [id_ for id_ in ids if id_ not in omitted]
+        elif self.preserved_segment is not None:
+            return None
+        return NativeContext(
+            last_item_id=last_item_id, replacement_ids=[summary_uuid, *retained]
+        )
 
 
 class CompactBoundary(TranscriptSchema):

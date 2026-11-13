@@ -586,3 +586,51 @@ async def test_consecutive_prompts_keep_distinct_surface_identities(
         for message in await app.conversations.history(conversation.id)
     ] == ["first", "second", "done"]
     assert len(await app.conversations.effective_messages(conversation)) == 2
+
+
+@pytest.mark.parametrize("same_session", [False, True])
+async def test_child_compaction_starts_after_inherited_rewrite(
+    in_memory_engine: AsyncEngine, same_session: bool
+) -> None:
+    app = Octomate()
+    parent = await app.conversations.ensure(
+        await a_thread("parent"), agent_tentacle_id="deepseek"
+    )
+    child = await app.conversations.ensure(
+        await a_thread("child"), agent_tentacle_id="deepseek"
+    )
+    tracker = DeepseekCompactions(app.conversations, parent, "parent-session")
+    accumulator = DeepseekRunAccumulator()
+    for raw in turn_events(1, 0, "old", "old answer"):
+        list(accumulator.consume(session_event("parent-session", raw)))
+    await app.conversations.record_agent_run(
+        parent, str(uuid7()), accumulator.messages, external_id="parent-session"
+    )
+    for raw in compaction_events():
+        await tracker.consume(SessionEvent.model_validate(raw))
+    await tracker.record_memberships()
+    [inherited] = await app.conversations.effective_messages(parent)
+    session_id = "parent-session" if same_session else "child-session"
+    await app.conversations.fork(parent, child, external_id=session_id)
+    accumulator = DeepseekRunAccumulator()
+    start = 10 if same_session else 0
+    for raw in turn_events(2, start, "new", "new answer"):
+        list(accumulator.consume(session_event(session_id, raw)))
+    await app.conversations.record_agent_run(
+        child, str(uuid7()), accumulator.messages, external_id=session_id
+    )
+    tracker = DeepseekCompactions(app.conversations, child, session_id)
+    for raw in compaction_events(base=start + 5, shadowed=[start + 1, start + 2]):
+        await tracker.consume(SessionEvent.model_validate(raw))
+    await tracker.record_memberships()
+    effective = await app.conversations.effective_messages(child)
+    assert len(effective) == 2
+    assert effective[0].id == inherited.id
+    assert effective[1].compaction_id != inherited.compaction_id
+    assert [
+        message.id for message in await app.conversations.effective_messages(parent)
+    ] == [inherited.id]
+    assert len(await app.conversations.history(child.id)) == 4
+    async with async_session() as session:
+        assert await session.count(Compaction) == 2
+        assert all(row.membership_complete for row in await session.list(Compaction))

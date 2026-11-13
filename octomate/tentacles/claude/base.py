@@ -1279,12 +1279,17 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                     agent_id=self.id, conversation_id=conversation.id
                 )
                 command_result: ResultMessage | None = None
+                compacted = False
                 async for message in messages:
                     if isinstance(message, ActionBatchEvent | ActionBatchAnsweredEvent):
                         yield message
                         continue
                     if command is not None and isinstance(message, ResultMessage):
                         command_result = message
+                    compacted |= (
+                        isinstance(message, SystemMessage)
+                        and message.subtype == "compact_boundary"
+                    )
                     await self.record_compaction(
                         conversation,
                         message,
@@ -1316,6 +1321,10 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                     cwd=Path(run_cwd),
                     external_id=accumulator.session_id,
                     native_turn_id=prompt_id,
+                )
+            if compacted and accumulator.session_id:
+                await self.conversations.record_native_memberships(
+                    conversation, accumulator.session_id
                 )
             if command_result is not None and command_result.is_error:
                 raise RuntimeError(

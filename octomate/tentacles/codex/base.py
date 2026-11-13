@@ -1168,6 +1168,9 @@ class CodexTentacle(AgentTentacle[str, None]):
                     happened_at=happened_at,
                     messages=messages,
                 )
+                await self.conversations.record_native_memberships(
+                    conversation, thread_id
+                )
 
     async def token_usage_status(self, conversation: Conversation | None) -> str:
         """Render the latest recorded native usage snapshot for this Codex session.
@@ -2007,6 +2010,13 @@ class CodexTentacle(AgentTentacle[str, None]):
             external_id=codex_thread_id,
             native_turn_id=accumulator.turn_id,
         )
+        if any(
+            isinstance(item.root, ContextCompactionThreadItem)
+            for item in completed_items
+        ):
+            await self.conversations.record_native_memberships(
+                conversation, codex_thread_id
+            )
         if artifact_messages:
             assert recorded_run is not None
             responses = {

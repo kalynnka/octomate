@@ -1,5 +1,7 @@
 """Completed dsh summaries shared by driven execution and native log ingestion."""
 
+from __future__ import annotations
+
 from datetime import UTC, datetime
 from typing import NamedTuple
 
@@ -7,7 +9,10 @@ from octomate_protocol.deepseek import PERMISSIVE
 from pydantic import UUID7, BaseModel, Field, ValidationError
 from pydantic_ai.messages import UserPromptPart
 
-from octomate.managers.conversation import ConversationManager
+from octomate.managers.conversation import (
+    ConversationManager,
+    IncompleteCompactionContext,
+)
 from octomate.schemas.compactions import Compaction
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.messages import ModelRequest, ModelResponse
@@ -53,6 +58,18 @@ class SurfaceCompaction(NamedTuple):
     shadowed_seqs: list[int]
     seq: int
     checkpoint: SurfaceMessage
+
+    def __lt__(self, other: SurfaceCompaction) -> bool:
+        return self.seq < other.seq
+
+    def __gt__(self, other: SurfaceCompaction) -> bool:
+        return self.seq > other.seq
+
+    def __le__(self, other: SurfaceCompaction) -> bool:
+        return self.seq <= other.seq
+
+    def __ge__(self, other: SurfaceCompaction) -> bool:
+        return self.seq >= other.seq
 
 
 class CompactionEnd(BaseModel):
@@ -174,8 +191,7 @@ class DeepseekCompactions:
         """Map exact surface spans once their enclosing run is durable.
 
         Missing source identities or a span splitting a normalized message remain
-        unknown. Event sequence numbers belong to one native session; mixed-session
-        archives require a separate mapping of the inherited context.
+        unknown. Sequence numbers are interpreted only within their native session.
         """
         pending = self.pending_membership
         if pending is None:
@@ -189,12 +205,15 @@ class DeepseekCompactions:
             for row in records
             if row.native_compaction_id == pending
         )
-        if any(row.conversation_id != owner for row in records):
-            return
-        if all(row.membership_complete for row in records):
+        pending_records = [
+            row
+            for row in records
+            if row.conversation_id == owner and not row.membership_complete
+        ]
+        if not pending_records:
             return
         boundaries: list[SurfaceCompaction] = []
-        for row in records:
+        for row in pending_records:
             if len(row.messages) != 1:
                 return
             message = row.messages[0]
@@ -229,47 +248,64 @@ class DeepseekCompactions:
                     SurfaceMessage(message.id, [checkpoint.seq]),
                 )
             )
-        conversation = await self.conversations.get(owner)
-        if any(run.native_session_id != self.session_id for run in conversation.runs):
+        conversation = await self.conversations.get(owner, with_runs=False)
+        session_runs = await self.conversations.session_run_ids(
+            conversation, self.session_id
+        )
+        current_checkpoints = {row.id for row in records}
+        try:
+            context = await self.conversations.effective_messages(
+                conversation, pending=tuple(row.id for row in pending_records)
+            )
+        except IncompleteCompactionContext:
             return
         archive: list[SurfaceMessage] = []
         injected: set[int] = set()
-        for run in conversation.runs:
-            for message in run.messages:
-                events = MessageProvenance.model_validate(message.metadata or {}).events
-                injected.update(
+        for message in context:
+            if (message.run_id is not None and message.run_id not in session_runs) or (
+                message.compaction_id is not None
+                and message.compaction_id not in current_checkpoints
+            ):
+                archive.append(SurfaceMessage(message.id, []))
+                continue
+            events = MessageProvenance.model_validate(message.metadata or {}).events
+            injected.update(
+                event.seq
+                for event in events
+                if isinstance(event, SessionEvent)
+                and event.type == "user/message"
+                and UserMessageData.model_validate(event.data).source.kind
+                not in {"user", "user-question-reply", "compact-checkpoint"}
+            )
+            seqs = sorted(
+                {
                     event.seq
                     for event in events
                     if isinstance(event, SessionEvent)
-                    and event.type == "user/message"
-                    and UserMessageData.model_validate(event.data).source.kind
-                    not in {"user", "user-question-reply", "compact-checkpoint"}
-                )
-                seqs = sorted(
-                    {
-                        event.seq
-                        for event in events
-                        if isinstance(event, SessionEvent)
-                        and (
-                            event.type in {"assistant/message", "tool/result"}
-                            or (
-                                event.type == "user/message"
-                                and UserMessageData.model_validate(
-                                    event.data
-                                ).source.kind
-                                in {"user", "user-question-reply"}
+                    and (
+                        event.type in {"assistant/message", "tool/result"}
+                        or (
+                            event.type == "user/message"
+                            and UserMessageData.model_validate(event.data).source.kind
+                            in (
+                                {"compact-checkpoint"}
+                                if message.compaction_id is not None
+                                else {"user", "user-question-reply"}
                             )
                         )
-                    }
-                )
-                if not seqs:
-                    return
-                archive.append(SurfaceMessage(message.id, seqs))
+                    )
+                }
+            )
+            if not seqs:
+                return
+            archive.append(SurfaceMessage(message.id, seqs))
         effective: list[SurfaceMessage] = []
         rewrites: list[CompactionRewrite] = []
         cursor = 0
-        for boundary in sorted(boundaries, key=lambda item: item.seq):
-            while cursor < len(archive) and archive[cursor].seqs[-1] < boundary.seq:
+        for boundary in sorted(boundaries):
+            while cursor < len(archive) and (
+                not archive[cursor].seqs or archive[cursor].seqs[-1] < boundary.seq
+            ):
                 effective.append(archive[cursor])
                 cursor += 1
             # Injected context is archived as provenance, not normalized messages.

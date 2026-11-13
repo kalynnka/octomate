@@ -16,6 +16,7 @@ from pydantic import (
 )
 from pydantic_ai.messages import CompactionPart, UserPromptPart
 
+from octomate.schemas.compactions import NativeContext
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.tentacles.codex.adapter import CODEX_PROVIDER_NAME, codex_metadata
 from octomate.tentacles.codex.schemas import PermissionProfile
@@ -50,6 +51,35 @@ class RolloutLine(BaseModel):
 rollout_line_adapter = TypeAdapter(RolloutLine)
 
 
+def is_injected_message(item: JsonObject) -> bool:
+    """Injected instructions have no normalized archive message to retain."""
+    if item.get("type") != "message":
+        return False
+    if item.get("role") in {"system", "developer"}:
+        return True
+    metadata = item.get("internal_chat_message_metadata_passthrough")
+    if item.get("role") != "user" or not isinstance(metadata, dict):
+        return False
+    kinds = metadata.get("content_item_kinds")
+    return isinstance(kinds, list) and "user.text" not in kinds
+
+
+def context_item_id(item: JsonObject) -> str | None:
+    """The runtime identity of a modeled item, including tool results without ids."""
+    kind = item.get("type")
+    if kind in {
+        "function_call",
+        "custom_tool_call",
+        "function_call_output",
+        "custom_tool_call_output",
+    }:
+        call_id = item.get("call_id")
+        if isinstance(call_id, str):
+            return ("return:" if kind.endswith("output") else "call:") + call_id
+    value = item.get("id")
+    return value if isinstance(value, str) else None
+
+
 class CompactedItem(BaseModel):
     """A committed context replacement, independent of turn lifecycle events."""
 
@@ -64,9 +94,26 @@ class CompactedItem(BaseModel):
     )
 
     def to_messages(
-        self, timestamp: AwareDatetime
+        self, timestamp: AwareDatetime, *, last_item_id: str | None = None
     ) -> list[ModelRequest | ModelResponse]:
         """Normalize created summaries/checkpoints; retained messages keep their owner."""
+        metadata = codex_metadata()
+        if last_item_id is not None and self.replacement_history is not None:
+            replacements: list[str] = []
+            for item in self.replacement_history:
+                if is_injected_message(item):
+                    continue
+                identity = context_item_id(item)
+                if identity is None:
+                    break
+                replacements.append(identity)
+            else:
+                metadata = {
+                    **metadata,
+                    "compaction_context": NativeContext(
+                        last_item_id=last_item_id, replacement_ids=replacements
+                    ).model_dump(mode="json"),
+                }
         checkpoints = [
             compaction_item_adapter.validate_python(raw)
             for raw in self.replacement_history or []
@@ -79,7 +126,7 @@ class CompactedItem(BaseModel):
                 ModelRequest(
                     parts=[UserPromptPart(self.message, timestamp=timestamp)],
                     timestamp=timestamp,
-                    metadata=codex_metadata(),
+                    metadata=metadata,
                 )
             )
         messages.extend(
@@ -98,9 +145,16 @@ class CompactedItem(BaseModel):
                 timestamp=timestamp,
                 provider_name=CODEX_PROVIDER_NAME,
                 provider_response_id=self.compaction_response_id,
-                metadata=codex_metadata(),
+                metadata={
+                    **(
+                        metadata
+                        if not self.message and index == 0
+                        else codex_metadata()
+                    ),
+                    "native_item_ids": [checkpoint.id] if checkpoint.id else [],
+                },
             )
-            for checkpoint in checkpoints
+            for index, checkpoint in enumerate(checkpoints)
         )
         return messages
 
