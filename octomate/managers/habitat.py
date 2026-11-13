@@ -68,12 +68,12 @@ class Invocation:
 
     @property
     def storage(self) -> Storage:
-        return self.workspace.attachment.storage
+        return self.volume.storage
 
     @property
     def cwd(self) -> Path | PurePosixPath:
         """The harness's working directory; `storage.path` remains host-side."""
-        return self.workspace.cwd
+        return self.habitat.path(self.volume)
 
     @property
     def thread_id(self) -> UUID7:
@@ -84,7 +84,7 @@ class Invocation:
         return self.workspace.project
 
     @property
-    def volume(self) -> Volume | None:
+    def volume(self) -> Volume:
         return self.workspace.volume
 
 

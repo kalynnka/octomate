@@ -15,6 +15,7 @@ from octomate.database import async_session
 from octomate.managers.workspaces.mirrors import MirrorManager, run_git
 from octomate.schemas.volumes import GitVolume, Volume
 from octomate.schemas.volumes.storage import HostDirectory
+from tests.support.managers import FakeVolumeManager
 from tests.support.users import a_user
 
 
@@ -94,17 +95,23 @@ async def test_unscoped_git_volume_checkpoints_and_restores_without_a_workspace(
 ) -> None:
     storage = HostDirectory(tmp_path / "git")
     volume = GitVolume(owner_id=uuid7(), storage=storage)
-    mirror = await MirrorManager(mirrors_dir=tmp_path / "mirrors").create()
-    async with volume(mirror=mirror) as path:
+    mirror = await MirrorManager(
+        volumes=FakeVolumeManager(), mirrors_dir=tmp_path / "mirrors"
+    ).create()
+    volume.mirror.value = mirror
+    async with volume() as path:
         assert (
             await run_git("branch", "--show-current", cwd=path)
         ).strip() == volume.branch
         (path / "work").write_text("saved")
     assert storage.uses == 0
-    assert await run_git("show", f"{volume.snapshot_ref}:work", cwd=mirror) == "saved"
+    assert (
+        await run_git("show", f"{volume.snapshot_ref}:work", cwd=mirror.storage.path)
+        == "saved"
+    )
 
     await storage.release()
-    async with volume(mirror=mirror) as restored:
+    async with volume() as restored:
         assert (restored / "work").read_text() == "saved"
 
 
@@ -118,3 +125,23 @@ async def test_git_entry_without_a_source_fails_before_claiming_or_creating_file
             pytest.fail("An unprepared Git volume was entered")
     assert storage.uses == 0
     assert not storage.path.exists()
+
+
+@pytest.mark.parametrize("path", ["../peer", "/volumes/../peer"])
+def test_storage_rejects_parent_traversal(path: str) -> None:
+    with pytest.raises(ValueError, match="parent traversal"):
+        HostDirectory(Path(path))
+
+
+async def test_host_mirror_entry_retains_its_contents_without_a_checkpoint(
+    tmp_path: Path,
+) -> None:
+    mirror = await MirrorManager(
+        volumes=FakeVolumeManager(), mirrors_dir=tmp_path / "mirrors"
+    ).create()
+    async with mirror() as path:
+        assert mirror.storage.uses == 1
+        (path / "host-only").write_text("retained")
+    assert mirror.storage.uses == 0
+    assert (path / "host-only").read_text() == "retained"
+    assert await run_git("for-each-ref", "refs/octomate/trees", cwd=path) == ""

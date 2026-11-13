@@ -120,11 +120,18 @@ async def test_project_preparation_uses_the_sender_and_starting_ref(
         return
     assert isinstance(await node.run(context), React)
     async with async_session() as session:
-        [volume] = await session.list(GitVolume)
+        [volume] = await session.list(
+            GitVolume, expressions=[GitVolume["usage"] == "tree"]
+        )
     assert volume.owner_id == state.user_profile.user_id
     assert volume.thread_id == state.thread.id
     assert volume.project_id == state.thread.project_id
     assert volume.base_ref == "HEAD"
+    mirror = await volume.mirror
+    assert mirror is not None
+    assert mirror.id == volume.mirror_id
+    assert mirror.usage == "mirror"
+    assert mirror.owner_id is None
     assert (context.deps.workspaces.path(volume) / "work.txt").read_text() == "Original"
 
 

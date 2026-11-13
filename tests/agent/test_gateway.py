@@ -24,7 +24,6 @@ from octomate.managers.gateway import (
 from octomate.managers.mcp import McpManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.mcp.gateway import HANDOFF_INSTRUCTION, gateway_instructions
 from octomate.mcp.server import octomate_mcp
 from octomate.nerve import Nerve
@@ -46,6 +45,7 @@ from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
     FakeConversationManager,
     FakeThreadManager,
+    a_workspace_manager,
     fixed_session,
 )
 from tests.support.mcp import gateway_schemas
@@ -107,7 +107,7 @@ def _capability(
         ),
         users=threads.users,
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
     )
     return capability
 
@@ -234,7 +234,7 @@ async def test_destination_discovery_is_cached(monkeypatch: pytest.MonkeyPatch) 
         users=users,
         user_profile=UserProfile(channel_user_id="alice"),
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
     )
     discover = AsyncMock(return_value=[])
     monkeypatch.setattr(users, "linked_profiles", discover)
@@ -262,7 +262,7 @@ async def test_a_native_session_cannot_be_summoned() -> None:
         user_profile=UserProfile(channel_tentacle_id="far", channel_user_id="alice"),
         users=threads.users,
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
     )
 
     operations = await session.operations
@@ -375,7 +375,7 @@ async def test_a_threads_privacy_is_read_from_its_surface_not_its_type(
         ),
         users=threads.users,
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
     )
 
     assert capability.private_blocked_by == blocked_by
@@ -887,7 +887,7 @@ def _registered_session() -> OctomateSession:
         current_agent_id="inkling",
         users=threads.users,
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
     )
     session.conversation_id = uuid7()
     return session
@@ -913,7 +913,7 @@ def test_a_session_without_a_conversation_cannot_be_registered() -> None:
                 current_agent_id="inkling",
                 users=threads.users,
                 threads=threads,
-                workspaces=WorkspaceManager(),
+                workspaces=a_workspace_manager(),
             )
         )
 
@@ -930,7 +930,7 @@ def test_a_second_turn_on_a_live_conversation_is_refused_not_queued() -> None:
         current_agent_id="inkling",
         users=threads.users,
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
     )
     second.conversation_id = first.conversation_id
     assert first.conversation_id is not None
@@ -971,7 +971,7 @@ async def test_driving_tolerates_a_gateway_that_was_never_built() -> None:
             current_agent_id="i",
             users=threads.users,
             threads=threads,
-            workspaces=WorkspaceManager(),
+            workspaces=a_workspace_manager(),
         )
     ):
         assert manager.sessions == {}
@@ -1267,7 +1267,7 @@ async def test_a_native_call_binds_only_a_session_its_caller_wrote(
         user_profile=profile,
         native=True,
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
     )
 
     for elsewhere in ("sess-2", "sess-unknown"):

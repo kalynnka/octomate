@@ -1,19 +1,20 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import field
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import anyio
 import pytest
 from anyio.lowlevel import checkpoint
+from arcanus import Relation
 from pydantic.dataclasses import dataclass
 from uuid_utils.compat import uuid7
 
-from octomate.habitat import Attachment
 from octomate.managers.workspaces.mirrors import MirrorManager, run_git
 from octomate.schemas.volumes import GitVolume, Volume
 from octomate.schemas.volumes.storage import HostDirectory
 from octomate.schemas.workspaces import Workspace
+from tests.support.managers import FakeVolumeManager
 
 
 @dataclass
@@ -45,16 +46,12 @@ async def test_workspace_enters_all_volumes_and_unwinds_in_reverse_order(
             "work": Volume(owner_id=owner_id, storage=work, ephemeral=True),
             "cache": Volume(owner_id=owner_id, storage=cache, usage="cache"),
         },
-        attachments={
-            "work": Attachment(work, work.path),
-            "cache": Attachment(cache, cache.path),
-        },
     )
     outcome = pytest.raises(RuntimeError, match="run failed") if fail else nullcontext()
     with outcome:
         async with workspace() as prepared:
             assert prepared is workspace
-            assert prepared.cwd == work.path
+            assert prepared.path == work.path
             assert work.uses == cache.uses == 1
             (work.path / "temporary").touch()
             (cache.path / "package").touch()
@@ -77,10 +74,6 @@ async def test_partial_preparation_releases_earlier_volumes(tmp_path: Path) -> N
             "work": Volume(owner_id=owner_id, storage=work, ephemeral=True),
             "cache": Volume(owner_id=owner_id, storage=broken),
         },
-        attachments={
-            "work": Attachment(work, work.path),
-            "cache": Attachment(broken, broken.path),
-        },
     )
     with pytest.raises(FileExistsError):
         async with workspace():
@@ -99,10 +92,6 @@ async def test_cancellation_releases_all_volumes(tmp_path: Path) -> None:
             "work": Volume(owner_id=owner_id, storage=work, ephemeral=True),
             "cache": Volume(owner_id=owner_id, storage=cache),
         },
-        attachments={
-            "work": Attachment(work, work.path),
-            "cache": Attachment(cache, cache.path),
-        },
     )
     with anyio.CancelScope() as scope:
         async with workspace():
@@ -119,62 +108,51 @@ async def test_git_volume_checkpoints_inside_a_composed_workspace(
 ) -> None:
     owner_id = uuid7()
     work = HostDirectory(tmp_path / "work")
-    volume = GitVolume(owner_id=owner_id, storage=work)
     cache = HostDirectory(tmp_path / "cache")
-    mirror = await MirrorManager(mirrors_dir=tmp_path / "mirrors").create()
+    mirror = await MirrorManager(
+        volumes=FakeVolumeManager(), mirrors_dir=tmp_path / "mirrors"
+    ).create()
+    volume = GitVolume(
+        owner_id=owner_id, storage=work, mirror_id=mirror.id, mirror=Relation(mirror)
+    )
     workspace = Workspace(
         thread_id=uuid7(),
         volumes={"work": volume, "cache": Volume(owner_id=owner_id, storage=cache)},
-        attachments={
-            "work": Attachment(work, work.path),
-            "cache": Attachment(cache, cache.path),
-        },
-        mirrors={"work": mirror},
     )
     async with workspace():
         (workspace.path / "work.txt").write_text("saved")
     assert (
-        await run_git("show", f"{volume.snapshot_ref}:work.txt", cwd=mirror) == "saved"
+        await run_git(
+            "show", f"{volume.snapshot_ref}:work.txt", cwd=mirror.storage.path
+        )
+        == "saved"
     )
     assert work.uses == cache.uses == 0
 
 
-def test_workspace_selects_a_habitat_working_directory(tmp_path: Path) -> None:
+def test_workspace_selects_a_working_volume(tmp_path: Path) -> None:
     storage = HostDirectory(tmp_path / "source")
     workspace = Workspace(
         thread_id=uuid7(),
         directory="source",
         volumes={"source": Volume(owner_id=uuid7(), storage=storage)},
-        attachments={"source": Attachment(storage, PurePosixPath("/project"))},
     )
     assert workspace.path == storage.path
-    assert workspace.cwd == PurePosixPath("/project")
     assert not storage.path.exists()
 
 
 def test_workspace_rejects_missing_working_directory() -> None:
     with pytest.raises(ValueError, match="working directory"):
-        Workspace(thread_id=uuid7(), volumes={}, attachments={})
-
-
-@pytest.mark.parametrize("attachment_name", [None, "other"])
-def test_workspace_rejects_unmatched_attachments(
-    tmp_path: Path, attachment_name: str | None
-) -> None:
-    storage = HostDirectory(tmp_path / "work")
-    attachments = (
-        {attachment_name: Attachment(storage, storage.path)}
-        if attachment_name is not None
-        else {}
-    )
-    with pytest.raises(ValueError, match="same names"):
         Workspace(
             thread_id=uuid7(),
-            volumes={"work": Volume(owner_id=uuid7(), storage=storage)},
-            attachments=attachments,
+            volumes={},
         )
-    assert storage.uses == 0
-    assert not storage.path.exists()
+
+
+def test_workspace_rejects_host_mirrors(tmp_path: Path) -> None:
+    mirror = GitVolume(usage="mirror", storage=HostDirectory(tmp_path / "mirror"))
+    with pytest.raises(ValueError, match="Host mirrors"):
+        Workspace(thread_id=uuid7(), volumes={"work": mirror})
 
 
 def test_workspace_rejects_different_volume_owners(tmp_path: Path) -> None:
@@ -186,9 +164,5 @@ def test_workspace_rejects_different_volume_owners(tmp_path: Path) -> None:
             volumes={
                 "work": Volume(owner_id=uuid7(), storage=work),
                 "other": Volume(owner_id=uuid7(), storage=other),
-            },
-            attachments={
-                "work": Attachment(work, work.path),
-                "other": Attachment(other, other.path),
             },
         )

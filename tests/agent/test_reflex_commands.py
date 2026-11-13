@@ -59,7 +59,6 @@ from octomate.tentacles.trunkline.base import TrunklineTentacle
 from tests.agent.test_command_execution import ExecutingAgent
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
-from tests.support.managers import RecordingWorkspaceManager
 from tests.support.nerve import drawing, held, kicked
 from tests.support.users import a_user
 
@@ -68,7 +67,7 @@ from tests.support.users import a_user
 async def scenario(
     in_memory_engine: AsyncEngine,
 ) -> tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandSignal]:
-    app = Octomate(workspaces=RecordingWorkspaceManager())
+    app = Octomate()
     agent = app.connect(ExecutingAgent())
     agent.commands = app.commands
     channel = app.connect(
@@ -168,9 +167,9 @@ async def test_direct_command_delivers_feedback_without_model_history_and_replay
     assert isinstance(agent.suspender, ReflexSuspender)
     assert agent.suspender.decision is None
     assert (agent.session is not None) is gateway
-    assert isinstance(app.workspaces, RecordingWorkspaceManager)
-    assert app.workspaces.saved == [conversation.thread_id]
+    save.assert_awaited_once()
     assert save.await_args is not None
+    assert save.await_args.args[0].id == conversation.thread_id
     assert save.await_args.args[1] == signal.context.user_id
 
 
@@ -408,6 +407,8 @@ async def test_refused_command_does_not_mount_user_tools_or_save_a_workspace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app, agent, channel, signal = scenario
+    save = AsyncMock(wraps=app.workspaces.save)
+    monkeypatch.setattr(app.workspaces, "save", save)
     conversation = signal.context.conversation
     assert conversation is not None
     if reason == "busy":
@@ -423,8 +424,7 @@ async def test_refused_command_does_not_mount_user_tools_or_save_a_workspace(
     assert outcome.status == reason
     assert not agent.intents
     capabilities.assert_not_awaited()
-    assert isinstance(app.workspaces, RecordingWorkspaceManager)
-    assert not app.workspaces.saved
+    save.assert_not_awaited()
     if reason == "busy":
         assert conversation.id in app.gateway.sessions
         assert app.gateway.sessions[conversation.id] is None

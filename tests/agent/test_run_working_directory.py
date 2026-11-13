@@ -25,7 +25,6 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.config.agents import ClaudeCodeConfig, CodexConfig
 from octomate.database import async_session
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import Nerve
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.runs import AgentRun
@@ -446,9 +445,8 @@ async def test_a_driven_claude_run_records_where_it_dispatched(
 ) -> None:
     inky = tmp_path / "inky"
     inky.mkdir()
-    octomate = Octomate(
-        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
-    )
+    octomate = Octomate()
+    octomate.workspaces.projects = await a_registry(a_project(inky))
     thread = await a_thread(octomate, "inky")
     tentacle = ClaudeTentacle(
         octomate,

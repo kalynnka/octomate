@@ -7,7 +7,6 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.thread import ThreadKey
 from octomate.types.permissions import CodexPermissionMode
 from tests.integration.native_sandbox.matrix import SandboxTree
@@ -20,12 +19,11 @@ async def test_codex_profile_survives_mode_changes_and_resume(
     sandbox_tree: SandboxTree, tmp_path: Path, in_memory_engine: AsyncEngine
 ) -> None:
     project = a_project(sandbox_tree.workspace, name="sandbox-audit")
-    octomate = Octomate(
-        workspaces=WorkspaceManager(
-            projects=await a_registry(project),
-            volumes_dir=sandbox_tree.workspace.parent / "runs",
-        )
-    )
+    octomate = Octomate()
+    octomate.workspaces.projects = await a_registry(project)
+    octomate.volumes.host_directories.root = (
+        sandbox_tree.workspace.parent / "runs"
+    ).resolve()
     thread = await octomate.threads.ensure(
         ThreadKey("sandbox-audit", "thread", "synthetic", "audit"), project=project
     )

@@ -19,7 +19,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.managers.gateway import OctomateSession
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.mcp.gateway import TELEPORT_RECORDED
 from octomate.mcp.server import (
     CALL_MCP_TOOL,
@@ -42,6 +41,7 @@ from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
     FakeConversationManager,
     FakeThreadManager,
+    a_workspace_manager,
     fixed_session,
 )
 from tests.support.mcp import install_tentacle
@@ -80,7 +80,7 @@ def a_turn(*, in_thread: bool = False) -> OctomateSession:
         ),
         users=threads.users,
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
     )
 
 

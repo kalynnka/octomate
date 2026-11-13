@@ -13,12 +13,11 @@ from octomate.capabilities.harness.events import (
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.todos import TodoManager
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.mcp.todos import update_events
 from octomate.nerve import ChannelTopic, Nerve
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.todos import Todo
-from tests.support.managers import FakeThreadManager, a_thread
+from tests.support.managers import FakeThreadManager, a_thread, a_workspace_manager
 from tests.support.mcp import core_tool_server
 from tests.support.nerve import held
 
@@ -36,7 +35,7 @@ async def a_session() -> OctomateSession:
         nerve=Nerve(),
         users=threads.users,
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
     )
 
 

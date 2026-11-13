@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.thread import ThreadKey
 from tests.integration.native_sandbox.matrix import (
     SERVER_CANARY,
@@ -87,12 +86,11 @@ async def native_call(
         request.node.user_properties.append((distribution, version(distribution)))
     monkeypatch.setenv(SERVER_CANARY, "synthetic-server-only")
     project = a_project(sandbox_tree.workspace, name="sandbox-audit")
-    octomate = Octomate(
-        workspaces=WorkspaceManager(
-            projects=await a_registry(project),
-            volumes_dir=sandbox_tree.workspace.parent / "runs",
-        )
-    )
+    octomate = Octomate()
+    octomate.workspaces.projects = await a_registry(project)
+    octomate.volumes.host_directories.root = (
+        sandbox_tree.workspace.parent / "runs"
+    ).resolve()
     thread = await octomate.threads.ensure(
         ThreadKey("sandbox-audit", "thread", "synthetic", "audit"), project=project
     )

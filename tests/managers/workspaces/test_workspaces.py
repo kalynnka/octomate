@@ -42,17 +42,16 @@ from octomate.managers.workspaces.base import (
 from octomate.managers.workspaces.dependencies import install
 from octomate.managers.workspaces.mirrors import (
     GitCommandError,
-    MirrorManager,
     run_git,
 )
 from octomate.nerve import Nerve
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import User
-from octomate.schemas.volumes import GitVolume, UnregisteredProjectError
+from octomate.schemas.volumes import GitVolume, UnregisteredProjectError, Volume
 from octomate.schemas.volumes.storage import HostDirectory
 from octomate.schemas.workspaces import Workspace
 from tests.support.dependencies import Probe, probing, runs
-from tests.support.managers import a_project, a_registry, a_thread
+from tests.support.managers import a_project, a_registry, a_thread, a_workspace_manager
 from tests.support.users import a_user
 
 # For commits the tests make in their mirrors — nothing in this unit commits, so
@@ -95,12 +94,10 @@ async def a_manager(
     a project, the mirrors are where that project's lives, and the identity a
     snapshot is written under is the mirrors' rather than this manager's to hold.
     """
-    return WorkspaceManager(
+    return a_workspace_manager(
         projects=await a_registry(a_project(a_root(tmp_path))),
-        mirrors=MirrorManager(
-            config=MirrorsConfig(identity=identity) if identity else MirrorsConfig(),
-            mirrors_dir=tmp_path / "mirrors",
-        ),
+        mirror_config=MirrorsConfig(identity=identity) if identity else MirrorsConfig(),
+        mirrors_dir=tmp_path / "mirrors",
         volumes_dir=tmp_path / "volumes",
     )
 
@@ -141,13 +138,15 @@ async def materialize(
     manager: WorkspaceManager, workspace: Workspace, mirror: Path
 ) -> Path:
     """Exercise the logical volume against the manager's shared storage."""
-    return await git_volume(workspace).materialize(mirror)
+    source = await manager.mirrors.resolve(workspace.project)
+    assert source.storage.path == mirror
+    return await git_volume(workspace).materialize(source)
 
 
 async def checkpoint_volume(manager: WorkspaceManager, workspace: Workspace) -> None:
     """Checkpoint with the same mirror and identity the invocation selects."""
     await git_volume(workspace).checkpoint(
-        manager.mirrors.path(workspace.project),
+        await manager.mirrors.resolve(workspace.project),
         manager.identity,
     )
 
@@ -378,7 +377,11 @@ async def test_a_fork_that_fails_leaves_nothing_behind(
     opened = await a_workspace(manager, await a_bound_thread(manager), owner)
 
     with pytest.raises(FileNotFoundError):
-        await materialize(manager, opened, tmp_path / "no-such-mirror")
+        await git_volume(opened).materialize(
+            GitVolume(
+                usage="mirror", storage=HostDirectory(tmp_path / "no-such-mirror")
+            )
+        )
 
     assert not opened.path.exists()
     assert list(opened.path.parent.iterdir()) == []
@@ -428,7 +431,7 @@ async def test_a_workspace_path_is_absolute_from_a_relative_directory(
     # The default `.octomate/volumes` is relative to wherever Octomate was
     # started, and a tree is handed to processes started elsewhere.
     monkeypatch.chdir(tmp_path)
-    manager = WorkspaceManager()
+    manager = a_workspace_manager()
     volume = GitVolume(
         storage=HostDirectory(Path("storage") / str(uuid7())),
         usage="tree",
@@ -448,9 +451,9 @@ async def test_the_sweep_works_from_the_default_relative_directory(
     # started. A relative root reaches git as a relative `GIT_INDEX_FILE` against
     # a tree's cwd, and resolves inside the tree it describes.
     monkeypatch.chdir(tmp_path)
-    manager = WorkspaceManager(
+    manager = a_workspace_manager(
         projects=await a_registry(a_project(a_root(tmp_path))),
-        mirrors=MirrorManager(mirrors_dir=Path(".octomate/mirrors")),
+        mirrors_dir=Path(".octomate/mirrors"),
     )
     thread = await a_bound_thread(manager)
     project = manager.projects.get("inky")
@@ -735,7 +738,9 @@ async def test_peer_snapshot_objects_are_absent_even_by_hash(
         if file.is_file()
     )
     await a_turn(path, {"bob.md": "bob's private work"})
-    await manager.save(thread, git_volume(peer).owner_id)
+    peer_owner = git_volume(peer).owner_id
+    assert peer_owner is not None
+    await manager.save(thread, peer_owner)
     peer_snapshot = (
         await run_git("rev-parse", git_volume(peer).snapshot_ref, cwd=mirror)
     ).strip()
@@ -1054,7 +1059,13 @@ async def test_carry_preserves_the_owners_uncommitted_work_on_a_new_thread_branc
     mirror = await a_project_mirror(
         manager, {"readme.md": "hello", ".gitignore": ".env\n"}
     )
-    monkeypatch.setattr(manager.mirrors, "sync", AsyncMock(return_value=mirror))
+    monkeypatch.setattr(
+        manager.mirrors,
+        "sync",
+        AsyncMock(
+            return_value=await manager.mirrors.resolve(manager.projects.get("inky"))
+        ),
+    )
     source = await a_bound_thread(manager)
     target = await a_bound_thread(manager)
     opened = await a_workspace(manager, source, owner)
@@ -1353,7 +1364,8 @@ async def test_a_fork_points_at_the_projects_upstream(
     # the mirror it happens to have been forked from — and not something that
     # differs by host, which is what inheriting the fork mechanism's answer gives.
     upstream = await a_mirror(tmp_path / "upstream", {"readme.md": "hello"})
-    mirror = tmp_path / "mirror"
+    mirror = (await manager.mirrors.resolve(manager.projects.get("inky"))).storage.path
+    mirror.parent.mkdir(parents=True, exist_ok=True)
     await run_git("clone", str(upstream), str(mirror))
 
     workspace = await a_tree(manager, owner, mirror)
@@ -1534,7 +1546,7 @@ async def test_a_chat_run_leaves_nothing_in_the_blank_mirror(
         (chat.path / "scratch.txt").write_text("mine")
         await manager.save(thread, owner.id)
 
-    blank = await manager.mirrors.create()
+    blank = (await manager.mirrors.create()).storage.path
     refs = await run_git("for-each-ref", "--format=%(refname)", cwd=blank)
     # Its own empty commit and nothing else — no tree ref, no snapshot.
     assert refs == "refs/heads/main\n"
@@ -1564,7 +1576,8 @@ async def test_an_unregistered_chat_runs_in_a_temporary_directory(
     thread_id = uuid7()
     workspace = await manager.resolve(thread_id, None, None)
 
-    assert workspace.volume is None
+    assert workspace.volume.owner_id is None
+    assert workspace.volume.ephemeral
     assert (
         workspace.path
         == (
@@ -1578,7 +1591,7 @@ async def test_an_unregistered_chat_runs_in_a_temporary_directory(
 
     assert not workspace.path.exists()
     async with async_session() as session:
-        assert await session.list(GitVolume, limit=None) == []
+        assert await session.list(Volume, limit=None) == []
 
 
 async def test_an_unregistered_sender_is_refused_a_project(

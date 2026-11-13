@@ -6,7 +6,7 @@ never a repository still gets branches, diffs, and history. Sync hides behind a
 freshness window that starts at zero, serializes per mirror, and degrades to the
 stale mirror — with a warning, never silently — when the upstream is unreachable.
 
-No database anywhere here: a mirror is filesystem state, keyed by project name.
+These filesystem tests use an in-memory volume registry; persistence is tested separately.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from octomate.managers.workspaces.mirrors import (
 )
 from octomate.schemas.project import DirectoryUpstream, Project, RemoteUpstream
 from tests.support.dependencies import Probe, probing, runs
-from tests.support.managers import a_project
+from tests.support.managers import FakeVolumeManager, a_project
 
 # For commits the *tests* make in their upstream repos — a person's, distinct from
 # the manager's own identity, so authorship assertions cannot pass by accident.
@@ -42,6 +42,7 @@ IDENTITY = (
 
 def a_mirror_manager(tmp_path: Path, window: float = 0.0) -> MirrorManager:
     return MirrorManager(
+        volumes=FakeVolumeManager(),
         config=MirrorsConfig(freshness_window=window),
         mirrors_dir=tmp_path / "mirrors",
     )
@@ -83,7 +84,7 @@ async def test_a_remote_upstream_is_cloned_onto_its_default_branch(
     repo = await a_git_repo(tmp_path / "upstream", {"readme.md": "hello"})
     manager = a_mirror_manager(tmp_path)
 
-    mirror = await manager.sync(a_remote_project(repo, name="inky"))
+    mirror = (await manager.sync(a_remote_project(repo, name="inky"))).storage.path
 
     assert mirror == tmp_path / "mirrors" / "inky"
     assert (await run_git("rev-parse", "--abbrev-ref", "HEAD", cwd=mirror)).strip() == (
@@ -100,7 +101,7 @@ async def test_a_remote_mirror_follows_new_upstream_commits(tmp_path: Path) -> N
 
     (repo / "next.md").write_text("more")
     await commit_all(repo)
-    mirror = await manager.sync(project)
+    mirror = (await manager.sync(project)).storage.path
 
     assert (mirror / "next.md").read_text() == "more"
     assert (await run_git("rev-parse", "HEAD", cwd=mirror)) == (
@@ -112,7 +113,7 @@ async def test_a_directory_upstream_first_commit_is_the_folder(tmp_path: Path) -
     folder = a_folder(tmp_path / "docs", {"notes.md": "keep", "deep/nested.md": "also"})
     manager = a_mirror_manager(tmp_path)
 
-    mirror = await manager.sync(a_project(folder))
+    mirror = (await manager.sync(a_project(folder))).storage.path
 
     assert (mirror / "notes.md").read_text() == "keep"
     assert (mirror / "deep" / "nested.md").read_text() == "also"
@@ -132,7 +133,7 @@ async def test_a_directory_mirror_syncs_from_the_upstream_not_the_root(
         upstream=DirectoryUpstream(path=folder),
     )
 
-    mirror = await a_mirror_manager(tmp_path).sync(project)
+    mirror = (await a_mirror_manager(tmp_path).sync(project)).storage.path
 
     assert (mirror / "real.md").exists()
     assert not (mirror / "decoy.md").exists()
@@ -144,7 +145,7 @@ async def test_syncing_an_unchanged_folder_creates_no_commit(tmp_path: Path) -> 
     project = a_project(folder)
 
     await manager.sync(project)
-    mirror = await manager.sync(project)
+    mirror = (await manager.sync(project)).storage.path
 
     assert await commit_count(mirror) == 1
 
@@ -157,7 +158,7 @@ async def test_a_deletion_in_the_folder_arrives_as_a_deletion(tmp_path: Path) ->
 
     (folder / "drop.md").unlink()
     (folder / "keep.md").write_text("edited")
-    mirror = await manager.sync(project)
+    mirror = (await manager.sync(project)).storage.path
 
     assert not (mirror / "drop.md").exists()
     assert (mirror / "keep.md").read_text() == "edited"
@@ -172,7 +173,7 @@ async def test_the_folders_own_gitignore_is_honored(tmp_path: Path) -> None:
         {".gitignore": "secrets/\n", "secrets/key.json": "{}", "readme.md": "public"},
     )
 
-    mirror = await a_mirror_manager(tmp_path).sync(a_project(folder))
+    mirror = (await a_mirror_manager(tmp_path).sync(a_project(folder))).storage.path
 
     assert (mirror / "readme.md").exists()
     assert not (mirror / "secrets").exists()
@@ -184,7 +185,7 @@ async def test_sync_commits_default_to_the_machine_identity(tmp_path: Path) -> N
     # config for a later workspace to inherit.
     folder = a_folder(tmp_path / "docs", {"notes.md": "keep"})
 
-    mirror = await a_mirror_manager(tmp_path).sync(a_project(folder))
+    mirror = (await a_mirror_manager(tmp_path).sync(a_project(folder))).storage.path
 
     author = await run_git("log", "-1", "--format=%an <%ae>", cwd=mirror)
     assert author.strip() == "octomate <octomate@example.com>"
@@ -194,13 +195,14 @@ async def test_sync_commits_default_to_the_machine_identity(tmp_path: Path) -> N
 async def test_sync_commits_carry_the_configured_identity(tmp_path: Path) -> None:
     folder = a_folder(tmp_path / "docs", {"notes.md": "keep"})
     manager = MirrorManager(
+        volumes=FakeVolumeManager(),
         config=MirrorsConfig(
             identity=GitIdentity(name="Lu Hui", email="lu@example.com")
         ),
         mirrors_dir=tmp_path / "mirrors",
     )
 
-    mirror = await manager.sync(a_project(folder))
+    mirror = (await manager.sync(a_project(folder))).storage.path
 
     author = await run_git("log", "-1", "--format=%an <%ae>", cwd=mirror)
     assert author.strip() == "Lu Hui <lu@example.com>"
@@ -212,11 +214,11 @@ async def test_a_failed_fetch_degrades_to_the_stale_mirror(
     repo = await a_git_repo(tmp_path / "upstream", {"readme.md": "hello"})
     manager = a_mirror_manager(tmp_path)
     project = a_remote_project(repo, name="inky")
-    mirror = await manager.sync(project)
+    mirror = (await manager.sync(project)).storage.path
 
     shutil.rmtree(repo)
     with caplog.at_level(logging.WARNING):
-        assert await manager.sync(project) == mirror
+        assert (await manager.sync(project)).storage.path == mirror
 
     assert "mirror for inky is stale" in caplog.text
     assert (mirror / "readme.md").read_text() == "hello"
@@ -228,11 +230,11 @@ async def test_a_missing_folder_degrades_to_the_stale_mirror(
     folder = a_folder(tmp_path / "docs", {"notes.md": "keep"})
     manager = a_mirror_manager(tmp_path)
     project = a_project(folder)
-    mirror = await manager.sync(project)
+    mirror = (await manager.sync(project)).storage.path
 
     shutil.rmtree(folder)
     with caplog.at_level(logging.WARNING):
-        assert await manager.sync(project) == mirror
+        assert (await manager.sync(project)).storage.path == mirror
 
     assert "is stale" in caplog.text
     assert (mirror / "notes.md").read_text() == "keep"
@@ -261,7 +263,7 @@ async def test_a_fresh_mirror_is_not_resynced_within_the_window(
     await manager.sync(project)
 
     (folder / "late.md").write_text("after the sync")
-    mirror = await manager.sync(project)
+    mirror = (await manager.sync(project)).storage.path
 
     assert not (mirror / "late.md").exists()
     assert await commit_count(mirror) == 1
@@ -276,7 +278,7 @@ async def test_a_synced_mirror_installs_its_dependencies(
     folder = a_folder(tmp_path / "docs", {Probe.lockfile: "one"})
     manager = a_mirror_manager(tmp_path)
 
-    mirror = await manager.sync(a_project(folder))
+    mirror = (await manager.sync(a_project(folder))).storage.path
 
     assert runs(mirror) == 1
 
@@ -293,7 +295,7 @@ async def test_a_mirror_whose_lockfile_stood_still_is_not_installed_again(
     await manager.sync(project)
 
     (folder / "notes.md").write_text("unrelated")
-    mirror = await manager.sync(project)
+    mirror = (await manager.sync(project)).storage.path
 
     assert (mirror / "notes.md").read_text() == "unrelated"
     assert runs(mirror) == 1
@@ -309,7 +311,7 @@ async def test_a_moved_lockfile_installs_the_mirror_again(
     await manager.sync(project)
 
     (folder / Probe.lockfile).write_text("two")
-    mirror = await manager.sync(project)
+    mirror = (await manager.sync(project)).storage.path
 
     assert runs(mirror) == 2
 
@@ -330,12 +332,14 @@ async def test_two_syncs_of_one_mirror_serialize(tmp_path: Path) -> None:
     assert not second.done()
 
     lock.release()
-    assert await second == manager.path(project)
+    assert (await second).storage.path == manager.path(project)
 
 
 async def test_reconcile_mirrors_every_enabled_project(tmp_path: Path) -> None:
     folder = a_folder(tmp_path / "inky", {"readme.md": "hello"})
-    manager = MirrorManager(mirrors_dir=tmp_path / "mirrors")
+    manager = MirrorManager(
+        volumes=FakeVolumeManager(), mirrors_dir=tmp_path / "mirrors"
+    )
 
     await manager.reconcile(
         [a_project(folder), a_project(tmp_path / "gone", enabled=False)]
@@ -350,7 +354,9 @@ async def test_reconcile_continues_past_a_failing_project(
 ) -> None:
     bad = a_remote_project(tmp_path / "missing", name="bad")
     good = a_project(a_folder(tmp_path / "good", {"readme.md": "hello"}))
-    manager = MirrorManager(mirrors_dir=tmp_path / "mirrors")
+    manager = MirrorManager(
+        volumes=FakeVolumeManager(), mirrors_dir=tmp_path / "mirrors"
+    )
 
     with caplog.at_level(logging.ERROR):
         await manager.reconcile([bad, good])
@@ -368,7 +374,7 @@ async def test_the_blank_mirror_is_an_empty_repository_with_a_head(
     # run does with one, so it gets an empty commit and nothing else.
     manager = a_mirror_manager(tmp_path)
 
-    blank = await manager.create()
+    blank = (await manager.create()).storage.path
 
     assert blank == (tmp_path / "mirrors" / ".blank").resolve() == manager.path()
     assert await run_git("rev-parse", "--abbrev-ref", "HEAD", cwd=blank) == "main\n"
@@ -382,10 +388,10 @@ async def test_the_blank_mirror_is_made_once(tmp_path: Path) -> None:
     # It has no upstream, so there is nothing for it to be behind and nothing a
     # second call should do to it — including to the commit a fork resolves HEAD to.
     manager = a_mirror_manager(tmp_path)
-    blank = await manager.create()
+    blank = (await manager.create()).storage.path
     head = await run_git("rev-parse", "HEAD", cwd=blank)
 
-    assert await manager.create() == blank
+    assert (await manager.create()).storage.path == blank
     assert await run_git("rev-parse", "HEAD", cwd=blank) == head
 
 
@@ -396,7 +402,7 @@ async def test_the_blank_mirror_is_not_a_projects(tmp_path: Path) -> None:
     folder = a_folder(tmp_path / "blank", {"readme.md": "hello"})
 
     await manager.create()
-    mirror = await manager.sync(a_project(folder))
+    mirror = (await manager.sync(a_project(folder))).storage.path
 
-    assert mirror != await manager.create()
+    assert mirror != (await manager.create()).storage.path
     assert await run_git("ls-files", cwd=mirror) == "readme.md\n"

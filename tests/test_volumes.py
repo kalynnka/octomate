@@ -12,13 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.project import Project
 from octomate.schemas.user import User
 from octomate.schemas.volumes import GitVolume, Volume
 from octomate.schemas.volumes.storage import HostDirectory
 from octomate.types.volumes import VolumeUsage
-from tests.support.managers import a_project, a_thread
+from tests.support.managers import a_project, a_thread, a_workspace_manager
 from tests.support.users import a_user
 
 
@@ -41,7 +40,7 @@ async def test_user_root_and_volume_paths_do_not_create_rows_or_directories(
     project: Project, tmp_path: Path
 ) -> None:
     alice, bob = await a_user("alice"), await a_user("bob")
-    manager = WorkspaceManager(volumes_dir=tmp_path / "volumes")
+    manager = a_workspace_manager(volumes_dir=tmp_path / "volumes")
     root = manager.root(alice.id)
     assert root == tmp_path / "volumes" / str(alice.id)
     assert root != manager.root(bob.id)
@@ -279,7 +278,7 @@ async def test_workspace_runtime_refuses_an_existing_plain_tree(
         thread_id=thread_id,
     )
     await add(volume)
-    manager = WorkspaceManager()
+    manager = a_workspace_manager()
     with pytest.raises(TypeError, match="requires a Git working volume"):
         await manager.volumes.tree(owner.id, thread_id, None)
     manager.path(volume).mkdir(parents=True)
@@ -288,7 +287,7 @@ async def test_workspace_runtime_refuses_an_existing_plain_tree(
 
 @pytest.mark.parametrize("field", ["thread_id", "project_id"])
 def test_only_working_tree_usage_accepts_associations(field: str) -> None:
-    with pytest.raises(ValidationError, match="Only working-tree volumes"):
+    with pytest.raises(ValidationError, match="Only working trees and mirrors"):
         Volume.model_validate(
             {
                 "owner_id": uuid7(),
@@ -364,3 +363,48 @@ async def test_loaded_volume_owns_activity_and_git_reference_policy(
         reloaded = await session.list(Volume, limit=None)
     assert all(volume.last_used_at > before for volume in reloaded)
     assert {volume.id for volume in reloaded} == {tree.id, independent.id}
+
+
+async def test_unregistered_temporary_volume_cannot_be_persisted(
+    in_memory_engine: AsyncEngine,
+    tmp_path: Path,
+) -> None:
+    volume = Volume(storage=HostDirectory(tmp_path / "temporary"), ephemeral=True)
+    async with volume() as path:
+        assert path.is_dir()
+    assert not path.exists()
+    with pytest.raises(IntegrityError, match="ck_volumes_persisted_owner"):
+        await add(volume)
+
+
+@pytest.mark.parametrize("project_mirror", [False, True])
+async def test_only_one_service_mirror_per_project_or_blank(
+    project: Project,
+    tmp_path: Path,
+    project_mirror: bool,
+) -> None:
+    project_id = project.id if project_mirror else None
+    first = GitVolume(
+        usage="mirror", project_id=project_id, storage=HostDirectory(tmp_path / "first")
+    )
+    duplicate = GitVolume(
+        usage="mirror",
+        project_id=project_id,
+        storage=HostDirectory(tmp_path / "second"),
+    )
+    await add(first)
+    with pytest.raises(IntegrityError):
+        await add(duplicate)
+
+
+def test_mirror_cannot_be_a_user_owned_or_ephemeral_volume(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="service-owned"):
+        GitVolume(
+            usage="mirror", owner_id=uuid7(), storage=HostDirectory(tmp_path / "owned")
+        )
+    with pytest.raises(ValidationError, match="persistent"):
+        GitVolume(
+            usage="mirror",
+            ephemeral=True,
+            storage=HostDirectory(tmp_path / "ephemeral"),
+        )

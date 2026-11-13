@@ -17,7 +17,7 @@ from sqlalchemy import (
     Uuid,
     text,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base, MapperArgs, UTCDateTime
@@ -25,15 +25,38 @@ from octomate.types.volumes import VolumeKind, VolumeUsage
 
 
 class Volume(Base, TransmuterProxiedMixin):
-    """An application-owned volume; storage and attachments have separate lifetimes."""
+    """A user-owned volume or a service-owned Git mirror."""
 
     __tablename__ = "volumes"
     __table_args__ = (
         CheckConstraint(
-            "(usage IS NOT NULL AND usage = 'tree' AND thread_id IS NOT NULL) OR ((usage IS NULL OR usage != 'tree') AND thread_id IS NULL AND project_id IS NULL)",
+            "(usage IS NOT NULL AND usage = 'tree' AND thread_id IS NOT NULL) OR (usage IS NOT NULL AND usage = 'mirror' AND kind = 'git' AND owner_id IS NULL AND thread_id IS NULL AND ephemeral = 0) OR ((usage IS NULL OR usage NOT IN ('tree', 'mirror')) AND thread_id IS NULL AND project_id IS NULL)",
             name="ck_volumes_usage_scope",
         ),
-        CheckConstraint("kind = 'git' OR base_ref IS NULL", name="ck_volumes_git_ref"),
+        CheckConstraint(
+            "kind = 'git' OR (base_ref IS NULL AND mirror_id IS NULL)",
+            name="ck_volumes_git_ref",
+        ),
+        CheckConstraint(
+            "owner_id IS NOT NULL OR (usage IS NOT NULL AND usage = 'mirror')",
+            name="ck_volumes_persisted_owner",
+        ),
+        CheckConstraint(
+            "usage IS NULL OR usage != 'mirror' OR mirror_id IS NULL",
+            name="ck_volumes_mirror_source",
+        ),
+        Index(
+            "uq_volumes_project_mirror",
+            "project_id",
+            unique=True,
+            sqlite_where=text("usage = 'mirror' AND project_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_volumes_blank_mirror",
+            "usage",
+            unique=True,
+            sqlite_where=text("usage = 'mirror' AND project_id IS NULL"),
+        ),
         Index(
             "uq_volumes_owner_usage",
             "owner_id",
@@ -64,12 +87,12 @@ class Volume(Base, TransmuterProxiedMixin):
     }
 
     id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
-    owner_id: Mapped[UUID7] = mapped_column(
+    owner_id: Mapped[UUID7 | None] = mapped_column(
         Uuid,
         ForeignKey("users.id", name="fk_volumes_owner_id_users", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
         index=True,
-        comment="The registered user who owns this logical volume.",
+        comment="The registered owner; NULL identifies a service-owned mirror in persisted records.",
     )
     storage: Mapped[JsonValue] = mapped_column(
         JSON,
@@ -84,7 +107,7 @@ class Volume(Base, TransmuterProxiedMixin):
     usage: Mapped[VolumeUsage | None] = mapped_column(
         String,
         nullable=True,
-        comment="Optional application use: working tree, user memory or package cache.",
+        comment="Optional application use: working tree, host mirror, user memory or package cache.",
     )
     ephemeral: Mapped[bool] = mapped_column(
         Boolean,
@@ -108,7 +131,7 @@ class Volume(Base, TransmuterProxiedMixin):
         ),
         nullable=True,
         index=True,
-        comment="The working volume's project; absent for chats and other uses.",
+        comment="The working tree or mirror's project; absent for chats, the blank mirror and other uses.",
     )
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime,
@@ -133,4 +156,19 @@ class GitVolume(Volume):
         String,
         nullable=True,
         comment="The Git ref used for the first checkout; None selects the source's default branch.",
+    )
+    mirror_id: Mapped[UUID7 | None] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "volumes.id", name="fk_volumes_mirror_id_volumes", ondelete="RESTRICT"
+        ),
+        nullable=True,
+        comment="The service-owned Git volume supplying this working tree's history and checkpoints.",
+    )
+    mirror: Mapped[GitVolume | None] = relationship(
+        "GitVolume",
+        remote_side="Volume.id",
+        foreign_keys=[mirror_id],
+        lazy="selectin",
+        join_depth=1,
     )

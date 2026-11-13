@@ -15,7 +15,6 @@ from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import GatewayManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import Nerve
 from octomate.schemas.commands import (
     CommandCatalog,
@@ -24,6 +23,7 @@ from octomate.schemas.commands import (
 )
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from tests.support.agents import FakeAgent
+from tests.support.managers import a_workspace_manager
 
 
 class SkillDescriptor(CommandDescriptor, frozen=True):
@@ -73,7 +73,7 @@ def manager() -> CommandManager:
         users=users,
         conversations=ConversationManager(),
         threads=ThreadManager(nerve=Nerve(), users=users),
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
         gateway=GatewayManager(),
     )
 

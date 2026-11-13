@@ -1,5 +1,5 @@
 import asyncio
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -8,17 +8,14 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config.habitat import SbxHabitatConfig
-from octomate.habitat import Attachment, Habitat, HabitatError, NativeHabitat
+from octomate.habitat import Habitat, HabitatError, NativeHabitat
 from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import Invocation
-from octomate.managers.workspaces.base import (
-    WorkspaceManager,
-)
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.volumes import GitVolume, UnregisteredProjectError
 from octomate.schemas.volumes.storage import HostDirectory
 from octomate.schemas.workspaces import Workspace
-from tests.support.managers import a_project, a_registry, a_thread
+from tests.support.managers import a_project, a_registry, a_thread, a_workspace_manager
 from tests.support.users import a_user
 
 
@@ -28,7 +25,7 @@ async def test_native_invocation_borrows_the_owners_chat_workspace(
 ) -> None:
     owner_id = (await a_user()).id if registered else None
     thread_id = await a_thread()
-    workspaces = WorkspaceManager()
+    workspaces = a_workspace_manager()
     habitat: Habitat = NativeHabitat()
     await habitat.prepare()
     async with workspaces.open(thread_id, None, owner_id) as workspace:
@@ -57,7 +54,7 @@ async def test_native_invocation_keeps_the_project_workspace_owner(
     root = tmp_path / "project"
     root.mkdir()
     project = a_project(root)
-    workspaces = WorkspaceManager(projects=await a_registry(project))
+    workspaces = a_workspace_manager(projects=await a_registry(project))
     async with workspaces.open(await a_thread(), project, owner.id) as workspace:
         invocation = Invocation(
             id=uuid7(),
@@ -83,19 +80,9 @@ async def test_invocation_borrows_the_habitat_without_managing_its_lifetime(
     stop = AsyncMock()
     monkeypatch.setattr(habitat, "prepare", prepare)
     monkeypatch.setattr(habitat, "stop", stop)
-    workspaces = WorkspaceManager()
+    workspaces = a_workspace_manager()
     async with workspaces.open(await a_thread(), None, owner.id) as workspace:
         assert isinstance(workspace.volume, GitVolume)
-        workspace = Workspace(
-            thread_id=workspace.thread_id,
-            volumes={"work": workspace.volume},
-            attachments={
-                "work": Attachment(
-                    workspace.attachment.storage,
-                    PurePosixPath("/workspace/tree") / str(workspace.volume.id),
-                )
-            },
-        )
         invocation = Invocation(
             id=uuid7(),
             conversation_id=uuid7(),
@@ -104,16 +91,14 @@ async def test_invocation_borrows_the_habitat_without_managing_its_lifetime(
         )
         assert invocation.habitat is habitat
         assert isinstance(workspace.volume, GitVolume)
-        assert invocation.cwd == PurePosixPath("/workspace/tree") / str(
-            workspace.volume.id
-        )
-        assert not isinstance(invocation.cwd, Path)
+        with pytest.raises(HabitatError, match="volume mounts"):
+            _ = invocation.cwd
 
     prepare.assert_not_called()
     stop.assert_not_called()
 
 
-async def test_project_guest_cwd_is_known_before_materialization(
+async def test_project_native_cwd_is_known_before_materialization(
     in_memory_engine: AsyncEngine, tmp_path: Path
 ) -> None:
     owner = await a_user()
@@ -125,8 +110,7 @@ async def test_project_guest_cwd_is_known_before_materialization(
         thread_id=await a_thread(),
         project_id=project.id,
     )
-    root = tmp_path / "volumes" / str(owner.id)
-    storage = HostDirectory(root / "tree" / str(volume.id))
+    storage = volume.storage
     assert volume.thread_id is not None
     invocation = Invocation(
         id=uuid7(),
@@ -135,20 +119,12 @@ async def test_project_guest_cwd_is_known_before_materialization(
             thread_id=volume.thread_id,
             project=project,
             volumes={"work": volume},
-            attachments={
-                "work": Attachment(
-                    storage, PurePosixPath("/workspace/tree") / str(volume.id)
-                )
-            },
         ),
-        habitat=SbxHabitat(
-            config=SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64),
-            user_id=owner.id,
-        ),
+        habitat=NativeHabitat(),
     )
     assert invocation.storage is storage
-    assert invocation.cwd == PurePosixPath("/workspace/tree") / str(volume.id)
-    assert not root.exists()
+    assert invocation.cwd == volume.storage.path
+    assert not storage.path.exists()
 
 
 @pytest.mark.parametrize("registered", [False, True])
@@ -160,7 +136,7 @@ async def test_invocation_rejects_an_unregistered_or_different_habitat_owner(
         config=SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64),
         user_id=uuid7(),
     )
-    workspaces = WorkspaceManager()
+    workspaces = a_workspace_manager()
     workspace = await workspaces.resolve(await a_thread(), None, owner_id)
     message = "owners do not match" if registered else "registered user"
     with pytest.raises(ValueError, match=message):
@@ -271,7 +247,8 @@ async def test_core_refuses_anonymous_project_and_managed_dispatch(
     root = tmp_path / "project"
     root.mkdir()
     project = a_project(root)
-    app = Octomate(workspaces=WorkspaceManager(projects=await a_registry(project)))
+    app = Octomate()
+    app.workspaces.projects = await a_registry(project)
     thread = await app.threads.ensure(
         ThreadKey("im", "thread", "room", "turn"),
         project=project,
@@ -302,7 +279,8 @@ async def test_core_checkpoints_an_empty_project_without_a_git_index(
     root = tmp_path / "empty"
     root.mkdir()
     project = a_project(root)
-    app = Octomate(workspaces=WorkspaceManager(projects=await a_registry(project)))
+    app = Octomate()
+    app.workspaces.projects = await a_registry(project)
     thread = await app.threads.ensure(
         ThreadKey("im", "thread", "room", "turn"),
         project=project,

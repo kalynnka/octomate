@@ -31,7 +31,7 @@ from octomate.database import async_session
 from octomate.managers import ThreadManager, UserManager
 from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.managers.mcp import McpManager
-from octomate.managers.workspaces import MirrorManager, WorkspaceManager
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.managers.workspaces.mirrors import run_git
 from octomate.mcp.server import octomate_mcp
 from octomate.nerve import Nerve
@@ -46,6 +46,7 @@ from tests.support.managers import (
     FakeThreadManager,
     a_project,
     a_registry,
+    a_workspace_manager,
     fixed_session,
 )
 from tests.support.mcp import core_tool_server
@@ -90,9 +91,10 @@ async def a_harness(
     (root / "readme.md").write_text("hello")
     off = tmp_path / "off"
     off.mkdir()
-    workspaces = WorkspaceManager(
+    workspaces = a_workspace_manager(
         projects=await a_registry(a_project(root), a_project(off, enabled=False)),
-        mirrors=MirrorManager(config=MirrorsConfig(), mirrors_dir=tmp_path / "mirrors"),
+        mirror_config=MirrorsConfig(),
+        mirrors_dir=tmp_path / "mirrors",
         volumes_dir=tmp_path / "volumes",
     )
     users, profile = await a_registered_profile()
@@ -307,7 +309,7 @@ async def test_a_gateway_without_a_thread_can_list_projects_but_not_move_or_dism
         user_profile=profile,
         conversation_address=ChannelAddress("im", "thread", "room", "U1", "thread"),
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
     )
 
     assert await session.inspect("projects") == []

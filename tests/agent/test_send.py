@@ -18,7 +18,6 @@ from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.config import ChannelConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.user import UserManager
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import ChannelTopic, Nerve
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.segments import MarkdownSegment
@@ -29,7 +28,7 @@ from octomate.tentacles.channel import ChannelSurfaces
 from octomate.types.json import JsonObject
 from tests.support.agents import FakeAgent, ScriptedStream, ScriptedTurn
 from tests.support.channels import FakeChannelTentacle
-from tests.support.managers import FakeThreadManager
+from tests.support.managers import FakeThreadManager, a_workspace_manager
 from tests.support.mcp import core_tool_capabilities, core_tool_server, gateway_schemas
 from tests.support.nerve import held
 from tests.support.users import a_user
@@ -65,7 +64,7 @@ def _gate(
         ),
         users=threads.users,
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
     )
 
 

@@ -825,7 +825,9 @@ class OctomateSession:
                     f"Available: {', '.join(sorted(p.name for p in available)) or 'none'}."
                 )
             mirror = await self.workspaces.mirrors.sync(registered)
-            if ref is not None and not await run_git("ls-remote", str(mirror), ref):
+            if ref is not None and not await run_git(
+                "ls-remote", str(mirror.storage.path), ref
+            ):
                 raise GatewayRefusal(
                     f"{registered.name!r} has no {ref!r} to start from. Name a "
                     "branch, tag or commit its mirror has, or omit it for the "
@@ -973,7 +975,9 @@ class OctomateSession:
             # not to resolve would otherwise leave the thread committed to the
             # project with no way to ask again for the branch that was meant.
             mirror = await self.workspaces.mirrors.sync(registered)
-            if ref is not None and not await run_git("ls-remote", str(mirror), ref):
+            if ref is not None and not await run_git(
+                "ls-remote", str(mirror.storage.path), ref
+            ):
                 raise GatewayRefusal(
                     f"{registered.name!r} has no {ref!r} to start from. Name a "
                     "branch, tag or commit its mirror has, or omit it for the "

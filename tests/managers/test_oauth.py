@@ -37,7 +37,6 @@ from octomate.managers.oauth import (
 )
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
 from octomate.mcp.server import tentacles_mcp
 from octomate.mcp.transport import mcp_http_client
@@ -69,7 +68,7 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.mcp import OAuthMcpTentacle
 from octomate.types.oauth import HttpsUrl
 from tests.support.channels import FakeChannelTentacle, RecordingOAuthFeeler
-from tests.support.managers import FakeThreadManager, fixed_session
+from tests.support.managers import FakeThreadManager, a_workspace_manager, fixed_session
 from tests.support.mcp import install_tentacle
 from tests.support.nerve import drawing
 from tests.support.users import a_user
@@ -940,7 +939,7 @@ def a_session(
         user_profile=profile,
         users=threads.users,
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
     )
 
 

@@ -27,9 +27,15 @@ storage_migration = import_module(
 )
 
 
+mirror_migration = import_module(
+    "octomate.migrations.versions.2026_11_13_2131-25d11a963652_record_service_mirrors_and_volume_"
+)
+
+
 async def test_storage_migration_round_trip(in_memory_engine: AsyncEngine) -> None:
     def round_trip(connection: Connection) -> None:
         with Operations.context(MigrationContext.configure(connection)):
+            mirror_migration.downgrade()
             storage_migration.downgrade()
             assert "storage" not in {
                 column["name"] for column in inspect(connection).get_columns("volumes")
@@ -87,6 +93,7 @@ async def test_legacy_volumes_preserve_data_and_paths_in_both_directions(
 
     def round_trip(connection: Connection) -> None:
         with Operations.context(MigrationContext.configure(connection)):
+            mirror_migration.downgrade()
             storage_migration.downgrade()
             before = (
                 connection.execute(text("SELECT * FROM volumes ORDER BY id"))
@@ -190,3 +197,28 @@ async def test_upgrade_refuses_unknown_legacy_kinds_before_dropping_the_table(
 
     async with in_memory_engine.begin() as connection:
         await connection.run_sync(reject)
+
+
+async def test_mirror_schema_round_trip(in_memory_engine: AsyncEngine) -> None:
+    def round_trip(connection: Connection) -> None:
+        with Operations.context(MigrationContext.configure(connection)):
+            mirror_migration.downgrade()
+            mirror_migration.upgrade()
+        columns = {
+            column["name"]: column
+            for column in inspect(connection).get_columns("volumes")
+        }
+        assert columns["owner_id"]["nullable"]
+        assert "mirror_id" in columns
+        assert {
+            constraint["name"]
+            for constraint in inspect(connection).get_check_constraints("volumes")
+        } >= {
+            "ck_volumes_persisted_owner",
+            "ck_volumes_mirror_source",
+            "ck_volumes_usage_scope",
+        }
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+
+    async with in_memory_engine.begin() as connection:
+        await connection.run_sync(round_trip)

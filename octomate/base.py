@@ -35,6 +35,7 @@ from octomate.managers.habitat import HabitatManager
 from octomate.managers.mcp import McpManager
 from octomate.managers.oauth import OAuthManager
 from octomate.managers.project import ProjectManager
+from octomate.managers.storages import HostDirectoryManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.volumes import VolumeManager
@@ -154,7 +155,7 @@ class Octomate(FastAPI):
     commands: CommandManager = field(init=False)
     deferred_actions: DeferredActionManager = field(init=False)
     gateway: GatewayManager = field(default_factory=GatewayManager)
-    workspaces: WorkspaceManager = field(default_factory=WorkspaceManager)
+    workspaces: WorkspaceManager = field(init=False)
     nerve: Nerve = field(default_factory=Nerve)
     habitats: HabitatManager = field(init=False)
 
@@ -180,6 +181,13 @@ class Octomate(FastAPI):
             docs_url="/docs",
             redoc_url=None,
             lifespan=self.lifespan,
+        )
+        volumes = VolumeManager(host_directories=HostDirectoryManager())
+        self.workspaces = WorkspaceManager(
+            projects=ProjectManager(self.config.projects),
+            volumes=volumes,
+            mirrors=MirrorManager(config=self.config.mirrors, volumes=volumes),
+            config=self.config.workspaces,
         )
         self.threads = ThreadManager(users=self.users, nerve=self.nerve)
         self.habitats = HabitatManager(self.config.habitat, self.nerve)

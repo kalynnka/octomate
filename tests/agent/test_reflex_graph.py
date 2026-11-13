@@ -35,7 +35,7 @@ from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager, OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
-from octomate.managers.workspaces import MirrorManager, WorkspaceManager
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.managers.workspaces.mirrors import run_git
 from octomate.nerve import Nerve
 from octomate.reflex import (
@@ -95,6 +95,7 @@ from tests.support.managers import (
     RecordingWorkspaceManager,
     a_project,
     a_registry,
+    a_workspace_manager,
 )
 from tests.support.nerve import drawing, unwired
 from tests.support.scenarios import text_part_events
@@ -2383,9 +2384,10 @@ async def test_a_dismiss_releases_the_workspace_once_the_turn_is_saved(
     root = tmp_path / "inky"
     root.mkdir()
     (root / "readme.md").write_text("hello")
-    workspaces = WorkspaceManager(
+    workspaces = a_workspace_manager(
         projects=await a_registry(a_project(root)),
-        mirrors=MirrorManager(config=MirrorsConfig(), mirrors_dir=tmp_path / "mirrors"),
+        mirror_config=MirrorsConfig(),
+        mirrors_dir=tmp_path / "mirrors",
         volumes_dir=tmp_path / "workspaces",
     )
     project = workspaces.projects.get("inky")
@@ -2449,9 +2451,10 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
     root = tmp_path / "inky"
     root.mkdir()
     (root / "readme.md").write_text("hello")
-    workspaces = WorkspaceManager(
+    workspaces = a_workspace_manager(
         projects=await a_registry(a_project(root)),
-        mirrors=MirrorManager(config=MirrorsConfig(), mirrors_dir=tmp_path / "mirrors"),
+        mirror_config=MirrorsConfig(),
+        mirrors_dir=tmp_path / "mirrors",
         volumes_dir=tmp_path / "workspaces",
     )
     owner = await a_user("alice", profiles={"im": "alice"})
@@ -2528,9 +2531,10 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
     root.mkdir()
     (root / "readme.md").write_text("hello")
     (root / ".gitignore").write_text(".env\nbuild/\n")
-    workspaces = WorkspaceManager(
+    workspaces = a_workspace_manager(
         projects=await a_registry(a_project(root)),
-        mirrors=MirrorManager(config=MirrorsConfig(), mirrors_dir=tmp_path / "mirrors"),
+        mirror_config=MirrorsConfig(),
+        mirrors_dir=tmp_path / "mirrors",
         volumes_dir=tmp_path / "workspaces",
     )
     project = workspaces.projects.get("inky")
@@ -2679,7 +2683,7 @@ async def test_react_prepares_each_senders_project_workspace(
     root.mkdir()
     (root / "README.md").write_text("shared project")
     project = a_project(root)
-    workspaces = WorkspaceManager(projects=await a_registry(project))
+    workspaces = a_workspace_manager(projects=await a_registry(project))
     threads = ThreadManager(nerve=Nerve(), users=UserManager())
     alice = await a_user("alice", profiles={"im": "alice"})
     bob = await a_user("bob", profiles={"im": "bob"})
@@ -2725,7 +2729,7 @@ async def test_react_refuses_an_anonymous_project_before_dispatch(
     root = tmp_path / "project"
     root.mkdir()
     project = a_project(root)
-    workspaces = WorkspaceManager(projects=await a_registry(project))
+    workspaces = a_workspace_manager(projects=await a_registry(project))
     threads = ThreadManager(nerve=Nerve(), users=UserManager())
     address = _key(thread_id="shared")
     thread = await threads.ensure(address, project=project)

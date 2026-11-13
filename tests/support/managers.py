@@ -25,14 +25,17 @@ from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.config.agents import AgentRouteModelName
+from octomate.config.mirrors import MirrorsConfig
+from octomate.config.workspaces import WorkspacesConfig
 from octomate.database import async_session
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.project import ProjectManager
+from octomate.managers.storages import HostDirectoryManager
 from octomate.managers.thread import ThreadManager, message_text_from_segments
 from octomate.managers.user import UserManager
 from octomate.managers.volumes import VolumeManager
-from octomate.managers.workspaces import WorkspaceManager
+from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.nerve import Nerve
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import (
@@ -60,6 +63,32 @@ from octomate.schemas.user import UserProfile
 from octomate.schemas.volumes import GitVolume
 from octomate.types.deferred import DeferredBatchStatus, DeferredResponseMode
 from octomate.types.permissions import AgentPermissionMode
+
+
+def a_workspace_manager(
+    *,
+    projects: ProjectManager | None = None,
+    volumes: VolumeManager | None = None,
+    config: WorkspacesConfig | None = None,
+    volumes_dir: Path | None = None,
+    mirrors_dir: Path = Path(".octomate/mirrors"),
+    mirror_config: MirrorsConfig | None = None,
+) -> WorkspaceManager:
+    """Compose real test services sharing one volume registry and storage manager."""
+    volumes = (
+        volumes
+        if volumes is not None
+        else VolumeManager(host_directories=HostDirectoryManager())
+    )
+    return WorkspaceManager(
+        projects=projects if projects is not None else ProjectManager(),
+        volumes=volumes,
+        mirrors=MirrorManager(
+            volumes=volumes, config=mirror_config, mirrors_dir=mirrors_dir
+        ),
+        config=config,
+        volumes_dir=volumes_dir,
+    )
 
 
 def a_project(
@@ -641,8 +670,18 @@ class FakeVolumeManager(VolumeManager):
     """Volume records for graph tests without database persistence."""
 
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__(host_directories=HostDirectoryManager())
         self.store: dict[tuple[UUID7, UUID7, UUID7 | None], GitVolume] = {}
+        self.mirrors: dict[UUID7 | None, GitVolume] = {}
+
+    async def mirror(self, project_id: UUID7 | None, path: Path) -> GitVolume:
+        if project_id not in self.mirrors:
+            self.mirrors[project_id] = GitVolume(
+                usage="mirror",
+                project_id=project_id,
+                storage=self.host_directories.get(path),
+            )
+        return self.mirrors[project_id]
 
     async def find(
         self, owner_id: UUID7, thread_id: UUID7, project_id: UUID7 | None
@@ -655,6 +694,8 @@ class FakeVolumeManager(VolumeManager):
         thread_id: UUID7,
         project_id: UUID7 | None,
         ref: str | None = None,
+        *,
+        mirror: GitVolume | None = None,
     ) -> GitVolume:
         key = (owner_id, thread_id, project_id)
         if key not in self.store:
@@ -669,6 +710,8 @@ class FakeVolumeManager(VolumeManager):
                 thread_id=thread_id,
                 project_id=project_id,
                 base_ref=ref,
+                mirror_id=mirror.id if mirror is not None else None,
+                mirror=Relation(mirror),
                 ephemeral=project_id is None,
             )
         return self.store[key]
@@ -684,7 +727,12 @@ class RecordingWorkspaceManager(WorkspaceManager):
     """
 
     def __init__(self) -> None:
-        super().__init__(volumes=FakeVolumeManager())
+        volumes = FakeVolumeManager()
+        super().__init__(
+            projects=ProjectManager(),
+            volumes=volumes,
+            mirrors=MirrorManager(volumes=volumes),
+        )
         self.saved: list[UUID7] = []
 
     async def save(self, thread: Thread, owner_id: UUID7) -> None:

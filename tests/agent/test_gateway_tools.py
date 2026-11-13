@@ -33,7 +33,6 @@ from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.mcp.gateway import (
     HANDOFF_INSTRUCTION,
     NATIVE_TELEPORT_STARTED,
@@ -62,6 +61,7 @@ from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
     FakeConversationManager,
     FakeThreadManager,
+    a_workspace_manager,
     fixed_session,
 )
 from tests.support.mcp import core_tool_server
@@ -106,7 +106,7 @@ def a_turn(
         ),
         users=threads.users,
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
     )
     server = octomate_mcp(
         fixed_session(session),
@@ -144,7 +144,7 @@ async def a_native_call(
         user_profile=await users.native_profile("coding", "luhui"),
         native=True,
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
     )
 
     async def kick(signal: NativeGatewaySignal) -> None:
@@ -215,7 +215,7 @@ async def test_accomplices_run_and_resume_without_harness_specific_metadata(
         },
         thread_id=thread_id,
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
         conversation_id=parent.id,
     )
     server = core_tool_server(session, conversations=conversations)
@@ -746,7 +746,7 @@ async def a_turn_of_alices(in_memory_engine: AsyncEngine) -> FastMCP:
         ),
         users=threads.users,
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
     )
     return octomate_mcp(
         fixed_session(session),
@@ -812,7 +812,7 @@ async def test_a_native_session_reads_its_users_history(
         user_profile=await users.native_profile("coding", "luhui"),
         native=True,
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
     )
     server = octomate_mcp(
         fixed_session(session),

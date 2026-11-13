@@ -42,7 +42,6 @@ from octomate.config.agents.common import Claim
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import async_session
 from octomate.managers.oauth import OAuthConnector
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import Impulse, ThreadTopic, UserTopic
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
@@ -72,7 +71,11 @@ from octomate.types.json import JsonObject
 from octomate.types.permissions import InklingPermissionMode, PermissionMode
 from tests.managers.test_oauth import FakeDeviceFlow
 from tests.support.agents import FakeAgent, build_non_stream_agent, build_scripted_agent
-from tests.support.managers import a_loaded_thread, a_project, a_registry
+from tests.support.managers import (
+    a_loaded_thread,
+    a_project,
+    a_registry,
+)
 from tests.support.mcp import served_inkling_mcp
 from tests.support.nerve import awake_on, settled
 from tests.support.users import auth_config
@@ -955,9 +958,8 @@ async def test_a_first_directive_files_the_thread_under_a_project(
     # operator's pick is the whole of how it gets one.
     inky = tmp_path / "inky"
     inky.mkdir()
-    octomate = Octomate(
-        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
-    )
+    octomate = Octomate()
+    octomate.workspaces.projects = await a_registry(a_project(inky))
     agent, _ = build_scripted_agent(["done"])
     channel = await _register(octomate, agent)
 
@@ -977,9 +979,8 @@ async def test_a_directive_naming_no_project_leaves_the_thread_a_chat(
     # agent works nowhere in particular.
     inky = tmp_path / "inky"
     inky.mkdir()
-    octomate = Octomate(
-        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
-    )
+    octomate = Octomate()
+    octomate.workspaces.projects = await a_registry(a_project(inky))
     agent, _ = build_scripted_agent(["done"])
     channel = await _register(octomate, agent)
 
@@ -1009,9 +1010,8 @@ async def test_a_new_thread_posted_by_the_console_carries_its_project(
     to a fresh thread key, and read the thread back filed under it."""
     inky = tmp_path / "inky"
     inky.mkdir()
-    octomate = Octomate(
-        workspaces=WorkspaceManager(projects=await a_registry(a_project(inky)))
-    )
+    octomate = Octomate()
+    octomate.workspaces.projects = await a_registry(a_project(inky))
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)
 
@@ -1562,13 +1562,10 @@ async def test_the_projects_endpoint_offers_only_enabled_ones(
 ) -> None:
     inky = tmp_path / "inky"
     inky.mkdir()
-    octomate = Octomate(
-        workspaces=WorkspaceManager(
-            projects=await a_registry(
-                a_project(inky),
-                a_project(tmp_path / "deleted", enabled=False),
-            )
-        )
+    octomate = Octomate()
+    octomate.workspaces.projects = await a_registry(
+        a_project(inky),
+        a_project(tmp_path / "deleted", enabled=False),
     )
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)

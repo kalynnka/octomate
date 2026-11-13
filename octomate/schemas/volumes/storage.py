@@ -20,7 +20,7 @@ class Storage(Protocol):
     """Storage exposed as a service-local directory for volume operations.
 
     Callers share one storage object per location so concurrent uses coordinate their
-    lifetime. Habitat destination paths and access modes belong to attachments.
+    lifetime. Habitat destination paths and access modes belong to habitats.
     """
 
     @property
@@ -62,6 +62,8 @@ class HostDirectory:
 
     def __post_init__(self) -> None:
         self.path = self.path.absolute()
+        if ".." in self.path.parts:
+            raise ValueError("Storage paths cannot contain parent traversal")
 
     async def claim(self, *, ephemeral: bool) -> None:
         """Retain this storage, clearing abandoned temporary contents first."""

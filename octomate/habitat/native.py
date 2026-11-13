@@ -1,6 +1,9 @@
 """Host execution under the selected harness's own controls."""
 
+from pathlib import Path
+
 from octomate.habitat.base import Habitat
+from octomate.schemas.volumes import Volume
 
 
 class NativeHabitat(Habitat):
@@ -9,6 +12,9 @@ class NativeHabitat(Habitat):
     @property
     def name(self) -> str:
         return "native"
+
+    def path(self, volume: Volume) -> Path:
+        return volume.storage.path
 
     async def prepare(self) -> None:
         return

@@ -52,7 +52,6 @@ from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import async_session
 from octomate.dependencies import workspace_manager
 from octomate.managers.auth import AuthManager
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import Impulse, ThreadTopic
 from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.commands import (
@@ -76,7 +75,7 @@ from octomate.types.permissions import PermissionMode
 from tests.agent.test_command_execution import ExecutingAgent
 from tests.agent.test_command_manager import DiscoveringAgent
 from tests.support.channels import FakeChannelTentacle
-from tests.support.managers import a_project, a_registry
+from tests.support.managers import a_project, a_registry, a_workspace_manager
 from tests.support.nerve import drawing, held
 from tests.support.users import a_user
 
@@ -396,7 +395,7 @@ async def test_http_uses_injected_managers(
     conversation: Conversation,
     tmp_path: Path,
 ) -> None:
-    workspaces = WorkspaceManager(volumes_dir=tmp_path / "injected")
+    workspaces = a_workspace_manager(volumes_dir=tmp_path / "injected")
     workspace = await workspaces.resolve(conversation.thread_id, None, user.id)
     app.dependency_overrides[workspace_manager] = lambda: workspaces
     body = {

@@ -15,7 +15,6 @@ from fastmcp import Client
 
 from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.managers.gateway import OctomateSession
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import ChannelTopic, Nerve
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
@@ -33,7 +32,7 @@ from octomate.tentacles.lark.chromo import LarkChromo
 from octomate.tentacles.napcat.chromo import NapcatChromo
 from octomate.tentacles.slack.chromo import SlackChromo
 from tests.support.channels import FakeChannelTentacle, FakeChromo, RecordingInk
-from tests.support.managers import FakeThreadManager
+from tests.support.managers import FakeThreadManager, a_workspace_manager
 from tests.support.mcp import core_tool_server
 from tests.support.nerve import held
 
@@ -72,7 +71,7 @@ async def test_send_tool_accepts_reply_and_mention() -> None:
         nerve=Nerve(),
         users=threads.users,
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
     )
     segments = [
         ReplySegment(data={"id": "msg-3"}),

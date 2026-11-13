@@ -46,7 +46,6 @@ from octomate.capabilities.harness.react import (
 )
 from octomate.config.base import OctomateConfig
 from octomate.managers.gateway import OctomateSession
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     DeferredActionCollection,
@@ -72,6 +71,7 @@ from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
     FakeThreadManager,
+    a_workspace_manager,
 )
 from tests.support.mcp import core_tool_capabilities, served_inkling_mcp
 from tests.support.users import a_user, auth_config
@@ -94,7 +94,7 @@ def _inkling_agent() -> Agent[None, InklingOutput]:
                     current_agent_id="inkling",
                     users=threads.users,
                     threads=threads,
-                    workspaces=WorkspaceManager(),
+                    workspaces=a_workspace_manager(),
                 )
             ),
         ],
@@ -633,7 +633,7 @@ async def test_a_question_batched_with_a_teleport_suspends_whole() -> None:
                     ),
                     users=threads.users,
                     threads=threads,
-                    workspaces=WorkspaceManager(),
+                    workspaces=a_workspace_manager(),
                 )
             ),
         ],

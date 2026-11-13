@@ -75,6 +75,7 @@ from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.channel import ChannelOutput
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from octomate.types.json import JsonObject
+from tests.support.managers import a_workspace_manager
 
 FakeRunOutput = ChannelOutput
 FAKE_CONTEXT = cast(RunContext[None], None)
@@ -175,7 +176,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     octomate: Octomate | None = None
     conversations: ConversationManager = field(default_factory=ConversationManager)
     projects: ProjectManager = field(default_factory=ProjectManager)
-    workspaces: WorkspaceManager = field(default_factory=WorkspaceManager)
+    workspaces: WorkspaceManager = field(default_factory=a_workspace_manager)
     habitats: HabitatManager = field(
         default_factory=lambda: HabitatManager(
             config=NativeHabitatConfig(), nerve=Nerve()

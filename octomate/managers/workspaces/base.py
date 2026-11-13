@@ -14,7 +14,6 @@ from pydantic import UUID7
 
 from octomate.config.mirrors import GitIdentity
 from octomate.config.workspaces import WorkspacesConfig
-from octomate.habitat.base import Attachment
 from octomate.managers.base import Manager
 from octomate.managers.project import ProjectManager
 from octomate.managers.storages import HostDirectoryManager
@@ -68,23 +67,15 @@ class WorkspaceManager(Manager):
     def __init__(
         self,
         *,
-        projects: ProjectManager | None = None,
-        volumes: VolumeManager | None = None,
-        mirrors: MirrorManager | None = None,
+        projects: ProjectManager,
+        volumes: VolumeManager,
+        mirrors: MirrorManager,
         config: WorkspacesConfig | None = None,
         volumes_dir: Path | None = None,
     ) -> None:
-        # A workspace is a project-bound thread's, so the registry that says which
-        # project and the mirrors that say where are what this works through. Its
-        # host replaces both with its own when it takes ownership — a second
-        # registry would resolve no thread to a project, and a second mirror
-        # manager would keep its own sync locks — so a manager built without them
-        # is one nobody has handed to a host yet.
-        self.projects = projects if projects is not None else ProjectManager()
-        self.volumes: VolumeManager = (
-            volumes if volumes is not None else VolumeManager()
-        )
-        self.mirrors = mirrors if mirrors is not None else MirrorManager()
+        self.projects: ProjectManager = projects
+        self.volumes: VolumeManager = volumes
+        self.mirrors: MirrorManager = mirrors
         self.config = config if config is not None else WorkspacesConfig()
         if volumes_dir is not None:
             self.volumes.host_directories.root = volumes_dir.resolve()
@@ -105,7 +96,7 @@ class WorkspaceManager(Manager):
         return self.mirrors.config.identity
 
     def root(self, owner_id: UUID7) -> Path:
-        """The owner's storage directory; attachments select individual host directories.
+        """The owner's storage directory; volumes select individual host directories.
 
         Resolving it creates neither files nor database rows.
         """
@@ -134,22 +125,21 @@ class WorkspaceManager(Manager):
             )
         volume = (
             await self.volumes.tree(
-                owner_id, thread_id, project.id if project else None, ref
+                owner_id,
+                thread_id,
+                project.id if project else None,
+                ref,
+                mirror=await self.mirrors.resolve(project),
             )
             if owner_id is not None
-            else None
-        )
-        storage = (
-            volume.storage
-            if volume is not None
-            else self.host_directories.temporary(thread_id)
+            else Volume(
+                storage=self.host_directories.temporary(thread_id), ephemeral=True
+            )
         )
         return Workspace(
             thread_id=thread_id,
             project=project,
             volumes={"work": volume},
-            attachments={"work": Attachment(storage, storage.path)},
-            mirrors={"work": self.mirrors.path(project)} if volume is not None else {},
             identity=self.identity,
         )
 
@@ -218,7 +208,7 @@ class WorkspaceManager(Manager):
         volume = await self.volumes.find(owner_id, thread.id, project.id)
         if volume is not None:
             await volume.checkpoint(
-                self.mirrors.path(project),
+                await self.mirrors.resolve(project),
                 self.identity,
             )
 
@@ -238,7 +228,7 @@ class WorkspaceManager(Manager):
         )
         if project is None:
             return False
-        mirror = self.mirrors.path(project)
+        mirror = (await self.mirrors.resolve(project)).storage.path
         if not mirror.is_dir():
             return False
         ref = volume.snapshot_ref
@@ -359,7 +349,7 @@ class WorkspaceManager(Manager):
         volume = landing.volume
         if not isinstance(volume, GitVolume):
             raise ValueError("A project handoff requires a Git working volume")
-        mirror = self.mirrors.path(project)
+        mirror = (await self.mirrors.resolve(project)).storage.path
         if origin is not None and await run_git(
             "ls-remote", str(mirror), origin.snapshot_ref, isolated=True
         ):

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Annotated, Literal, Self
 
 import anyio
-from arcanus import BaseTransmuter
+from arcanus import BaseTransmuter, Relation
 from arcanus.base import Identity
 from pydantic import UUID7, AwareDatetime, ConfigDict, Field, model_validator
 from uuid_utils.compat import uuid7
@@ -32,7 +32,7 @@ class UnregisteredProjectError(PermissionError):
 
 @sqlalchemy_materia.bless(volume_models.Volume)
 class Volume(BaseTransmuter):
-    """A logical volume whose identity outlives any local directory or attachment.
+    """A logical volume whose identity outlives its local directory.
 
     Operations change this transmuter directly. The caller's session owns
     persistence, including the storage location. Mounts and active uses remain
@@ -42,8 +42,10 @@ class Volume(BaseTransmuter):
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
-    owner_id: UUID7 = Field(
-        frozen=True, description="The registered user who owns this logical volume."
+    owner_id: UUID7 | None = Field(
+        default=None,
+        frozen=True,
+        description="The registered owner; absent for service mirrors and unregistered temporary volumes.",
     )
     storage: HostDirectory = Field(
         description="Storage location and its resolved runtime handle; only kind and path are persisted."
@@ -56,7 +58,7 @@ class Volume(BaseTransmuter):
     usage: VolumeUsage | None = Field(
         default=None,
         frozen=True,
-        description="Optional application use: working tree, user memory or package cache.",
+        description="Optional application use: working tree, host mirror, user memory or package cache.",
     )
     ephemeral: bool = Field(
         default=False,
@@ -71,7 +73,7 @@ class Volume(BaseTransmuter):
     project_id: UUID7 | None = Field(
         default=None,
         frozen=True,
-        description="The working volume's project; absent for chats and other uses.",
+        description="The working tree or mirror's project; absent for chats, the blank mirror and other uses.",
     )
     created_at: AwareDatetime = Field(
         default_factory=lambda: datetime.now(UTC),
@@ -85,12 +87,27 @@ class Volume(BaseTransmuter):
 
     @model_validator(mode="after")
     def validate_scope(self) -> Self:
+        if self.owner_id is None and self.usage != "mirror":
+            if not (self.kind == "directory" and self.ephemeral and self.usage is None):
+                raise ValueError(
+                    "An ownerless volume must be a host mirror or a temporary directory"
+                )
         if self.usage == "tree":
             if self.thread_id is None:
                 raise ValueError("A working-tree volume requires a thread")
+        elif self.usage == "mirror":
+            if (
+                self.kind != "git"
+                or self.owner_id is not None
+                or self.ephemeral
+                or self.thread_id is not None
+            ):
+                raise ValueError(
+                    "A host mirror must be a persistent service-owned Git volume without a thread"
+                )
         elif self.thread_id is not None or self.project_id is not None:
             raise ValueError(
-                "Only working-tree volumes have thread or project associations"
+                "Only working trees and mirrors have thread or project associations"
             )
         return self
 
@@ -116,6 +133,11 @@ class GitVolume(Volume):
         frozen=True,
         description="The Git ref used for the first checkout; None selects the source's default branch.",
     )
+    mirror_id: UUID7 | None = Field(
+        default=None,
+        description="The service-owned Git volume supplying history and checkpoints.",
+    )
+    mirror: Relation[GitVolume | None] = Field(default_factory=Relation)
 
     @property
     def snapshot_ref(self) -> str:
@@ -133,7 +155,6 @@ class GitVolume(Volume):
     async def __call__(
         self,
         *,
-        mirror: Path | None = None,
         identity: GitIdentity | None = None,
     ) -> AsyncGenerator[Path]:
         """Prepare Git content and checkpoint persistent work after a completed run.
@@ -141,10 +162,16 @@ class GitVolume(Volume):
         Cancellation leaves persistent files in place without capturing a partial
         turn. Temporary contents are released after their last active use.
         """
-        if mirror is None:
+        mirror = await self.mirror
+        if self.usage != "mirror" and mirror is None:
             raise ValueError("A Git volume requires a source mirror")
         identity = identity if identity is not None else GitIdentity()
         async with self.storage.acquire(ephemeral=self.ephemeral) as path:
+            if mirror is None:
+                if not path.is_dir():
+                    raise ValueError("A host mirror must be prepared before entry")
+                yield path
+                return
             await self.materialize(mirror)
             save = True
             try:
@@ -156,12 +183,15 @@ class GitVolume(Volume):
                 if save and not self.ephemeral:
                     await self.checkpoint(mirror, identity)
 
-    async def materialize(self, mirror: Path) -> Path:
+    async def materialize(self, mirror: GitVolume) -> Path:
         """Export only authorized history and this volume's snapshot atomically."""
         # The legacy workspace package imports this schema during initialization.
         from octomate.managers.workspaces.dependencies import install
         from octomate.managers.workspaces.mirrors import MirrorManager
 
+        if mirror.usage != "mirror":
+            raise ValueError("A working tree requires a service-owned mirror")
+        source = mirror.storage.path
         path = self.storage.path
         # Outside the lock, so a turn waiting on another turn's fork is time this
         # span accounts for. From the far end the wait and a slow fork look the
@@ -188,8 +218,8 @@ class GitVolume(Volume):
                 if staging.exists():
                     shutil.rmtree(staging)
                 try:
-                    await MirrorManager.export(mirror, staging, self.snapshot_ref)
-                    await self.inherit_remotes(mirror, staging)
+                    await MirrorManager.export(source, staging, self.snapshot_ref)
+                    await self.inherit_remotes(source, staging)
                     await self.checkout(staging)
                     await install(staging)
                     staging.rename(path)
@@ -315,12 +345,14 @@ class GitVolume(Volume):
             )
             await run_git("reset", cwd=workspace, isolated=True)
 
-    async def checkpoint(self, mirror: Path, identity: GitIdentity) -> None:
+    async def checkpoint(self, mirror: GitVolume, identity: GitIdentity) -> None:
         """Import a validated snapshot; retain the working tree when capture fails."""
         # The legacy workspace package imports this schema during initialization.
         from octomate.managers.workspaces.mirrors import GitCommandError
         from octomate.managers.workspaces.snapshots import Snapshot
 
+        if mirror.usage != "mirror":
+            raise ValueError("A working tree requires a service-owned mirror")
         path = self.storage.path
         with volume_logfire.span(
             "volume.save",
@@ -337,7 +369,7 @@ class GitVolume(Volume):
                     Snapshot.capture(path, identity) as snapshot,
                 ):
                     await snapshot.save(
-                        mirror,
+                        mirror.storage.path,
                         self.snapshot_ref,
                     )
                     span.set_attribute("snapshot", snapshot.commit)

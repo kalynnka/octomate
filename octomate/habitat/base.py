@@ -2,48 +2,16 @@
 
 from abc import ABC, abstractmethod
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from anyio.abc import ByteStream
 from pydantic import UUID7
 
-from octomate.schemas.volumes.storage import Storage
+from octomate.schemas.volumes import Volume
 
 
 class HabitatError(RuntimeError):
     """An actionable failure safe to publish without guest or credential output."""
-
-
-@dataclass(frozen=True)
-class Attachment:
-    """A storage location's destination and requested access in a habitat.
-
-    This value describes the mapping; the habitat provider makes it accessible.
-    Native execution uses the existing host path as its destination.
-    """
-
-    storage: Storage
-    destination: Path | PurePosixPath  # Absolute path visible to the agent harness.
-    read_only: bool = False  # Access requested from the habitat provider.
-
-    def __post_init__(self) -> None:
-        if not self.storage.path.is_absolute() or not self.destination.is_absolute():
-            raise HabitatError("Attachment paths must be absolute")
-        if ".." in self.storage.path.parts or ".." in self.destination.parts:
-            raise HabitatError("Attachment paths cannot contain parent traversal")
-
-    def path(self, path: Path) -> Path | PurePosixPath:
-        """Map a host path within this storage without consulting the filesystem."""
-        if not path.is_absolute():
-            raise HabitatError("Attachment paths must be absolute")
-        if ".." in path.parts:
-            raise HabitatError("Attachment paths cannot contain parent traversal")
-        try:
-            relative = path.relative_to(self.storage.path)
-        except ValueError:
-            raise HabitatError("Host path is outside the attached storage") from None
-        return self.destination.joinpath(*relative.parts)
 
 
 class Habitat(ABC):
@@ -53,6 +21,10 @@ class Habitat(ABC):
     @abstractmethod
     def name(self) -> str:
         """Stable identifier of this habitat."""
+
+    @abstractmethod
+    def path(self, volume: Volume) -> Path | PurePosixPath:
+        """The volume location visible to the harness in this environment."""
 
     @abstractmethod
     async def prepare(self) -> None:
@@ -67,6 +39,9 @@ class ManagedHabitat(Habitat):
     """One registered user's persistent runtime, hosting agent processes."""
 
     user_id: UUID7  # The registered user whose private runtime this is.
+
+    def path(self, volume: Volume) -> PurePosixPath:
+        raise HabitatError("Managed habitat volume mounts are not yet supported")
 
     @property
     @abstractmethod

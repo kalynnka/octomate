@@ -42,7 +42,6 @@ from tests.agent.deepseek.test_tentacle import (
 )
 from tests.support.channels import FakeChannelTentacle
 from tests.support.invocations import invocation_for
-from tests.support.managers import RecordingWorkspaceManager
 from tests.support.nerve import kick_and_wait, kicked
 from tests.support.users import a_user
 
@@ -64,7 +63,7 @@ async def scenario(
             }
         ]
     )
-    app = Octomate(workspaces=RecordingWorkspaceManager())
+    app = Octomate()
     agent = app.connect(
         DeepseekTentacle(
             app,

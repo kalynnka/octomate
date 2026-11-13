@@ -37,7 +37,6 @@ from octomate.managers.gateway import (
     GatewayRefusal,
     OctomateSession,
 )
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import (
@@ -52,6 +51,7 @@ from tests.support.managers import (
     FakeThreadManager,
     a_project,
     a_registry,
+    a_workspace_manager,
 )
 from tests.support.users import a_user
 
@@ -111,7 +111,7 @@ async def _gate(
         thread_id=THREAD,
         conversation_address=ADDRESS,
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
         users=threads.users,
     )
     parent = await conversations.ensure(THREAD, agent_tentacle_id="inkling")
@@ -436,7 +436,8 @@ async def test_commission_inherits_the_parent_owner_in_a_project(
     root = tmp_path / "project"
     root.mkdir()
     project = a_project(root)
-    app = Octomate(workspaces=WorkspaceManager(projects=await a_registry(project)))
+    app = Octomate()
+    app.workspaces.projects = await a_registry(project)
     owner = await a_user("alice", profiles={"im": "alice"})
     thread = await app.threads.ensure(
         ThreadKey("im", "thread", "shared", "turn"), project=project

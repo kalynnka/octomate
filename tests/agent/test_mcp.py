@@ -45,7 +45,6 @@ from octomate.database import async_session
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.oauth import OAuthConnector
 from octomate.managers.user import UserManager
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL, LINK_PROFILE_TOOL
 from octomate.mcp.server import (
     CALL_MCP_TOOL,
@@ -81,6 +80,7 @@ from tests.support.invocations import invocation_for
 from tests.support.managers import (
     FakeConversationManager,
     FakeThreadManager,
+    a_workspace_manager,
     fixed_session,
 )
 from tests.support.mcp import discover, install_tentacle, served_inkling_mcp
@@ -188,7 +188,7 @@ def a_turn(profile: UserProfile | None = None) -> OctomateSession:
         user_profile=profile,
         users=threads.users,
         threads=threads,
-        workspaces=WorkspaceManager(),
+        workspaces=a_workspace_manager(),
     )
 
 

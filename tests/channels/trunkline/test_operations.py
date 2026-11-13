@@ -17,7 +17,6 @@ from octomate.auth import current_user
 from octomate.config import ChannelConfig, DiscordChannelConfig
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.managers.gateway import OctomateSession
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import ThreadTopic
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
@@ -48,7 +47,8 @@ class Case:
 
 @pytest.fixture
 async def case(in_memory_engine: AsyncEngine, tmp_path: Path) -> Case:
-    app = Octomate(workspaces=WorkspaceManager(volumes_dir=tmp_path / "workspaces"))
+    app = Octomate()
+    app.volumes.host_directories.root = (tmp_path / "workspaces").resolve()
     owner = await a_user(profiles={"far": "alice"})
     app.dependency_overrides[current_user] = lambda: owner
     agent = app.connect(FakeAgent(id="first"))
