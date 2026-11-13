@@ -14,7 +14,6 @@ from pydantic_ai.messages import (
     PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
-    RetryPromptPart,
     TextPart,
     TextPartDelta,
     ThinkingPart,
@@ -250,13 +249,15 @@ def test_unsuccessful_tool_results_are_not_reported_as_completed(
 def test_retry_is_a_failed_tool_update_and_does_not_hide_the_next_answer() -> None:
     translator = AcpTranslator()
     translator.translate(ResultTextDeltaEvent(delta="Looking that up"))
-    part = RetryPromptPart("Query required", tool_name="lookup", tool_call_id="call-1")
+    part = ToolReturnPart(
+        "lookup", "Query required", tool_call_id="call-1", outcome="retried"
+    )
 
     result = translator.translate(FunctionToolResultEvent(part=part))[0]
 
     assert isinstance(result, schema.ToolCallProgress)
     assert result.status == "failed"
-    assert result.raw_output == part.model_response()
+    assert result.raw_output == part.content
     assert (
         len(
             translator.translate(

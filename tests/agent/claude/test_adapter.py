@@ -31,7 +31,6 @@ from pydantic_ai.messages import (
     PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
-    RetryPromptPart,
     TextPart,
     TextPartDelta,
     ThinkingPart,
@@ -142,7 +141,7 @@ def test_adapter_maps_a_full_turn_to_messages_and_events() -> None:
     assert acc.session_id == "sess-1"
 
 
-def test_adapter_error_tool_result_becomes_retry_prompt() -> None:
+def test_adapter_error_tool_result_becomes_retried_tool_return() -> None:
     acc = ClaudeRunAccumulator()
     list(
         acc.consume(
@@ -152,7 +151,7 @@ def test_adapter_error_tool_result_becomes_retry_prompt() -> None:
             )
         )
     )
-    list(
+    events = list(
         acc.consume(
             UserMessage(
                 content=[
@@ -164,9 +163,14 @@ def test_adapter_error_tool_result_becomes_retry_prompt() -> None:
     request = acc.messages[-1]
     assert isinstance(request, ModelRequest)
     retry = request.parts[0]
-    assert isinstance(retry, RetryPromptPart)
+    assert isinstance(retry, ToolReturnPart)
+    assert retry.outcome == "retried"
     assert retry.tool_name == "Bash"
     assert retry.content == "boom"
+    result = next(
+        event for event in events if isinstance(event, FunctionToolResultEvent)
+    )
+    assert result.part is retry
 
 
 def test_adapter_build_result_synthesizes_agent_run_result() -> None:

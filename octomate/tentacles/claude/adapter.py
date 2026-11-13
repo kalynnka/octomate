@@ -54,7 +54,6 @@ from pydantic_ai.messages import (
     PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
-    RetryPromptPart,
     TextContent,
     TextPart,
     TextPartDelta,
@@ -644,10 +643,11 @@ class ClaudeRunAccumulator:
             if isinstance(block, ToolResultBlock):
                 name = self.tool_names.get(block.tool_use_id, "")
                 if block.is_error:
-                    part: ModelRequestPart = RetryPromptPart(
+                    part = ToolReturnPart(
                         content=str(block.content) if block.content is not None else "",
-                        tool_name=name or None,
+                        tool_name=name,
                         tool_call_id=block.tool_use_id,
+                        outcome="retried",
                     )
                 else:
                     part = ToolReturnPart(
