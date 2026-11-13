@@ -26,7 +26,6 @@ from octomate.database import async_session
 from octomate.managers.commands import CommandManager, ValidatedCommand
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.habitat import Invocation
-from octomate.managers.workspaces.base import ChatWorkspace, UnregisteredWorkspace
 from octomate.schemas.commands import (
     CommandContext,
     CommandDescriptor,
@@ -43,6 +42,7 @@ from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import ChannelOutput
 from octomate.tentacles.codex.catalog import APP_COMMANDS
 from octomate.types.permissions import PermissionMode
+from octomate.volumes import HostDirectory
 from tests.agent.test_command_manager import DiscoveringAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import RecordingSuspender, a_project, a_registry
@@ -1063,14 +1063,14 @@ async def test_workspace_cleanup_failure_is_recorded_as_command_failure(
 ) -> None:
     agent.requires_runtime = True
     agent.behavior = behavior
-    discard = app.workspaces.discard
+    discard = HostDirectory.discard
     error = asyncio.CancelledError if cancel else RuntimeError
 
-    async def fail_cleanup(workspace: ChatWorkspace | UnregisteredWorkspace) -> None:
-        await discard(workspace)
+    async def fail_cleanup(workspace: HostDirectory, *, ephemeral: bool) -> None:
+        await discard(workspace, ephemeral=ephemeral)
         raise error("workspace cleanup failed")
 
-    monkeypatch.setattr(app.workspaces, "discard", fail_cleanup)
+    monkeypatch.setattr(HostDirectory, "discard", fail_cleanup)
     command = CommandIntent(command_id="skill")
     with (
         pytest.raises(error, match="workspace cleanup")

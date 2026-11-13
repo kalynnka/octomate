@@ -42,12 +42,6 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.managers.gateway import OctomateSession
-from octomate.managers.workspaces.base import (
-    ChatWorkspace,
-    UnregisteredWorkspace,
-    Workspace,
-    WorkspaceManager,
-)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision, TeleportDecision
 from octomate.telemetry import TraceEnvironment
@@ -57,6 +51,7 @@ from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.transcript import transcripts_dir
 from octomate.types.json import JsonObject
+from octomate.volumes import HostDirectory
 from tests.support.invocations import invocation_for
 from tests.support.managers import (
     FakeConversation,
@@ -226,7 +221,7 @@ async def test_closing_a_stream_closes_its_sdk_client_before_the_workspace(
     closed = asyncio.Event()
     waiting = asyncio.Event()
     receive_response = FakeClaudeClient.receive_response
-    workspace_exit = WorkspaceManager.discard
+    workspace_exit = HostDirectory.discard
 
     async def receive(client: FakeClaudeClient) -> AsyncIterator[Message]:
         async for message in receive_response(client):
@@ -242,16 +237,17 @@ async def test_closing_a_stream_closes_its_sdk_client_before_the_workspace(
         closed.set()
 
     async def close_workspace(
-        manager: WorkspaceManager,
-        workspace: ChatWorkspace | UnregisteredWorkspace,
+        workspace: HostDirectory,
+        *,
+        ephemeral: bool,
     ) -> None:
         assert closed.is_set()
-        await workspace_exit(manager, workspace)
+        await workspace_exit(workspace, ephemeral=ephemeral)
 
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     monkeypatch.setattr(FakeClaudeClient, "__aexit__", close_client)
     monkeypatch.setattr(FakeClaudeClient, "receive_response", receive)
-    monkeypatch.setattr(WorkspaceManager, "discard", close_workspace)
+    monkeypatch.setattr(HostDirectory, "discard", close_workspace)
     tentacle = _tentacle(FakeConversationManager())
     async with (
         invocation_for(
@@ -344,23 +340,23 @@ async def test_sdk_ingest_claim_brackets_client_lifetime(
     conversation.external_id = external_id
     tentacle = _tentacle(conversations)
     lifecycle: list[str] = []
-    workspace_enter = WorkspaceManager.prepare
-    workspace_exit = WorkspaceManager.discard
+    workspace_enter = HostDirectory.claim
+    workspace_exit = HostDirectory.discard
 
-    async def open_workspace(manager: WorkspaceManager, workspace: Workspace) -> Path:
+    async def open_workspace(workspace: HostDirectory, *, ephemeral: bool) -> None:
         assert tentacle.driven_sessions == {}
         lifecycle.append("workspace-enter")
-        result = await workspace_enter(manager, workspace)
+        await workspace_enter(workspace, ephemeral=ephemeral)
         assert tentacle.driven_sessions == {}
-        return result
 
     async def close_workspace(
-        manager: WorkspaceManager,
-        workspace: ChatWorkspace | UnregisteredWorkspace,
+        workspace: HostDirectory,
+        *,
+        ephemeral: bool,
     ) -> None:
         assert tentacle.driven_sessions == {}
         lifecycle.append("workspace-exit")
-        await workspace_exit(manager, workspace)
+        await workspace_exit(workspace, ephemeral=ephemeral)
 
     async def enter(client: FakeClaudeClient) -> FakeClaudeClient:
         options = FakeClaudeClient.last_options
@@ -412,8 +408,8 @@ async def test_sdk_ingest_claim_brackets_client_lifetime(
     monkeypatch.setattr(FakeClaudeClient, "__aenter__", enter)
     monkeypatch.setattr(FakeClaudeClient, "__aexit__", leave)
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
-    monkeypatch.setattr(WorkspaceManager, "prepare", open_workspace)
-    monkeypatch.setattr(WorkspaceManager, "discard", close_workspace)
+    monkeypatch.setattr(HostDirectory, "claim", open_workspace)
+    monkeypatch.setattr(HostDirectory, "discard", close_workspace)
 
     if connect_fails:
         with pytest.raises(RuntimeError, match="SDK connect failed"):

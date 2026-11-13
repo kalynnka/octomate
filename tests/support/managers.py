@@ -663,6 +663,7 @@ class FakeVolumeManager(VolumeManager):
                 thread_id=thread_id,
                 project_id=project_id,
                 base_ref=ref,
+                ephemeral=project_id is None,
             )
         return self.store[key]
 

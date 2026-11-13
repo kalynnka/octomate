@@ -38,7 +38,6 @@ from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config.agents import DeepseekConfig
 from octomate.database import async_session
 from octomate.managers.deferred import DeferredActionManager
-from octomate.managers.workspaces.base import ChatWorkspace
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
@@ -58,6 +57,7 @@ from octomate.tentacles.deepseek.wire import (
     StreamErrorFrame,
 )
 from octomate.types.json import JsonObject, JsonValue
+from octomate.volumes import HostDirectory
 from tests.support.invocations import invocation_for
 from tests.support.managers import (
     FakeConversation,
@@ -1028,20 +1028,20 @@ async def test_driving_covers_runtime_cleanup_before_persistence_and_workspace_e
     tentacle = _tentacle(conversations)
     tentacle.octomate.connect(tentacle)
     original_call = FakeDeepseekApi.call
-    original_claim = tentacle.octomate.workspaces.claim
-    original_discard = tentacle.octomate.workspaces.discard
+    original_claim = HostDirectory.claim
+    original_discard = HostDirectory.discard
     original_record = conversations.record_agent_run
     observed: list[str] = []
 
-    async def claim(workspace: ChatWorkspace) -> None:
+    async def claim(workspace: HostDirectory, *, ephemeral: bool) -> None:
         assert tentacle.driven_sessions == {}
         observed.append("workspace.enter")
-        await original_claim(workspace)
+        await original_claim(workspace, ephemeral=ephemeral)
 
-    async def discard(workspace: ChatWorkspace) -> None:
+    async def discard(workspace: HostDirectory, *, ephemeral: bool) -> None:
         assert tentacle.driven_sessions == {}
         observed.append("workspace.exit")
-        await original_discard(workspace)
+        await original_discard(workspace, ephemeral=ephemeral)
 
     async def record(
         conversation: Conversation,
@@ -1090,8 +1090,8 @@ async def test_driving_covers_runtime_cleanup_before_persistence_and_workspace_e
         return await original_call(client, method, payload)
 
     monkeypatch.setattr(FakeDeepseekApi, "call", call)
-    monkeypatch.setattr(tentacle.octomate.workspaces, "claim", claim)
-    monkeypatch.setattr(tentacle.octomate.workspaces, "discard", discard)
+    monkeypatch.setattr(HostDirectory, "claim", claim)
+    monkeypatch.setattr(HostDirectory, "discard", discard)
     monkeypatch.setattr(conversations, "record_agent_run", record)
     async with tentacle:
         with pytest.raises(AgentRunError, match="socket died"):
@@ -1649,9 +1649,9 @@ async def test_detached_run_collects_through_turn_end(
     observed = asyncio.Event()
     close = asyncio.Event()
     scopes: list[anyio.CancelScope] = []
-    discarded: list[ChatWorkspace] = []
+    discarded: list[HostDirectory] = []
     original_call = FakeDeepseekApi.call
-    original_discard = tentacle.octomate.workspaces.discard
+    original_discard = HostDirectory.discard
 
     async def call(
         client: FakeDeepseekApi, method: str, payload: JsonValue
@@ -1663,9 +1663,9 @@ async def test_detached_run_collects_through_turn_end(
                 await accept.wait()
         return result
 
-    async def discard(workspace: ChatWorkspace) -> None:
+    async def discard(workspace: HostDirectory, *, ephemeral: bool) -> None:
         discarded.append(workspace)
-        await original_discard(workspace)
+        await original_discard(workspace, ephemeral=ephemeral)
 
     async def consume() -> None:
         with anyio.CancelScope() as scope:
@@ -1693,7 +1693,7 @@ async def test_detached_run_collects_through_turn_end(
                         break
 
     monkeypatch.setattr(FakeDeepseekApi, "call", call)
-    monkeypatch.setattr(tentacle.octomate.workspaces, "discard", discard)
+    monkeypatch.setattr(HostDirectory, "discard", discard)
     async with tentacle:
         task = asyncio.create_task(consume())
         try:
@@ -1756,16 +1756,16 @@ async def test_concurrent_run_waits_with_both_workspaces_claimed(
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
     conversation = await conversations.ensure(_THREAD, agent_tentacle_id="deepseek")
-    claimed: list[ChatWorkspace] = []
+    claimed: list[HostDirectory] = []
     first_prompted = asyncio.Event()
     second_waiting = asyncio.Event()
-    claim_workspace = tentacle.octomate.workspaces.claim
+    claim_workspace = HostDirectory.claim
     lock = asyncio.Lock()
     acquire = lock.acquire
 
-    async def claim(workspace: ChatWorkspace) -> None:
+    async def claim(workspace: HostDirectory, *, ephemeral: bool) -> None:
         claimed.append(workspace)
-        await claim_workspace(workspace)
+        await claim_workspace(workspace, ephemeral=ephemeral)
 
     async def acquire_lock() -> bool:
         if lock.locked():
@@ -1784,7 +1784,7 @@ async def test_concurrent_run_waits_with_both_workspaces_claimed(
             async for _ in stream:
                 first_prompted.set()
 
-    monkeypatch.setattr(tentacle.octomate.workspaces, "claim", claim)
+    monkeypatch.setattr(HostDirectory, "claim", claim)
     monkeypatch.setattr(lock, "acquire", acquire_lock)
     tentacle.conversation_locks.by_session[str(conversation.id)] = lock
     async with tentacle:

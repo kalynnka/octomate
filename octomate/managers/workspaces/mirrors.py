@@ -131,7 +131,8 @@ class MirrorManager(Manager, Locks[str]):
         projects, and so after directories people actually have."""
         return project.name if project is not None else BLANK_MIRROR
 
-    async def export(self, source: Path, target: Path, snapshot: str) -> None:
+    @staticmethod
+    async def export(source: Path, target: Path, snapshot: str) -> None:
         """Export project refs and one core-selected snapshot to a fresh repository.
 
         Copying or locally cloning the mirror would expose every cached object,

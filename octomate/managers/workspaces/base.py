@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
 import tempfile
 import uuid
 from abc import ABC, abstractmethod
@@ -21,10 +20,9 @@ from pydantic import UUID7
 
 from octomate.config.mirrors import GitIdentity
 from octomate.config.workspaces import WorkspacesConfig
-from octomate.managers.base import Locks, Manager
+from octomate.managers.base import Manager
 from octomate.managers.project import ProjectManager
 from octomate.managers.volumes import VolumeManager
-from octomate.managers.workspaces.dependencies import install
 from octomate.managers.workspaces.mirrors import (
     GitCommandError,
     MirrorManager,
@@ -36,6 +34,7 @@ from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
 from octomate.schemas.volumes import GitVolume, Volume
 from octomate.telemetry import workspace_logfire
+from octomate.volumes import HostDirectory
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +46,7 @@ class UnregisteredProjectError(PermissionError):
 
 @dataclass
 class Workspace(ABC):
-    """A run's directory and identity, with its lifetime owned by the manager."""
+    """A run's directory and identity; volumes own its content lifecycle."""
 
     path: Path  # Absolute host path, known before the directory is prepared.
     thread_id: UUID7
@@ -106,11 +105,6 @@ class ChatWorkspace(TreeWorkspace):
     session by the directory it ran in.
     """
 
-    @property
-    def key(self) -> UUID7:
-        """What overlapping runs in this folder are counted by."""
-        return self.volume.id
-
 
 @dataclass
 class UnregisteredWorkspace(Workspace):
@@ -126,13 +120,8 @@ class UnregisteredWorkspace(Workspace):
     def owner_id(self) -> None:
         return None
 
-    @property
-    def key(self) -> UUID7:
-        """What overlapping runs in this directory are counted by."""
-        return self.thread_id
 
-
-class WorkspaceManager(Manager, Locks[UUID7]):
+class WorkspaceManager(Manager):
     """Every run's workspace. A registered user's run gets a tree volume in that
     user's root, ``volumes_dir/<owner>/tree/<volume>``, recorded by a row and
     checked out on the thread's own branch; an unregistered sender's run gets an
@@ -186,11 +175,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         # subprocess's cwd and a `GIT_INDEX_FILE` beside it, and the default is
         # relative to wherever Octomate was started.
         self.volumes_dir = volumes_dir.resolve()
-        # How many runs are in each throwaway directory right now, keyed by the
-        # chat tree's volume or the unregistered thread. Two overlapping runs of
-        # one conversation share it — this is what stops the first to finish
-        # taking it from the second.
-        self.chatting: dict[UUID7, int] = {}
+        self.backings: dict[Path, HostDirectory] = {}
 
     @property
     def identity(self) -> GitIdentity:
@@ -219,7 +204,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         self,
         thread_id: UUID7,
         project: Project,
-        owner_id: UUID7,
+        owner_id: UUID7 | None,
         ref: str | None = None,
     ) -> ProjectWorkspace: ...
 
@@ -285,7 +270,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         self,
         thread_id: UUID7,
         project: Project,
-        owner_id: UUID7,
+        owner_id: UUID7 | None,
         ref: str | None = None,
     ) -> AbstractAsyncContextManager[ProjectWorkspace]: ...
 
@@ -320,264 +305,41 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         async with self.enter(workspace):
             yield workspace
 
+    def backing(self, path: Path) -> HostDirectory:
+        """Share a directory's lock and active uses across resolved workspace views."""
+        path = path.absolute()
+        if path not in self.backings:
+            self.backings[path] = HostDirectory(path)
+        return self.backings[path]
+
     @asynccontextmanager
     async def enter[WorkspaceT: Workspace](
         self, workspace: WorkspaceT
     ) -> AsyncGenerator[WorkspaceT]:
-        """Scope a resolved workspace, keeping project work on cancellation."""
-        await self.prepare(workspace)
-        save_project = True
-        try:
-            yield workspace
-        except BaseException as error:
-            save_project = isinstance(error, Exception)
-            raise
-        finally:
-            if isinstance(workspace, ProjectWorkspace) and save_project:
-                await self.checkpoint(workspace)
-            elif isinstance(workspace, ChatWorkspace | UnregisteredWorkspace):
-                with anyio.CancelScope(shield=True):
-                    await self.discard(workspace)
-
-    async def prepare(self, workspace: Workspace) -> Path:
-        """Make a resolved directory ready; a chat acquires a claim until discard."""
-        if isinstance(workspace, ProjectWorkspace):
-            if workspace.path.is_dir():
-                return workspace.path
-            mirror = await self.mirrors.sync(workspace.project)
-            return await self.materialize(workspace, mirror)
-        if not isinstance(workspace, ChatWorkspace | UnregisteredWorkspace):
-            raise TypeError(f"Unsupported workspace: {type(workspace).__name__}")
-        await self.claim(workspace)
-        try:
-            if isinstance(workspace, ChatWorkspace):
+        """Adapt the current workspace view to the volume-owned lifecycle."""
+        backing = self.backing(workspace.path)
+        if isinstance(workspace, ProjectWorkspace | ChatWorkspace):
+            if isinstance(workspace, ProjectWorkspace):
+                mirror = self.mirrors.path(workspace.project)
+                if not workspace.path.is_dir():
+                    mirror = await self.mirrors.sync(workspace.project)
+            else:
                 mirror = await self.mirrors.create()
-                return await self.materialize(workspace, mirror)
-            workspace.path.mkdir(parents=True, exist_ok=True)
-            return workspace.path
-        except BaseException:
-            with anyio.CancelScope(shield=True):
-                await self.discard(workspace)
-            raise
-
-    async def claim(self, workspace: ChatWorkspace | UnregisteredWorkspace) -> None:
-        """Count this run into a throwaway directory, and clear whatever the last
-        one left.
-
-        Counted, because a mid-run follow-up starts its turn before the turn it
-        supersedes has finished losing its own: both runs are in this directory,
-        and the first to leave must not take the floor out from under the second.
-
-        A directory nobody is in belongs to a run that is over — one that was
-        killed before it could discard — so it goes, and this run makes its own.
-        """
-        # `holders` is the count after this run joined, and the number to read a
-        # throwaway directory's life by: it is what a `discard` has to bring back
-        # to zero.
-        key = workspace.key
-        with workspace_logfire.span("workspace.claim", key=str(key)) as span:
-            async with self.lock(key):
-                holders = self.chatting.get(key, 0)
-                if holders == 0 and workspace.path.exists():
-                    # What a run killed before it could discard left behind.
-                    span.set_attribute("abandoned_tree", True)
-                    await asyncio.to_thread(shutil.rmtree, workspace.path)
-                self.chatting[key] = holders + 1
-                span.set_attribute("holders", holders + 1)
-
-    async def discard(self, workspace: ChatWorkspace | UnregisteredWorkspace) -> None:
-        """Give this throwaway directory back to the disk, once no run is still in
-        it."""
-        key, path = workspace.key, workspace.path
-        with workspace_logfire.span("workspace.discard", key=str(key)) as span:
-            async with self.lock(key):
-                holders = self.chatting.get(key, 0) - 1
-                span.set_attribute("holders", max(holders, 0))
-                if holders > 0:
-                    # An overlapping run of the same conversation is still in this
-                    # directory, so it stays and its life is that run's to end.
-                    span.set_attribute("removed", False)
-                    self.chatting[key] = holders
-                    return
-                self.chatting.pop(key, None)
-                span.set_attribute("removed", path.is_dir())
-                if path.is_dir():
-                    await asyncio.to_thread(shutil.rmtree, path)
-
-    async def materialize(self, workspace: TreeWorkspace, mirror: Path) -> Path:
-        """Fork `mirror` into `workspace`, and answer the tree.
-
-        The one place a workspace is made, whichever kind it is: a project's
-        checkout and a chat thread's empty tree are the same fork of the same
-        shape, differing only in what they were forked from. Both land on the
-        thread's own branch, and neither carries the mirror's `origin` unless the
-        mirror has a real one to inherit.
-
-        A workspace that already exists is answered as it stands — a project
-        thread's live tree, uncommitted work included, where forking again would
-        throw that work away, and for a chat thread the tree an overlapping run of
-        the same conversation is already in. Serialized per thread, so two turns
-        arriving together materialize once.
-
-        The fork is made beside the workspace and moved into place, so a workspace
-        only ever exists whole: a rename within one directory is atomic, where a
-        copy the machine dies in the middle of would leave half a tree that every
-        later turn reads as this thread's own. That is what makes "the directory is
-        there" mean "the workspace is there", here and for a caller that asks the
-        same question. A fork that merely fails is removed the same way, before the
-        error travels on. Serialized per tree, so two users forking into one
-        thread do not wait on each other.
-
-        It is installed before it is moved into place. Only selected Git objects
-        cross from the mirror; host metadata and untracked files do not.
-        """
-        path = workspace.path
-        # Outside the lock, so a turn waiting on another turn's fork is time this
-        # span accounts for. From the far end the wait and a slow fork look the
-        # same, and they want opposite fixes.
-        with workspace_logfire.span(
-            "workspace.materialize",
-            thread_id=str(workspace.thread_id),
-            volume_id=str(workspace.volume.id),
-            kind=type(workspace).__name__,
-            path=str(path),
-        ) as span:
-            async with self.lock(workspace.volume.id):
-                if path.is_dir():
-                    # Where every turn after a thread's first arrives. Saying so is
-                    # what leaves the forks findable among them.
-                    span.set_attribute("forked", False)
-                    return path
-                span.set_attribute("forked", True)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                # Hidden, and named after the volume, so it is never mistaken for a
-                # tree and the next fork of this volume reclaims whatever a killed
-                # one left — the case the cleanup below cannot reach.
-                staging = path.with_name(f".{workspace.volume.id}.forking")
-                if staging.exists():
-                    shutil.rmtree(staging)
-                try:
-                    await self.mirrors.export(
-                        mirror, staging, workspace.volume.snapshot_ref
-                    )
-                    await self.inherit_remotes(mirror, staging)
-                    await self.checkout(workspace.volume, staging)
-                    await install(staging)
-                    staging.rename(path)
-                except BaseException:
-                    shutil.rmtree(staging, ignore_errors=True)
-                    raise
-            return path
-
-    async def inherit_remotes(self, mirror: Path, workspace: Path) -> None:
-        """Give the fork the mirror's own `origin`, or no remote where the mirror
-        has none.
-
-        The mirror's `origin` is the project's real upstream, and is what an agent
-        means by pushing — a branch it named for the job, on the repository people
-        will read it in. Nothing Octomate does travels that way: a turn is saved by
-        pushing to the mirror's path, never through a remote name.
-
-        A folder project's mirror has no upstream to inherit, and neither does its
-        fork. There is nowhere to push a directory, and saying so by having no
-        remote is clearer to an agent than an `origin` that fails when it is used.
-        """
-        if "origin" in (await run_git("remote", cwd=workspace)).split():
-            await run_git("remote", "remove", "origin", cwd=workspace)
-        if "origin" not in (await run_git("remote", cwd=mirror)).split():
+            async with workspace.volume(backing, mirror=mirror, identity=self.identity):
+                yield workspace
             return
-        url = await run_git("remote", "get-url", "origin", cwd=mirror)
-        await run_git("remote", "add", "origin", url.strip(), cwd=workspace)
+        if not isinstance(workspace, UnregisteredWorkspace):
+            raise TypeError(f"Unsupported workspace: {type(workspace).__name__}")
+        async with backing.use(ephemeral=True) as path:
+            await anyio.Path(path).mkdir(parents=True, exist_ok=True)
+            yield workspace
 
-    async def checkout(self, volume: GitVolume, workspace: Path) -> None:
-        """Put a freshly forked `workspace` back the way this tree's last turn left
-        it, when the export includes its saved snapshot.
-
-        A thread whose workspace was pruned resumes here, and resumes into the
-        state it was interrupted in rather than a tidied version of it: the branch
-        goes back to where the agent's HEAD was, which is the snapshot's parent,
-        and the tree it could see is laid down over that from the snapshot itself.
-        The index then drops back to HEAD, so work the agent had not committed
-        reads as uncommitted rather than as staged.
-
-        A thread forking for the first time starts on its own branch, where the
-        mirror's branch is — or where the volume's `base_ref` names, when the bind
-        asked for one.
-        The default branch is the wrong answer often enough: continuing someone's
-        feature branch, reproducing against a tag, working from a PR head.
-
-        The ref is only consulted by a first fork. A tree that was released resumes
-        into its own snapshot, which is where its work is, and no starting point
-        competes with that.
-        """
-        thread_id, ref = volume.thread_id, volume.base_ref
-        saved = volume.snapshot_ref
-        # The fork's two endings, and the only place that knows which this is: a
-        # thread starting, or one coming back to work a sweep reclaimed the tree
-        # of. `resumed` is what separates them in a trace, and the snapshot it
-        # came back from is what makes the tree it landed on checkable.
-        with workspace_logfire.span(
-            "workspace.checkout",
-            thread_id=str(thread_id),
-            volume_id=str(volume.id),
-            ref=ref,
-        ) as span:
-            if not await run_git(
-                "for-each-ref",
-                "--format=%(refname)",
-                saved,
-                cwd=workspace,
-                isolated=True,
-            ):
-                span.set_attribute("resumed", False)
-                # Resolve only in the exported object store. A user-supplied ref
-                # must never trigger a fetch of private mirror objects.
-                start = (
-                    await run_git(
-                        "rev-parse",
-                        "--verify",
-                        "--end-of-options",
-                        f"{ref if ref is not None else 'HEAD'}^{{commit}}",
-                        cwd=workspace,
-                        isolated=True,
-                    )
-                ).strip()
-                await run_git(
-                    "checkout",
-                    "-b",
-                    volume.branch,
-                    start,
-                    cwd=workspace,
-                    isolated=True,
-                )
-                return
-            span.set_attribute("resumed", True)
-            subject = await run_git(
-                "show", "-s", "--format=%s", saved, cwd=workspace, isolated=True
-            )
-            branch = subject.strip().removeprefix(SNAPSHOT_PREFIX)
-            span.set_attribute("branch", branch)
-            span.set_attribute(
-                "snapshot",
-                (
-                    await run_git(
-                        "rev-parse",
-                        saved,
-                        cwd=workspace,
-                        isolated=True,
-                    )
-                ).strip(),
-            )
-            head = (
-                ("--detach", f"{saved}^")
-                if branch == "HEAD"
-                else ("-B", branch, f"{saved}^")
-            )
-            await run_git("checkout", *head, cwd=workspace, isolated=True)
-            await run_git(
-                "read-tree", "-u", "--reset", saved, cwd=workspace, isolated=True
-            )
-            await run_git("reset", cwd=workspace, isolated=True)
+    async def prepare(self, workspace: ProjectWorkspace) -> Path:
+        """Prepare a persistent project tree for a handoff outside an invocation."""
+        if workspace.path.is_dir():
+            return workspace.path
+        mirror = await self.mirrors.sync(workspace.project)
+        return await workspace.volume.materialize(self.backing(workspace.path), mirror)
 
     async def save(self, thread: Thread, owner_id: UUID7) -> None:
         """Leave this owner's finished turn where losing their tree cannot cost it:
@@ -605,51 +367,11 @@ class WorkspaceManager(Manager, Locks[UUID7]):
             return
         volume = await self.volumes.find(owner_id, thread.id, project.id)
         if volume is not None:
-            await self.checkpoint(
-                ProjectWorkspace(
-                    self.path(volume),
-                    thread.id,
-                    volume,
-                    project,
-                    root=self.root(owner_id),
-                )
+            await volume.checkpoint(
+                self.backing(self.path(volume)),
+                self.mirrors.path(project),
+                self.identity,
             )
-
-    async def checkpoint(self, workspace: ProjectWorkspace) -> None:
-        """Checkpoint this exact volume without changing the user's index or tree.
-
-        Validate the capture in a host-owned repository before importing it. A
-        failed import leaves the tree unsaved and unreclaimable; an unchanged
-        checkpoint needs no second transfer.
-        """
-        path = workspace.path
-        with workspace_logfire.span(
-            "workspace.save",
-            thread_id=str(workspace.thread_id),
-            volume_id=str(workspace.volume.id),
-            project=workspace.project.name,
-            saved=False,
-        ) as span:
-            if not path.is_dir():
-                return
-            try:
-                async with (
-                    self.lock(workspace.volume.id),
-                    Snapshot.capture(path, self.identity) as snapshot,
-                ):
-                    await snapshot.save(
-                        self.mirrors.path(workspace.project),
-                        workspace.volume.snapshot_ref,
-                    )
-                    span.set_attribute("snapshot", snapshot.commit)
-                span.set_attribute("saved", True)
-            except (GitCommandError, OSError):
-                logger.exception(
-                    "the tree for thread %s could not be saved; its work is only in "
-                    "%s until a later turn saves it",
-                    workspace.thread_id,
-                    path,
-                )
 
     async def saved(self, volume: GitVolume) -> bool:
         """Whether this volume matches its canonical snapshot in the host mirror.
@@ -710,7 +432,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                 path = self.path(volume)
                 if not path.is_dir():
                     continue
-                if volume.last_used_at > cutoff:
+                if self.backing(path).uses or volume.last_used_at > cutoff:
                     kept_busy += 1
                     continue
                 if not await self.saved(volume):
@@ -722,7 +444,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                         volume.thread_id,
                     )
                     continue
-                await self.release(volume)
+                await self.backing(self.path(volume)).release()
                 released.append(volume.id)
             span.set_attribute("released", len(released))
             span.set_attribute("kept_busy", kept_busy)
@@ -836,7 +558,11 @@ class WorkspaceManager(Manager, Locks[UUID7]):
             if project is None:
                 return False
             volume = await self.volumes.find(owner_id, thread.id, project.id)
-            if volume is None or not self.path(volume).is_dir():
+            if (
+                volume is None
+                or not self.path(volume).is_dir()
+                or self.backing(self.path(volume)).uses
+            ):
                 return False
             if not await self.saved(volume):
                 logger.warning(
@@ -846,28 +572,6 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                     thread.id,
                 )
                 return False
-            await self.release(volume)
+            await self.backing(self.path(volume)).release()
             span.set_attribute("released", True)
             return True
-
-    async def release(self, volume: GitVolume) -> None:
-        """Give this tree's folder back to the disk, or nothing when it is already
-        gone. The row stays, so the next fork lands at the same path.
-
-        The mirror is untouched: each fork owns its objects outright. In a
-        thread, off the loop: a released tree is as big as the project.
-        """
-        path = self.path(volume)
-        # The end of a tree, and the span a resume is read against: a
-        # `materialize` that forks the same volume is this one's other half.
-        with workspace_logfire.span(
-            "workspace.release",
-            thread_id=str(volume.thread_id),
-            volume_id=str(volume.id),
-        ) as span:
-            async with self.lock(volume.id):
-                # False where the folder is already gone, or a sweep and a caller
-                # both reached for the same tree.
-                span.set_attribute("removed", path.is_dir())
-                if path.is_dir():
-                    await asyncio.to_thread(shutil.rmtree, path)

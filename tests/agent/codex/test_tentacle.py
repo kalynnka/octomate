@@ -70,12 +70,6 @@ from octomate.database import async_session
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import OctomateSession
-from octomate.managers.workspaces.base import (
-    ChatWorkspace,
-    UnregisteredWorkspace,
-    Workspace,
-    WorkspaceManager,
-)
 from octomate.reflex.nodes.teleport import Teleport
 from octomate.reflex.state import ReflexDeps, ReflexState, ResponseTarget
 from octomate.reflex.suspender import ReflexSuspender, TeleportRequest
@@ -102,6 +96,7 @@ from octomate.tentacles.slack.feelers.questions import SlackAskQuestionFeeler
 from octomate.tentacles.slack.ink import SlackInk
 from octomate.tentacles.slack.schema import SlackOutboundMessage
 from octomate.types.json import JsonObject
+from octomate.volumes import HostDirectory
 from tests.support.channels import FakeChannelTentacle, RecordingTimeline, carried
 from tests.support.invocations import invocation_for
 from tests.support.managers import (
@@ -1609,7 +1604,7 @@ async def test_detached_run_drains_before_releasing_resources(
     stopped = asyncio.Event()
     scopes: list[anyio.CancelScope] = []
     workspace_exits: list[bool] = []
-    workspace_exit = WorkspaceManager.discard
+    workspace_exit = HostDirectory.discard
     tentacle.octomate.connect(tentacle)
 
     async def gated_stream(turn: FakeTurn) -> AsyncIterator[Notification]:
@@ -1629,12 +1624,13 @@ async def test_detached_run_drains_before_releasing_resources(
         stopped.set()
 
     async def close_workspace(
-        manager: WorkspaceManager,
-        workspace: ChatWorkspace | UnregisteredWorkspace,
+        workspace: HostDirectory,
+        *,
+        ephemeral: bool,
     ) -> None:
         assert stopped.is_set()
         workspace_exits.append(True)
-        await workspace_exit(manager, workspace)
+        await workspace_exit(workspace, ephemeral=ephemeral)
 
     async def consume() -> None:
         with anyio.CancelScope() as scope:
@@ -1664,7 +1660,7 @@ async def test_detached_run_drains_before_releasing_resources(
                         break
 
     monkeypatch.setattr(FakeTurn, "stream", gated_stream)
-    monkeypatch.setattr(WorkspaceManager, "discard", close_workspace)
+    monkeypatch.setattr(HostDirectory, "discard", close_workspace)
     async with tentacle:
         task = asyncio.create_task(consume())
         try:
@@ -1804,8 +1800,8 @@ async def test_same_conversation_waits_with_both_workspaces_claimed(
     started = asyncio.Event()
     finish = asyncio.Event()
     second_waiting = asyncio.Event()
-    opened: list[Workspace] = []
-    workspace_enter = WorkspaceManager.prepare
+    opened: list[HostDirectory] = []
+    workspace_enter = HostDirectory.claim
 
     async def gated_stream(turn: FakeTurn) -> AsyncIterator[Notification]:
         if len(FakeCodex.turns) == 1:
@@ -1814,9 +1810,9 @@ async def test_same_conversation_waits_with_both_workspaces_claimed(
         for event in FakeCodex.script:
             yield event
 
-    async def open_workspace(manager: WorkspaceManager, workspace: Workspace) -> Path:
+    async def open_workspace(workspace: HostDirectory, *, ephemeral: bool) -> None:
         opened.append(workspace)
-        return await workspace_enter(manager, workspace)
+        await workspace_enter(workspace, ephemeral=ephemeral)
 
     # Signal the actual lock wait, rather than relying on task scheduling speed.
     lock = asyncio.Lock()
@@ -1828,7 +1824,7 @@ async def test_same_conversation_waits_with_both_workspaces_claimed(
         return await acquire()
 
     monkeypatch.setattr(FakeTurn, "stream", gated_stream)
-    monkeypatch.setattr(WorkspaceManager, "prepare", open_workspace)
+    monkeypatch.setattr(HostDirectory, "claim", open_workspace)
     monkeypatch.setattr(lock, "acquire", acquire_lock)
     conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
     tentacle.conversation_locks.by_session[str(conversation.id)] = lock
@@ -1927,25 +1923,25 @@ async def test_session_is_driven_before_turn_dispatch_and_released_afterward(
     tentacle = _tentacle(conversations)
     dispatched: list[str] = []
     lifecycle: list[str] = []
-    workspace_enter = WorkspaceManager.prepare
-    workspace_exit = WorkspaceManager.discard
+    workspace_enter = HostDirectory.claim
+    workspace_exit = HostDirectory.discard
 
-    async def open_workspace(manager: WorkspaceManager, workspace: Workspace) -> Path:
+    async def open_workspace(workspace: HostDirectory, *, ephemeral: bool) -> None:
         assert tentacle.driven_sessions == {}
         lifecycle.append("workspace-enter")
-        result = await workspace_enter(manager, workspace)
+        await workspace_enter(workspace, ephemeral=ephemeral)
         assert tentacle.driven_sessions == {}
-        return result
 
     async def close_workspace(
-        manager: WorkspaceManager,
-        workspace: ChatWorkspace | UnregisteredWorkspace,
+        workspace: HostDirectory,
+        *,
+        ephemeral: bool,
     ) -> None:
         assert tentacle.driven_sessions == {}
         assert tentacle.live_turns == {}
         assert tentacle.bridge_contexts == {}
         lifecycle.append("workspace-exit")
-        await workspace_exit(manager, workspace)
+        await workspace_exit(workspace, ephemeral=ephemeral)
 
     def check_driving(thread_id: str) -> None:
         assert thread_id == session_id
@@ -1955,8 +1951,8 @@ async def test_session_is_driven_before_turn_dispatch_and_released_afterward(
         lifecycle.append("turn")
 
     monkeypatch.setattr(FakeCodex, "on_turn", check_driving)
-    monkeypatch.setattr(WorkspaceManager, "prepare", open_workspace)
-    monkeypatch.setattr(WorkspaceManager, "discard", close_workspace)
+    monkeypatch.setattr(HostDirectory, "claim", open_workspace)
+    monkeypatch.setattr(HostDirectory, "discard", close_workspace)
     assert tentacle.driven_sessions == {}
     async with tentacle:
         for _ in range(2):
