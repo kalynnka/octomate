@@ -63,6 +63,7 @@ from octomate.schemas.thread import (
     ThreadMessage,
 )
 from octomate.types.compactions import (
+    CompactionRewrite,
     CompactionSessionKey,
     CompactionStage,
     CompactionTrigger,
@@ -407,6 +408,150 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
             await session.commit()
             return current.revision
 
+    async def native_compactions(
+        self, conversation: Conversation, native_session_id: str
+    ) -> list[Compaction]:
+        """Read canonical native records across driven and transcript owners."""
+        async with async_session() as session:
+            rows = await session.list(
+                Compaction,
+                limit=None,
+                expressions=[
+                    Compaction["conversation_id"].in_(
+                        select(Conversation["id"]).where(
+                            Conversation["agent_tentacle_id"]
+                            == conversation.agent_tentacle_id
+                        )
+                    ),
+                    Compaction["native_session_id"] == native_session_id,
+                ],
+                options=[selectinload(Compaction["messages"])],
+            )
+            return list(rows)
+
+    async def record_compaction_memberships(
+        self, conversation: Conversation, rewrites: list[CompactionRewrite]
+    ) -> None:
+        """Complete an ordered native prefix using existing archive identities.
+
+        Previously completed snapshots are immutable. All reads and writes are
+        batched, and inherited links acquire the proven order without copying
+        either messages or compactions.
+        """
+        if not rewrites:
+            return
+        ids = [rewrite.compaction_id for rewrite in rewrites]
+        if len(set(ids)) != len(ids):
+            raise ValueError("compaction identities must be unique")
+        async with self.lock(conversation.key), async_session() as session:
+            compactions = {
+                row.id: row
+                for row in await session.list(
+                    Compaction,
+                    limit=None,
+                    expressions=[
+                        Compaction["id"].in_(ids),
+                        Compaction["conversation_id"] == conversation.id,
+                    ],
+                )
+            }
+            if len(compactions) != len(ids):
+                raise ValueError("membership must belong to the owning conversation")
+            links = await session.list(
+                ConversationCompaction,
+                limit=None,
+                expressions=[ConversationCompaction["compaction_id"].in_(ids)],
+            )
+            members = await session.list(
+                CompactionMembership,
+                limit=None,
+                expressions=[CompactionMembership["compaction_id"].in_(ids)],
+                order_bys=[CompactionMembership["position"]],
+            )
+            stored: dict[UUID7, dict[CompactionStage, list[UUID7]]] = {
+                id_: {"before": [], "after": []} for id_ in ids
+            }
+            for member in members:
+                stored[member.compaction_id][member.stage].append(
+                    member.model_message_id
+                )
+            effective = deque(
+                await session.scalars(
+                    select(ModelMessage["id"])
+                    .select_from(Conversation)
+                    .join(Conversation["runs"])
+                    .join(AgentRun["messages"])
+                    .where(Conversation["id"] == conversation.id)
+                    .order_by(
+                        AgentRun["started_at"], AgentRun["id"], ModelMessage["id"]
+                    )
+                )
+            )
+            replacements: dict[UUID7, set[UUID7]] = {id_: set() for id_ in ids}
+            for message_id, owner in await session.execute(
+                select(ModelMessage["id"], ModelMessage["compaction_id"]).where(
+                    ModelMessage["compaction_id"].in_(ids)
+                )
+            ):
+                replacements[owner].add(message_id)
+            positions = {id_: position for position, id_ in enumerate(ids)}
+            for rewrite in rewrites:
+                before, after = rewrite.before, rewrite.after
+                if (
+                    not before
+                    or len(before) > len(effective)
+                    or any(effective.popleft() != message_id for message_id in before)
+                ):
+                    raise ValueError(
+                        "compaction input does not match the effective context"
+                    )
+                inputs, outputs = set(before), set(after)
+                if len(inputs) != len(before) or len(outputs) != len(after):
+                    raise ValueError("compaction stage members must be unique")
+                if outputs - inputs - replacements[rewrite.compaction_id]:
+                    raise ValueError(
+                        "replacement messages must belong to this compaction"
+                    )
+                effective.extendleft(reversed(after))
+                row = compactions[rewrite.compaction_id]
+                if row.membership_complete:
+                    if stored[row.id] != {"before": before, "after": after}:
+                        raise ValueError("completed compaction membership is immutable")
+                    continue
+                stages: tuple[tuple[CompactionStage, list[UUID7]], ...] = (
+                    ("before", before),
+                    ("after", after),
+                )
+                session.add_all(
+                    CompactionMembership(
+                        compaction_id=row.id,
+                        stage=stage,
+                        position=index,
+                        model_message_id=message_id,
+                    )
+                    for stage, message_ids in stages
+                    for index, message_id in enumerate(message_ids)
+                )
+                row.membership_complete = True
+            owned: set[UUID7] = set()
+            for link in links:
+                position = positions[link.compaction_id]
+                if link.position is not None and link.position != position:
+                    raise ValueError("completed compaction order is immutable")
+                link.position = position
+                if link.conversation_id == conversation.id:
+                    owned.add(link.compaction_id)
+            session.add_all(
+                ConversationCompaction(
+                    conversation_id=conversation.id,
+                    compaction_id=id_,
+                    position=position,
+                )
+                for id_, position in positions.items()
+                if id_ not in owned
+            )
+            await session.commit()
+
     async def record_driven_compaction(
         self,
         conversation: Conversation,
@@ -554,6 +699,34 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 await session.commit()
                 return compaction
             existing = matches[0]
+            links = (
+                await session.list(
+                    ConversationCompaction,
+                    limit=None,
+                    expressions=[
+                        ConversationCompaction["compaction_id"].in_(
+                            [match.id for match in matches]
+                        )
+                    ],
+                )
+                if len(matches) > 1
+                else []
+            )
+            inherited = {
+                link.conversation_id: link
+                for link in links
+                if link.compaction_id == existing.id
+            }
+            for link in links:
+                if link.compaction_id == existing.id:
+                    continue
+                if link.conversation_id in inherited:
+                    await session.delete(link)
+                    continue
+                link.compaction_id = existing.id
+                inherited[link.conversation_id] = link
+            if links:
+                await session.flush()
             for duplicate in matches[1:]:
                 if not existing.messages:
                     content = list(duplicate.messages)
@@ -1126,7 +1299,9 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
 
         A native import passes `end_offset`, where the transcript's last completed
         turn ends (an uploaded snapshot's size by default), to leave out the turns
-        that end past it and cut the source's ledger before their chat.
+        and compactions that end past it and cut the source's ledger before their
+        chat. Compactions with unknown boundaries cannot be cut safely. Inherited
+        compactions keep their identities and any unknown membership or order.
         `carry_external_id` moves the existing handle instead, for runtimes whose
         continuation requires it. Return the id of the last run the target's history
         includes, if any.
@@ -1163,7 +1338,14 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 Conversation,
                 expressions=[
                     Conversation["thread_id"] == target.thread_id,
-                    or_(Conversation["id"] != target.id, Conversation["runs"].any()),
+                    or_(
+                        Conversation["id"] != target.id,
+                        Conversation["runs"].any(),
+                        Conversation["id"].in_(select(Compaction["conversation_id"])),
+                        Conversation["id"].in_(
+                            select(ConversationCompaction["conversation_id"])
+                        ),
+                    ),
                 ],
             ) or await session.count(
                 Thread,
@@ -1198,16 +1380,57 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 stored_target.usage = origin.usage
                 stored_target.deferred_tool_requests = origin.deferred_tool_requests
                 stored_target.revision = str(uuid7())
-                await session.execute(
-                    insert(ConversationCompaction).from_select(
-                        ["conversation_id", "compaction_id", "position"],
-                        select(
-                            literal(target.id),
-                            ConversationCompaction["compaction_id"],
-                            ConversationCompaction["position"],
-                        ).where(ConversationCompaction["conversation_id"] == source.id),
+            compactions = (
+                select(
+                    literal(target.id),
+                    Compaction["id"],
+                    ConversationCompaction["position"],
+                )
+                .select_from(Compaction)
+                .outerjoin(
+                    ConversationCompaction,
+                    and_(
+                        ConversationCompaction["compaction_id"] == Compaction["id"],
+                        ConversationCompaction["conversation_id"] == source.id,
+                    ),
+                )
+                .where(
+                    or_(
+                        Compaction["conversation_id"] == source.id,
+                        ConversationCompaction["conversation_id"] == source.id,
                     )
                 )
+            )
+            if end_offset is not None:
+                if await session.scalar(
+                    select(
+                        compactions.where(
+                            or_(
+                                literal(origin.external_id).is_(None),
+                                Compaction["native_session_id"].is_(None),
+                                and_(
+                                    Compaction["native_session_id"]
+                                    == origin.external_id,
+                                    ExternalCompaction["end_offset"].is_(None),
+                                ),
+                            )
+                        ).exists()
+                    )
+                ):
+                    raise ValueError(
+                        "cannot place compaction at the requested transcript boundary"
+                    )
+                compactions = compactions.where(
+                    or_(
+                        Compaction["native_session_id"] != origin.external_id,
+                        ExternalCompaction["end_offset"] <= end_offset,
+                    )
+                )
+            await session.execute(
+                insert(ConversationCompaction).from_select(
+                    ["conversation_id", "compaction_id", "position"], compactions
+                )
+            )
             dropped: set[str] = set()
             # Without an end offset the cut is the ledger's last message. With one,
             # it falls after the last chat of a completed turn: bound to one, or

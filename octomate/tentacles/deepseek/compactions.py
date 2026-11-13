@@ -1,12 +1,14 @@
 """Completed dsh summaries shared by driven execution and native log ingestion."""
 
 from datetime import UTC, datetime
+from typing import NamedTuple
 
 from octomate_protocol.deepseek import PERMISSIVE
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import UUID7, BaseModel, Field, ValidationError
 from pydantic_ai.messages import UserPromptPart
 
 from octomate.managers.conversation import ConversationManager
+from octomate.schemas.compactions import Compaction
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.tentacles.deepseek.adapter import deepseek_metadata
@@ -16,7 +18,7 @@ from octomate.tentacles.deepseek.wire import (
     UserMessageData,
     text_of,
 )
-from octomate.types.compactions import CompactionTrigger
+from octomate.types.compactions import CompactionRewrite, CompactionTrigger
 from octomate.types.json import JsonValue
 
 
@@ -27,6 +29,29 @@ class CompactionSummary(BaseModel):
 
     compaction_id: str = Field(alias="compactionId")
     summary: list[ContentBlock]
+    shadowed_seqs: list[int] | None = Field(default=None, alias="shadowedSeqs")
+
+
+class MessageProvenance(BaseModel):
+    """The existing event metadata needed to map native surface identities."""
+
+    events: list[SessionEvent] = Field(default_factory=list)
+
+
+class SurfaceMessage(NamedTuple):
+    """One stored message may fold several indivisible native surface entries."""
+
+    message_id: UUID7
+    seqs: list[int]
+
+
+class SurfaceCompaction(NamedTuple):
+    """A completed checkpoint and the exact native span it replaces."""
+
+    record: Compaction
+    shadowed_seqs: list[int]
+    seq: int
+    checkpoint: SurfaceMessage
 
 
 class CompactionEnd(BaseModel):
@@ -57,6 +82,7 @@ class DeepseekCompactions:
     source: str | None
     summaries: dict[str, tuple[CompactionSummary, SessionEvent]]
     checkpoints: dict[str, tuple[UserMessageData, SessionEvent]]
+    pending_membership: str | None
 
     def __init__(
         self,
@@ -72,6 +98,7 @@ class DeepseekCompactions:
         self.source = source
         self.summaries = {}
         self.checkpoints = {}
+        self.pending_membership = None
 
     async def consume(self, event: SessionEvent) -> None:
         if event.type not in {"compaction/summary", "compaction/end", "user/message"}:
@@ -128,15 +155,115 @@ class DeepseekCompactions:
                 happened_at=timestamp,
                 messages=messages,
             )
+        else:
+            await self.conversations.record_external_compaction(
+                self.conversation,
+                native_session_id=self.session_id,
+                native_compaction_id=end.compaction_id,
+                trigger=trigger,
+                source=self.source,
+                start_offset=None,
+                end_offset=None,
+                happened_at=timestamp,
+                messages=messages,
+            )
+        self.pending_membership = end.compaction_id
+
+    async def record_memberships(self) -> None:
+        """Map exact surface spans once their enclosing run is durable.
+
+        Missing source identities or a span splitting a normalized message remain
+        unknown. Event sequence numbers belong to one native session; mixed-session
+        archives require a separate mapping of the inherited context.
+        """
+        pending = self.pending_membership
+        if pending is None:
             return
-        await self.conversations.record_external_compaction(
-            self.conversation,
-            native_session_id=self.session_id,
-            native_compaction_id=end.compaction_id,
-            trigger=trigger,
-            source=self.source,
-            start_offset=None,
-            end_offset=None,
-            happened_at=timestamp,
-            messages=messages,
+        self.pending_membership = None
+        records = await self.conversations.native_compactions(
+            self.conversation, self.session_id
         )
+        owner = next(
+            row.conversation_id
+            for row in records
+            if row.native_compaction_id == pending
+        )
+        if any(row.conversation_id != owner for row in records):
+            return
+        if all(row.membership_complete for row in records):
+            return
+        boundaries: list[SurfaceCompaction] = []
+        for row in records:
+            if len(row.messages) != 1:
+                return
+            message = row.messages[0]
+            events = MessageProvenance.model_validate(message.metadata or {}).events
+            summary_event = next(
+                (event for event in events if event.type == "compaction/summary"), None
+            )
+            checkpoint = next(
+                (event for event in events if event.type == "user/message"), None
+            )
+            if summary_event is None or checkpoint is None:
+                return
+            summary = CompactionSummary.model_validate(summary_event.data)
+            if not summary.shadowed_seqs:
+                return
+            boundaries.append(
+                SurfaceCompaction(
+                    row,
+                    summary.shadowed_seqs,
+                    summary_event.seq,
+                    SurfaceMessage(message.id, [checkpoint.seq]),
+                )
+            )
+        conversation = await self.conversations.get(owner)
+        if any(run.native_session_id != self.session_id for run in conversation.runs):
+            return
+        archive: list[SurfaceMessage] = []
+        for run in conversation.runs:
+            for message in run.messages:
+                events = MessageProvenance.model_validate(message.metadata or {}).events
+                seqs = sorted(
+                    {
+                        event.seq
+                        for event in events
+                        if event.type in {"assistant/message", "tool/result"}
+                        or (
+                            event.type == "user/message"
+                            and UserMessageData.model_validate(event.data).source.kind
+                            in {"user", "user-question-reply"}
+                        )
+                    }
+                )
+                if not seqs:
+                    return
+                archive.append(SurfaceMessage(message.id, seqs))
+        effective: list[SurfaceMessage] = []
+        rewrites: list[CompactionRewrite] = []
+        cursor = 0
+        for boundary in sorted(boundaries, key=lambda item: item.seq):
+            while cursor < len(archive) and archive[cursor].seqs[-1] < boundary.seq:
+                effective.append(archive[cursor])
+                cursor += 1
+            shadowed = set(boundary.shadowed_seqs)
+            indices = [
+                index
+                for index, item in enumerate(effective)
+                if any(seq in shadowed for seq in item.seqs)
+            ]
+            if not indices:
+                break
+            start, stop = indices[0], indices[-1] + 1
+            if [
+                seq for item in effective[start:stop] for seq in item.seqs
+            ] != boundary.shadowed_seqs:
+                break
+            before = [item.message_id for item in effective]
+            effective[start:stop] = [boundary.checkpoint]
+            rewrites.append(
+                CompactionRewrite(
+                    boundary.record.id, before, [item.message_id for item in effective]
+                )
+            )
+        await self.conversations.record_compaction_memberships(conversation, rewrites)

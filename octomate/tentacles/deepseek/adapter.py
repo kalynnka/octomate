@@ -61,6 +61,7 @@ from octomate.tentacles.deepseek.wire import (
     tool_call_of,
     tool_result_of,
     turn_end_of,
+    user_message_of,
 )
 from octomate.types.json import JsonObject, JsonValue
 
@@ -209,7 +210,27 @@ class DeepseekRunAccumulator:
             return
         if self.turn_ended:
             return
-        if event.type == "assistant/chunk":
+        if (
+            event.type == "user/message"
+            and (prompt := user_message_of(event)) is not None
+            and prompt.source.kind in {"user", "user-question-reply"}
+        ):
+            request = self.messages[-1] if self.messages else None
+            if (
+                isinstance(request, PydanticModelRequest)
+                and request.metadata
+                and request.metadata.get("events")
+            ):
+                if request.metadata["events"][0]["seq"] == event.seq:
+                    return
+                request = None
+            if not isinstance(request, PydanticModelRequest):
+                request = PydanticModelRequest(
+                    parts=[UserPromptPart(content=text_of(prompt.content))]
+                )
+                self.messages.append(request)
+            request.metadata = deepseek_metadata([payload])
+        elif event.type == "assistant/chunk":
             yield from self.consume_chunk(event, payload)
         elif event.type == "assistant/message":
             yield from self.consume_message(event, payload)

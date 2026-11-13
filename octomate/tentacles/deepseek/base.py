@@ -664,6 +664,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 if (
                     frame.event.type == "user/message"
                     and (message := user_message_of(frame.event)) is not None
+                    and message.source.kind in {"user", "user-question-reply"}
                 ):
                     accumulator.begin(text_of(message.content))
                 if (
@@ -696,6 +697,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     else None
                 ),
             )
+            await compactions.record_memberships()
             if accumulator.turn_error or execution.result.kind == "error":
                 raise AgentRunError(
                     accumulator.turn_error
@@ -708,6 +710,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 )
             )
             return
+        await compactions.record_memberships()
         if accumulator.turn_error or execution.result.kind == "error":
             yield CommandError(
                 status="failed",
@@ -1133,6 +1136,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                         suspender=deferred_suspender,
                         frames=queue,
                     )
+                    compactions = DeepseekCompactions(
+                        self.conversations, conversation, session_id
+                    )
                     prompted = False
                     try:
                         SessionPromptValue.model_validate(
@@ -1154,9 +1160,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                             )
                         )
                         prompted = True
-                        compactions = DeepseekCompactions(
-                            self.conversations, conversation, session_id
-                        )
                         while not accumulator.turn_ended:
                             frame = await queue.get()
                             if isinstance(
@@ -1222,6 +1225,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                         else None
                     ),
                 )
+                await compactions.record_memberships()
                 await self.sync_session_name(conversation, session_id)
         if source_thread_message_ids:
             if recorded_run is None:

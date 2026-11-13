@@ -233,9 +233,9 @@ async def test_fork_shares_the_source_history_and_grows_apart(
             for statement in statements
             if statement.startswith("INSERT")
         } == (
-            {"conversation_runs"}
+            {"conversation_runs", "conversation_compactions"}
             if subthread
-            else {"conversation_runs", "thread_ledgers"}
+            else {"conversation_runs", "conversation_compactions", "thread_ledgers"}
         )
         source = await manager.get(target.id)
     forked = source
