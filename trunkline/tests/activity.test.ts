@@ -30,8 +30,8 @@ before(async () => {
     root: fileURLToPath(new URL('../', import.meta.url)),
     server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom',
   })
-  const { activityText, observeActivity, useThreadActivity, useActivity } = await server.ssrLoadModule('/src/state/activity.ts')
-  activity = { activityText, observeActivity, useThreadActivity, useActivity }
+  const { activityText, observeActivity, resumeActivity, useThreadActivity, useActivity } = await server.ssrLoadModule('/src/state/activity.ts')
+  activity = { activityText, observeActivity, resumeActivity, useThreadActivity, useActivity }
   ;({ TurnFold } = await server.ssrLoadModule('/src/lib/api/fold.ts'))
   ;({ useConsole } = await server.ssrLoadModule('/src/state/console.ts'))
   ;({ queryClient } = await server.ssrLoadModule('/src/lib/queryClient.ts'))
@@ -225,6 +225,27 @@ test('reconnect resumes subsequent events and ignores stale connection callbacks
   assert.equal(text(), 'Moving')
 })
 
+test('returning to the tab resumes a pending retry without duplicating the socket or losing activity', async () => {
+  observe()
+  await tick()
+  const old = LiveSocket.last()
+  old.deliver(update(thinking))
+  activity.resumeActivity()
+  assert.equal(LiveSocket.opened.length, 1)
+  old.close()
+  activity.resumeActivity()
+  activity.resumeActivity()
+  await tick()
+  assert.equal(LiveSocket.opened.length, 2)
+  assert.equal(text(), 'Thinking')
+  assert.deepEqual(JSON.parse(LiveSocket.last().sent[0]), { thread_ids: ['first'], thread_keys: [] })
+  mock.timers.tick(2_000)
+  await tick()
+  assert.equal(LiveSocket.opened.length, 2)
+  LiveSocket.last().deliver(update({ event_kind: 'run_ended' }))
+  assert.equal(text(), undefined)
+})
+
 test('unmount aborts a pending handshake and cancels reconnect and expiry', async () => {
   LiveSocket.autoOpen = false
   const release = observe('new thread', true)
@@ -264,6 +285,7 @@ test('a denied subscription does not retry the same forbidden request', async ()
   observe()
   await tick()
   LiveSocket.last().close(1008)
+  activity.resumeActivity()
   mock.timers.tick(240_000)
   await tick()
   assert.equal(LiveSocket.opened.length, 1)

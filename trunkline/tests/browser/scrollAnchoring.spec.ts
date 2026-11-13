@@ -70,7 +70,7 @@ for (const width of [1280, 390]) {
         const bounds = el.getBoundingClientRect()
         return (document.querySelector('.trk-composer-frame')!.getBoundingClientRect().top - bounds.bottom) / (bounds.height / el.clientHeight)
       })
-      expect(composerGap).toBeCloseTo(16, 0)
+      expect(composerGap).toBeCloseTo(0, 0)
       await expect(log.getByText('End of latest answer.', { exact: true })).toBeVisible()
       await page.evaluate(async () => { await document.fonts.ready })
       await expect.poll(() => log.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(2)
@@ -157,6 +157,18 @@ for (const width of [1280, 390]) {
       } else {
         await expect.poll(() => log.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(2)
         await expect(log.getByText('End of latest answer.', { exact: true })).toBeInViewport()
+        await log.getByText('End of latest answer.', { exact: true }).hover()
+        const copy = log.getByRole('button', { name: 'Copy message', exact: true }).last()
+        await copy.hover()
+        await page.mouse.wheel(0, 1000)
+        await expect.poll(() => log.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(2)
+        await expect(copy).toBeInViewport({ ratio: 1 })
+        const tailGap = await copy.evaluate(el => {
+          const log = document.getElementById('trk-chatlog')!
+          const bounds = log.getBoundingClientRect()
+          return (bounds.bottom - el.getBoundingClientRect().bottom) / (bounds.height / log.clientHeight)
+        })
+        expect(Math.abs(tailGap - 20)).toBeLessThan(1)
       }
       await page.setViewportSize({ width, height: 700 })
       if (readingHistory) {

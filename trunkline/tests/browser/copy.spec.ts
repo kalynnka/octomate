@@ -160,18 +160,25 @@ for (const width of [1280, 390]) {
           const body = actions.previousElementSibling!.getBoundingClientRect()
           const box = el.getBoundingClientRect()
           const icon = el.querySelector('svg')!.getBoundingClientRect()
+          const row = actions.parentElement!
+          const height = row.getBoundingClientRect().height
+          actions.style.display = 'none'
+          const heightWithoutActions = row.getBoundingClientRect().height
+          actions.style.display = ''
           return {
             bottom: actions === actions.parentElement!.lastElementChild,
             below: box.top >= body.bottom,
             topGap: (box.top - body.bottom) / (box.height / Number.parseFloat(getComputedStyle(el).height)),
             leftGap: Math.abs(box.left - body.left),
             rowHeight: getComputedStyle(actions).height,
+            addedHeight: height - heightWithoutActions,
             square: Math.abs(box.width - box.height),
             centerX: Math.abs(icon.x + icon.width / 2 - box.x - box.width / 2),
             centerY: Math.abs(icon.y + icon.height / 2 - box.y - box.height / 2),
           }
         })
         expect(position.bottom).toBe(true)
+        expect(position.addedHeight).toBe(0)
         expect(position.below).toBe(true)
         if (row !== user) {
           expect(position.topGap).toBeCloseTo(6, 0)

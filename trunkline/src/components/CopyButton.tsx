@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Icon } from './Icon'
 import { TextSwap } from './TextSwap'
 
-export function CopyButton({ text, label, className = '', children }: { text: string; label: string; className?: string; children?: ReactNode }) {
+export function CopyButton({ text, label, className = '', children, showIcon = true }: { text: string; label: string; className?: string; children?: ReactNode; showIcon?: boolean }) {
   const [pressed, setPressed] = useState(false)
   const [result, setResult] = useState<{ status: 'copied' | 'failed' } | null>(null)
   useEffect(() => {
@@ -31,7 +31,7 @@ export function CopyButton({ text, label, className = '', children }: { text: st
     }}
   >
     {children}
-    <Icon name={status === 'copied' ? 'check' : 'copy'} size={12} />
+    {showIcon && <Icon name={status === 'copied' ? 'check' : 'copy'} size={12} />}
     <span role="status"><TextSwap>{status === 'copied' ? 'Copied' : status === 'failed' ? 'Copy failed' : ''}</TextSwap></span>
   </button>
 }
