@@ -36,6 +36,36 @@ test('Markdown preserves single newlines and paragraph boundaries', () => {
   assert.ok(html.includes('<strong>First</strong><br>\nSecond</p>\n<p>Third</p>'))
 })
 
+for (const path of ['src/agent.py', '/work/agent.py#L12', '../README.md', 'README.md:12', 'file:///work/agent.py', 'sandbox:/mnt/data/report.txt', 'C:/work/agent.py']) {
+  test(`local file link ${path} renders a reference instead of a navigation target`, () => {
+    const html = renderToStaticMarkup(createElement(Markdown, { text: `[\`agent.py\`](${path})` }))
+    assert.ok(html.includes('class="trk-markdown-file"'))
+    assert.ok(html.includes(`data-path="${path}"`))
+    assert.ok(html.includes('data-label="agent.py">agent.py</span>'))
+    assert.ok(!html.includes('<a '))
+    assert.ok(!html.includes('<code>agent.py</code>'))
+  })
+}
+
+test('web URLs, mail links and fragments retain their normal link behavior', () => {
+  const html = renderToStaticMarkup(createElement(Markdown, { text: '[Web](https://example.com/agent.py) [CDN](//example.com/agent.py) [Mail](mailto:dev@example.com) [Section](#files)' }))
+  assert.equal((html.match(/<a /g) ?? []).length, 4)
+  assert.ok(!html.includes('trk-markdown-file'))
+})
+
+test('file labels and paths stay escaped and unsafe protocols remain rejected', () => {
+  const html = renderToStaticMarkup(createElement(Markdown, { text: '[<img src=x onerror=alert(1)>](./safe.py) [unsafe](javascript:alert(1))' }))
+  assert.ok(html.includes('data-label="&lt;img src=x onerror=alert(1)&gt;"'))
+  assert.ok(!html.includes('<img'))
+  assert.ok(!html.includes('href="javascript:'))
+})
+
+test('recognizing file links does not enable local file image requests', () => {
+  const html = renderToStaticMarkup(createElement(Markdown, { text: '![Local image](file:///work/private.png)' }))
+  assert.ok(!html.includes('<img'))
+  assert.ok(html.includes('![Local image](file:///work/private.png)'))
+})
+
 test('the draft renders headings and bullets while leaving code and HTML literal', () => {
   const html = renderToStaticMarkup(createElement(DraftMarkdown, { text: '# Heading\n- one\n  - two\n\n```\n# code\n- code\n```\n<script>literal</script>' }))
   assert.ok(html.includes('font-weight:700'))
@@ -203,9 +233,9 @@ for (const kind of ['user', 'agent', 'stream'] as const) {
     const body = html.indexOf('<p>Message body.</p>')
     assert.ok(prefix >= 0 && prefix < body)
     assert.ok(!html.includes('data-position="after"'))
-    assert.ok(html.indexOf('Copy reference: src/main.py') < body)
+    assert.ok(html.indexOf('Open file: src/main.py') < body)
     assert.ok(!html.includes('IDE context'))
-    assert.ok(!html.includes('Copy reference: MEMORY.md:10'))
+    assert.ok(!html.includes('Open file: MEMORY.md:10'))
   })
 }
 

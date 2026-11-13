@@ -15,6 +15,7 @@ import { StatusBar } from './StatusBar'
 export function ConsoleShell() {
   const [threadListError, setThreadListError] = useState<string | null>(null)
   const [reconnecting, setReconnecting] = useState(false)
+  const [connected, setConnected] = useState(false)
   const [connectionAttempt, setConnectionAttempt] = useState(0)
   const actions = useConsole((s) => s.actions)
   const { applyViewport, closeOverlays, cyclePermissionMode, resumeLiveUpdates } = actions
@@ -27,13 +28,16 @@ export function ConsoleShell() {
         stop?.()
         disconnected = false
         setReconnecting(true)
+        setConnected(false)
         stop = watchThreads(message => {
           disconnected = true
           setReconnecting(false)
+          setConnected(false)
           setThreadListError(message)
         }, () => {
           setReconnecting(false)
           setThreadListError(null)
+          setConnected(true)
         })
       }
       resumeActivity()
@@ -48,6 +52,11 @@ export function ConsoleShell() {
       stop?.()
     }
   }, [resumeLiveUpdates, connectionAttempt])
+  useEffect(() => {
+    if (!connected) return
+    const timeout = window.setTimeout(() => setConnected(false), 1000)
+    return () => window.clearTimeout(timeout)
+  }, [connected])
   const overlayOpen = useConsole(
     (s) => !s.sbFold || (!s.mgmtSec && (s.mgmtOpen || (s.traceOn === true && !s.pvOpen))),
   )
@@ -98,21 +107,21 @@ export function ConsoleShell() {
         fontFamily: 'var(--font-sans)',
       }}
     >
-      {threadListError && (
-        <div className="trk-thread-list-alert lt-fade-in" role={reconnecting ? 'status' : 'alert'}>
+      {(threadListError || connected) && (
+        <div className="trk-thread-list-alert trk-connection-motion" data-connected={connected || undefined} role={reconnecting || connected ? 'status' : 'alert'}>
           <svg className={reconnecting ? 'lt-spin' : undefined} aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            {reconnecting ? <path d="M20 12a8 8 0 1 1-8-8" /> : <>
+            {connected ? <path d="m5 12 4 4L19 6" /> : reconnecting ? <path d="M20 12a8 8 0 1 1-8-8" /> : <>
               <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
               <path d="M12 9v4M12 17h.01" />
             </>}
           </svg>
           <div className="trk-thread-list-alert-copy">
-            <strong><TextSwap>{reconnecting ? 'Reconnecting…' : threadListError}</TextSwap></strong>
-            <span>{reconnecting ? 'Restoring thread-list updates.' : 'Reconnect to resume live updates.'}</span>
+            <strong><TextSwap>{connected ? 'Live updates connected.' : reconnecting ? 'Reconnecting…' : threadListError!}</TextSwap></strong>
+            {!connected && <span>{reconnecting ? 'Restoring thread-list updates.' : 'Reconnect to resume live updates.'}</span>}
           </div>
-          <Button disabled={reconnecting} onClick={() => setConnectionAttempt(attempt => attempt + 1)} style={{ flexShrink: 0 }}>
+          {!connected && <Button disabled={reconnecting} onClick={() => setConnectionAttempt(attempt => attempt + 1)} style={{ flexShrink: 0 }}>
             {reconnecting ? 'Connecting…' : 'Reconnect'}
-          </Button>
+          </Button>}
         </div>
       )}
       <div className="trk-shell-row" style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative' }}>

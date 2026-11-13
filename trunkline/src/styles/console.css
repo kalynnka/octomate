@@ -61,20 +61,23 @@ html[data-interface-size='small'] { --trk-interface-scale: 0.8; }
 html[data-interface-size='large'] { --trk-interface-scale: 1; }
 
 .trk-thread-list-alert {
+  --connection-color: var(--color-gold);
   display: flex;
   flex-shrink: 0;
   align-items: center;
   gap: 12px;
   padding: 8px 16px;
-  border-bottom: 1px solid color-mix(in srgb, var(--color-gold) 40%, var(--line-divider));
-  background: color-mix(in srgb, var(--color-gold) 8%, var(--page-bg));
+  border-bottom: 1px solid color-mix(in srgb, var(--connection-color) 40%, var(--line-divider));
+  background: color-mix(in srgb, var(--connection-color) 8%, var(--page-bg));
   color: var(--fg-1);
   font: var(--ui);
 }
 .trk-thread-list-alert > svg {
   flex-shrink: 0;
-  color: color-mix(in srgb, var(--color-gold) 55%, var(--fg-1));
+  color: color-mix(in srgb, var(--connection-color) 55%, var(--fg-1));
 }
+.trk-thread-list-alert[data-connected] { --connection-color: var(--color-sage); }
+.trk-thread-list-alert[data-connected] .trk-thread-list-alert-copy span { color: color-mix(in srgb, var(--color-sage) 55%, var(--fg-1)); }
 .trk-thread-list-alert-copy {
   display: flex;
   flex: 1;
@@ -808,12 +811,17 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
 .trk-user-message > .trk-message-references .trk-reference-tags { justify-content: flex-end; }
 .trk-reference-tags { position: relative; display: flex; flex-wrap: wrap; gap: 4px; }
 .trk-reference { display: inline-flex; max-width: min(100%, 28ch); font: 10px/1.4 var(--font-mono); }
-.trk-reference-copy { display: inline-flex; align-items: center; width: auto; max-width: 100%; min-width: 0; gap: 4px; padding: 2px 5px; height: auto; min-height: 24px; border: 0; border-radius: var(--radius-soft-sm); background: transparent; font: 10px/1.4 var(--font-mono); white-space: nowrap; cursor: pointer; }
-.trk-reference-copy { position: static; flex: 0 1 auto; color: var(--info-strong); }
+.trk-file-reference { max-width: 100%; border: 0; padding: 0; background: transparent; color: var(--info-strong); font: inherit; text-align: inherit; cursor: pointer; }
+.trk-file-reference:focus-visible { outline: 2px solid var(--fg-2); outline-offset: 2px; }
+.trk-reference-chip { display: inline-flex; align-items: center; min-width: 0; gap: 4px; padding: 2px 5px; min-height: 24px; border-radius: var(--radius-soft-sm); font: 10px/1.4 var(--font-mono); white-space: nowrap; }
+.trk-reference-link:not([data-unavailable]) { text-decoration: underline; text-underline-offset: 2px; }
+.trk-file-reference[data-unavailable] { color: var(--fg-1); cursor: help; user-select: text; }
+.trk-file-reference[data-unavailable] > code { display: block; min-width: 0; overflow-wrap: anywhere; font: .85em var(--font-mono); background: var(--trk-wash-strong); padding: 1px 5px; }
+.trk-reference-chip[data-unavailable] > code { font-size: 1em; overflow: hidden; text-overflow: ellipsis; }
 .trk-reference-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .trk-reference-tooltip {
   --trk-reference-grain: 3.2%;
-  display: none; position: absolute; z-index: 5; bottom: calc(100% + 6px); left: 0; right: 0; padding: 8px 10px;
+  position: fixed; z-index: 100; width: max-content; max-width: min(320px, calc(100vw / var(--trk-zoom, 1) - 16px)); box-sizing: border-box; padding: 8px 10px; font: var(--meta);
   background-color: var(--surface-raised);
   background-image: radial-gradient(color-mix(in srgb, var(--color-ink) var(--trk-reference-grain), transparent) 0.5px, transparent 0.6px), radial-gradient(color-mix(in srgb, var(--color-ink) calc(var(--trk-reference-grain) * .75), transparent) 0.5px, transparent 0.6px);
   background-size: 4px 4px, 7px 7px;
@@ -822,11 +830,10 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
 }
 html[data-theme='dark'] .trk-reference-tooltip { --trk-reference-grain: 1.6%; }
 .trk-reference-tooltip > span, .trk-reference-tooltip > strong { display: block; }
-.trk-reference-copy:is(:hover, :focus-visible) .trk-reference-tooltip { display: block; }
 .trk-context-content { border-top: 1px solid var(--line-divider); padding: 6px 10px; color: var(--fg-2); overflow-wrap: anywhere; }
 .trk-context-rollouts { margin-top: 6px; }
 .trk-memory-reference + .trk-memory-reference { margin-top: 8px; }
-.trk-memory-reference-copy { width: auto; height: auto; max-width: 100%; padding: 0; border: 0; font: var(--meta); color: var(--info-strong); white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.trk-memory-reference > .trk-file-reference { font: var(--meta); overflow-wrap: anywhere; }
 .trk-oauth-copy { width: auto; height: auto; flex: 0 1 auto; gap: 8px; margin-top: 10px; border: 0; cursor: default; user-select: none; }
 .trk-oauth-copy:hover { background: transparent; }
 .trk-oauth-copy > svg { padding: 7px; box-sizing: content-box; border-radius: var(--radius-soft-sm); }

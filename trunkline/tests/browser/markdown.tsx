@@ -13,6 +13,7 @@ const code = 'This is `demo_worker.py`.\n\n## Python\n\n```python\nimport json\n
 const longCode = ['message = """First line', 'Second line', 'Third line"""', '', ...Array.from({ length: 100 }, (_, index) => `value_${index} = ${index}`), `print("${'a long line of code '.repeat(20)}")`].join('\n')
 const diagram = '```mermaid\nflowchart LR\n    accTitle: Octomate dispatch\n    Core[Octomate core] --> Worker[Alice worker]\n    Worker --> CLI[CLI tools]\n```'
 const second = '> ```mermaid\n> flowchart TD\n>     accTitle: Thread lifecycle\n>     Start --> Done\n> ```'
+const fileReferences = 'Check [`scripts/local_dev.py`](scripts/local_dev.py), then [settings](/work/project/settings.py#L12). See [the website](https://example.com/guide.md).\n\nKeep `literal.py` and code fences literal.\n\n```text\n[file](./inside-code.py)\n```'
 const tall = '```mermaid\nflowchart TD\n    Start([Start]) --> Setup[Set a = 2 and b = 3]\n    Setup --> Calculate[Calculate sum = a + b]\n    Calculate --> Decision{Is sum greater than 0?}\n    Decision -->|Yes| Positive[Print sum]\n    Decision -->|No| Other[Print zero]\n    Positive --> End([End])\n    Other --> End\n```'
 const toolArgs = JSON.stringify({ command: '/bin/zsh -lc "git diff --cached -- trunkline/src/features/chat/cards.tsx trunkline/src/styles/console.css"', cwd: '/work/project', commandActions: [{ type: 'unknown' }], options: { staged: true, limit: 3 } })
 const toolDiff = 'diff --git a/trunkline/src/features/chat/cards.tsx b/trunkline/src/features/chat/cards.tsx\nindex 12abc34..56def78 100644\n--- a/trunkline/src/features/chat/cards.tsx\n+++ b/trunkline/src/features/chat/cards.tsx\n@@ -10,3 +10,4 @@ function render() {\n-  return raw\n+  const label = "<script>literal</script>"\n+  return format(raw, label)\n }'
@@ -29,6 +30,7 @@ useConsole.getState().actions.setTheme('light')
 
 export function Harness() {
   const [message, setMessage] = useState({ text: code, cursor: false })
+  const [files, setFiles] = useState(false)
   const [reasoning, setReasoning] = useState(false)
   const [thinking, setThinking] = useState(true)
   const [tools, setTools] = useState(false)
@@ -54,6 +56,8 @@ export function Harness() {
   return <main style={{ maxWidth: 900, margin: '24px auto', padding: 16, fontFamily: 'var(--font-cn)', fontSize: 16 }}>
     <nav style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 24 }}>
       <button onClick={() => setMessage({ text: `${code}\n\n${diagram}\n\n${second}`, cursor: false })}>Example</button>
+      <button onClick={() => { setFiles(true); setMessage({ text: fileReferences, cursor: true }) }}>File references</button>
+      {files && <button onClick={() => setMessage({ text: `${fileReferences}\n\nMore context.`, cursor: false })}>Continue references</button>}
       <button onClick={() => setMessage({ text: `\`\`\`python\n${longCode}\n\`\`\``, cursor: false })}>Long code</button>
       <button onClick={() => setMessage({ text: tall, cursor: false })}>Tall</button>
       <button onClick={() => setMessage({ text: math, cursor: false })}>Math</button>
@@ -77,7 +81,10 @@ export function Harness() {
       </>}
       {reasoning && <button onClick={() => setThinking(false)}>Finish reasoning</button>}
     </nav>
-    {tools ? <section aria-label="Tool cards" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    {files ? <section aria-label="File references" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <LedgerRow cardMax="100%" item={{ kind: 'user', uid: 'file-user', who: 'Owner', t: '', text: fileReferences }} />
+      <LedgerRow cardMax="100%" item={{ kind: 'stream', uid: 'file-assistant', text: message.text, streaming: message.cursor }} />
+    </section> : tools ? <section aria-label="Tool cards" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <LedgerRow cardMax="100%" item={{ kind: 'tool', uid: 'formatted-tool', name: 'codex_command_execution', icon: 'terminal', status: 'done', defaultOpen: true, detail: { type: 'plain', args: toolArgs, res: toolResult } }} />
       <LedgerRow cardMax="100%" item={{ kind: 'tool', uid: 'partial-tool', name: 'exec', icon: 'code', status: 'done', defaultOpen: true, detail: { type: 'plain', args: '{"command":"unfinished …', res: 'ordinary output' } }} />
     </section> : reasoning ? <section aria-label="Reasoning cards" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>

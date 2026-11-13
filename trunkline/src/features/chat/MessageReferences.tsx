@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react'
 import { Brackets } from '@/components/Brackets'
-import { CopyButton } from '@/components/CopyButton'
+import { FileReference as FileReferenceControl } from '@/components/FileReference'
 import { Disclose, Fold } from '@/components/Fold'
 import { Icon } from '@/components/Icon'
 import { Markdown } from '@/components/Markdown'
@@ -14,22 +14,16 @@ function ReferenceTag({ reference: ref, source, workspace }: { reference: FileRe
   const lines = ref.start_line === null ? '' : `:${ref.start_line}${ref.end_line !== null && ref.end_line !== ref.start_line ? `–${ref.end_line}` : ''}`
   const reference = `${ref.path}${lines}`
   if (memory) return <div className="trk-memory-reference">
-    <CopyButton text={reference} label={`Copy reference: ${reference}`} className="trk-memory-reference-copy" showIcon={false}>{reference}</CopyButton>
+    <FileReferenceControl path={reference}><span>Memory source · {source}</span></FileReferenceControl>
     {ref.note && <div>{ref.note}</div>}
   </div>
   const label = ref.path.split(/[\\/]/).at(-1) ?? ref.path
   return <span className="trk-reference">
-    <CopyButton text={reference} label={`Copy reference: ${reference}`} className="trk-reference-copy">
-      <Icon name="file" size={12} />
-      <span className="trk-reference-name">{label}{lines}</span>
-      <span className="trk-reference-tooltip">
-        <strong>{reference}</strong>
-        <span>{ref.roles.join(' · ')} · {source}</span>
-        {workspace && <span>Workspace: {workspace}</span>}
-        {ref.note && <span>{ref.note}</span>}
-        <span>Copy reference</span>
-      </span>
-    </CopyButton>
+    <FileReferenceControl path={reference} label={`${label}${lines}`} chip>
+      <span>{ref.roles.join(' · ')} · {source}</span>
+      {workspace && <span>Workspace: {workspace}</span>}
+      {ref.note && <span>{ref.note}</span>}
+    </FileReferenceControl>
   </span>
 }
 

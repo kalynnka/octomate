@@ -18,11 +18,13 @@ for (const width of [1280, 390]) {
   test(`returning to the tab restores live updates without refreshing the conversation (${width}px)`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 })
     await page.emulateMedia({ colorScheme: width === 390 ? 'dark' : 'light', reducedMotion: width === 390 ? 'reduce' : 'no-preference' })
+    await page.clock.install()
     const errors: string[] = []
     page.on('pageerror', error => errors.push(error.message))
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()) })
     const sockets = new Map<string, WebSocketRoute[]>()
     const requests: string[] = []
+    const writes: string[] = []
     let snapshot: Promise<void> | undefined
     let releaseSnapshot!: () => void
     let navigations = 0
@@ -35,6 +37,7 @@ for (const width of [1280, 390]) {
     await page.route(url => url.pathname.startsWith('/api/'), async route => {
       const path = new URL(route.request().url()).pathname
       requests.push(path)
+      if (route.request().method() !== 'GET') writes.push(path)
       if (path === '/api/auth/me') return route.fulfill({ json: { id: 'owner', username: 'owner', name: 'Owner', nickname: null } })
       if (path === '/api/artifacts/config') return route.fulfill({ json: { path: '/artifacts' } })
       if (path === '/api/trunkline/threads') {
@@ -61,6 +64,11 @@ for (const width of [1280, 390]) {
     })
     await page.goto('/threads/thread-a')
     await expect(page).toHaveTitle(/Octomate/i)
+    const notice = page.locator('.trk-thread-list-alert')
+    await expect(notice).toHaveAttribute('data-connected', 'true')
+    await expect(notice.locator('strong [data-text-current]')).toHaveText('Live updates connected.')
+    await page.clock.fastForward(1001)
+    await expect(notice).toHaveCount(0)
     const log = page.locator('#trk-chatlog')
     const saved = page.locator('#pm-saved-39')
     await expect(saved).toBeVisible()
@@ -83,6 +91,7 @@ for (const width of [1280, 390]) {
       window.dispatchEvent(new Event('focus'))
     })
     expect(Object.fromEntries([...sockets].map(([key, values]) => [key, values.length]))).toEqual(connected)
+    await expect(notice).toHaveCount(0)
     await page.evaluate(() => {
       Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
       document.dispatchEvent(new Event('visibilitychange'))
@@ -96,22 +105,33 @@ for (const width of [1280, 390]) {
       window.dispatchEvent(new Event('focus'))
     })
     for (const key of ['thread', 'activity', 'user']) await expect.poll(() => sockets.get(key)?.length).toBe(connected[key] + 1)
-    const notice = page.locator('.trk-thread-list-alert')
     await expect(notice).toHaveAttribute('role', 'status')
     await expect(notice.locator('strong [data-text-current]')).toHaveText('Reconnecting…')
+    await expect(notice).toHaveCSS('animation-name', width === 390 ? 'lt-fade-in' : 'lt-fade-up')
     await expect(page.getByRole('button', { name: 'Connecting…', exact: true })).toBeDisabled()
     await expect(notice.locator('svg')).toHaveCSS('animation-name', width === 390 ? 'none' : 'lt-spin')
     await expect(notice).toHaveCSS('opacity', '1')
     await expect(notice.locator('strong [data-text-current]')).toHaveCSS('opacity', '1')
     await page.screenshot({ path: `/private/tmp/trunkline-reconnecting-${width}.png` })
     releaseSnapshot()
-    await expect(notice).toHaveCount(0)
+    await expect(notice).toHaveAttribute('data-connected', 'true')
+    await expect(notice).toHaveAttribute('role', 'status')
+    await expect(notice.locator('strong [data-text-current]')).toHaveText('Live updates connected.')
+    await expect(notice).toHaveCSS('animation-name', width === 390 ? 'lt-fade-in, lt-fade-out' : 'lt-fade-up, trk-connection-out')
+    await expect(notice).toHaveCSS('animation-duration', width === 390 ? '0.08s, 0.08s' : '0.24s, 0.15s')
+    await expect(notice).toHaveCSS('animation-delay', width === 390 ? '0s, 0.92s' : '0s, 0.85s')
+    await expect(notice.getByRole('button')).toHaveCount(0)
     await expect(page.getByRole('alert')).toHaveCount(0)
     await expect(composer).toHaveValue('Keep this unsent draft')
     expect(await saved.evaluate((current, previous) => current === previous, original)).toBe(true)
     expect(await log.evaluate(el => el.scrollTop)).toBe(scrollTop)
     expect(requests.filter(path => path.startsWith('/api/trunkline/threads/thread-a')).length).toBe(historyReads)
     expect(navigations).toBe(1)
+    await expect(notice.locator('strong [data-text-current]')).toHaveCSS('opacity', '1')
+    await page.screenshot({ path: `/private/tmp/trunkline-connected-${width}.png` })
+    await page.clock.fastForward(1001)
+    await expect(notice).toHaveCount(0)
+    expect(await log.evaluate(el => el.scrollTop)).toBe(scrollTop)
 
     const events: WireEvent[] = [
       { event_kind: 'run_started', address: {
@@ -140,10 +160,19 @@ for (const width of [1280, 390]) {
     await expect(page.getByRole('button', { name: 'Reconnect', exact: true })).toBeEnabled()
     await page.getByRole('button', { name: 'Reconnect', exact: true }).click()
     await expect.poll(() => sockets.get('user')?.length).toBe(connected.user + 3)
-    await expect(notice).toHaveCount(0)
+    await expect(notice).toHaveAttribute('data-connected', 'true')
     await expect(page.getByRole('alert')).toHaveCount(0)
     expect(sockets.get('thread')?.length).toBe(connected.thread + 1)
     expect(navigations).toBe(1)
     await expect(composer).toHaveValue('Keep this unsent draft')
+
+    // A fresh disconnect replaces the success notice; its old timer cannot hide the warning.
+    await sockets.get('user')!.at(-1)!.close({ code: 1012 })
+    await expect(notice).toHaveAttribute('role', 'alert')
+    await page.clock.fastForward(1001)
+    await expect(notice).toHaveAttribute('role', 'alert')
+    await expect(notice).not.toHaveAttribute('data-connected', 'true')
+    expect(writes).toEqual([])
+    await expect(log.getByText('Live updates connected.', { exact: true })).toHaveCount(0)
   })
 }
