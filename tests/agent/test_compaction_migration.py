@@ -28,7 +28,7 @@ from octomate.schemas.thread import MessageBinding, ThreadMessage
 from octomate.schemas.user import UserProfile
 from tests.support.managers import a_thread
 
-PREVIOUS = "792e14ef4f19"
+PREVIOUS = "90e954ec0b2d"
 REVISION = "a1a2d6fe9638"
 
 

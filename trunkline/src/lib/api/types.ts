@@ -8,7 +8,7 @@
  */
 import type { ThreadReads } from './live'
 
-import type { ApiThread } from './events'
+import type { ApiThread, MessageAnnotations } from './events'
 
 export type ChannelId = string
 
@@ -100,7 +100,7 @@ export interface DiffCard {
 
 /** One block of an agent message. Inline `code` spans use backtick markup. */
 export type AgentBlock =
-  | { type: 'p'; text: string }
+  | { type: 'p'; text: string; annotations?: MessageAnnotations | null }
   | { type: 'ul'; items: string[] }
   | { type: 'diff'; diff: DiffCard }
 
@@ -163,8 +163,8 @@ export type LedgerItem =
       text: string
       tone: 'plain' | 'summon'
     }
-  | { kind: 'user'; uid: string; t: string; who: string; userId?: string | null; text: string; reply?: MessageReply; chips?: QueueChip[] }
-  | { kind: 'agent'; uid: string; agentId?: string; label: string; blocks: AgentBlock[]; reply?: MessageReply }
+  | { kind: 'user'; uid: string; t: string; who: string; userId?: string | null; text: string; annotations?: MessageAnnotations | null; workspace?: string; reply?: MessageReply; chips?: QueueChip[] }
+  | { kind: 'agent'; uid: string; agentId?: string; label: string; blocks: AgentBlock[]; workspace?: string; reply?: MessageReply }
   | { kind: 'code'; uid: string; lang: string; lines: string[] }
   /** `thinking` is false once the part closed — the card folds itself then,
    *  the way `stream.streaming` marks a reply as settled.
@@ -240,7 +240,7 @@ export type LedgerItem =
       connectorId: string
     }
   | { kind: 'dots'; uid: string; label: string; attention?: boolean }
-  | { kind: 'stream'; uid: string; agentId?: string; text: string; streaming: boolean; label?: string }
+  | { kind: 'stream'; uid: string; agentId?: string; text: string; annotations?: MessageAnnotations | null; workspace?: string; streaming: boolean; label?: string }
   | { kind: 'end'; uid: string; label: string }
   | { kind: 'notice'; uid: string; text: string; tone?: 'error' | 'warning' | 'info' }
 

@@ -4,6 +4,7 @@ import { useThreadActivity } from '@/state/activity'
 import { useAgents, useThreadSummary } from '@/lib/api/hooks'
 import { botLabel } from '@/lib/api/fold'
 import { AgentLabel, LedgerRow, TraceGroupRow } from './cards'
+import { MessageContext } from './MessageReferences'
 import { traceRows } from './trace'
 import { label, mono, display, statusNote } from '@/components/text'
 
@@ -68,6 +69,7 @@ export function ChatLog() {
   const rows = [...visible, ...live.filter((item) => !saved.has(item.uid))]
   const dispatch = rows.findLast((item) => item.kind === 'dots')
   const items = rows.filter((item) => item.kind !== 'dots')
+  const renderedRows = traceRows(items, running)
   const firstLive = live.find(item => item.kind !== 'dots' && !saved.has(item.uid))
   const copyable = new Set<string>()
   let lastOutput: string | undefined
@@ -185,10 +187,10 @@ export function ChatLog() {
             </span>
           </div>
         )}
-        {traceRows(items, running).map((item, i) => {
-          const first = item.kind === 'trace' ? item.items[0] : item
+        {renderedRows.map((item, i) => {
+          const first = item.kind === 'trace' ? item.items[0] : item.kind === 'annotated' ? item.item : item
           let heading
-          if (first.kind === 'agent' || first.kind === 'stream' || first.kind === 'think' || first.kind === 'tool') {
+          if (first.kind === 'agent' || first.kind === 'stream' || first.kind === 'think' || first.kind === 'tool' || first.kind === 'context') {
             const label = first.kind === 'agent' || first.kind === 'stream' ? first.label ?? botLabel(first.agentId) : botLabel(first.agentId)
             const author = first.agentId ?? label
             if (author !== assistantLabel) {
@@ -196,13 +198,16 @@ export function ChatLog() {
               heading = <AgentLabel label={label} iconUrl={agent?.icon_url} />
             }
             assistantLabel = author
-          } else if (item.kind === 'user' || item.kind === 'end' || item.kind === 'session-open') {
+          } else if (first.kind === 'user' || first.kind === 'end' || first.kind === 'session-open') {
             assistantLabel = undefined
           }
           // The newest page enters first; earlier reveals stay calm.
           return <Fragment key={item.uid}>{heading}{item.kind === 'trace'
             ? <TraceGroupRow group={item} cardMax={CARD_MAX} />
-            : <LedgerRow item={item} cardMax={CARD_MAX} showAgentLabel={false} showCopy={copyable.has(item.uid)} i={Math.min(items.length - 1 - i, 7)} />}</Fragment>
+            : item.kind === 'context' ? <MessageContext item={item} cardMax={CARD_MAX} />
+            : <LedgerRow item={item.kind === 'annotated' ? item.item : item} cardMax={CARD_MAX} showAgentLabel={false} showCopy={copyable.has(item.uid)} i={Math.min(renderedRows.length - 1 - i, 7)}>
+              {item.kind === 'annotated' && item.after.map(context => <MessageContext key={context.uid} item={context} cardMax={CARD_MAX} />)}
+            </LedgerRow>}</Fragment>
         })}
         {notices.map((item) => (
           <LedgerRow key={item.uid} item={item} cardMax={CARD_MAX} />

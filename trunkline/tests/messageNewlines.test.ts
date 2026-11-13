@@ -5,7 +5,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createServer, type ViteDevServer } from 'vite'
 import type { LedgerItem } from '../src/lib/api/types.ts'
-import type { ThinkingPart } from '../src/lib/api/events.ts'
+import type { MessageAnnotations, ThinkingPart } from '../src/lib/api/events.ts'
 
 let server: ViteDevServer
 let Markdown: typeof import('../src/components/Markdown.tsx').Markdown
@@ -34,6 +34,36 @@ after(async () => { await server?.close() })
 test('Markdown preserves single newlines and paragraph boundaries', () => {
   const html = renderToStaticMarkup(createElement(Markdown, { text: '**First**\nSecond\n\nThird' }))
   assert.ok(html.includes('<strong>First</strong><br>\nSecond</p>\n<p>Third</p>'))
+})
+
+for (const path of ['src/agent.py', '/work/agent.py#L12', '../README.md', 'README.md:12', 'file:///work/agent.py', 'sandbox:/mnt/data/report.txt', 'C:/work/agent.py']) {
+  test(`local file link ${path} renders a reference instead of a navigation target`, () => {
+    const html = renderToStaticMarkup(createElement(Markdown, { text: `[\`agent.py\`](${path})` }))
+    assert.ok(html.includes('class="trk-markdown-file"'))
+    assert.ok(html.includes(`data-path="${path}"`))
+    assert.ok(html.includes('data-label="agent.py">agent.py</span>'))
+    assert.ok(!html.includes('<a '))
+    assert.ok(!html.includes('<code>agent.py</code>'))
+  })
+}
+
+test('web URLs, mail links and fragments retain their normal link behavior', () => {
+  const html = renderToStaticMarkup(createElement(Markdown, { text: '[Web](https://example.com/agent.py) [CDN](//example.com/agent.py) [Mail](mailto:dev@example.com) [Section](#files)' }))
+  assert.equal((html.match(/<a /g) ?? []).length, 4)
+  assert.ok(!html.includes('trk-markdown-file'))
+})
+
+test('file labels and paths stay escaped and unsafe protocols remain rejected', () => {
+  const html = renderToStaticMarkup(createElement(Markdown, { text: '[<img src=x onerror=alert(1)>](./safe.py) [unsafe](javascript:alert(1))' }))
+  assert.ok(html.includes('data-label="&lt;img src=x onerror=alert(1)&gt;"'))
+  assert.ok(!html.includes('<img'))
+  assert.ok(!html.includes('href="javascript:'))
+})
+
+test('recognizing file links does not enable local file image requests', () => {
+  const html = renderToStaticMarkup(createElement(Markdown, { text: '![Local image](file:///work/private.png)' }))
+  assert.ok(!html.includes('<img'))
+  assert.ok(html.includes('![Local image](file:///work/private.png)'))
 })
 
 test('the draft renders headings and bullets while leaving code and HTML literal', () => {
@@ -167,9 +197,50 @@ test('an idle turn displays all its text without a stale printing cursor', () =>
   }
 })
 
+test('user messages render quotes and fences without changing code whitespace', () => {
+  const code = 'if True:\n    first()\n\n\n\n    second()\n'
+  const text = `> Quoted\n\nFirst line\nSecond line\n\n\n\n\`\`\`python\n${code}\`\`\`\n\n<script>literal</script>`
+  const item: LedgerItem = { kind: 'user', uid: 'user', t: '12:00', who: 'test', text }
+  const html = renderToStaticMarkup(createElement(LedgerRow, { item, cardMax: '100%' }))
+  assert.ok(html.includes('<blockquote>\n<p>Quoted</p>'))
+  assert.ok(html.includes('<p>First line<br>\nSecond line</p>'))
+  assert.ok(html.includes(`<pre><code class="language-python">${code}</code></pre>`))
+  assert.ok(html.includes('&lt;script&gt;literal&lt;/script&gt;'))
+  assert.ok(!html.includes('<script>'))
+})
+
+for (const kind of ['user', 'agent', 'stream'] as const) {
+  test(`${kind} retains only file references as message chips`, () => {
+    const annotations: MessageAnnotations = {
+      raw: 'Original message', source: 'codex',
+      contexts: [
+        { title: 'IDE context', text: 'Opened src/main.py', rollout_ids: [] },
+        { title: 'Memory sources', text: 'Memory citation', rollout_ids: [] },
+      ],
+      references: [
+        { path: 'src/main.py', roles: ['Active file'], start_line: null, end_line: null, note: null },
+        { path: 'MEMORY.md', roles: ['Memory source'], start_line: 10, end_line: 10, note: 'Relevant memory' },
+      ],
+    }
+    const text = 'Message body.'
+    const item: LedgerItem = kind === 'user'
+      ? { kind, uid: 'message', t: '12:00', who: 'test', text, annotations }
+      : kind === 'agent'
+        ? { kind, uid: 'message', label: 'Codex', blocks: [{ type: 'p', text, annotations }] }
+        : { kind, uid: 'message', text, annotations, streaming: false }
+    const html = renderToStaticMarkup(createElement(LedgerRow, { item, cardMax: '100%' }))
+    const prefix = html.indexOf('data-position="before"')
+    const body = html.indexOf('<p>Message body.</p>')
+    assert.ok(prefix >= 0 && prefix < body)
+    assert.ok(!html.includes('data-position="after"'))
+    assert.ok(html.indexOf('Open file: src/main.py') < body)
+    assert.ok(!html.includes('IDE context'))
+    assert.ok(!html.includes('Open file: MEMORY.md:10'))
+  })
+}
+
 const text = 'First line\n\nSecond line'
 const items: LedgerItem[] = [
-  { kind: 'user', uid: 'user', t: '12:00', who: 'test', text },
   { kind: 'system', uid: 'system', text },
   { kind: 'notice', uid: 'notice', text },
 ]

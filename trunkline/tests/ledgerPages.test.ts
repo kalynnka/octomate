@@ -116,6 +116,43 @@ test('binding an inbound row preserves its position in the saved conversation', 
   assert.equal(after.ledger.filter(item => item.uid === inbound.id).length, 1)
 })
 
+for (const kind of ['native_thread', 'thread'] as const) {
+  test(`native question replies keep transcript order in a ${kind}, including older pages`, () => {
+    const replyText = `<send_user_message_question_reply>\n${JSON.stringify([{
+      questionItemId: JSON.stringify(['request_user_input_async', 'native-q', 0]), question: 'Render Markdown?', answer: 'Yes',
+    }])}\n</send_user_message_question_reply>`
+    const original = said('011', 'Render my message', 'human')
+    const replied = said('012', replyText, 'human')
+    const followup = said('013', 'Is this standard Markdown?', 'human')
+    const asked: ApiModelMessage = {
+      id: '102', run_id: 'run', kind: 'response', timestamp: at, thread_messages: [],
+      parts: [{ part_kind: 'builtin-tool-call', tool_name: 'request_user_input_async', tool_call_id: 'native-q', args: { questions: [{ title: 'Render Markdown?', options: ['Yes', 'No'] }] } }],
+    }
+    const messages: ApiModelMessage[] = [
+      { ...prompt, id: '100', thread_messages: [original] },
+      { ...answer, id: '101', parts: [{ part_kind: 'text', content: 'Checking the renderer.' }] },
+      asked,
+      { ...prompt, id: '103', parts: [{ part_kind: 'user-prompt', content: replyText }], thread_messages: [replied] },
+      { ...prompt, id: '104', thread_messages: [followup] },
+      { ...answer, id: '105' },
+    ]
+    const source: ThreadReads = {
+      ...reads(messages, [], { model: null, unbound: null }),
+      thread: { ...thread, kind, handoffs: [] },
+      conversations: [{ ...conversation, agent_tentacle_id: 'codex', runs: conversation.runs.map(run => ({ ...run, kind: 'external' })) }],
+    }
+    const whole = liveThreadDetail(source)
+    assert.deepEqual(whole.ledger.map(item => item.uid), ['011', '101.0', '102.0', '012', '013', '105.0'])
+    const question = whole.ledger.find(item => item.kind === 'ask')
+    assert.equal(question?.kind === 'ask' && question.questions[0].answer, 'Yes')
+    assert.equal(whole.ledger.find(item => item.uid === '012')?.kind, 'user')
+    const latest = liveThreadDetail({ ...source, modelMessages: messages.slice(3), cursors: { model: 'older', unbound: null } })
+    assert.deepEqual(latest.ledger.map(item => item.uid), ['012', '013', '105.0'])
+    const paged = withOlderPage(latest, latest.reads!, { read: 'model', page: page(messages.slice(0, 3)) })
+    assert.deepEqual(paged.ledger, whole.ledger)
+  })
+}
+
 for (const [agent, bound] of [['coding', true], ['coding', false], ['deepseek', true], ['deepseek', false]] as const) {
   test(`${agent} question replies remain readable ${bound ? 'after binding' : 'before their run commits'}`, () => {
     const deepseek = agent === 'deepseek'

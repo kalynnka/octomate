@@ -4,6 +4,7 @@ import type { Mounted } from 'pele'
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { CopyButton } from './CopyButton'
+import { FileReference } from './FileReference'
 
 // html stays off (the default): agent output is prose, not trusted markup —
 // any raw HTML in it renders as text. linkify turns bare URLs into links.
@@ -11,6 +12,14 @@ const md = new MarkdownIt({
   linkify: true,
   breaks: true,
 })
+const validateLink = md.validateLink
+md.validateLink = href => /^file:/i.test(href) || validateLink(href)
+const renderImage = md.renderer.rules.image!
+md.renderer.rules.image = (tokens, idx, options, env, self) => {
+  const source = String(tokens[idx].attrGet('src') ?? '')
+  if (/^file:/i.test(source)) return md.utils.escapeHtml(`![${tokens[idx].content}](${source})`)
+  return renderImage(tokens, idx, options, env, self)
+}
 md.use(tex, {
   delimiters: 'all',
   render: (source, display) => `<span class="trk-math" data-source="${md.utils.escapeHtml(source)}" data-display="${display}">${md.utils.escapeHtml(source)}</span>`,
@@ -32,25 +41,43 @@ for (const rule of ['fence', 'code_block']) {
   }
 }
 
-// Links leave the console; open them beside it rather than over it.
+// Local paths cannot be opened by the browser; web links still leave the console.
 const renderLink =
   md.renderer.rules.link_open ??
   ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options))
 md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+  const href = String(tokens[idx].attrGet('href') ?? '')
+  const path = href.replace(/:\d+(?::\d+)?(?:[-–]\d+)?$/, '')
+  const local = /^(?:file:|sandbox:|[a-z]:[\\/])/i.test(path)
+    || (!/^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(path) && /[/.\\]/.test(path))
+  if (local) {
+    const end = tokens.findIndex((token, index) => index > idx && token.type === 'link_close')
+    const label = tokens.slice(idx + 1, end).map(token => token.content).join('')
+    for (let index = idx + 1; index <= end; index++) tokens[index].type = 'file_reference_label'
+    return `<span class="trk-markdown-file" data-path="${md.utils.escapeHtml(href)}" data-label="${md.utils.escapeHtml(label)}">${md.utils.escapeHtml(label)}</span>`
+  }
   tokens[idx].attrSet('target', '_blank')
   tokens[idx].attrSet('rel', 'noreferrer')
   return renderLink(tokens, idx, options, env, self)
 }
+md.renderer.rules.file_reference_label = () => ''
 
-function CodeCopyButtons({ root, html }: { root: RefObject<HTMLDivElement | null>; html: string }) {
+function MarkdownControls({ root, html }: { root: RefObject<HTMLDivElement | null>; html: string }) {
   const [codeTargets, setCodeTargets] = useState<{ node: HTMLElement; text: string }[]>([])
+  const [fileTargets, setFileTargets] = useState<HTMLElement[]>([])
   useLayoutEffect(() => {
     setCodeTargets(Array.from(root.current!.querySelectorAll<HTMLElement>('.trk-code-copy'), node => ({
       node,
       text: node.closest('.trk-code-block')!.querySelector('code')!.textContent!,
     })))
+    const files = Array.from(root.current!.querySelectorAll<HTMLElement>('.trk-markdown-file'))
+    for (const node of files) node.replaceChildren()
+    setFileTargets(files)
   }, [root, html])
-  return codeTargets.map(({ node, text }, index) => createPortal(<CopyButton text={text} label="Copy code" />, node, String(index)))
+  return <>
+    {codeTargets.map(({ node, text }, index) => createPortal(<CopyButton text={text} label="Copy code" />, node, `code-${index}`))}
+    {fileTargets.map((node, index) => <FileReference key={`${node.dataset.path}:${index}`} path={node.dataset.path!} label={node.dataset.label!} target={node} />)}
+  </>
 }
 
 /** Agent prose rendered as markdown — element rhythm comes from `.trk-md`
@@ -133,6 +160,6 @@ export const Markdown = memo(function Markdown({ text, cursor = false }: { text:
 
   return <>
     <div ref={root} className="trk-md" dangerouslySetInnerHTML={{ __html: html }} />
-    <CodeCopyButtons root={root} html={html} />
+    <MarkdownControls root={root} html={html} />
   </>
 })

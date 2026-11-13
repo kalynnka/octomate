@@ -1,7 +1,7 @@
 """Preserve compaction history and checkpoints without copying conversation messages.
 
 Revision ID: a1a2d6fe9638
-Revises: 792e14ef4f19
+Revises: 90e954ec0b2d
 Create Date: 2026-11-11 15:16:45.131813
 
 """
@@ -15,7 +15,7 @@ import octomate.models.base
 
 # revision identifiers, used by Alembic.
 revision: str = "a1a2d6fe9638"
-down_revision: str | Sequence[str] | None = "792e14ef4f19"
+down_revision: str | Sequence[str] | None = "90e954ec0b2d"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

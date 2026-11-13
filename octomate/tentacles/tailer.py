@@ -12,6 +12,7 @@ from pydantic_ai.messages import (
     EnqueuedMessagesEvent,
     ModelMessage,
     ModelRequest,
+    TextContent,
     UserPromptPart,
 )
 
@@ -86,7 +87,7 @@ class NativeTurn:
         self,
         *,
         message_id: str,
-        text: str,
+        text: str | TextContent,
         timestamp: datetime,
         metadata: JsonObject | None = None,
     ) -> None:
@@ -104,7 +105,12 @@ class NativeTurn:
                 timestamp=timestamp,
             )
         request = ModelRequest(
-            parts=[UserPromptPart(content=text, timestamp=timestamp)],
+            parts=[
+                UserPromptPart(
+                    content=[text] if isinstance(text, TextContent) else text,
+                    timestamp=timestamp,
+                )
+            ],
             timestamp=timestamp,
             metadata=metadata,
         )

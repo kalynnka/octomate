@@ -10,7 +10,7 @@ from arcanus import Cursor, Page, Relation
 from arcanus.expression import Expression
 from arcanus.materia.sqlalchemy import aliased, noload, selectinload
 from pydantic import UUID7
-from pydantic_ai.messages import FilePart
+from pydantic_ai.messages import FilePart, TextContent, TextPart
 from sqlalchemy import ColumnElement, and_, or_, select
 
 from octomate.config.agents import AgentRouteModelName
@@ -27,6 +27,7 @@ from octomate.managers.base import Locks, Manager
 from octomate.managers.conversation import own_runs
 from octomate.managers.user import UserManager
 from octomate.nerve import Impulse, Nerve, UserTopic
+from octomate.schemas.annotations import MessageAnnotations
 from octomate.schemas.artifacts import Artifact
 from octomate.schemas.commands import CommandOutcome
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -1000,7 +1001,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         address: ChannelAddress,
         *,
         message_id: str,
-        text: str,
+        text: str | TextContent,
         sender: UserProfile,
         timestamp: datetime,
     ) -> ThreadMessage:
@@ -1024,7 +1025,18 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                 chat_type=address.chat_type,
                 user_id=sender.channel_user_id,
                 sender=sender,
-                segments=[TextSegment(data={"text": text})],
+                segments=[
+                    TextSegment(
+                        data={
+                            "text": text.content,
+                            "annotations": MessageAnnotations.model_validate(
+                                text.metadata["annotations"]
+                            ),
+                        }
+                    )
+                ]
+                if isinstance(text, TextContent)
+                else [TextSegment(data={"text": text})],
             ),
             happened_at=timestamp,
         )
@@ -1063,10 +1075,30 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             None,
         )
         if outbound is None:
+            segment = MarkdownSegment(data={"text": answer})
+            annotations = (
+                next(
+                    (
+                        part.provider_details["annotations"]
+                        for part in answered.parts
+                        if isinstance(part, TextPart)
+                        and part.content == answer
+                        and part.provider_details
+                        and "annotations" in part.provider_details
+                    ),
+                    None,
+                )
+                if answered is not None
+                else None
+            )
+            if annotations is not None:
+                segment.data["annotations"] = MessageAnnotations.model_validate(
+                    annotations
+                )
             outbound = await self.record_outbound(
                 thread,
                 agent_tentacle_id=address.channel_tentacle_id,
-                segments=[MarkdownSegment(data={"text": answer})],
+                segments=[segment],
                 sender=sender,
                 platform_message_id=run.id,
                 happened_at=answered.timestamp if answered is not None else None,

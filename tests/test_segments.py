@@ -3,6 +3,11 @@ or a channel with no native form for it."""
 
 from __future__ import annotations
 
+import json
+
+import pytest
+
+from octomate.schemas.annotations import FileReference, MessageAnnotations
 from octomate.schemas.segments import (
     AtData,
     AtSegment,
@@ -38,6 +43,25 @@ LARK_CARD: JsonObject = {
     "header": {"title": {"tag": "plain_text", "content": "Deploy?"}},
     "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": "v2.1"}}],
 }
+
+
+@pytest.mark.parametrize("segment_type", [TextSegment, MarkdownSegment])
+def test_harness_annotations_persist_without_becoming_tool_arguments(
+    segment_type: type[TextSegment] | type[MarkdownSegment],
+) -> None:
+    annotations = MessageAnnotations(
+        raw="IDE context followed by hello",
+        source="codex",
+        references=[FileReference(path="src/main.py", roles=["Active file"])],
+    )
+    segment = segment_type(data={"text": "hello", "annotations": annotations})
+
+    restored = segment_type.model_validate_json(segment.model_dump_json())
+
+    assert "annotations" in restored.data
+    assert restored.data["annotations"] == annotations
+    assert str(restored) == "hello"
+    assert '"annotations"' not in json.dumps(segment_type.model_json_schema())
 
 
 def test_every_segment_type_says_more_than_its_name() -> None:

@@ -1,0 +1,57 @@
+import { test, expect } from '@playwright/test'
+
+for (const width of [1280, 390]) {
+  test(`unavailable file links become inline code in human and assistant messages (${width}px)`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 950 })
+    const errors: string[] = []
+    const requests: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    page.on('console', message => { if (message.type() === 'error') errors.push(message.text()) })
+    page.on('request', request => { if (/local_dev\.py|settings\.py/.test(request.url())) requests.push(request.url()) })
+    await page.goto('/tests/browser/markdown.html')
+    await expect(page).toHaveTitle('Message rendering test')
+    await page.getByRole('button', { name: width === 1280 ? 'Light' : 'Dark', exact: true }).click()
+    await page.getByRole('button', { name: 'File references', exact: true }).click()
+    for (const id of ['file-user', 'file-assistant']) {
+      const message = page.locator(`#pm-${id}`)
+      const reference = message.getByRole('button', { name: 'Open file: scripts/local_dev.py', exact: true })
+      await expect(reference).toHaveCount(1)
+      await expect(message.locator('.trk-md')).toContainText('Check scripts/local_dev.py, then settings.')
+      await reference.press('Enter')
+      const unavailable = message.getByRole('button', { name: 'Unavailable file: scripts/local_dev.py', exact: true })
+      await expect(unavailable.locator('code')).toHaveText('scripts/local_dev.py')
+      const tooltip = page.getByRole('tooltip')
+      await expect(tooltip).toContainText('This file can’t be opened here yet. Ask the agent to show its contents or check the path.')
+      await expect(unavailable).toHaveAttribute('aria-describedby', (await tooltip.getAttribute('id'))!)
+      const bounds = (await tooltip.boundingBox())!
+      expect(bounds.x).toBeGreaterThanOrEqual(0)
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(width)
+      expect(bounds.y).toBeGreaterThanOrEqual(0)
+      expect(bounds.y + bounds.height).toBeLessThanOrEqual(950)
+      await page.screenshot({ path: `/private/tmp/trunkline-file-reference-${id}-${width}.png` })
+      await unavailable.press('Escape')
+      await expect(tooltip).toHaveCount(0)
+      await unavailable.hover()
+      await expect(tooltip).toBeVisible()
+      const absolute = message.getByRole('button', { name: 'Open file: /work/project/settings.py#L12', exact: true })
+      await absolute.click()
+      await expect(message.getByRole('button', { name: 'Unavailable file: /work/project/settings.py#L12', exact: true }).locator('code')).toHaveText('settings')
+      await expect(page.getByRole('tooltip')).toContainText('/work/project/settings.py#L12')
+      await expect(message.getByRole('link', { name: 'the website', exact: true })).toHaveAttribute('href', 'https://example.com/guide.md')
+      await expect(message.getByRole('link', { name: 'the website', exact: true })).toHaveAttribute('target', '_blank')
+      await expect(message.locator('pre code')).toHaveText('[file](./inside-code.py)\n')
+      await expect(message.locator('.trk-md > p > code')).toHaveText('literal.py')
+    }
+    await page.getByRole('button', { name: 'Continue references', exact: true }).click()
+    const assistant = page.locator('#pm-file-assistant')
+    await expect(assistant).toContainText('More context.')
+    await expect(assistant.getByRole('button', { name: 'Unavailable file: scripts/local_dev.py', exact: true }).locator('code')).toHaveText('scripts/local_dev.py')
+    await expect(assistant.getByRole('button', { name: 'Open file:', exact: false })).toHaveCount(0)
+    expect(page.url()).toContain('/tests/browser/markdown.html')
+    expect(page.context().pages()).toHaveLength(1)
+    expect(requests).toEqual([])
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await expect(page.locator('vite-error-overlay')).toHaveCount(0)
+    expect(errors).toEqual([])
+  })
+}

@@ -55,6 +55,7 @@ from pydantic_ai.messages import (
     PartEndEvent,
     PartStartEvent,
     RetryPromptPart,
+    TextContent,
     TextPart,
     TextPartDelta,
     ThinkingPart,
@@ -68,6 +69,7 @@ from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.usage import RequestUsage, RunUsage
 
 from octomate.events import RunActivityChangedEvent, StreamEvents
+from octomate.tentacles.claude.content import prompt_content
 from octomate.tentacles.claude.transcript import (
     TranscriptAssistantLine,
     TranscriptUserLine,
@@ -286,6 +288,9 @@ class ClaudeRunAccumulator:
     streaming_active: bool = False
 
     def begin(self, user_prompt: str | Sequence[UserContent] | None) -> None:
+        if isinstance(user_prompt, str):
+            content = prompt_content(user_prompt)
+            user_prompt = [content] if isinstance(content, TextContent) else content
         if user_prompt:
             self.messages.append(
                 ModelRequest(parts=[UserPromptPart(content=user_prompt)])
