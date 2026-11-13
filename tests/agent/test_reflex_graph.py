@@ -36,7 +36,7 @@ from octomate.managers.gateway import GatewayManager, OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
-from octomate.managers.workspaces.base import UnregisteredProjectError, tree_ref
+from octomate.managers.workspaces.base import UnregisteredProjectError
 from octomate.managers.workspaces.mirrors import run_git
 from octomate.nerve import Nerve
 from octomate.reflex import (
@@ -2434,7 +2434,7 @@ async def test_a_dismiss_releases_the_workspace_once_the_turn_is_saved(
     assert not workspace.path.exists()
     mirror = workspaces.mirrors.path(project)
     assert await run_git(
-        "show", f"{tree_ref(workspace.volume.id)}:work.md", cwd=mirror
+        "show", f"{workspace.volume.snapshot_ref}:work.md", cwd=mirror
     ) == ("done")
 
 

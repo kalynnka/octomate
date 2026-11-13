@@ -23,7 +23,7 @@ from octomate.schemas.awakes import SummonSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import AgentRouteKey, SummonDecision
 from octomate.schemas.user import UserProfile
-from octomate.schemas.volumes import TreeVolume
+from octomate.schemas.volumes import GitVolume
 from octomate.tentacles.channel import ChannelOutput
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
@@ -117,11 +117,11 @@ async def test_project_preparation_uses_the_sender_and_starting_ref(
         assert thread is not None
         assert thread.project_id is None
         async with async_session() as session:
-            assert await session.count(TreeVolume) == 0
+            assert await session.count(GitVolume) == 0
         return
     assert isinstance(await node.run(context), React)
     async with async_session() as session:
-        [volume] = await session.list(TreeVolume)
+        [volume] = await session.list(GitVolume)
     assert volume.owner_id == state.user_profile.user_id
     assert volume.thread_id == state.thread.id
     assert volume.project_id == state.thread.project_id

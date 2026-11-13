@@ -12,7 +12,7 @@ from octomate.managers.habitat import Invocation
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread
-from octomate.schemas.volumes import TreeVolume
+from octomate.schemas.volumes import GitVolume
 from octomate.tentacles.agent import AgentTentacle
 
 
@@ -57,7 +57,7 @@ async def invocation_for(
 
 async def volume_for(
     workspaces: WorkspaceManager, thread_id: UUID7, owner_id: UUID7
-) -> TreeVolume:
+) -> GitVolume:
     async with async_session() as session:
         thread = await session.get(Thread, thread_id)
         assert thread is not None

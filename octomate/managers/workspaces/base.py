@@ -34,26 +34,10 @@ from octomate.managers.workspaces.snapshots import SNAPSHOT_PREFIX, Snapshot
 from octomate.managers.workspaces.transfers import copy_ignored
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
-from octomate.schemas.volumes import CacheVolume, MemoryVolume, TreeVolume
+from octomate.schemas.volumes import GitVolume, Volume
 from octomate.telemetry import workspace_logfire
 
 logger = logging.getLogger(__name__)
-
-
-def tree_ref(volume_id: UUID7) -> str:
-    """Where a tree's saved work is kept in its project's mirror.
-
-    Outside `refs/heads/`, so the mirror does not grow a branch per tree. Keyed by
-    the tree's volume rather than its thread, so two users working in one shared
-    thread never save over each other. A fork receives only its own snapshot
-    alongside the project's public history.
-    """
-    return f"refs/octomate/trees/{volume_id}"
-
-
-def thread_branch(thread_id: uuid.UUID) -> str:
-    """The branch a thread's first fork starts on, its own."""
-    return f"octomate/thread-{thread_id}"
 
 
 class UnregisteredProjectError(PermissionError):
@@ -84,7 +68,7 @@ class TreeWorkspace(Workspace, ABC):
     harness resume a session it keyed by its working directory.
     """
 
-    volume: TreeVolume
+    volume: GitVolume
     root: Path = field(
         kw_only=True
     )  # The owner's host directory containing all volumes.
@@ -218,27 +202,33 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         """
         return self.volumes_dir / str(owner_id)
 
-    def path(self, volume: TreeVolume | MemoryVolume | CacheVolume) -> Path:
+    def path(self, volume: Volume) -> Path:
         """Where this volume's folder lives in its owner's root. Derived from the
         row's identity, never stored, so the store can change without a
         migration."""
-        return self.root(volume.owner_id) / volume.kind / str(volume.id)
+        return (
+            self.root(volume.owner_id) / (volume.usage or volume.kind) / str(volume.id)
+        )
 
     async def find(
         self, owner_id: UUID7, thread_id: UUID7, project_id: UUID7 | None
-    ) -> TreeVolume | None:
+    ) -> GitVolume | None:
         """This owner's tree for this thread and project, if one was ever opened."""
         async with async_session() as session:
-            return await session.one_or_none(
-                TreeVolume,
+            volume = await session.one_or_none(
+                Volume,
                 expressions=[
-                    TreeVolume["owner_id"] == owner_id,
-                    TreeVolume["thread_id"] == thread_id,
-                    TreeVolume["project_id"].is_(None)
+                    Volume["usage"] == "tree",
+                    Volume["owner_id"] == owner_id,
+                    Volume["thread_id"] == thread_id,
+                    Volume["project_id"].is_(None)
                     if project_id is None
-                    else TreeVolume["project_id"] == project_id,
+                    else Volume["project_id"] == project_id,
                 ],
             )
+        if volume is not None and not isinstance(volume, GitVolume):
+            raise TypeError("The workspace runtime requires a Git working volume")
+        return volume
 
     async def tree(
         self,
@@ -246,7 +236,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         thread_id: UUID7,
         project_id: UUID7 | None,
         ref: str | None = None,
-    ) -> TreeVolume:
+    ) -> GitVolume:
         """This owner's tree for this thread and project, its row written now when
         there is none, and stamped as used either way.
 
@@ -258,14 +248,16 @@ class WorkspaceManager(Manager, Locks[UUID7]):
             volume = await self.find(owner_id, thread_id, project_id)
             async with async_session() as session:
                 if volume is None:
-                    volume = TreeVolume(
+                    volume = GitVolume(
+                        usage="tree",
                         owner_id=owner_id,
                         thread_id=thread_id,
                         project_id=project_id,
                         base_ref=ref,
+                        ephemeral=project_id is None,
                     )
                 else:
-                    volume.last_used_at = datetime.now(UTC)
+                    volume.touch()
                 session.add(volume)
                 await session.commit()
             return volume
@@ -514,7 +506,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                     shutil.rmtree(staging)
                 try:
                     await self.mirrors.export(
-                        mirror, staging, tree_ref(workspace.volume.id)
+                        mirror, staging, workspace.volume.snapshot_ref
                     )
                     await self.inherit_remotes(mirror, staging)
                     await self.checkout(workspace.volume, staging)
@@ -545,7 +537,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         url = await run_git("remote", "get-url", "origin", cwd=mirror)
         await run_git("remote", "add", "origin", url.strip(), cwd=workspace)
 
-    async def checkout(self, volume: TreeVolume, workspace: Path) -> None:
+    async def checkout(self, volume: GitVolume, workspace: Path) -> None:
         """Put a freshly forked `workspace` back the way this tree's last turn left
         it, when the export includes its saved snapshot.
 
@@ -567,7 +559,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         competes with that.
         """
         thread_id, ref = volume.thread_id, volume.base_ref
-        saved = tree_ref(volume.id)
+        saved = volume.snapshot_ref
         # The fork's two endings, and the only place that knows which this is: a
         # thread starting, or one coming back to work a sweep reclaimed the tree
         # of. `resumed` is what separates them in a trace, and the snapshot it
@@ -601,7 +593,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                 await run_git(
                     "checkout",
                     "-b",
-                    thread_branch(thread_id),
+                    volume.branch,
                     start,
                     cwd=workspace,
                     isolated=True,
@@ -695,7 +687,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                 ):
                     await snapshot.save(
                         self.mirrors.path(workspace.project),
-                        tree_ref(workspace.volume.id),
+                        workspace.volume.snapshot_ref,
                     )
                     span.set_attribute("snapshot", snapshot.commit)
                 span.set_attribute("saved", True)
@@ -707,7 +699,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                     path,
                 )
 
-    async def saved(self, volume: TreeVolume) -> bool:
+    async def saved(self, volume: GitVolume) -> bool:
         """Whether this volume matches its canonical snapshot in the host mirror.
 
         Workspace markers are writable by the harness and cannot authorize
@@ -726,7 +718,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         mirror = self.mirrors.path(project)
         if not mirror.is_dir():
             return False
-        ref = tree_ref(volume.id)
+        ref = volume.snapshot_ref
         try:
             if not await run_git(
                 "for-each-ref", "--format=%(objectname)", ref, cwd=mirror, isolated=True
@@ -765,9 +757,12 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                 # Chat trees are their run's to throw away, and are never saved
                 # anywhere a resume could restore them from.
                 trees = await session.list(
-                    TreeVolume,
+                    GitVolume,
                     limit=None,
-                    expressions=[TreeVolume["project_id"].is_not(None)],
+                    expressions=[
+                        GitVolume["usage"] == "tree",
+                        GitVolume["project_id"].is_not(None),
+                    ],
                 )
             for volume in trees:
                 path = self.path(volume)
@@ -808,9 +803,9 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         if named:
             async with async_session() as session:
                 owned = await session.list(
-                    TreeVolume,
+                    Volume,
                     limit=None,
-                    expressions=[TreeVolume["id"].in_(list(named))],
+                    expressions=[Volume["id"].in_(list(named))],
                 )
             owned_ids = {volume.id for volume in owned}
             unowned += [path for key, path in named.items() if key not in owned_ids]
@@ -856,14 +851,14 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         landing = await self.resolve(thread.id, project, owner_id)
         mirror = self.mirrors.path(project)
         if origin is not None and await run_git(
-            "ls-remote", str(mirror), tree_ref(origin.id), isolated=True
+            "ls-remote", str(mirror), origin.snapshot_ref, isolated=True
         ):
-            saved = tree_ref(origin.id)
+            saved = origin.snapshot_ref
             subject = await run_git(
                 "show", "-s", "--format=%s", saved, cwd=mirror, isolated=True
             )
             filed = saved
-            if subject.strip() == f"{SNAPSHOT_PREFIX}{thread_branch(source.id)}":
+            if subject.strip() == f"{SNAPSHOT_PREFIX}{origin.branch}":
                 filed = await run_git(
                     *self.identity.commit_flags,
                     "commit-tree",
@@ -871,13 +866,13 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                     "-p",
                     f"{saved}^",
                     "-m",
-                    f"{SNAPSHOT_PREFIX}{thread_branch(thread.id)}",
+                    f"{SNAPSHOT_PREFIX}{landing.volume.branch}",
                     cwd=mirror,
                     isolated=True,
                 )
             await run_git(
                 "update-ref",
-                tree_ref(landing.volume.id),
+                landing.volume.snapshot_ref,
                 filed.strip(),
                 cwd=mirror,
                 isolated=True,
@@ -919,7 +914,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
             span.set_attribute("released", True)
             return True
 
-    async def release(self, volume: TreeVolume) -> None:
+    async def release(self, volume: GitVolume) -> None:
         """Give this tree's folder back to the disk, or nothing when it is already
         gone. The row stays, so the next fork lands at the same path.
 

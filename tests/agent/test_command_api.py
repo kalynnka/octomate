@@ -69,7 +69,7 @@ from octomate.schemas.runs import AgentRun
 from octomate.schemas.segments import MessageSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadCommand, ThreadKey
 from octomate.schemas.user import User, UserProfile
-from octomate.schemas.volumes import TreeVolume
+from octomate.schemas.volumes import GitVolume
 from octomate.tentacles.channel import ChannelOutput
 from octomate.tentacles.trunkline import TrunklineTentacle
 from octomate.types.permissions import PermissionMode
@@ -632,7 +632,7 @@ async def test_inspection_reads_only_the_requesting_owners_volume(
     )
     async with async_session() as session:
         before = {
-            volume.id: volume.last_used_at for volume in await session.list(TreeVolume)
+            volume.id: volume.last_used_at for volume in await session.list(GitVolume)
         }
     result = await discover(
         app=app,
@@ -644,7 +644,7 @@ async def test_inspection_reads_only_the_requesting_owners_volume(
     assert result.context.cwd == (workspace.path if workspace is not None else None)
     async with async_session() as session:
         assert {
-            volume.id: volume.last_used_at for volume in await session.list(TreeVolume)
+            volume.id: volume.last_used_at for volume in await session.list(GitVolume)
         } == before
     assert not app.workspaces.volumes_dir.exists()
 
@@ -1285,5 +1285,5 @@ async def test_foreign_agent_conversation_is_rejected_before_discovery_or_execut
     assert not agent.intents
     assert not app.workspaces.volumes_dir.exists()
     async with async_session() as session:
-        assert await session.count(TreeVolume) == 0
+        assert await session.count(GitVolume) == 0
         assert await session.count(ThreadCommand) == 0

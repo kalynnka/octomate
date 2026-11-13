@@ -1,17 +1,22 @@
 """The volume record: each kind round-trips as itself, and the table keeps one
 volume per owner where the model says there is one."""
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.project import Project
 from octomate.schemas.user import User
-from octomate.schemas.volumes import CacheVolume, MemoryVolume, TreeVolume, Volume
+from octomate.schemas.volumes import GitVolume, Volume
+from octomate.types.volumes import VolumeUsage
 from tests.support.managers import a_project, a_thread
 from tests.support.users import a_user
 
@@ -40,14 +45,19 @@ async def test_user_root_and_volume_paths_do_not_create_rows_or_directories(
     assert root == tmp_path / "volumes" / str(alice.id)
     assert root != manager.root(bob.id)
     volumes = (
-        TreeVolume(
-            owner_id=alice.id, thread_id=await a_thread(), project_id=project.id
+        GitVolume(
+            usage="tree",
+            owner_id=alice.id,
+            thread_id=await a_thread(),
+            project_id=project.id,
         ),
-        MemoryVolume(owner_id=alice.id),
-        CacheVolume(owner_id=alice.id),
+        Volume(usage="memory", owner_id=alice.id),
+        Volume(usage="cache", owner_id=alice.id),
     )
     for volume in volumes:
-        assert manager.path(volume) == root / volume.kind / str(volume.id)
+        assert manager.path(volume) == root / (volume.usage or volume.kind) / str(
+            volume.id
+        )
         assert not manager.path(volume).is_relative_to(manager.root(bob.id))
     async with async_session() as session:
         assert await session.count(Volume) == 0
@@ -57,15 +67,16 @@ async def test_user_root_and_volume_paths_do_not_create_rows_or_directories(
 async def test_each_kind_loads_back_as_itself(project: Project) -> None:
     owner = await a_user()
     thread_id = await a_thread()
-    tree = TreeVolume(
+    tree = GitVolume(
+        usage="tree",
         owner_id=owner.id,
         thread_id=thread_id,
         project_id=project.id,
         base_ref="refs/heads/main",
     )
-    chat_tree = TreeVolume(owner_id=owner.id, thread_id=thread_id)
-    memory = MemoryVolume(owner_id=owner.id)
-    cache = CacheVolume(owner_id=owner.id)
+    chat_tree = GitVolume(usage="tree", owner_id=owner.id, thread_id=thread_id)
+    memory = Volume(usage="memory", owner_id=owner.id)
+    cache = Volume(usage="cache", owner_id=owner.id)
     await add(tree, chat_tree, memory, cache)
 
     # A filtered read, not `session.get`: Arcanus answers `get` on the base with
@@ -77,29 +88,31 @@ async def test_each_kind_loads_back_as_itself(project: Project) -> None:
         ]
 
     assert [type(volume) for volume in loaded] == [
-        TreeVolume,
-        TreeVolume,
-        MemoryVolume,
-        CacheVolume,
+        GitVolume,
+        GitVolume,
+        Volume,
+        Volume,
     ]
-    assert isinstance(loaded[0], TreeVolume)
+    assert isinstance(loaded[0], GitVolume)
     assert (loaded[0].project_id, loaded[0].base_ref) == (
         project.id,
         "refs/heads/main",
     )
-    assert isinstance(loaded[1], TreeVolume)
+    assert isinstance(loaded[1], GitVolume)
     assert loaded[1].project_id is None
 
 
-@pytest.mark.parametrize("kind", [MemoryVolume, CacheVolume])
+@pytest.mark.parametrize("usage", ["memory", "cache"])
 async def test_one_memory_and_one_cache_per_owner(
-    in_memory_engine: AsyncEngine, kind: type[MemoryVolume | CacheVolume]
+    in_memory_engine: AsyncEngine, usage: VolumeUsage
 ) -> None:
     alice, bob = await a_user("alice"), await a_user("bob")
-    await add(kind(owner_id=alice.id), kind(owner_id=bob.id))
+    await add(
+        Volume(usage=usage, owner_id=alice.id), Volume(usage=usage, owner_id=bob.id)
+    )
 
     with pytest.raises(IntegrityError):
-        await add(kind(owner_id=alice.id))
+        await add(Volume(usage=usage, owner_id=alice.id))
 
 
 async def test_one_tree_per_owner_thread_and_project(project: Project) -> None:
@@ -113,7 +126,12 @@ async def test_one_tree_per_owner_thread_and_project(project: Project) -> None:
     # one tree in no project.
     await add(
         *(
-            TreeVolume(owner_id=owner.id, thread_id=thread_id, project_id=project_id)
+            GitVolume(
+                usage="tree",
+                owner_id=owner.id,
+                thread_id=thread_id,
+                project_id=project_id,
+            )
             for owner in (alice, bob)
             for project_id in (project.id, other.id, None)
         )
@@ -121,10 +139,15 @@ async def test_one_tree_per_owner_thread_and_project(project: Project) -> None:
 
     with pytest.raises(IntegrityError):
         await add(
-            TreeVolume(owner_id=alice.id, thread_id=thread_id, project_id=project.id)
+            GitVolume(
+                usage="tree",
+                owner_id=alice.id,
+                thread_id=thread_id,
+                project_id=project.id,
+            )
         )
     with pytest.raises(IntegrityError):
-        await add(TreeVolume(owner_id=alice.id, thread_id=thread_id))
+        await add(GitVolume(usage="tree", owner_id=alice.id, thread_id=thread_id))
 
 
 async def test_an_owner_with_volumes_cannot_be_deleted(
@@ -133,7 +156,7 @@ async def test_an_owner_with_volumes_cannot_be_deleted(
     """The row goes after its folder, and the owner after the row; a cascade
     would drop the row while the folder is still on disk."""
     owner: User = await a_user()
-    await add(MemoryVolume(owner_id=owner.id))
+    await add(Volume(usage="memory", owner_id=owner.id))
 
     async with async_session() as session:
         loaded = await session.get(User, owner.id)
@@ -141,3 +164,106 @@ async def test_an_owner_with_volumes_cannot_be_deleted(
         await session.delete(loaded)
         with pytest.raises(IntegrityError):
             await session.commit()
+
+
+async def test_unscoped_volumes_round_trip_without_a_directory(
+    in_memory_engine: AsyncEngine, tmp_path: Path
+) -> None:
+    owner = await a_user()
+    volumes = [
+        Volume(owner_id=owner.id),
+        GitVolume(owner_id=owner.id, base_ref="refs/tags/start"),
+        GitVolume(owner_id=owner.id),
+    ]
+    await add(*volumes)
+
+    async with async_session() as session:
+        loaded = await session.list(Volume, limit=None)
+
+    assert {volume.id for volume in loaded} == {volume.id for volume in volumes}
+    assert sum(isinstance(volume, GitVolume) for volume in loaded) == 2
+    assert all(volume.thread_id is None and volume.usage is None for volume in loaded)
+    assert not (tmp_path / ".octomate/volumes").exists()
+
+
+async def test_usage_uniqueness_applies_across_content_kinds(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    owner = await a_user()
+    await add(GitVolume(owner_id=owner.id, usage="memory"))
+    with pytest.raises(IntegrityError):
+        await add(Volume(owner_id=owner.id, usage="memory"))
+
+
+async def test_workspace_runtime_refuses_an_existing_plain_tree(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    owner = await a_user()
+    thread_id = await a_thread()
+    volume = Volume(owner_id=owner.id, usage="tree", thread_id=thread_id)
+    await add(volume)
+    manager = WorkspaceManager()
+    with pytest.raises(TypeError, match="requires a Git working volume"):
+        await manager.tree(owner.id, thread_id, None)
+    manager.path(volume).mkdir(parents=True)
+    assert await manager.report_unowned() == 0
+
+
+@pytest.mark.parametrize("field", ["thread_id", "project_id"])
+def test_only_working_tree_usage_accepts_associations(field: str) -> None:
+    with pytest.raises(ValidationError, match="Only working-tree volumes"):
+        Volume.model_validate({"owner_id": uuid7(), field: uuid7()})
+
+
+def test_working_tree_usage_requires_a_thread() -> None:
+    with pytest.raises(ValidationError, match="requires a thread"):
+        GitVolume(owner_id=uuid7(), usage="tree")
+
+
+async def test_database_rejects_associations_without_usage(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    owner = await a_user()
+    volume = GitVolume(owner_id=owner.id, usage="tree", thread_id=await a_thread())
+    await add(volume)
+    with pytest.raises(IntegrityError):
+        async with in_memory_engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE volumes SET usage = NULL WHERE id = :id"),
+                {"id": volume.id.hex},
+            )
+
+
+async def test_loaded_volume_owns_activity_and_git_reference_policy(
+    project: Project,
+) -> None:
+    owner = await a_user()
+    before = datetime(2025, 1, 1, tzinfo=UTC)
+    tree = GitVolume(
+        owner_id=owner.id,
+        usage="tree",
+        thread_id=await a_thread(),
+        project_id=project.id,
+        last_used_at=before,
+    )
+    independent = GitVolume(owner_id=owner.id, last_used_at=before)
+    await add(tree, independent)
+
+    async with async_session() as session:
+        loaded = await session.list(Volume, limit=None)
+        for volume in loaded:
+            assert isinstance(volume, GitVolume)
+            assert volume.snapshot_ref == f"refs/octomate/trees/{volume.id}"
+            expected = (
+                f"octomate/thread-{tree.thread_id}"
+                if volume.id == tree.id
+                else f"octomate/volume-{independent.id}"
+            )
+            assert volume.branch == expected
+            volume.touch()
+        await session.commit()
+
+    async with async_session() as session:
+        reloaded = await session.list(Volume, limit=None)
+    assert all(volume.last_used_at > before for volume in reloaded)
+    assert {volume.id for volume in reloaded} == {tree.id, independent.id}

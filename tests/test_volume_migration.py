@@ -1,0 +1,133 @@
+"""Logical volume migrations preserve data and refuse lossy conversions."""
+
+from importlib import import_module
+from pathlib import Path
+
+import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from sqlalchemy import text
+from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+from octomate.database import async_session
+from octomate.schemas.volumes import GitVolume, Volume
+from tests.support.managers import a_project, a_registry, a_thread
+from tests.support.users import a_user
+
+migration = import_module(
+    "octomate.migrations.versions.2026_11_13_0047-d5553eabfc92_separate_logical_volume_kind_and_usage"
+)
+
+
+async def test_legacy_volumes_preserve_data_and_paths_in_both_directions(
+    in_memory_engine: AsyncEngine, tmp_path: Path
+) -> None:
+    owner = await a_user()
+    thread_id = await a_thread()
+    project = a_project(tmp_path / "project")
+    await a_registry(project)
+    records = [
+        GitVolume(
+            owner_id=owner.id,
+            usage="tree",
+            thread_id=thread_id,
+            project_id=project.id,
+            base_ref="refs/heads/feature",
+        ),
+        GitVolume(owner_id=owner.id, usage="tree", thread_id=thread_id, ephemeral=True),
+        Volume(owner_id=owner.id, usage="cache"),
+        Volume(owner_id=owner.id, usage="memory"),
+    ]
+    async with async_session() as session:
+        session.add_all(records)
+        await session.commit()
+
+    def round_trip(connection: Connection) -> None:
+        before = (
+            connection.execute(text("SELECT * FROM volumes ORDER BY id"))
+            .mappings()
+            .all()
+        )
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+            legacy = (
+                connection.execute(text("SELECT * FROM volumes ORDER BY id"))
+                .mappings()
+                .all()
+            )
+            assert [row["kind"] for row in legacy] == [row["usage"] for row in before]
+            assert [(row["owner_id"], row["kind"], row["id"]) for row in legacy] == [
+                (row["owner_id"], row["usage"], row["id"]) for row in before
+            ]
+            migration.upgrade()
+        after = (
+            connection.execute(text("SELECT * FROM volumes ORDER BY id"))
+            .mappings()
+            .all()
+        )
+        assert before == after
+        assert connection.execute(text("PRAGMA foreign_key_check")).all() == []
+
+    async with in_memory_engine.begin() as connection:
+        await connection.run_sync(round_trip)
+
+
+@pytest.mark.parametrize(
+    "case", ["unscoped", "git_cache", "ephemeral_cache", "plain_tree"]
+)
+async def test_downgrade_rejects_loss_without_changing_data(
+    in_memory_engine: AsyncEngine, case: str
+) -> None:
+    owner = await a_user()
+    if case == "git_cache":
+        volume = GitVolume(owner_id=owner.id, usage="cache")
+    elif case == "plain_tree":
+        volume = Volume(owner_id=owner.id, usage="tree", thread_id=await a_thread())
+    else:
+        volume = Volume(
+            owner_id=owner.id,
+            usage="cache" if case == "ephemeral_cache" else None,
+            ephemeral=case == "ephemeral_cache",
+        )
+    async with async_session() as session:
+        session.add(volume)
+        await session.commit()
+
+    def reject(connection: Connection) -> None:
+        before = connection.execute(text("SELECT * FROM volumes")).mappings().all()
+        with (
+            Operations.context(MigrationContext.configure(connection)),
+            pytest.raises(ValueError, match="cannot be represented"),
+        ):
+            migration.downgrade()
+        assert (
+            connection.execute(text("SELECT * FROM volumes")).mappings().all() == before
+        )
+
+    async with in_memory_engine.begin() as connection:
+        await connection.run_sync(reject)
+
+
+async def test_upgrade_refuses_unknown_legacy_kinds_before_dropping_the_table(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    owner = await a_user()
+    async with async_session() as session:
+        session.add(Volume(owner_id=owner.id, usage="memory"))
+        await session.commit()
+
+    def reject(connection: Connection) -> None:
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+            connection.execute(text("UPDATE volumes SET kind = 'unknown'"))
+            before = connection.execute(text("SELECT * FROM volumes")).mappings().all()
+            with pytest.raises(ValueError, match="unknown legacy volume kind"):
+                migration.upgrade()
+            assert (
+                connection.execute(text("SELECT * FROM volumes")).mappings().all()
+                == before
+            )
+
+    async with in_memory_engine.begin() as connection:
+        await connection.run_sync(reject)

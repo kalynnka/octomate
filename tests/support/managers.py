@@ -56,7 +56,7 @@ from octomate.schemas.thread import (
 )
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.schemas.user import UserProfile
-from octomate.schemas.volumes import TreeVolume
+from octomate.schemas.volumes import GitVolume
 from octomate.types.deferred import DeferredBatchStatus, DeferredResponseMode
 from octomate.types.permissions import AgentPermissionMode
 
@@ -648,11 +648,11 @@ class RecordingWorkspaceManager(WorkspaceManager):
     def __init__(self) -> None:
         super().__init__()
         self.saved: list[UUID7] = []
-        self.volumes: dict[tuple[UUID7, UUID7, UUID7 | None], TreeVolume] = {}
+        self.volumes: dict[tuple[UUID7, UUID7, UUID7 | None], GitVolume] = {}
 
     async def find(
         self, owner_id: UUID7, thread_id: UUID7, project_id: UUID7 | None
-    ) -> TreeVolume | None:
+    ) -> GitVolume | None:
         return self.volumes.get((owner_id, thread_id, project_id))
 
     async def tree(
@@ -661,10 +661,11 @@ class RecordingWorkspaceManager(WorkspaceManager):
         thread_id: UUID7,
         project_id: UUID7 | None,
         ref: str | None = None,
-    ) -> TreeVolume:
+    ) -> GitVolume:
         key = (owner_id, thread_id, project_id)
         if key not in self.volumes:
-            self.volumes[key] = TreeVolume(
+            self.volumes[key] = GitVolume(
+                usage="tree",
                 owner_id=owner_id,
                 thread_id=thread_id,
                 project_id=project_id,

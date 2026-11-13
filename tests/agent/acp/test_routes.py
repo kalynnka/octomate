@@ -31,7 +31,7 @@ from octomate.nerve import ThreadTopic
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadMessage
-from octomate.schemas.volumes import TreeVolume
+from octomate.schemas.volumes import GitVolume
 from octomate.tentacles.acp.channel import AcpChannelTentacle
 from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
@@ -654,8 +654,8 @@ async def test_workspace_filter_distinguishes_one_checkout_from_project(
         assert isinstance(first["sessionId"], str)
         async with async_session() as session:
             volume = await session.one_or_none(
-                TreeVolume,
-                expressions=[TreeVolume["thread_id"] == UUID(first["sessionId"])],
+                GitVolume,
+                expressions=[GitVolume["thread_id"] == UUID(first["sessionId"])],
             )
         assert volume is not None
         checkout = app.workspaces.path(volume)
@@ -680,15 +680,15 @@ async def test_listing_sessions_does_not_create_or_touch_volumes(
         missing = new_session(socket)
         async with async_session() as session:
             volume = await session.one_or_none(
-                TreeVolume,
-                expressions=[TreeVolume["thread_id"] == UUID(missing)],
+                GitVolume,
+                expressions=[GitVolume["thread_id"] == UUID(missing)],
             )
             assert volume is not None
             await session.delete(volume)
             await session.commit()
             before = {
                 volume.id: volume.last_used_at
-                for volume in await session.list(TreeVolume)
+                for volume in await session.list(GitVolume)
             }
         listing = rpc(socket, "session/list", {})[-1]["result"]
         assert isinstance(listing, dict)
@@ -699,7 +699,7 @@ async def test_listing_sessions_does_not_create_or_touch_volumes(
         ]
     async with async_session() as session:
         assert {
-            volume.id: volume.last_used_at for volume in await session.list(TreeVolume)
+            volume.id: volume.last_used_at for volume in await session.list(GitVolume)
         } == before
     assert not list(app.workspaces.volumes_dir.glob("*/tree/*"))
 

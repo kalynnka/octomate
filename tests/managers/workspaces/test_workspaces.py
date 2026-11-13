@@ -42,7 +42,6 @@ from octomate.managers.workspaces.base import (
     UnregisteredProjectError,
     UnregisteredWorkspace,
     WorkspaceManager,
-    tree_ref,
 )
 from octomate.managers.workspaces.dependencies import install
 from octomate.managers.workspaces.mirrors import (
@@ -53,7 +52,7 @@ from octomate.managers.workspaces.mirrors import (
 from octomate.nerve import Nerve
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import User
-from octomate.schemas.volumes import TreeVolume
+from octomate.schemas.volumes import GitVolume
 from tests.support.dependencies import Probe, probing, runs
 from tests.support.managers import a_project, a_registry, a_thread
 from tests.support.users import a_user
@@ -148,11 +147,11 @@ async def a_project_mirror(manager: WorkspaceManager, files: dict[str, str]) -> 
     return await a_mirror(manager.mirrors.path(project), files)
 
 
-async def age(volume: TreeVolume, seconds: float) -> None:
+async def age(volume: GitVolume, seconds: float) -> None:
     """Move a tree's last use `seconds` into the past, as a quiet thread would."""
     async with async_session() as session:
         row = await session.one_or_none(
-            TreeVolume, expressions=[TreeVolume["id"] == volume.id]
+            GitVolume, expressions=[GitVolume["id"] == volume.id]
         )
         assert row is not None
         row.last_used_at = datetime.now(UTC) - timedelta(seconds=seconds)
@@ -280,9 +279,9 @@ async def test_two_users_in_one_thread_get_their_own_trees_and_refs(
     await a_turn(theirs.path, {"work.md": "theirs"})
     await manager.save(thread, other.id)
 
-    show = ("show", f"{tree_ref(mine.volume.id)}:work.md")
+    show = ("show", f"{mine.volume.snapshot_ref}:work.md")
     assert await run_git(*show, cwd=mirror) == "mine"
-    show = ("show", f"{tree_ref(theirs.volume.id)}:work.md")
+    show = ("show", f"{theirs.volume.snapshot_ref}:work.md")
     assert await run_git(*show, cwd=mirror) == "theirs"
 
 
@@ -338,7 +337,7 @@ async def test_releasing_keeps_the_row_so_the_tree_comes_back_at_its_path(
     assert reopened.path == opened.path
     async with async_session() as session:
         rows = await session.list(
-            TreeVolume, limit=None, expressions=[TreeVolume["thread_id"] == thread.id]
+            GitVolume, limit=None, expressions=[GitVolume["thread_id"] == thread.id]
         )
     assert [row.id for row in rows] == [opened.volume.id]
 
@@ -409,7 +408,7 @@ async def test_a_workspace_path_is_absolute_from_a_relative_directory(
     # started, and a tree is handed to processes started elsewhere.
     monkeypatch.chdir(tmp_path)
     manager = WorkspaceManager()
-    volume = TreeVolume(owner_id=uuid7(), thread_id=uuid7())
+    volume = GitVolume(usage="tree", owner_id=uuid7(), thread_id=uuid7())
 
     assert manager.path(volume) == (
         tmp_path / ".octomate/volumes" / str(volume.owner_id) / "tree" / str(volume.id)
@@ -447,9 +446,9 @@ async def a_turn(workspace: Path, files: dict[str, str]) -> None:
         (workspace / name).write_text(content)
 
 
-async def saved(mirror: Path, volume: TreeVolume) -> str:
+async def saved(mirror: Path, volume: GitVolume) -> str:
     """What the mirror is keeping for this tree, or "" when it keeps nothing."""
-    return (await run_git("ls-remote", str(mirror), tree_ref(volume.id))).strip()
+    return (await run_git("ls-remote", str(mirror), volume.snapshot_ref)).strip()
 
 
 async def test_a_turn_leaves_its_work_on_the_trees_ref(
@@ -462,7 +461,7 @@ async def test_a_turn_leaves_its_work_on_the_trees_ref(
 
     await manager.save(thread, owner.id)
 
-    ref = tree_ref(opened.volume.id)
+    ref = opened.volume.snapshot_ref
     assert await run_git("show", f"{ref}:work.md", cwd=mirror) == "done"
     # And the mirror's own branch is not where it landed.
     assert not (mirror / "work.md").exists()
@@ -634,7 +633,7 @@ async def test_a_resumed_thread_keeps_going_from_where_it_was(
     await a_turn(resumed, {"work.md": "second"})
     await manager.save(thread, owner.id)
 
-    ref = tree_ref(opened.volume.id)
+    ref = opened.volume.snapshot_ref
     assert await run_git("show", f"{ref}:work.md", cwd=mirror) == "second"
     # Two turns, two saves, a prune in between, and the repository the agent works
     # in has exactly the one commit its mirror was forked with.
@@ -687,7 +686,7 @@ async def test_peer_snapshot_objects_are_absent_even_by_hash(
     mine = await a_workspace(manager, thread, owner)
     await a_turn(await manager.materialize(mine, mirror), {"secret.md": "private"})
     await manager.save(thread, owner.id)
-    private = (await run_git("rev-parse", tree_ref(mine.volume.id), cwd=mirror)).strip()
+    private = (await run_git("rev-parse", mine.volume.snapshot_ref, cwd=mirror)).strip()
     blob = (await run_git("rev-parse", f"{private}:secret.md", cwd=mirror)).strip()
     if packed:
         await run_git("repack", "-ad", cwd=mirror)
@@ -707,7 +706,7 @@ async def test_peer_snapshot_objects_are_absent_even_by_hash(
     await a_turn(path, {"bob.md": "bob's private work"})
     await manager.save(thread, peer.owner_id)
     peer_snapshot = (
-        await run_git("rev-parse", tree_ref(peer.volume.id), cwd=mirror)
+        await run_git("rev-parse", peer.volume.snapshot_ref, cwd=mirror)
     ).strip()
     await manager.release(mine.volume)
 
@@ -747,7 +746,7 @@ async def test_mirror_replace_refs_cannot_export_private_history(
     mine = await a_workspace(manager, thread, owner)
     await a_turn(await manager.materialize(mine, mirror), {"secret.md": "private"})
     await manager.save(thread, owner.id)
-    private = (await run_git("rev-parse", tree_ref(mine.volume.id), cwd=mirror)).strip()
+    private = (await run_git("rev-parse", mine.volume.snapshot_ref, cwd=mirror)).strip()
     await run_git("replace", "HEAD", private, cwd=mirror)
 
     peer = await a_workspace(manager, thread, await a_user("bob"))
@@ -797,7 +796,7 @@ async def test_base_ref_cannot_request_a_peer_snapshot(
     mine = await a_workspace(manager, thread, owner)
     await a_turn(await manager.materialize(mine, mirror), {"secret.md": "private"})
     await manager.save(thread, owner.id)
-    ref = tree_ref(mine.volume.id)
+    ref = mine.volume.snapshot_ref
     if by_hash:
         ref = (await run_git("rev-parse", ref, cwd=mirror)).strip()
     peer = await a_workspace(manager, thread, await a_user("bob"), ref)
@@ -853,7 +852,7 @@ async def test_saving_never_runs_workspace_git_commands(
 
     assert not marker.exists()
     assert (
-        await run_git("show", f"{tree_ref(opened.volume.id)}:work.txt", cwd=mirror)
+        await run_git("show", f"{opened.volume.snapshot_ref}:work.txt", cwd=mirror)
         == "unfinished"
     )
 
@@ -931,7 +930,7 @@ async def test_capture_preserves_staged_files_and_records_symlinks_without_follo
 
     await manager.checkpoint(opened)
 
-    ref = tree_ref(opened.volume.id)
+    ref = opened.volume.snapshot_ref
     assert (path / ".git/index").read_bytes() == original_index
     assert await head(path) == original_head
     assert await run_git("show", f"{ref}:staged.local", cwd=mirror) == "staged"
@@ -961,7 +960,7 @@ async def test_capture_ignores_local_config_and_inherited_git_environment(
 
     assert not redirected.exists()
     assert (
-        await run_git("show", f"{tree_ref(opened.volume.id)}:work.txt", cwd=mirror)
+        await run_git("show", f"{opened.volume.snapshot_ref}:work.txt", cwd=mirror)
         == "unfinished"
     )
 
@@ -1100,7 +1099,7 @@ async def test_snapshots_carry_the_machine_identity(
 
     await manager.save(thread, owner.id)
 
-    ref = tree_ref(opened.volume.id)
+    ref = opened.volume.snapshot_ref
     author = await run_git("show", "-s", "--format=%an <%ae>", ref, cwd=mirror)
     assert author.strip() == "octomate <octomate@example.com>"
 
@@ -1120,7 +1119,7 @@ async def test_snapshots_carry_the_configured_identity(
 
     await manager.save(thread, owner.id)
 
-    ref = tree_ref(opened.volume.id)
+    ref = opened.volume.snapshot_ref
     author = await run_git("show", "-s", "--format=%an <%ae>", ref, cwd=mirror)
     assert author.strip() == "Lu Hui <lu@example.com>"
 
@@ -1161,7 +1160,7 @@ async def test_a_workspace_the_mirror_already_has_is_pruned(
 
     assert not workspace.exists()
     # And what it held is still the tree's, waiting in the mirror.
-    ref = tree_ref(opened.volume.id)
+    ref = opened.volume.snapshot_ref
     assert await run_git("show", f"{ref}:work.md", cwd=mirror) == "done"
 
 
@@ -1213,7 +1212,7 @@ async def test_a_dismissed_workspace_is_saved_and_then_released(
     assert await manager.dismiss(thread, owner.id)
 
     assert not workspace.exists()
-    ref = tree_ref(opened.volume.id)
+    ref = opened.volume.snapshot_ref
     assert await run_git("show", f"{ref}:work.md", cwd=mirror) == "done"
 
 
@@ -1526,7 +1525,7 @@ async def test_an_unregistered_chat_runs_in_a_temporary_directory(
 
     assert not workspace.path.exists()
     async with async_session() as session:
-        assert await session.list(TreeVolume, limit=None) == []
+        assert await session.list(GitVolume, limit=None) == []
 
 
 async def test_an_unregistered_sender_is_refused_a_project(
@@ -1559,7 +1558,7 @@ async def test_leaving_a_project_workspace_keeps_it(
     assert (workspace.path / "work.md").read_text() == "done"
     assert (workspace.path / "readme.md").read_text() == "hello"
     assert (
-        await run_git("show", f"{tree_ref(workspace.volume.id)}:work.md", cwd=mirror)
+        await run_git("show", f"{workspace.volume.snapshot_ref}:work.md", cwd=mirror)
         == "done"
     )
 

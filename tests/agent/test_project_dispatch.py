@@ -33,7 +33,6 @@ from octomate.config.agents import ClaudeCodeConfig, CodexConfig
 from octomate.config.workspaces import WorkspacesConfig
 from octomate.database import async_session
 from octomate.managers.workspaces import WorkspaceManager
-from octomate.managers.workspaces.base import tree_ref
 from octomate.managers.workspaces.mirrors import run_git
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread, ThreadKey
@@ -466,7 +465,7 @@ async def test_a_finished_turn_leaves_its_work_on_the_threads_ref(
     await octomate.workspaces.save(thread, OWNER_ID)
 
     mirror = mirror_of(octomate, "inky")
-    ref = tree_ref((await volume_for(octomate.workspaces, thread.id, OWNER_ID)).id)
+    ref = (await volume_for(octomate.workspaces, thread.id, OWNER_ID)).snapshot_ref
     assert await run_git("show", f"{ref}:work.md", cwd=mirror) == "done"
 
 
