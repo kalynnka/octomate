@@ -26,7 +26,8 @@ from pydantic_ai.messages import (
 from typing_extensions import TypedDict
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import (
+from octomate.config import ChannelConfig, ChannelStreamConfig
+from octomate.events import (
     GatewayEvent,
     RunErrorEvent,
     SubagentActivityStatus,
@@ -35,8 +36,6 @@ from octomate.capabilities.harness.events import (
     WireEvent,
     to_wire,
 )
-from octomate.capabilities.harness.react import ReactStreamEvent
-from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import AwakeSignal
 from octomate.schemas.conversation import ChannelAddress, ChatType
@@ -66,6 +65,7 @@ from octomate.tentacles.feelers.output import (
     TimelineState,
 )
 from octomate.tentacles.feelers.status import StatusFeeler
+from octomate.tentacles.stream import ReactStreamEvent
 
 NativeMessage = dict[str, str]
 

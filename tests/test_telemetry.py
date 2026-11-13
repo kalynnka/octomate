@@ -14,7 +14,6 @@ from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.agent import Agent
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment
 from octomate.telemetry import (
@@ -24,6 +23,7 @@ from octomate.telemetry import (
 )
 from octomate.tentacles.codex.telemetry import TracedCodexClient
 from octomate.tentacles.inkling import InklingTentacle
+from octomate.tentacles.inkling.agent import Agent
 from octomate.types.json import JsonObject
 from tests.support.managers import FakeConversationManager
 
@@ -112,7 +112,15 @@ async def test_inkling_native_model_spans_keep_the_driving_trace(
                 chat_id="test",
                 user_id="test",
             ),
-            thread_id=uuid7(),
+            conversation=await tentacle.resolve_conversation(
+                uuid7(),
+                conversation_address=ChannelAddress(
+                    channel_tentacle_id="test",
+                    chat_type="dm",
+                    chat_id="test",
+                    user_id="test",
+                ),
+            ),
             output_type=str,
         )
 

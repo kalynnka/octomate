@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ActionBatchEvent,
     GatewayEvent,
     RunErrorEvent,

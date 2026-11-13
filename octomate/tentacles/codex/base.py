@@ -16,6 +16,7 @@ import uuid
 from collections.abc import AsyncGenerator, Generator, Sequence
 from contextvars import Context, copy_context
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from functools import cached_property, partial
 from io import BytesIO
 from itertools import chain
@@ -51,6 +52,7 @@ from openai_codex.errors import MethodNotFoundError
 from openai_codex.generated.v2_all import (
     AgentMessageThreadItem,
     BaseBranchReviewTarget,
+    ContextCompactionThreadItem,
     GuardianApprovalReviewStatus,
     ItemCompletedNotification,
     ItemGuardianApprovalReviewCompletedNotification,
@@ -60,6 +62,7 @@ from openai_codex.generated.v2_all import (
     ReasoningSummary,
     ReasoningSummaryValue,
     ReviewTarget,
+    ThreadItem,
     ThreadTokenUsageUpdatedNotification,
     TurnStatus,
     UncommittedChangesReviewTarget,
@@ -72,7 +75,6 @@ from pydantic_ai import (
     AgentNativeTool,
     AgentRunResult,
     AgentRunResultEvent,
-    RunUsage,
     UsageLimits,
 )
 from pydantic_ai.agent.abstract import (
@@ -91,15 +93,13 @@ from rich.style import Style
 from starlette.datastructures import Headers
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.deferred import DeferredSuspender, Interjections
-from octomate.capabilities.harness.events import (
+from octomate.config.agents import Claim, CodexConfig
+from octomate.config.channels import TrunklineChannelConfig
+from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
     ArtifactAvailableEvent,
 )
-from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import Claim, CodexConfig
-from octomate.config.channels import TrunklineChannelConfig
 from octomate.mcp.server import OCTOMATE_MCP_PATH
 from octomate.nerve import Impulse
 from octomate.schemas.artifacts import (
@@ -153,8 +153,11 @@ from octomate.tentacles.codex.ink import CodexInk
 from octomate.tentacles.codex.schemas import CodexCommandDescriptor
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer
 from octomate.tentacles.codex.transcript import RolloutLine, rollout_line_adapter
+from octomate.tentacles.deferred import DeferredSuspender, Interjections
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
+from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
+from octomate.types.compactions import CompactionTrigger
 from octomate.types.json import JsonObject
 from octomate.types.permissions import PermissionMode
 from octomate.utils import drain_task
@@ -289,7 +292,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         self, conversation: Conversation, mode: str
     ) -> None:
         # A first run may have assigned its native ID since the caller loaded it.
-        current = await self.conversations.get(conversation.id, with_history=False)
+        current = await self.conversations.get(conversation.id, with_runs=False)
         if current.external_id is None:
             return
         await self.ink.set_permission_mode(
@@ -698,12 +701,16 @@ class CodexTentacle(AgentTentacle[str, None]):
         conversations = self.conversations
         async with conversations.lock(target.key):
             source = await conversations.get(source.id)
-            target = await conversations.get(target.id)
+            target = await conversations.get(target.id, with_runs=False)
             if source.agent_tentacle_id != self.id:
                 raise ValueError("Transcript imports require a native Codex source")
             if target.agent_tentacle_id != self.id or source.id == target.id:
                 raise ValueError("Transcript imports require a separate Codex target")
-            if target.messages or target.external_id or target.transcript_file_id:
+            if (
+                target.external_id
+                or target.transcript_file_id
+                or await conversations.has_history(target.id)
+            ):
                 raise ValueError("Transcript imports require an empty target")
             if source.transcript_file_id is None or source.external_id is None:
                 raise ValueError("Native Codex history has not been uploaded")
@@ -931,8 +938,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                     review=review,
                     approval=approval,
                     conversation_address=context.address,
-                    thread_id=conversation.thread_id,
-                    conversation_id=conversation.id,
+                    conversation=conversation,
                     run_name=descriptor.name,
                     model=self.models[selected_model]
                     if selected_model is not None
@@ -1093,6 +1099,16 @@ class CodexTentacle(AgentTentacle[str, None]):
                         if completed.error
                         else f"Codex compaction {completed.status.value}.",
                     )
+                await self.capture_compactions(
+                    conversation,
+                    thread_id=thread_id,
+                    turn_id=completed.id,
+                    items=completed.items,
+                    trigger="manual",
+                    happened_at=datetime.fromtimestamp(completed.completed_at, UTC)
+                    if completed.completed_at is not None
+                    else None,
+                )
                 return CommandResult(
                     segments=[
                         TextSegment(data={"text": "Conversation context compacted."})
@@ -1118,6 +1134,44 @@ class CodexTentacle(AgentTentacle[str, None]):
         text = f"Planning mode {'disabled' if argument == 'off' else 'enabled'} for subsequent turns."
         return CommandResult(segments=[TextSegment(data={"text": text})])
 
+    async def capture_compactions(
+        self,
+        conversation: Conversation,
+        *,
+        thread_id: str,
+        turn_id: str,
+        items: list[ThreadItem],
+        trigger: CompactionTrigger,
+        happened_at: datetime | None,
+    ) -> None:
+        """Record completed identities, then enrich them from their matching rollout."""
+        for entry in items:
+            item = entry.root
+            if not isinstance(item, ContextCompactionThreadItem):
+                continue
+            if conversation.external_id != thread_id:
+                raise ValueError("Compaction belongs to a different native session")
+            await self.conversations.record_driven_compaction(
+                conversation,
+                native_session_id=thread_id,
+                native_compaction_id=item.id,
+                trigger=trigger,
+                happened_at=happened_at,
+            )
+            messages = await self.ink.compaction_messages(thread_id, turn_id, item.id)
+            if messages:
+                await self.conversations.record_driven_compaction(
+                    conversation,
+                    native_session_id=thread_id,
+                    native_compaction_id=item.id,
+                    trigger=trigger,
+                    happened_at=happened_at,
+                    messages=messages,
+                )
+                await self.conversations.record_native_memberships(
+                    conversation, thread_id
+                )
+
     async def token_usage_status(self, conversation: Conversation | None) -> str:
         """Render the latest recorded native usage snapshot for this Codex session.
 
@@ -1127,10 +1181,10 @@ class CodexTentacle(AgentTentacle[str, None]):
         """
         if conversation is None or conversation.external_id is None:
             return "Token usage: not reported yet."
-        conversation = await self.conversations.get(conversation.id)
+        messages = await self.conversations.history(conversation.id)
         events = (
             event
-            for message in reversed(conversation.messages)
+            for message in reversed(messages)
             if (metadata := message.metadata) is not None
             and metadata.get("source") == CODEX_METADATA_SOURCE
             and isinstance(recorded := metadata.get("events"), list)
@@ -1649,14 +1703,13 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        conversation: Conversation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
@@ -1667,8 +1720,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         approval: ItemGuardianApprovalReviewCompletedNotification | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
         sdk_model = model.model_name if isinstance(model, Model) else model
-        if thread_id is None:
-            raise ValueError("agent run requires a thread_id to own its conversation")
+        self.check_conversation(conversation)
         if not self.ink.running:
             raise RuntimeError("CodexTentacle.run requires the tentacle to be entered")
         if output_type is DeferredToolRequests or (
@@ -1679,11 +1731,6 @@ class CodexTentacle(AgentTentacle[str, None]):
                 "CodexTentacle does not support DeferredToolRequests in output_type"
             )
 
-        conversation = await self.resolve_conversation(
-            thread_id,
-            conversation_address=conversation_address,
-            conversation_id=conversation_id,
-        )
         if deferred_tool_results is not None:
             # A resumed run. The app-server takes no tool result back, so the graph's
             # resolution of the deferral is this turn's prompt, ledgered as one.
@@ -1776,7 +1823,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 self.conversation_locks.hold(str(conversation.id))
             )
             conversation = await self.conversations.get(
-                conversation.id, with_history=False
+                conversation.id, with_runs=False
             )
             effort = await self.resolve_effort(
                 conversation, model=sdk_model, effort=effort
@@ -1853,6 +1900,16 @@ class CodexTentacle(AgentTentacle[str, None]):
                 review=review,
             )
             resources.enter_context(self.track_turn(conversation.id, turn))
+            completed_items: list[ThreadItem] = []
+            resources.push_async_callback(
+                self.capture_compactions,
+                conversation,
+                thread_id=codex_thread_id,
+                turn_id=turn.id,
+                items=completed_items,
+                trigger="auto",
+                happened_at=None,
+            )
             # Closed with the turn's other resources, so its reader never outlives it.
             notifications = await resources.enter_async_context(
                 contextlib.aclosing(interjections.around(turn.stream()))
@@ -1865,6 +1922,18 @@ class CodexTentacle(AgentTentacle[str, None]):
                     # A batch the turn paused on, or its answer, for whoever draws the run.
                     yield notification
                     continue
+                if isinstance(notification.payload, ItemCompletedNotification):
+                    completed_items.append(notification.payload.item)
+                    await self.capture_compactions(
+                        conversation,
+                        thread_id=notification.payload.thread_id,
+                        turn_id=notification.payload.turn_id,
+                        items=[notification.payload.item],
+                        trigger="auto",
+                        happened_at=datetime.fromtimestamp(
+                            notification.payload.completed_at_ms / 1000, UTC
+                        ),
+                    )
                 artifacts = await self.capture_html(
                     notification,
                     workspace=workspace.path,
@@ -1941,6 +2010,13 @@ class CodexTentacle(AgentTentacle[str, None]):
             external_id=codex_thread_id,
             native_turn_id=accumulator.turn_id,
         )
+        if any(
+            isinstance(item.root, ContextCompactionThreadItem)
+            for item in completed_items
+        ):
+            await self.conversations.record_native_memberships(
+                conversation, codex_thread_id
+            )
         if artifact_messages:
             assert recorded_run is not None
             responses = {
@@ -2161,7 +2237,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        conversation: Conversation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -2170,13 +2246,11 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -2193,7 +2267,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        conversation: Conversation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -2202,13 +2276,11 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -2224,7 +2296,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        conversation: Conversation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -2233,13 +2305,11 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -2254,14 +2324,13 @@ class CodexTentacle(AgentTentacle[str, None]):
             self._iter_events(
                 user_prompt,
                 conversation_address=conversation_address,
-                thread_id=thread_id,
+                conversation=conversation,
                 source_thread_address=source_thread_address,
                 source_thread_message_ids=source_thread_message_ids,
                 run_name=run_name,
                 output_type=output_type,
                 model=model,
                 effort=effort,
-                conversation_id=conversation_id,
                 interactive=interactive,
                 instructions=instructions,
                 capabilities=capabilities,
@@ -2283,7 +2352,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        conversation: Conversation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -2292,13 +2361,11 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -2314,7 +2381,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        conversation: Conversation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -2323,13 +2390,11 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -2344,7 +2409,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        conversation: Conversation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -2353,13 +2418,11 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -2373,14 +2436,13 @@ class CodexTentacle(AgentTentacle[str, None]):
                 self._iter_events(
                     user_prompt,
                     conversation_address=conversation_address,
-                    thread_id=thread_id,
+                    conversation=conversation,
                     source_thread_address=source_thread_address,
                     source_thread_message_ids=source_thread_message_ids,
                     run_name=run_name,
                     output_type=output_type,
                     model=model,
                     effort=effort,
-                    conversation_id=conversation_id,
                     interactive=interactive,
                     instructions=instructions,
                     capabilities=capabilities,

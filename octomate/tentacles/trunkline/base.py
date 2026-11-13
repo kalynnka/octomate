@@ -32,11 +32,11 @@ from starlette.responses import Response
 from starlette.types import Scope
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.events import (
+from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
+from octomate.events import (
     WireEvent,
     wire_event_adapter,
 )
-from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
 from octomate.nerve import EventTopic
 from octomate.schemas.awakes import StillAwake, UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress
@@ -441,7 +441,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             if agent_id is None:
                 raise ValueError("Select a route before setting its effort")
             conversation = await self.octomate.conversations.ensure(
-                thread.id, agent_tentacle_id=agent_id, with_history=False
+                thread.id, agent_tentacle_id=agent_id, with_runs=False
             )
             effort = await self.octomate.agents[agent_id].resolve_effort(
                 conversation, model=thread.active_model, effort=directive.effort

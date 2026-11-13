@@ -12,7 +12,7 @@ from pydantic import TypeAdapter, ValidationError
 from pydantic_ai.messages import PartDeltaEvent, TextPartDelta
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.events import RunEndedEvent, RunStartedEvent
+from octomate.events import RunEndedEvent, RunStartedEvent
 from octomate.fibers import (
     FIBER_BUFFER,
     MAX_FRAME_BYTES,

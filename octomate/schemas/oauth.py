@@ -10,8 +10,7 @@ from datetime import UTC, datetime
 from os import urandom
 from typing import Annotated, Literal
 
-from arcanus import BaseTransmuter
-from arcanus.base import Identity
+from arcanus import BaseTransmuter, Identity
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from mcp.shared.auth import OAuthClientInformationFull, OAuthMetadata
 from pydantic import (

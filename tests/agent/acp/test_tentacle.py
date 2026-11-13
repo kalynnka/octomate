@@ -15,14 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import (
+from octomate.config import AcpAgentConfig, OctomateConfig
+from octomate.database import async_session
+from octomate.events import (
     ActionBatchEvent,
     ReflexAsleepEvent,
     RunEndedEvent,
     RunStartedEvent,
 )
-from octomate.config import AcpAgentConfig, OctomateConfig
-from octomate.database import async_session
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.nerve import ThreadTopic
 from octomate.reflex.state import ReflexResult
@@ -145,7 +145,10 @@ async def test_custom_harness_discovers_selects_and_reopens(
             result = await agent.run(
                 "hello",
                 conversation_address=thread.key.address(sender.channel_user_id),
-                thread_id=thread.id,
+                conversation=await agent.resolve_conversation(
+                    thread.id,
+                    conversation_address=thread.key.address(sender.channel_user_id),
+                ),
                 model=model,
                 interactive=False,
             )
@@ -233,7 +236,10 @@ async def test_harness_efforts_follow_model_and_reach_new_and_loaded_sessions(
             result = await agent.run(
                 "hello",
                 conversation_address=thread.key.address(sender.channel_user_id),
-                thread_id=thread.id,
+                conversation=await agent.resolve_conversation(
+                    thread.id,
+                    conversation_address=thread.key.address(sender.channel_user_id),
+                ),
                 model=model,
                 effort=explicit,
                 interactive=False,
@@ -265,7 +271,10 @@ async def test_harness_efforts_follow_model_and_reach_new_and_loaded_sessions(
             await agent.run(
                 "hello",
                 conversation_address=thread.key.address(sender.channel_user_id),
-                thread_id=thread.id,
+                conversation=await agent.resolve_conversation(
+                    thread.id,
+                    conversation_address=thread.key.address(sender.channel_user_id),
+                ),
                 model="fast",
                 effort="max",
                 interactive=False,
@@ -377,13 +386,19 @@ async def test_harness_without_http_mcp(
             with pytest.raises(ValueError, match="must support HTTP MCP"):
                 await agent.run(
                     "hello",
-                    thread_id=thread.id,
+                    conversation=await agent.resolve_conversation(
+                        thread.id,
+                        conversation_address=thread.key.address(sender.channel_user_id),
+                    ),
                     conversation_address=thread.key.address(sender.channel_user_id),
                 )
             return
         result = await agent.run(
             "hello",
-            thread_id=thread.id,
+            conversation=await agent.resolve_conversation(
+                thread.id,
+                conversation_address=thread.key.address(sender.channel_user_id),
+            ),
             conversation_address=thread.key.address(sender.channel_user_id),
             interactive=False,
         )
@@ -540,7 +555,10 @@ async def test_direct_runs_reopen_the_conversation_without_dispatch(
     for prompt in ("first", "second"):
         result = await tentacle.run(
             prompt,
-            thread_id=thread.id,
+            conversation=await tentacle.resolve_conversation(
+                thread.id,
+                conversation_address=thread.key.address(sender.channel_user_id),
+            ),
             conversation_address=thread.key.address(sender.channel_user_id),
             interactive=False,
         )
@@ -627,9 +645,12 @@ async def test_conversation_cannot_cross_threads(
     with pytest.raises(ValueError, match="does not belong"):
         await tentacle.run(
             "wrong thread",
-            thread_id=thread.id,
+            conversation=await tentacle.resolve_conversation(
+                thread.id,
+                conversation_address=thread.key.address(sender.channel_user_id),
+                conversation_id=conversation.id,
+            ),
             conversation_address=thread.key.address(sender.channel_user_id),
-            conversation_id=conversation.id,
         )
     assert not await AsyncPath(adapter_environment["ACP_TEST_LOG"]).exists()
 
@@ -650,7 +671,10 @@ async def test_provider_failure_preserves_partial_run_and_revokes_key(
     with pytest.raises(acp.RequestError, match="provider failed"):
         await tentacle.run(
             "fail after a partial answer",
-            thread_id=thread.id,
+            conversation=await tentacle.resolve_conversation(
+                thread.id,
+                conversation_address=thread.key.address(sender.channel_user_id),
+            ),
             conversation_address=thread.key.address(sender.channel_user_id),
             interactive=False,
         )

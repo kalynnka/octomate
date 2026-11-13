@@ -10,6 +10,7 @@ from claude_agent_sdk import ClaudeAgentOptions
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from uuid_utils.compat import uuid7
 
+from octomate.managers.conversation import ConversationManager
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
@@ -90,8 +91,11 @@ async def test_plan_updates_live_permissions_and_persists_for_next_run(
     await agent.run(
         "continue",
         conversation_address=context.address,
-        conversation_id=conversation.id,
-        thread_id=conversation.thread_id,
+        conversation=await agent.resolve_conversation(
+            conversation.thread_id,
+            conversation_address=context.address,
+            conversation_id=conversation.id,
+        ),
     )
     assert options[-1].permission_mode == mode
 
@@ -183,9 +187,9 @@ async def test_fork_copies_sdk_transcript_and_resumes_from_destination(
     assert source.external_id == session_id
     assert copied.permission_mode == source.permission_mode == "plan"
     assert copied.effort == source.effort == "max"
-    assert [message.parts for message in copied.messages] == [
-        message.parts for message in source.messages
-    ]
+    assert [
+        message.parts for message in (await ConversationManager().history(copied.id))
+    ] == [message.parts for message in (await ConversationManager().history(source.id))]
     target_cwd = agent.workspaces.open(target.id, None).path
     assert target_cwd != context.cwd
     fork_file = transcripts_dir(target_cwd) / f"{copied.external_id}.jsonl"
@@ -205,8 +209,13 @@ async def test_fork_copies_sdk_transcript_and_resumes_from_destination(
         conversation_address=replace(
             context.address, channel_thread_id=target.channel_thread_id
         ),
-        conversation_id=copied.id,
-        thread_id=target.id,
+        conversation=await agent.resolve_conversation(
+            target.id,
+            conversation_address=replace(
+                context.address, channel_thread_id=target.channel_thread_id
+            ),
+            conversation_id=copied.id,
+        ),
         model=context.model,
     )
     assert options[-1].resume == copied.external_id

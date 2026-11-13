@@ -18,10 +18,11 @@ from pydantic_ai_harness.step_persistence.conversations import conversation_text
 from pydantic_ai_harness.step_persistence.naming import NamingResult
 
 from octomate import Octomate
-from octomate.capabilities.ask import AskCapability
+from octomate.managers.conversation import ConversationManager
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling import base as inkling_base
+from octomate.tentacles.inkling.capabilities.ask import AskCapability
 
 pytestmark = pytest.mark.usefixtures("in_memory_engine")
 
@@ -103,7 +104,9 @@ async def test_group_naming_only_runs_inside_a_work_subthread(
     await tentacle.run(
         "Investigate the gateway",
         conversation_address=address,
-        thread_id=thread.id,
+        conversation=await tentacle.resolve_conversation(
+            thread.id, conversation_address=address
+        ),
         output_type=str,
     )
     assert len(naming_requests) == int(subthread)
@@ -132,7 +135,9 @@ async def test_new_prompts_name_and_revise_the_session_and_thread(
     first = await tentacle.run(
         "Investigate the gateway",
         conversation_address=ADDRESS,
-        thread_id=thread_id,
+        conversation=await tentacle.resolve_conversation(
+            thread_id, conversation_address=ADDRESS
+        ),
         output_type=str,
     )
     conversation = await octomate.conversations.ensure(
@@ -145,14 +150,16 @@ async def test_new_prompts_name_and_revise_the_session_and_thread(
     assert "user: Investigate the gateway" in naming_requests[0]
     assert "assistant: Expose MCP tools." not in naming_requests[0]
     assert len(conversation.runs) == 1
-    assert conversation_text(conversation.messages) == conversation_text(
-        first.all_messages()
-    )
+    assert conversation_text(
+        await ConversationManager().history(conversation.id)
+    ) == conversation_text(first.all_messages())
 
     await tentacle.run(
         "Old context " * 300 + "Now fix session naming",
         conversation_address=ADDRESS,
-        thread_id=thread_id,
+        conversation=await tentacle.resolve_conversation(
+            thread_id, conversation_address=ADDRESS
+        ),
         output_type=str,
     )
     revised = await octomate.conversations.get(conversation.id)
@@ -183,7 +190,9 @@ async def test_naming_model_override_and_active_model_default(
     await tentacle.run(
         "Investigate this",
         conversation_address=ADDRESS,
-        thread_id=(await tentacle.threads.ensure(ADDRESS)).id,
+        conversation=await tentacle.resolve_conversation(
+            (await tentacle.threads.ensure(ADDRESS)).id, conversation_address=ADDRESS
+        ),
         model=TestModel() if configured else naming_model,
         output_type=str,
     )
@@ -227,7 +236,9 @@ async def test_naming_and_foreground_stream_run_concurrently(
     await tentacle.run(
         "Prior question",
         conversation_address=ADDRESS,
-        thread_id=thread_id,
+        conversation=await tentacle.resolve_conversation(
+            thread_id, conversation_address=ADDRESS
+        ),
         output_type=str,
     )
     naming_requests.clear()
@@ -237,7 +248,9 @@ async def test_naming_and_foreground_stream_run_concurrently(
         async with tentacle.run_stream_events(
             "New question",
             conversation_address=ADDRESS,
-            thread_id=thread_id,
+            conversation=await tentacle.resolve_conversation(
+                thread_id, conversation_address=ADDRESS
+            ),
             model=FunctionModel(stream_function=reply),
             output_type=str,
         ) as stream:
@@ -285,8 +298,9 @@ async def test_child_name_does_not_replace_the_parent_thread_title(
     await tentacle.subagent_run(
         "Investigate the gateway",
         conversation_address=ADDRESS,
-        thread_id=thread_id,
-        conversation_id=child.id,
+        conversation=await tentacle.resolve_conversation(
+            thread_id, conversation_address=ADDRESS, conversation_id=child.id
+        ),
     )
     named = await octomate.conversations.get(child.id)
     assert named.name == "Plan gateway MCP exposure"
@@ -314,7 +328,12 @@ async def test_naming_failure_preserves_the_reply_and_existing_name(
     await octomate.conversations.set_name(conversation, "Existing name")
     monkeypatch.setattr(inkling_base, "generate_name", AsyncMock(side_effect=error))
     result = await tentacle.run(
-        "Continue", conversation_address=ADDRESS, thread_id=thread_id, output_type=str
+        "Continue",
+        conversation_address=ADDRESS,
+        conversation=await tentacle.resolve_conversation(
+            thread_id, conversation_address=ADDRESS
+        ),
+        output_type=str,
     )
     assert result.output == "Expose MCP tools."
     saved = await octomate.conversations.get(conversation.id)
@@ -349,7 +368,10 @@ async def test_cancelling_a_run_cleans_up_its_naming_task(
         tentacle.run(
             "Continue",
             conversation_address=ADDRESS,
-            thread_id=(await tentacle.threads.ensure(ADDRESS)).id,
+            conversation=await tentacle.resolve_conversation(
+                (await tentacle.threads.ensure(ADDRESS)).id,
+                conversation_address=ADDRESS,
+            ),
             output_type=str,
         )
     )
@@ -378,13 +400,17 @@ async def test_a_prompt_names_a_deferred_turn_but_its_resume_does_not(
     result = await tentacle.run(
         "Ask before proceeding",
         conversation_address=ADDRESS,
-        thread_id=thread_id,
+        conversation=await tentacle.resolve_conversation(
+            thread_id, conversation_address=ADDRESS
+        ),
     )
     assert isinstance(result.output, DeferredToolRequests)
     assert len(naming_requests) == 1
     await tentacle.run(
         conversation_address=ADDRESS,
-        thread_id=thread_id,
+        conversation=await tentacle.resolve_conversation(
+            thread_id, conversation_address=ADDRESS
+        ),
         deferred_tool_results=DeferredToolResults(
             calls={call.tool_call_id: "Proceed" for call in result.output.calls}
         ),

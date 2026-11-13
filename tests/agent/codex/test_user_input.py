@@ -10,15 +10,15 @@ from openai_codex.models import Notification
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.harness.deferred import Interjections
-from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.config.agents import CodexConfig
 from octomate.config.channels import TrunklineChannelConfig
+from octomate.events import ActionBatchEvent
 from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex.base import CodexBridgeContext
+from octomate.tentacles.deferred import Interjections
 from octomate.tentacles.trunkline import TrunklineTentacle
 from octomate.types.json import JsonObject
 

@@ -43,6 +43,7 @@ from openai_codex.generated.v2_all import (
     TurnCompletedNotification,
     TurnPlanUpdatedNotification,
     TurnStatus,
+    UserMessageThreadItem,
     WebSearchThreadItem,
 )
 from openai_codex.models import Notification, UnknownNotification
@@ -78,7 +79,7 @@ from pydantic_ai.messages import ModelRequest as PydanticModelRequest
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.usage import RequestUsage, RunUsage
 
-from octomate.capabilities.harness.events import RunActivityChangedEvent, StreamEvents
+from octomate.events import RunActivityChangedEvent, StreamEvents
 from octomate.tentacles.codex.content import answer_part, prompt_content
 from octomate.tentacles.codex.html import visualization_text
 from octomate.types.json import JsonObject, JsonValue
@@ -652,6 +653,20 @@ class CodexRunAccumulator:
             )
         elif isinstance(item, WebSearchThreadItem):
             yield from self.complete_native_tool(item, event, outcome="success")
+        elif isinstance(item, UserMessageThreadItem):
+            prompts = [
+                message
+                for message in self.messages
+                if isinstance(message, PydanticModelRequest)
+            ]
+            if len(prompts) == 1 and not (prompts[0].metadata or {}).get(
+                "native_item_ids"
+            ):
+                prompts[0].metadata = {
+                    **(prompts[0].metadata or {}),
+                    "native_item_ids": [item.id],
+                }
+            self.pending_events.append(event)
         else:
             # User-message echoes and any other non-tool item: preserve the raw event
             # in metadata, but don't fabricate a tool call/return — they are messages.

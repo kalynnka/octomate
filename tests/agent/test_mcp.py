@@ -39,7 +39,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.agent import Agent
 from octomate.config.base import OctomateConfig
 from octomate.database import async_session
 from octomate.managers.gateway import OctomateSession
@@ -69,6 +68,7 @@ from octomate.schemas.oauth import (
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.inkling import InklingTentacle
+from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.base import InklingOutput
 from octomate.tentacles.inkling.mcp import OctomateTools
 from octomate.tentacles.mcp import (
@@ -469,8 +469,11 @@ async def test_a_run_mounts_the_tentacles_for_its_octomate_session(
         inkling.run_stream_events(
             "hello",
             conversation_address=address,
-            thread_id=thread_id,
-            conversation_id=session.conversation_id,
+            conversation=await inkling.resolve_conversation(
+                thread_id,
+                conversation_address=address,
+                conversation_id=session.conversation_id,
+            ),
         ) as stream,
     ):
         async for _event in stream:

@@ -71,6 +71,7 @@ Always generate UUIDs with `uuid7` from `uuid_utils.compat`, including in tests.
 4. Every migration is produced by `uv run alembic revision --autogenerate -m "..."`, always, and then adjusted. Never hand-write one. Point `OCTOMATE_DB_URL` at a copy of the database for the run, as with any other migration work. The generated file is what keeps a column's type, constraints and `comment=` identical to the ORM definition that produced them — restating any of that by hand creates a second source of truth that drifts silently, and the drift only shows up as a column whose comment describes something it no longer is.
 5. Adjust the generated file afterwards: write the docstring that says why, add a data backfill, drop an operation autogenerate inferred but the change does not want. What must not be typed by hand is the schema operations themselves. If autogenerate produces nothing, the ORM change is missing — fix the model rather than writing the operation.
 6. Attribute documentation lives on the ORM column as `comment=`, and reaches the migration by being generated from it. A migration that carries a comment string the model does not have is the drift this rule exists to prevent.
+7. Keep one migration per branch by default. As the branch evolves, consolidate its migrations against the base branch's schema before merging. Multiple migrations need a specific reason, such as separating a data migration from schema changes. Consolidate only migrations introduced by the branch; leave inherited migration history unchanged.
 
 ## Observability
 
@@ -82,6 +83,7 @@ Always generate UUIDs with `uuid7` from `uuid_utils.compat`, including in tests.
 2. Channel tentacles are for long-lived IM platform connections and translation only. They call Octomate directly for dispatch: an inbound message becomes a kick, never an object queued for another task to pick up.
 3. The nerve is the one event stream in the tree, and it runs one way. The reflex graph and the tailers publish what a run does onto it; a reader subscribes to a channel or a thread and reads what is published from then on. Nothing is kept for a reader that is not there, so one that opens late reads the ledger first. Publishing knows nothing of readers, nothing is answered over it, and no channel or agent is driven through it. A new reader subscribes to the nerve rather than being handed a sink by the producer.
 4. Use the concrete tentacle base class hierarchy for Octomate-managed agents and channels. Do not introduce extra Protocol wrappers for Octomate, tentacle, or channel lifecycle contracts with out permit.
+5. Before adding a feature to Inkling, check `pydantic-ai-harness` documentation and source for existing support, verifying what is available in the installed version. When upstream supports the feature, use its implementation and follow its lifecycle and storage contracts, adapting persistence through Arcanus and preserving Octomate's thread/conversation ownership. Identify the concrete upstream gap before introducing custom behavior.
 
 ## Documentation
 

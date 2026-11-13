@@ -29,13 +29,13 @@ from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.agent import Agent
 from octomate.config.agents import ClaudeCodeConfig, CodexConfig, DeepseekConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.inkling import InklingTentacle
+from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.base import InklingOutput
 from octomate.types.json import JsonObject
 from tests.integration.native_sandbox.matrix import NativeCall, ToolOutcome
@@ -106,7 +106,9 @@ async def inkling_runner(
         await tentacle.run(
             "Execute the synthetic probe once.",
             conversation_address=ADDRESS,
-            thread_id=thread_id,
+            conversation=await tentacle.resolve_conversation(
+                thread_id, conversation_address=ADDRESS
+            ),
             output_type=output,
         )
         assert outcome is not None, "the native tool never returned a result"
@@ -176,7 +178,9 @@ async def codex_runner(
                 await tentacle.run(
                     "Execute the synthetic probe once.",
                     conversation_address=ADDRESS,
-                    thread_id=thread_id,
+                    conversation=await tentacle.resolve_conversation(
+                        thread_id, conversation_address=ADDRESS
+                    ),
                     interactive=False,
                 )
                 assert state.outcome is not None, (
@@ -239,7 +243,9 @@ async def claude_runner(
                 await tentacle.run(
                     "Execute the synthetic probe once.",
                     conversation_address=ADDRESS,
-                    thread_id=thread_id,
+                    conversation=await tentacle.resolve_conversation(
+                        thread_id, conversation_address=ADDRESS
+                    ),
                     model="claude-sonnet-4-6",
                 )
                 assert state.outcome is not None, (
@@ -338,7 +344,9 @@ async def deepseek_runner(
             await tentacle.run(
                 "Execute the synthetic probe once.",
                 conversation_address=ADDRESS,
-                thread_id=thread_id,
+                conversation=await tentacle.resolve_conversation(
+                    thread_id, conversation_address=ADDRESS
+                ),
                 model="octomate-test:mock",
                 interactive=False,
             )

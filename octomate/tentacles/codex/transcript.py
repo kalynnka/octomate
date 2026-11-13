@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import (
     AwareDatetime,
@@ -12,9 +13,14 @@ from pydantic import (
     ConfigDict,
     Field,
     TypeAdapter,
+    ValidationError,
     model_validator,
 )
+from pydantic_ai.messages import CompactionPart, UserPromptPart
 
+from octomate.schemas.compactions import NativeContext
+from octomate.schemas.messages import ModelRequest, ModelResponse
+from octomate.tentacles.codex.adapter import CODEX_PROVIDER_NAME, codex_metadata
 from octomate.tentacles.codex.schemas import PermissionProfile
 from octomate.types.json import JsonObject
 from octomate.types.permissions import CodexPermissionMode
@@ -45,6 +51,167 @@ class RolloutLine(BaseModel):
 
 
 rollout_line_adapter = TypeAdapter(RolloutLine)
+
+
+def is_injected_message(item: JsonObject) -> bool:
+    """Injected instructions have no normalized archive message to retain."""
+    if item.get("type") != "message":
+        return False
+    if item.get("role") in {"system", "developer"}:
+        return True
+    metadata = item.get("internal_chat_message_metadata_passthrough")
+    if item.get("role") != "user" or not isinstance(metadata, dict):
+        return False
+    kinds = metadata.get("content_item_kinds")
+    return isinstance(kinds, list) and "user.text" not in kinds
+
+
+def context_item_id(item: JsonObject) -> str | None:
+    """The runtime identity of a modeled item, including tool results without ids."""
+    kind = item.get("type")
+    if kind in {
+        "function_call",
+        "custom_tool_call",
+        "function_call_output",
+        "custom_tool_call_output",
+    }:
+        call_id = item.get("call_id")
+        if isinstance(call_id, str):
+            return ("return:" if kind.endswith("output") else "call:") + call_id
+    value = item.get("id")
+    return value if isinstance(value, str) else None
+
+
+class CompactedItem(BaseModel):
+    """A committed context replacement, independent of turn lifecycle events."""
+
+    message: str = Field(description="Readable summary; empty for opaque compaction.")
+    replacement_history: list[JsonObject] | None = Field(
+        default=None,
+        description="Native replacement items, including retained context and provider checkpoints.",
+    )
+    compaction_response_id: str | None = Field(
+        default=None,
+        description="Provider response ID of the compaction request, when reported.",
+    )
+
+    def to_messages(
+        self,
+        timestamp: AwareDatetime,
+        *,
+        last_item_id: str | None = None,
+        item_aliases: dict[str, str] | None = None,
+    ) -> list[ModelRequest | ModelResponse]:
+        """Normalize created summaries/checkpoints; retained messages keep their owner."""
+        metadata = codex_metadata()
+        if last_item_id is not None and self.replacement_history is not None:
+            replacements: list[str] = []
+            for item in self.replacement_history:
+                if is_injected_message(item):
+                    continue
+                identity = context_item_id(item)
+                if identity is None:
+                    break
+                replacements.append(identity)
+            else:
+                referenced = {last_item_id, *replacements}
+                metadata = {
+                    **metadata,
+                    "compaction_context": NativeContext(
+                        last_item_id=last_item_id,
+                        replacement_ids=replacements,
+                        item_aliases={
+                            alias: identity
+                            for alias, identity in (item_aliases or {}).items()
+                            if identity in referenced
+                        },
+                    ).model_dump(mode="json"),
+                }
+        checkpoints = [
+            compaction_item_adapter.validate_python(raw)
+            for raw in self.replacement_history or []
+            if raw.get("type")
+            in {"compaction", "compaction_summary", "context_compaction"}
+        ]
+        messages: list[ModelRequest | ModelResponse] = []
+        if self.message:
+            messages.append(
+                ModelRequest(
+                    parts=[UserPromptPart(self.message, timestamp=timestamp)],
+                    timestamp=timestamp,
+                    metadata=metadata,
+                )
+            )
+        messages.extend(
+            ModelResponse(
+                parts=[
+                    CompactionPart(
+                        id=checkpoint.id,
+                        provider_name=CODEX_PROVIDER_NAME,
+                        provider_details={
+                            "encrypted_content": checkpoint.encrypted_content
+                        }
+                        if checkpoint.encrypted_content is not None
+                        else None,
+                    )
+                ],
+                timestamp=timestamp,
+                provider_name=CODEX_PROVIDER_NAME,
+                provider_response_id=self.compaction_response_id,
+                metadata={
+                    **(
+                        metadata
+                        if not self.message and index == 0
+                        else codex_metadata()
+                    ),
+                    "native_item_ids": [checkpoint.id] if checkpoint.id else [],
+                },
+            )
+            for index, checkpoint in enumerate(checkpoints)
+        )
+        return messages
+
+
+class CompletedCompactionItem(BaseModel):
+    """The native rollout's completed context-compaction item."""
+
+    type: Literal["ContextCompaction"]
+    id: str
+
+
+class CompactionCompletedEvent(BaseModel):
+    """The source item identity following a committed replacement."""
+
+    type: Literal["item_completed"]
+    thread_id: str
+    turn_id: str
+    item: CompletedCompactionItem
+
+
+class EncryptedCompactionItem(BaseModel):
+    """An opaque provider checkpoint carried in replacement history."""
+
+    type: Literal["compaction", "compaction_summary"]
+    id: str | None = None
+    encrypted_content: str
+
+
+class ContextCompactionItem(BaseModel):
+    """A context-compaction item that may omit its encrypted content."""
+
+    type: Literal["context_compaction"]
+    id: str | None = None
+    encrypted_content: str | None = None
+
+
+compaction_item_adapter: TypeAdapter[
+    EncryptedCompactionItem | ContextCompactionItem
+] = TypeAdapter(
+    Annotated[
+        EncryptedCompactionItem | ContextCompactionItem,
+        Field(discriminator="type"),
+    ]
+)
 
 
 class ParsedCommand(BaseModel):
@@ -97,11 +264,80 @@ class UserMessageItem(BaseModel):
     """
 
     type: Literal["message"]
+    id: str | None = None
     role: Literal["user"]
     content: list[UserMessageContent]
     metadata: UserMessageMetadata = Field(
         alias="internal_chat_message_metadata_passthrough"
     )
+
+
+class CompletedUserMessageItem(BaseModel):
+    """The app-server identity of a prompt already written to the rollout."""
+
+    type: Literal["UserMessage"]
+    id: str
+
+
+class UserMessageCompletedEvent(BaseModel):
+    """A prompt completion scoped to its native session and turn."""
+
+    type: Literal["item_completed"]
+    thread_id: str
+    turn_id: str
+    item: CompletedUserMessageItem
+
+
+@dataclass
+class UserMessageIdentities:
+    """Pair source occurrences, including repeated text, without importing a turn."""
+
+    turn_id: str | None = None
+    pending: list[str] = field(default_factory=list)
+    aliases: dict[str, str] = field(default_factory=dict)
+
+    def consume(self, line: RolloutLine, thread_id: str) -> None:
+        kind = payload_type(line)
+        if line.type == "event_msg" and kind in {
+            "task_started",
+            "task_complete",
+            "turn_aborted",
+        }:
+            turn_id = line.payload.get("turn_id")
+            self.turn_id = (
+                turn_id if kind == "task_started" and isinstance(turn_id, str) else None
+            )
+            self.pending.clear()
+            return
+        if line.type == "response_item" and line.payload.get("role") == "user":
+            try:
+                item = UserMessageItem.model_validate(line.payload)
+            except ValidationError:
+                self.pending.clear()
+                return
+            if (
+                item.id is not None
+                and item.metadata.turn_id == self.turn_id
+                and len(item.metadata.content_item_kinds) == len(item.content)
+                and "user.text" in item.metadata.content_item_kinds
+            ):
+                self.pending.append(item.id)
+            else:
+                self.pending.clear()
+            return
+        if line.type == "event_msg" and kind == "user_message":
+            return
+        if not self.pending:
+            return
+        pending, self.pending = self.pending, []
+        if line.type != "event_msg" or kind != "item_completed" or len(pending) != 1:
+            return
+        try:
+            event = UserMessageCompletedEvent.model_validate(line.payload)
+        except ValidationError:
+            return
+        if event.thread_id == thread_id and event.turn_id == self.turn_id:
+            self.aliases[event.item.id] = pending[0]
 
 
 class ThreadSpawnMetadata(BaseModel):

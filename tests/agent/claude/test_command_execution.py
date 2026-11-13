@@ -9,6 +9,7 @@ No real provider or application database was used.
 """
 
 import asyncio
+import json
 from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack
 from dataclasses import replace
@@ -16,9 +17,10 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from claude_agent_sdk import ClaudeAgentOptions
+from arcanus.materia.sqlalchemy import selectinload
+from claude_agent_sdk import ClaudeAgentOptions, project_key_for_directory
 from claude_agent_sdk._internal.message_parser import parse_message
-from claude_agent_sdk.types import Message, ResultMessage
+from claude_agent_sdk.types import Message, ResultMessage, SystemMessage
 from pydantic import TypeAdapter
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import (
@@ -28,16 +30,19 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import ChannelConfig
 from octomate.config.agents import ClaudeCodeConfig
+from octomate.database import async_session
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
     CommandInvocation,
     CommandResult,
 )
+from octomate.schemas.compactions import Compaction
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadCommand
@@ -68,6 +73,106 @@ async def native_messages(messages: list[JsonObject]) -> AsyncGenerator[Message]
         message = parse_message(raw)
         assert message is not None
         yield message
+
+
+@pytest.mark.parametrize("command", [False, True])
+@pytest.mark.parametrize("anchor", ["messages", "segment", "missing", "partial"])
+async def test_driven_compaction_reads_its_summary_from_sdk_history(
+    execution: tuple[
+        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+    ],
+    streams: dict[str, list[JsonObject]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    command: bool,
+    anchor: str,
+) -> None:
+    agent, context, client, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    native_session_id = str(uuid7())
+    boundary_id, summary_id, retained_id = (str(uuid7()) for _ in range(3))
+    metadata: JsonObject = {"trigger": "manual" if command else "auto"}
+    if anchor in {"messages", "partial"}:
+        metadata["preserved_messages"] = {
+            "anchor_uuid": summary_id,
+            "uuids": [retained_id],
+        }
+    if anchor in {"segment", "partial"}:
+        metadata["preserved_segment"] = {"anchor_uuid": summary_id}
+    if anchor == "partial":
+        metadata["preserved_messages"] = {}
+    boundary: JsonObject = {
+        "type": "system",
+        "subtype": "compact_boundary",
+        "uuid": boundary_id,
+        "session_id": native_session_id,
+        "compact_metadata": metadata,
+    }
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    project = tmp_path / "projects" / project_key_for_directory(str(context.cwd))
+    project.mkdir(parents=True)
+    entries: list[JsonObject] = [
+        {
+            "type": "system",
+            "subtype": "compact_boundary",
+            "uuid": boundary_id,
+            "parentUuid": None,
+        },
+        {
+            "type": "user",
+            "uuid": summary_id,
+            "parentUuid": boundary_id,
+            "sessionId": native_session_id,
+            "isCompactSummary": True,
+            "message": {"role": "user", "content": "Authoritative SDK summary"},
+        },
+        {
+            "type": "user",
+            "uuid": retained_id,
+            "parentUuid": summary_id,
+            "sessionId": native_session_id,
+            "message": {"role": "user", "content": "Retained original"},
+        },
+    ]
+    (project / f"{native_session_id}.jsonl").write_text(
+        "\n".join(json.dumps(entry) for entry in entries) + "\n"
+    )
+    script = [
+        entry
+        for entry in streams["compact" if command else "skill"]
+        if entry.get("subtype") != "compact_boundary"
+    ]
+    script.insert(1, boundary)
+    script[-1]["session_id"] = native_session_id
+    client.receive_response.side_effect = lambda: native_messages(script)
+    if command:
+        async for _ in agent.execute_command(
+            context, CommandInvocation(command_id="compact")
+        ):
+            pass
+    else:
+        await agent.run(
+            "continue",
+            conversation_address=context.address,
+            conversation=await agent.resolve_conversation(
+                conversation.thread_id,
+                conversation_address=context.address,
+                conversation_id=conversation.id,
+            ),
+        )
+    async with async_session() as session:
+        [stored] = await session.list(
+            Compaction, options=[selectinload(Compaction["messages"])]
+        )
+    assert stored.native_compaction_id == boundary_id
+    expected = [] if anchor == "missing" else ["Authoritative SDK summary"]
+    assert [message.message_text for message in stored.messages] == expected
+    if stored.messages:
+        assert stored.messages[0].run_id is None
+    assert all(
+        message.message_text != "Retained original" for message in stored.messages
+    )
 
 
 async def paused_native_messages(
@@ -211,6 +316,12 @@ async def test_direct_commands_persist_receipts_and_native_session_without_model
     stored = await agent.conversations.get(conversation.id)
     assert stored.external_id == streams[script][-1]["session_id"]
     assert len(await stored.runs) == 1
+    async with async_session() as session:
+        compactions = await session.list(Compaction)
+    assert len(compactions) == (1 if script == "compact" else 0)
+    if compactions:
+        assert compactions[0].conversation_id == conversation.id
+        assert compactions[0].trigger == "manual"
     receipt = await agent.threads.find_message(
         conversation.thread_id, "direct", "inbound"
     )
@@ -219,6 +330,71 @@ async def test_direct_commands_persist_receipts_and_native_session_without_model
     assert agent.driven_sessions == {}
     assert client.__aenter__.await_count == client.__aexit__.await_count
     build_result.assert_not_called()
+
+
+@pytest.mark.parametrize("command", [False, True])
+@pytest.mark.parametrize("interrupted", [False, True])
+async def test_completed_compaction_survives_later_stream_failure(
+    execution: tuple[
+        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+    ],
+    streams: dict[str, list[JsonObject]],
+    command: bool,
+    interrupted: bool,
+) -> None:
+    agent, context, client, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    script = streams["compact" if command else "skill"]
+    if not command:
+        script.insert(
+            1,
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "uuid": str(uuid7()),
+                "session_id": script[-1]["session_id"],
+                "compact_metadata": {"trigger": "auto"},
+            },
+        )
+
+    async def messages() -> AsyncGenerator[Message]:
+        async for message in native_messages(script):
+            yield message
+            if (
+                interrupted
+                and isinstance(message, SystemMessage)
+                and message.subtype == "compact_boundary"
+            ):
+                raise RuntimeError("Stream failed after compaction")
+
+    async def execute() -> None:
+        if command:
+            async for _ in agent.execute_command(
+                context, CommandInvocation(command_id="compact")
+            ):
+                pass
+            return
+        await agent.run(
+            "continue",
+            conversation_address=context.address,
+            conversation=await agent.resolve_conversation(
+                conversation.thread_id,
+                conversation_address=context.address,
+                conversation_id=conversation.id,
+            ),
+        )
+
+    client.receive_response.side_effect = messages
+    if interrupted:
+        with pytest.raises(RuntimeError, match="Stream failed after compaction"):
+            await execute()
+    else:
+        await execute()
+    async with async_session() as session:
+        [row] = await session.list(Compaction)
+    assert row.trigger == ("manual" if command else "auto")
+    assert row.conversation_id == conversation.id
 
 
 @pytest.mark.parametrize("command", [False, True])
@@ -247,8 +423,11 @@ async def test_runs_apply_saved_effort(
         await agent.run(
             "review",
             conversation_address=context.address,
-            conversation_id=conversation.id,
-            thread_id=conversation.thread_id,
+            conversation=await agent.resolve_conversation(
+                conversation.thread_id,
+                conversation_address=context.address,
+                conversation_id=conversation.id,
+            ),
             model=model,
         )
     assert options[-1].effort == ("max" if saved else None)
@@ -542,12 +721,15 @@ async def test_permission_updates_reach_live_client_and_next_run(
     async with agent.run_stream_events(
         "work",
         conversation_address=context.address,
-        conversation_id=conversation.id,
-        thread_id=conversation.thread_id,
+        conversation=await agent.resolve_conversation(
+            conversation.thread_id,
+            conversation_address=context.address,
+            conversation_id=conversation.id,
+        ),
     ) as events:
         await anext(events)
         assert conversation.id in agent.ink.live_clients
-        selected = await agent.conversations.get(conversation.id, with_history=False)
+        selected = await agent.conversations.get(conversation.id, with_runs=False)
         await agent.set_permission_mode(selected, mode)
         client.set_permission_mode.assert_awaited_once_with(
             mode or agent.default_permission_mode
@@ -556,13 +738,16 @@ async def test_permission_updates_reach_live_client_and_next_run(
         async for _ in events:
             pass
     assert not agent.ink.live_clients
-    stored = await agent.conversations.get(conversation.id, with_history=False)
+    stored = await agent.conversations.get(conversation.id, with_runs=False)
     assert stored.permission_mode == mode
     await agent.run(
         "continue",
         conversation_address=context.address,
-        conversation_id=conversation.id,
-        thread_id=conversation.thread_id,
+        conversation=await agent.resolve_conversation(
+            conversation.thread_id,
+            conversation_address=context.address,
+            conversation_id=conversation.id,
+        ),
     )
     assert options[-1].permission_mode == (mode or agent.default_permission_mode)
 
@@ -584,8 +769,11 @@ async def test_rejected_live_permission_update_does_not_save_the_selection(
     async with agent.run_stream_events(
         "work",
         conversation_address=context.address,
-        conversation_id=conversation.id,
-        thread_id=conversation.thread_id,
+        conversation=await agent.resolve_conversation(
+            conversation.thread_id,
+            conversation_address=context.address,
+            conversation_id=conversation.id,
+        ),
     ) as events:
         await anext(events)
         with pytest.raises(RuntimeError, match="runtime refused"):
@@ -593,7 +781,7 @@ async def test_rejected_live_permission_update_does_not_save_the_selection(
         release.set()
         async for _ in events:
             pass
-    stored = await agent.conversations.get(conversation.id, with_history=False)
+    stored = await agent.conversations.get(conversation.id, with_runs=False)
     assert stored.permission_mode is None
 
 
@@ -613,5 +801,5 @@ async def test_permission_selection_validates_owner_and_mode_before_runtime_acce
     with pytest.raises(ValueError, match="belongs to another agent"):
         await agent.set_permission_mode(foreign, "plan")
     client.set_permission_mode.assert_not_called()
-    stored = await agent.conversations.get(conversation.id, with_history=False)
+    stored = await agent.conversations.get(conversation.id, with_runs=False)
     assert stored.permission_mode is None

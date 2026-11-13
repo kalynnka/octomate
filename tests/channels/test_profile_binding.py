@@ -11,10 +11,10 @@ from fastmcp.exceptions import ToolError
 from pydantic import AnyHttpUrl, SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from octomate.capabilities.harness.events import LinkProfileAuthorizationEvent
 from octomate.config import AuthConfig, OAuthConfig, OctomateConfig
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import async_session
+from octomate.events import LinkProfileAuthorizationEvent
 from octomate.managers.gateway import OctomateSession
 from octomate.mcp.oauth import LINK_PROFILE_TOOL
 from octomate.mcp.server import tentacles_mcp

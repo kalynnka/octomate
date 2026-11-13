@@ -23,7 +23,7 @@ from pydantic_ai.messages import (
 )
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ResultSegmentEvent,
     StreamEvents,
     SubagentStartedEvent,

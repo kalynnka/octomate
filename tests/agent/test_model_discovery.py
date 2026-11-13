@@ -399,7 +399,9 @@ async def test_deepseek_preserves_provider_pairs_and_native_effort_ids(
         await tentacle.run(
             "hello",
             conversation_address=KEY,
-            thread_id=uuid7(),
+            conversation=await tentacle.resolve_conversation(
+                uuid7(), conversation_address=KEY
+            ),
             model="first:future-model",
             effort="plugin-effort",
         )

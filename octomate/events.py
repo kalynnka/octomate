@@ -25,7 +25,7 @@ One stream, with these event families:
 Display, action and subagent events are emitted by capabilities (a capability
 bundles a tool + instructions + `wrap_run_event_stream`) or the suspender; the
 output events are emitted by `Agent.stream_events` (see
-octomate/capabilities/harness/agent.py).
+octomate/tentacles/inkling/agent.py).
 
 The reflex graph also reports outside any run (`GatewayEvent`, `RunErrorEvent`),
 handing each to a channel's `Feelers.present`, and brackets what a kick does on

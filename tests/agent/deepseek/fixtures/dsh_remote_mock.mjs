@@ -13,6 +13,14 @@ class Mock extends LlmAdapter {
   }
 
   async *stream(options) {
+    if (options.purpose === "compaction") {
+      const text = "The integration verified tools, approvals, questions, and resume.";
+      yield { type: "block-start", index: 0, blockType: "text" };
+      yield { type: "text-delta", index: 0, text };
+      yield { type: "block-end", index: 0, block: { type: "text", text } };
+      yield { type: "finish", reason: { kind: "stop" } };
+      return;
+    }
     const result = options.messages.at(-1)?.role === "tool";
     if (!result) {
       const args = JSON.stringify({

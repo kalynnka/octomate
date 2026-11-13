@@ -7,8 +7,13 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Annotated, Literal, Self
 
-from arcanus import BaseTransmuter, RelationCollection, Relationships, Transmuter
-from arcanus.base import Identity
+from arcanus import (
+    BaseTransmuter,
+    Identity,
+    RelationCollection,
+    Relationships,
+    Transmuter,
+)
 from arcanus.dataclass import dataclass as arcanus_dataclass
 from octomate_protocol.gateway import GatewayTool
 from pydantic import (
@@ -83,6 +88,10 @@ class ModelMessage(BaseTransmuter, ABC):
 
     id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
     run_id: str | None = None
+    compaction_id: UUID7 | None = Field(
+        default=None,
+        description="Compaction that created or rewrote this message; None for original run messages.",
+    )
     conversation_id: str | None = None
     timestamp: AwareDatetime | None = None
     role: Literal["user", "assistant"] = "assistant"
@@ -97,6 +106,12 @@ class ModelMessage(BaseTransmuter, ABC):
         materializes as a concrete sibling (`ModelRequest`/`ModelResponse`) via the
         polymorphic adapter, so the base itself is never instantiated."""
 
+    def __lt__(self, other: ModelMessage | ModelRequest | ModelResponse) -> bool:
+        return self.id < other.id
+
+    def __gt__(self, other: ModelMessage | ModelRequest | ModelResponse) -> bool:
+        return self.id > other.id
+
 
 @sqlalchemy_materia.bless(ModelRequestModel)
 @arcanus_dataclass(config=dataclass_config)
@@ -105,6 +120,10 @@ class ModelRequest(Transmuter, PydanticModelRequest):
     its parts."""
 
     id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
+    compaction_id: UUID7 | None = Field(
+        default=None,
+        description="Compaction that created or rewrote this message; None for original run messages.",
+    )
     timestamp: AwareDatetime | None = None
     metadata: Annotated[JsonObject | None, Field(alias="meta")] = None
     role: Literal["user", "assistant"] = "assistant"
@@ -114,6 +133,12 @@ class ModelRequest(Transmuter, PydanticModelRequest):
     thread_messages: RelationCollection[
         ThreadMessage | ThreadCommand | ThreadArtifact
     ] = Relationships()
+
+    def __lt__(self, other: ModelMessage | ModelRequest | ModelResponse) -> bool:
+        return self.id < other.id
+
+    def __gt__(self, other: ModelMessage | ModelRequest | ModelResponse) -> bool:
+        return self.id > other.id
 
     @model_validator(mode="after")
     def _derive_message_fields(self) -> Self:
@@ -142,6 +167,10 @@ class ModelResponse(Transmuter, PydanticModelResponse):
     including what it delivered through `send`."""
 
     id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
+    compaction_id: UUID7 | None = Field(
+        default=None,
+        description="Compaction that created or rewrote this message; None for original run messages.",
+    )
     timestamp: AwareDatetime = Field(default_factory=now_utc)
     metadata: Annotated[JsonObject | None, Field(alias="meta")] = None
     workspace_ref: WorkspaceRef | None = Field(
@@ -162,6 +191,12 @@ class ModelResponse(Transmuter, PydanticModelResponse):
     thread_messages: RelationCollection[
         ThreadMessage | ThreadCommand | ThreadArtifact
     ] = Relationships()
+
+    def __lt__(self, other: ModelMessage | ModelRequest | ModelResponse) -> bool:
+        return self.id < other.id
+
+    def __gt__(self, other: ModelMessage | ModelRequest | ModelResponse) -> bool:
+        return self.id > other.id
 
     @model_validator(mode="after")
     def _derive_message_fields(self) -> Self:

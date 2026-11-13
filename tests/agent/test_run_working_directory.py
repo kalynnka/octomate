@@ -1,8 +1,8 @@
 """Every run records the directory it ran in.
 
-`AgentRun.cwd` is written by all three writers: the hooks' live sketch, the tailer's
-turn rebuilt from the transcript, and Octomate-driven dispatch. The data was already
-arriving on every hook event and every transcript line and was being dropped.
+`AgentRun.cwd` is written by Claude's hook sketch, transcript ingestion, and
+Octomate-driven dispatch. Codex hooks establish the session; its rollout owns
+the run and the directory recorded on it.
 
 The column is on the polymorphic base, so a native turn and a driven run answer "where
 did this run" the same way. A source that reported no directory records None — never a
@@ -346,7 +346,9 @@ def codex_rollout(cwd: str) -> list[JsonObject]:
     ]
 
 
-async def test_a_codex_hook_sketch_records_the_directory_the_hook_reported() -> None:
+async def test_a_codex_hook_waits_for_the_rollout_to_record_the_directory(
+    tmp_path: Path,
+) -> None:
     octomate = Octomate()
     tailer = CodexTranscriptTailer(
         octomate.conversations,
@@ -373,8 +375,14 @@ async def test_a_codex_hook_sketch_records_the_directory_the_hook_reported() -> 
         ),
     )
 
-    [sketch] = await runs_of(octomate, "codex", CODEX_SESSION)
-    assert sketch.cwd == Path(REPO)
+    assert await runs_of(octomate, "codex", CODEX_SESSION) == []
+
+    rollout = tmp_path / "rollout.jsonl"
+    write_transcript(rollout, codex_rollout(ELSEWHERE))
+    await stream_rollout(tailer, CODEX_SESSION, rollout)
+
+    [run] = await runs_of(octomate, "codex", CODEX_SESSION)
+    assert run.cwd == Path(ELSEWHERE)
 
 
 async def codex_rollout_run(octomate: Octomate, rollout: Path) -> AgentRun:
@@ -460,7 +468,12 @@ async def test_a_driven_claude_run_records_where_it_dispatched(
     )
 
     async with tentacle.run_stream_events(
-        "do it", conversation_address=ADDRESS, thread_id=thread.id, run_name="react"
+        "do it",
+        conversation_address=ADDRESS,
+        conversation=await tentacle.resolve_conversation(
+            thread.id, conversation_address=ADDRESS
+        ),
+        run_name="react",
     ) as stream:
         async for _event in stream:
             pass
@@ -499,7 +512,12 @@ async def test_a_driven_codex_run_records_where_it_dispatched() -> None:
 
     async with tentacle:
         async with tentacle.run_stream_events(
-            "do it", conversation_address=ADDRESS, thread_id=thread.id, run_name="react"
+            "do it",
+            conversation_address=ADDRESS,
+            conversation=await tentacle.resolve_conversation(
+                thread.id, conversation_address=ADDRESS
+            ),
+            run_name="react",
         ) as stream:
             async for _event in stream:
                 pass

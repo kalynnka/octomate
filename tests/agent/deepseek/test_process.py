@@ -97,6 +97,12 @@ async def test_launches_with_patch_before_web_app_options(
             "session-persistence-jsonl": {"root": str(dsh.dsh_home / "sessions")},
             "attachment-local": {"dshHome": str(dsh.dsh_home)},
         }
+        assert next(
+            patch for patch in patches if patch["id"] == "agent-preset-registry"
+        ) == {
+            "id": "agent-preset-registry",
+            "isolate": {"profileContext": True},
+        }
     finally:
         await dsh.stop()
 
@@ -233,7 +239,7 @@ async def test_launch_url_is_logged_once_without_writing_a_file(
 @pytest.mark.parametrize(
     ("version", "expected", "level"),
     [
-        ("0.2.1-rc.2", "matches Octomate's tested release", logging.INFO),
+        ("0.2.2-rc.1", "matches Octomate's tested release", logging.INFO),
         ("0.2.1-alpha.2", "differs from Octomate's tested version", logging.WARNING),
         ("unknown", "Could not determine dsh version", logging.WARNING),
     ],
@@ -252,6 +258,22 @@ async def test_version_matching_is_visible(
     await process(binary, tmp_path, []).check_version()
     assert expected in caplog.text
     assert [record.levelno for record in caplog.records] == [level]
+
+
+async def test_version_mismatch_does_not_prevent_launch(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    binary, argv = fake_dsh(tmp_path)
+    caplog.set_level(logging.WARNING, logger="octomate.tentacles.deepseek.process")
+    dsh = process(binary, tmp_path, [])
+    try:
+        assert await dsh.start() == BASE_URL
+        assert dsh.process is not None
+        assert dsh.process.returncode is None
+        assert len(launches(argv)) == 1
+        assert "differs from Octomate's tested version" in caplog.text
+    finally:
+        await dsh.stop()
 
 
 async def test_startup_failure_keeps_cause_without_flooding_logs(

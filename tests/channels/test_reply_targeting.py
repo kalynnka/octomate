@@ -13,7 +13,7 @@ from typing import Any, cast
 
 from fastmcp import Client
 
-from octomate.capabilities.harness.events import MessageSentEvent
+from octomate.events import MessageSentEvent
 from octomate.managers.gateway import OctomateSession
 from octomate.nerve import ChannelTopic, Nerve
 from octomate.schemas.conversation import ChannelAddress

@@ -9,7 +9,7 @@ callback, which needs ingress this deployment does not have.
 
 from __future__ import annotations
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     LinkProfileAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,
 )

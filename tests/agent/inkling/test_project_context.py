@@ -30,12 +30,12 @@ from pydantic_ai_harness.shell import ShellToolset
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.harness.agent import Agent
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.tentacles.inkling import InklingTentacle
+from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.base import InklingOutput
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from tests.support.managers import a_project, a_registry
@@ -102,7 +102,9 @@ async def inkling_run(octomate: Octomate, thread: Thread, scripted: Scripted) ->
     await tentacle.run(
         "what is this repo?",
         conversation_address=ADDRESS,
-        thread_id=thread.id,
+        conversation=await tentacle.resolve_conversation(
+            thread.id, conversation_address=ADDRESS
+        ),
         output_type=STR_OUTPUT,
     )
 
@@ -140,7 +142,6 @@ async def test_a_run_in_a_project_can_act_in_it(tmp_path: Path) -> None:
     await inkling_run(octomate, await a_thread(octomate, "chat", "inky"), scripted)
 
     assert scripted.tools[-1] == [
-        "inventory_agent_context",
         "read_file",
         "write_file",
         "edit_file",
@@ -191,7 +192,9 @@ async def test_project_file_calls_defer_for_user_approval(tmp_path: Path) -> Non
     result = await tentacle.run(
         "read the instructions",
         conversation_address=ADDRESS,
-        thread_id=thread.id,
+        conversation=await tentacle.resolve_conversation(
+            thread.id, conversation_address=ADDRESS
+        ),
         output_type=STR_OUTPUT,
     )
 

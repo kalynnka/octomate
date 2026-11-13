@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from pydantic_graph import BaseNode, End, GraphRunContext
 
-from octomate.capabilities.harness.events import ReflexPhaseChangedEvent
+from octomate.events import ReflexPhaseChangedEvent
 from octomate.nerve import Impulse
 from octomate.reflex.nodes.scheme import Scheme
 from octomate.reflex.nodes.summon import Summon

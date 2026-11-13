@@ -43,7 +43,7 @@ from pydantic_ai.tools import RunContext
 from pydantic_ai.toolsets import FunctionToolset
 from pydantic_graph import End
 
-from octomate.capabilities.harness.agent import Agent
+from octomate.tentacles.inkling.agent import Agent
 
 
 class RecordingCapability(AbstractCapability[None]):

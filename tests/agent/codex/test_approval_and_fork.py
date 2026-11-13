@@ -16,6 +16,7 @@ from pydantic_ai.exceptions import AgentRunError
 
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import async_session
+from octomate.managers.conversation import ConversationManager
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
@@ -73,8 +74,11 @@ async def recorded_context(
     await agent.run(
         "Do the work",
         conversation_address=context.address,
-        conversation_id=context.conversation.id,
-        thread_id=context.conversation.thread_id,
+        conversation=await agent.resolve_conversation(
+            context.conversation.thread_id,
+            conversation_address=context.address,
+            conversation_id=context.conversation.id,
+        ),
     )
     return replace(
         context,
@@ -412,15 +416,15 @@ async def test_fork_copies_history_settings_and_preserves_source(
     assert copied.external_id == "thread-fork"
     assert copied.effort == source.effort == "high"
     assert copied.permission_mode == source.permission_mode == "user_review"
-    assert [message.parts for message in copied.messages] == [
-        message.parts for message in source.messages
-    ]
+    assert [
+        message.parts for message in (await ConversationManager().history(copied.id))
+    ] == [message.parts for message in (await ConversationManager().history(source.id))]
     assert [run.model_name for run in copied.runs] == [
         run.model_name for run in source.runs
     ]
-    assert [message.id for message in copied.messages] == [
-        message.id for message in source.messages
-    ]
+    assert [
+        message.id for message in (await ConversationManager().history(copied.id))
+    ] == [message.id for message in (await ConversationManager().history(source.id))]
     assert target.active_agent_tentacle_id == agent.id
     assert target.active_model == context.model
     assert target.project_id == source_thread.project_id
@@ -441,8 +445,11 @@ async def test_fork_copies_history_settings_and_preserves_source(
     await agent.run(
         "Continue",
         conversation_address=target.key.address(context.address.user_id),
-        conversation_id=copied.id,
-        thread_id=target.id,
+        conversation=await agent.resolve_conversation(
+            target.id,
+            conversation_address=target.key.address(context.address.user_id),
+            conversation_id=copied.id,
+        ),
         interactive=False,
     )
     assert FakeCodex.thread_calls[-1].thread_id == "thread-fork"

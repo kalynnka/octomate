@@ -110,7 +110,9 @@ async def test_oversized_tool_return_is_reduced_before_it_reaches_history(
     result = await tentacle.run(
         "dump it",
         conversation_address=_address(),
-        thread_id=_THREAD,
+        conversation=await tentacle.resolve_conversation(
+            _THREAD, conversation_address=_address()
+        ),
         output_type=STR_OUTPUT,
     )
 
@@ -145,8 +147,9 @@ async def test_accomplice_is_bounded_without_being_asked(
     result = await tentacle.subagent_run(
         "dump it",
         conversation_address=_address(),
-        thread_id=_THREAD,
-        conversation_id=child.id,
+        conversation=await tentacle.resolve_conversation(
+            _THREAD, conversation_address=_address(), conversation_id=child.id
+        ),
     )
 
     returns = _tool_returns(result.all_messages())

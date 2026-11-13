@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, NotRequired, TypedDict
 
-from arcanus import BaseTransmuter
-from arcanus.base import Identity
+from arcanus import BaseTransmuter, Identity
 from pydantic import UUID7, AwareDatetime, BaseModel, ConfigDict, Field
 from pydantic_ai._utils import now_utc
 from uuid_utils.compat import uuid7

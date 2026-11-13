@@ -16,7 +16,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     RunEndedEvent,
     RunStartedEvent,
     StreamEvents,
@@ -153,7 +153,13 @@ class NativeTurn:
         reply_id = await self.threads.bind_native_run(
             self.address, run, prompts=prompts, answer=answer, sender=self.sender
         )
+        await self.settle(run_id, thread_message_id=reply_id)
+
+    async def settle(
+        self, run_id: str, *, thread_message_id: UUID7 | None = None
+    ) -> None:
+        """Publish the closing bracket after the native task's durable writes finish."""
         self.recorded.add(run_id)
         await self.impulses.send(
-            Impulse(RunEndedEvent(thread_message_id=reply_id), self.address)
+            Impulse(RunEndedEvent(thread_message_id=thread_message_id), self.address)
         )

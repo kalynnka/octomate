@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import discord
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     LinkProfileAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,
 )

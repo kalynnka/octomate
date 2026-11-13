@@ -16,6 +16,7 @@ from octomate import Octomate
 from octomate.auth import current_user
 from octomate.config import ChannelConfig, DiscordChannelConfig
 from octomate.config.channels import TrunklineChannelConfig
+from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import ThreadTopic
@@ -305,7 +306,14 @@ async def test_teleport_creates_independent_owned_destination(
     assert copied.id != source.id
     assert copied.permission_mode == "default"
     assert copied.runs[-1].model_name == "opus"
-    assert len((await case.app.conversations.get(copied.id)).messages) == 2
+    assert (
+        len(
+            await ConversationManager().history(
+                (await case.app.conversations.get(copied.id)).id
+            )
+        )
+        == 2
+    )
     # The landing is still recorded, on the model the conversation ran.
     stored = await case.app.threads.get(landed.id)
     assert stored is not None

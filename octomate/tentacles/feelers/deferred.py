@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import UUID7
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchUpdatedEvent,
 )

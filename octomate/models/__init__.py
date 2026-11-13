@@ -9,7 +9,16 @@ from octomate.models.auth import (
     UserSession,
 )
 from octomate.models.base import Base
-from octomate.models.conversation import Conversation, ConversationRun
+from octomate.models.compactions import (
+    Compaction,
+    CompactionMembership,
+    ExternalCompaction,
+)
+from octomate.models.conversation import (
+    Conversation,
+    ConversationCompaction,
+    ConversationRun,
+)
 from octomate.models.deferred import (
     DeferredAction,
     DeferredActionBatch,
@@ -44,6 +53,13 @@ from octomate.models.oauth import OAuthConnection, OAuthOperation
 from octomate.models.project import Project
 from octomate.models.runs import AgentRun, ExternalAgentRun
 from octomate.models.spills import ToolOutputSpill
+from octomate.models.steps import (
+    Snapshot,
+    SnapshotMembership,
+    SnapshotMessage,
+    StepEvent,
+    ToolEffect,
+)
 from octomate.models.thread import (
     Handoff,
     MessageBinding,
@@ -62,13 +78,17 @@ __all__ = [
     "Base",
     "BearerMcp",
     "Binary",
+    "Compaction",
+    "CompactionMembership",
     "Conversation",
+    "ConversationCompaction",
     "ConversationRun",
     "DeferredAction",
     "DeferredActionBatch",
     "DeferredApprovalAction",
     "DeferredQuestionAction",
     "ExternalAgentRun",
+    "ExternalCompaction",
     "File",
     "Gif",
     "Handoff",
@@ -92,6 +112,10 @@ __all__ = [
     "OAuthOperation",
     "Png",
     "Project",
+    "Snapshot",
+    "SnapshotMembership",
+    "SnapshotMessage",
+    "StepEvent",
     "Text",
     "Thread",
     "ThreadArtifact",
@@ -99,6 +123,7 @@ __all__ = [
     "ThreadLedger",
     "ThreadMessage",
     "Todo",
+    "ToolEffect",
     "ToolOutputSpill",
     "User",
     "UserApiKey",

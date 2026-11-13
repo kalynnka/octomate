@@ -17,11 +17,13 @@ from anyio.abc import ObjectSendStream
 from octomate_protocol.stream import SESSION_FILE
 from pydantic import ValidationError
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
+from pydantic_ai.messages import UserPromptPart
 
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
 from octomate.nerve import Impulse
 from octomate.schemas.conversation import ChannelAddress, Conversation
+from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import (
     ThreadKey,
@@ -31,6 +33,7 @@ from octomate.telemetry import claude_logfire
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.content import prompt_content
 from octomate.tentacles.claude.transcript import (
+    CompactMetadata,
     TranscriptAiTitleLine,
     TranscriptAssistantLine,
     TranscriptLine,
@@ -41,6 +44,7 @@ from octomate.tentacles.claude.transcript import (
 )
 from octomate.tentacles.locks import SessionLocks
 from octomate.tentacles.tailer import NativeTurn
+from octomate.types.compactions import CompactionTrigger
 from octomate.types.permissions import is_claude_mode
 
 logger = logging.getLogger(__name__)
@@ -112,6 +116,10 @@ class SubagentTail:
     conversation: Conversation | None = None
     recorded: set[str] = field(default_factory=set)  # child run ids already committed
     open_turn: OpenTurn | None = None
+    last_item_id: str | None = None
+    compact_metadata: CompactMetadata | None = None
+    compactions_pending: bool = False
+    omitted_uuids: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -133,6 +141,10 @@ class TailState:
     conversation: Conversation | None = None
     recorded: set[str] = field(default_factory=set)  # prompt_ids already committed
     open_turn: OpenTurn | None = None
+    last_item_id: str | None = None
+    compact_metadata: CompactMetadata | None = None
+    compactions_pending: bool = False
+    omitted_uuids: set[str] = field(default_factory=set)
     subagents: dict[str, SubagentTail] = field(default_factory=dict)
     # A parent's file may be ahead of its child, including resumed invocations.
     subagent_calls: dict[tuple[str, str], str] = field(default_factory=dict)
@@ -353,6 +365,16 @@ class ClaudeTranscriptTailer:
         so a resume never re-commits a run the last run already wrote."""
         state.conversation = await self.ensure_session(state.session_id)
         state.recorded = state.conversation.native_run_ids
+        previous = max(
+            (
+                run
+                for run in state.conversation.runs
+                if isinstance(run, ExternalAgentRun) and run.end_offset is not None
+            ),
+            key=lambda run: run.end_offset or 0,
+            default=None,
+        )
+        state.last_item_id = previous.last_line_uuid if previous is not None else None
 
     async def ensure_session(self, session_id: str) -> Conversation:
         """Map a native Claude session id to its Octomate home — the session's thread and
@@ -393,6 +415,10 @@ class ClaudeTranscriptTailer:
         if isinstance(line, TranscriptUserLine):
             if line.is_sidechain:
                 return
+            if line.is_compact_summary:
+                await self.record_compaction(state, line, start, end)
+                return
+            state.last_item_id = line.uuid
             await self.harvest_subagent_call(state, line)
             if line.prompt_source is not None:
                 await self.close_turn(state)
@@ -403,15 +429,93 @@ class ClaudeTranscriptTailer:
         elif isinstance(line, TranscriptAssistantLine):
             if line.is_sidechain:
                 return
+            state.last_item_id = line.uuid
             if state.open_turn is not None:
                 await self.fold(state, line, end)
         elif isinstance(line, TranscriptSystemLine):
+            state.omitted_uuids.add(line.uuid)
+            if line.subtype == "compact_boundary" and not line.is_sidechain:
+                await self.record_compaction(state, line, start, end)
+                return
             # Claude writes it once the turn's `Stop` hooks have run, delivered or
             # not: a server down through the stop never hears the hook.
             if line.subtype == "stop_hook_summary" and not line.is_sidechain:
                 await self.close_turn(state)
         elif isinstance(line, TranscriptAiTitleLine):
             await self.record_title(state, line.ai_title)
+
+    async def record_compaction(
+        self,
+        state: TailState,
+        line: TranscriptSystemLine | TranscriptUserLine,
+        start: int,
+        end: int,
+        *,
+        tail: SubagentTail | None = None,
+    ) -> None:
+        """Keep the boundary and its following summary outside model runs and chat."""
+        conversation = tail.conversation if tail is not None else state.conversation
+        assert conversation is not None
+        messages: list[ModelRequest | ModelResponse] = []
+        trigger: CompactionTrigger = "unknown"
+        if isinstance(line, TranscriptSystemLine):
+            if line.compact_metadata is None:
+                return
+            native_compaction_id = line.uuid
+            trigger = line.compact_metadata.trigger
+            (tail or state).compact_metadata = line.compact_metadata
+        else:
+            native_compaction_id = line.parent_uuid
+            if native_compaction_id is None:
+                return
+            metadata = (tail or state).compact_metadata
+            context = (
+                metadata.context(
+                    line.uuid,
+                    (tail or state).last_item_id,
+                    (tail or state).omitted_uuids,
+                )
+                if metadata is not None
+                else None
+            )
+            messages.append(
+                ModelRequest(
+                    parts=[
+                        UserPromptPart(
+                            prompt_text(line.message), timestamp=line.timestamp
+                        )
+                    ],
+                    timestamp=line.timestamp,
+                    metadata={
+                        "native_item_ids": [line.uuid],
+                        **(
+                            {"compaction_context": context.model_dump(mode="json")}
+                            if context is not None
+                            else {}
+                        ),
+                    },
+                )
+            )
+        await self.conversation_manager.record_external_compaction(
+            conversation,
+            native_session_id=state.session_id,
+            native_compaction_id=native_compaction_id,
+            trigger=trigger,
+            source=str(tail.path if tail is not None else state.transcript_path),
+            start_offset=start,
+            end_offset=end,
+            happened_at=line.timestamp,
+            messages=messages,
+        )
+        if isinstance(line, TranscriptUserLine):
+            (tail or state).last_item_id = line.uuid
+            (tail or state).compactions_pending = True
+            turn = (tail or state).open_turn
+            if turn is None:
+                await self.conversation_manager.record_native_memberships(
+                    conversation, state.session_id
+                )
+                (tail or state).compactions_pending = False
 
     async def record_title(self, state: TailState, title: str) -> None:
         """Carry the name Claude gave this session onto the rows that show it.
@@ -482,6 +586,7 @@ class ClaudeTranscriptTailer:
                 message_id=line.uuid,
                 text=prompt_content(text),
                 timestamp=line.timestamp,
+                metadata={"native_item_ids": [line.uuid]},
             )
         await turn.native.fold(turn.accumulator.consume(line))
         stamp(turn.accumulator.messages[written:], line.timestamp)
@@ -541,6 +646,7 @@ class ClaudeTranscriptTailer:
                 message_id=line.prompt_id,
                 text=prompt_content(text),
                 timestamp=line.timestamp,
+                metadata={"native_item_ids": [line.uuid]},
             )
         return OpenTurn(
             prompt_id=line.prompt_id,
@@ -571,6 +677,11 @@ class ClaudeTranscriptTailer:
         turn = state.open_turn
         state.open_turn = None
         if turn is None or turn.native is None:
+            if state.compactions_pending and state.conversation is not None:
+                await self.conversation_manager.record_native_memberships(
+                    state.conversation, state.session_id
+                )
+                state.compactions_pending = False
             return
         conversation = state.conversation
         if conversation is None:
@@ -603,6 +714,11 @@ class ClaudeTranscriptTailer:
                     last_line_uuid=turn.last_line_uuid,
                 )
                 span.set_attribute("committed", run is not None)
+                if state.compactions_pending:
+                    await self.conversation_manager.record_native_memberships(
+                        conversation, state.session_id
+                    )
+                    state.compactions_pending = False
                 await turn.native.close(
                     run, run_id=turn.prompt_id, answer=turn.accumulator.result_text
                 )
@@ -696,6 +812,16 @@ class ClaudeTranscriptTailer:
             parent_conversation_id=parent.id,
         )
         tail.recorded = tail.conversation.native_run_ids
+        previous = max(
+            (
+                run
+                for run in tail.conversation.runs
+                if isinstance(run, ExternalAgentRun) and run.end_offset is not None
+            ),
+            key=lambda run: run.end_offset or 0,
+            default=None,
+        )
+        tail.last_item_id = previous.last_line_uuid if previous is not None else None
 
     async def process_subagent_line(
         self,
@@ -710,6 +836,19 @@ class ClaudeTranscriptTailer:
         neither parent rule applies). Each turn's `promptId` is the *parent* turn
         that drove it; a resumed subagent opens its next turn on whatever user line
         arrives first, which is measured to be a tool result, not a prompt."""
+        if (
+            isinstance(line, TranscriptSystemLine)
+            and line.subtype == "compact_boundary"
+        ):
+            await self.record_compaction(state, line, start, end, tail=tail)
+            return
+        if isinstance(line, TranscriptUserLine) and line.is_compact_summary:
+            await self.record_compaction(state, line, start, end, tail=tail)
+            return
+        if isinstance(line, TranscriptUserLine | TranscriptAssistantLine):
+            tail.last_item_id = line.uuid
+        elif isinstance(line, TranscriptSystemLine):
+            tail.omitted_uuids.add(line.uuid)
         if isinstance(line, TranscriptUserLine):
             turn = tail.open_turn
             if turn is None or line.prompt_id != turn.prompt_id:
@@ -728,6 +867,7 @@ class ClaudeTranscriptTailer:
         text = prompt_text(line.message)
         if text:
             accumulator.begin(text)
+            accumulator.messages[0].metadata = {"native_item_ids": [line.uuid]}
         # The opener may itself carry tool results (a resumed subagent's turn opens on
         # one); consuming is a no-op for a plain prompt line.
         for _ in accumulator.consume(line):
@@ -814,6 +954,11 @@ class ClaudeTranscriptTailer:
                 if run is None:
                     return
                 tail.recorded.add(run_id)
+                if tail.compactions_pending:
+                    await self.conversation_manager.record_native_memberships(
+                        conversation, state.session_id
+                    )
+                    tail.compactions_pending = False
                 logger.info(
                     "session %s: subagent %s turn %s synced — %d messages, bytes %d-%d",
                     state.session_id,

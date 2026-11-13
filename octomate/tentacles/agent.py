@@ -23,7 +23,6 @@ from pydantic_ai import (
     AgentNativeTool,
     AgentRunResult,
     AgentSpec,
-    RunUsage,
     ToolDenied,
     UsageLimits,
 )
@@ -39,7 +38,6 @@ from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
-from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import AgentConfig, AgentRouteModelName
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.auth import IssuedApiKey
@@ -58,13 +56,13 @@ from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import AgentRoute, Claim
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.base import Tentacle
+from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from octomate.types.json import JsonObject
 from octomate.types.permissions import PermissionMode
 from octomate.utils import drain_task
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
-    from octomate.capabilities.harness.deferred import DeferredSuspender
     from octomate.managers.auth import AuthManager
     from octomate.managers.commands import CommandManager
     from octomate.managers.conversation import ConversationManager
@@ -73,6 +71,7 @@ if TYPE_CHECKING:
     from octomate.managers.project import ProjectManager
     from octomate.managers.thread import ThreadManager
     from octomate.managers.workspaces import WorkspaceManager
+    from octomate.tentacles.deferred import DeferredSuspender
 
 # The tentacle's output type is whatever its builder's agent produces (a deferring
 # agent includes DeferredToolRequests in it); run-level output_type overrides are
@@ -378,6 +377,18 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
                 f"{'/'.join(efforts) or 'none'}"
             )
 
+    def check_conversation(
+        self, conversation: Conversation, *, thread_id: UUID7 | None = None
+    ) -> None:
+        """Require this agent's context, and the selected thread when resolving an ID."""
+        if conversation.agent_tentacle_id != self.id or (
+            thread_id is not None and conversation.thread_id != thread_id
+        ):
+            raise ValueError(
+                f"conversation {conversation.id} does not belong to "
+                f"({self.id!r}, {thread_id})"
+            )
+
     async def resolve_conversation(
         self,
         thread_id: UUID7,
@@ -395,17 +406,10 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         """
         if conversation_id is None:
             return await self.conversations.ensure(
-                thread_id, agent_tentacle_id=self.id, with_history=False
+                thread_id, agent_tentacle_id=self.id, with_runs=False
             )
-        conversation = await self.conversations.get(conversation_id, with_history=False)
-        if (
-            conversation.agent_tentacle_id != self.id
-            or conversation.thread_id != thread_id
-        ):
-            raise ValueError(
-                f"conversation {conversation_id} does not belong to "
-                f"({self.id!r}, {thread_id})"
-            )
+        conversation = await self.conversations.get(conversation_id, with_runs=False)
+        self.check_conversation(conversation, thread_id=thread_id)
         return conversation
 
     async def resolve_effort(
@@ -737,7 +741,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        conversation: Conversation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -746,13 +750,11 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
         model_settings: AgentModelSettings[AgentDepsT] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[AgentDepsT] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -769,7 +771,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        conversation: Conversation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -778,13 +780,11 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
         model_settings: AgentModelSettings[AgentDepsT] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[AgentDepsT] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -801,7 +801,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        conversation: Conversation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -810,13 +810,11 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
         model_settings: AgentModelSettings[AgentDepsT] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[AgentDepsT] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -833,8 +831,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7,
-        conversation_id: UUID7,
+        conversation: Conversation,
         run_name: str | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
@@ -844,8 +841,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         """Run as a subagent: the subagent contract in one place, apart from
         `run()`'s general surface.
 
-        A subagent run is addressed at a pre-ensured conversation its spawner
-        owns (`conversation_id` is required, not optional), and it is fully
+        A subagent run receives the conversation its spawner resolved, and it is fully
         non-interactive — every human interaction declines at once. What
         `capabilities` mounts is the runtime's to decide: inkling adds the
         spawner's set to its own, Claude resolves its registered gateway session,
@@ -855,8 +851,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         return await self.run(
             user_prompt,
             conversation_address=conversation_address,
-            thread_id=thread_id,
-            conversation_id=conversation_id,
+            conversation=conversation,
             interactive=False,
             run_name=run_name,
             model=model,
@@ -871,7 +866,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        conversation: Conversation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -880,13 +875,11 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
         model_settings: AgentModelSettings[AgentDepsT] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[AgentDepsT] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -902,7 +895,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        conversation: Conversation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -911,13 +904,11 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
         model_settings: AgentModelSettings[AgentDepsT] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[AgentDepsT] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -933,7 +924,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        conversation: Conversation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -942,13 +933,11 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
         model_settings: AgentModelSettings[AgentDepsT] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[AgentDepsT] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,

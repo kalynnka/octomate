@@ -11,7 +11,7 @@ from anyio.abc import ObjectReceiveStream, ObjectSendStream
 from pydantic_ai.messages import PartDeltaEvent, TextPartDelta
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.events import MessageSentEvent
+from octomate.events import MessageSentEvent
 from octomate.fibers import MemoryFiber
 from octomate.nerve import (
     ChannelTopic,

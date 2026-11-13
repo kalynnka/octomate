@@ -13,10 +13,8 @@ from pydantic_ai import AgentCapability
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.harness.deferred import DeferredSuspender
-from octomate.capabilities.harness.events import MessageSentEvent
-from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.database import async_session
+from octomate.events import MessageSentEvent
 from octomate.managers.commands import CommandManager, ValidatedCommand
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.commands import (
@@ -34,6 +32,8 @@ from octomate.schemas.thread import Thread, ThreadCommand, ThreadMessage
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import ChannelOutput
 from octomate.tentacles.codex.catalog import APP_COMMANDS
+from octomate.tentacles.deferred import DeferredSuspender
+from octomate.tentacles.stream import ReactStreamEvent
 from octomate.types.permissions import PermissionMode
 from tests.agent.test_command_manager import DiscoveringAgent
 from tests.support.channels import FakeChannelTentacle
@@ -589,7 +589,7 @@ async def test_execution_checks_access_and_selection_after_discovery(
     elif change == "permission":
         agent.permission_modes = (PermissionMode(value="plan", name="Plan"),)
         await app.conversations.set_permission_mode(
-            context.conversation.model_copy(), "plan"
+            replace(context.conversation), "plan"
         )
     elif change == "workspace":
         project = a_project(tmp_path / "project")

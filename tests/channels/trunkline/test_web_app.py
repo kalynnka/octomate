@@ -30,17 +30,16 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.auth import current_user
-from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.events import (
-    RunActivityChangedEvent,
-    RunEndedEvent,
-    ThreadTitleChangedEvent,
-)
 from octomate.config import OctomateConfig
 from octomate.config.agents import CodexConfig, DeepseekConfig, InklingConfig
 from octomate.config.agents.common import Claim
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import async_session
+from octomate.events import (
+    RunActivityChangedEvent,
+    RunEndedEvent,
+    ThreadTitleChangedEvent,
+)
 from octomate.managers.oauth import OAuthConnector
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import Impulse, ThreadTopic, UserTopic
@@ -56,6 +55,7 @@ from octomate.tentacles.channel import ChannelTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.inkling import InklingTentacle
+from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.base import InklingOutput
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.trunkline import (
@@ -1652,6 +1652,7 @@ async def test_threads_and_detail_endpoints(
         [conversation] = conversations.json()
         assert conversation["agent_tentacle_id"] == "inkling"
         assert "messages" not in conversation
+        assert "all_messages" not in conversation
         [run] = conversation["runs"]
         assert run["kind"] == "octomate"
         assert run["started_at"].endswith("Z") or "+" in run["started_at"]

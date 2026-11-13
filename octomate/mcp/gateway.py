@@ -30,7 +30,7 @@ from fastmcp.server.dependencies import (
 from octomate_protocol.gateway import GatewayTool
 from pydantic import Field, TypeAdapter
 
-from octomate.capabilities.harness.events import MessageSentEvent
+from octomate.events import MessageSentEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.managers.thread import ThreadManager

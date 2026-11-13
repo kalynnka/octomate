@@ -18,7 +18,10 @@ from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import (
+from octomate.config import ChannelConfig, ChannelStreamConfig
+from octomate.config.channels import TrunklineChannelConfig
+from octomate.database import async_session
+from octomate.events import (
     MessageSentEvent,
     ReflexAsleepEvent,
     ReflexAwakeEvent,
@@ -28,10 +31,6 @@ from octomate.capabilities.harness.events import (
     RunResultEvent,
     RunStartedEvent,
 )
-from octomate.capabilities.harness.react import ReactStreamEvent
-from octomate.config import ChannelConfig, ChannelStreamConfig
-from octomate.config.channels import TrunklineChannelConfig
-from octomate.database import async_session
 from octomate.nerve import ThreadTopic
 from octomate.reflex.graph import reflex_graph
 from octomate.reflex.nodes.awake import Awake
@@ -55,6 +54,7 @@ from octomate.schemas.triage import (
 )
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import ChannelOutput
+from octomate.tentacles.stream import ReactStreamEvent
 from octomate.tentacles.trunkline.base import TrunklineTentacle
 from tests.agent.test_command_execution import ExecutingAgent
 from tests.support.agents import FakeAgent

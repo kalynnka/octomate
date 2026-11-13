@@ -42,14 +42,12 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.deferred import DeferredSuspender
-from octomate.capabilities.harness.events import (
+from octomate.config.acp import AcpAgentConfig
+from octomate.config.agents import Claim
+from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
 )
-from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.acp import AcpAgentConfig
-from octomate.config.agents import Claim
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -62,6 +60,8 @@ from octomate.tentacles.acp.client import NativeAcpClient, NativeAcpSession
 from octomate.tentacles.acp.elicitation import AcpForm, AcpFormValidationError
 from octomate.tentacles.acp.history import AcpHistory
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
+from octomate.tentacles.deferred import DeferredSuspender
+from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from octomate.utils import drain_task
 
 if TYPE_CHECKING:
@@ -184,7 +184,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        conversation: Conversation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -193,13 +193,11 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -216,7 +214,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         async with self.run_stream_events(
             user_prompt,
             conversation_address=conversation_address,
-            thread_id=thread_id,
+            conversation=conversation,
             source_thread_address=source_thread_address,
             source_thread_message_ids=source_thread_message_ids,
             run_name=run_name,
@@ -225,13 +223,11 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             deferred_suspender=deferred_suspender,
             model=model,
             effort=effort,
-            conversation_id=conversation_id,
             interactive=interactive,
             instructions=instructions,
             deps=deps,
             model_settings=model_settings,
             usage_limits=usage_limits,
-            usage=usage,
             metadata=metadata,
             output_retries=output_retries,
             infer_name=infer_name,
@@ -252,7 +248,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: UUID7 | None = None,
+        conversation: Conversation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -261,13 +257,11 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
-        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -286,7 +280,6 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                     instructions,
                     model_settings,
                     usage_limits,
-                    usage,
                     metadata,
                     output_retries,
                     toolsets,
@@ -305,8 +298,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             self.stream(
                 user_prompt,
                 conversation_address,
-                thread_id,
-                conversation_id,
+                conversation,
                 source_thread_address,
                 source_thread_message_ids,
                 run_name,
@@ -320,8 +312,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         self,
         user_prompt: str | Sequence[UserContent] | None,
         address: ChannelAddress,
-        thread_id: UUID7 | None,
-        conversation_id: UUID7 | None,
+        conversation: Conversation,
         source_address: ChannelAddress | None,
         source_message_ids: Sequence[UUID7] | None,
         run_name: str | None,
@@ -330,8 +321,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         effort: str | None,
     ) -> AsyncGenerator[ReactStreamEvent[str]]:
         provider = self.config.provider
-        if thread_id is None:
-            raise ValueError("agent run requires a thread_id to own its conversation")
+        self.check_conversation(conversation)
         if isinstance(user_prompt, str):
             text = user_prompt
         else:
@@ -343,19 +333,16 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             text = "\n".join(parts)
         if not text.strip():
             raise ValueError("ACP requires a non-empty text prompt")
-        conversation = await self.resolve_conversation(
-            thread_id, conversation_address=address, conversation_id=conversation_id
-        )
         effort = await self.resolve_effort(conversation, model=model, effort=effort)
         sender = await self.octomate.users.profile(
             address.channel_tentacle_id, address.user_id
         )
         if sender is None or sender.user_id is None:
             raise ValueError("Outbound ACP requires a registered user")
-        thread = await self.threads.get(thread_id, with_messages=False)
+        thread = await self.threads.get(conversation.thread_id, with_messages=False)
         assert thread is not None
         project = await self.projects.of(thread)
-        workspace = self.workspaces.open(thread_id, project)
+        workspace = self.workspaces.open(conversation.thread_id, project)
         updates: asyncio.Queue[
             StreamEvent | ActionBatchEvent | ActionBatchAnsweredEvent | None
         ] = asyncio.Queue()

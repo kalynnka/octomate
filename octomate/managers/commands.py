@@ -11,8 +11,6 @@ from typing import ClassVar, NamedTuple
 from cachetools import LRUCache
 from pydantic_ai import AgentCapability
 
-from octomate.capabilities.harness.deferred import DeferredSuspender
-from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.managers.base import Manager
 from octomate.managers.conversation import ConversationManager
@@ -35,6 +33,8 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.channel import ChannelTentacle
+from octomate.tentacles.deferred import DeferredSuspender
+from octomate.tentacles.stream import ReactStreamEvent
 
 logger = logging.getLogger(__name__)
 
@@ -262,7 +262,7 @@ class CommandManager(Manager):
                 )
                 try:
                     conversation = await self.conversations.get(
-                        conversation_id, with_history=False
+                        conversation_id, with_runs=False
                     )
                 except ValueError:
                     conversation = None

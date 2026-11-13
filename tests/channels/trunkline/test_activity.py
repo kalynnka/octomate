@@ -2,7 +2,7 @@
 
 import pytest
 
-from octomate.capabilities.harness.events import wire_event_adapter
+from octomate.events import wire_event_adapter
 from octomate.tentacles.trunkline.activity import ActivityUpdate
 from octomate.types.json import JsonObject
 

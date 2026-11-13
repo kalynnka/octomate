@@ -13,10 +13,10 @@ from starlette.datastructures import Headers
 
 from octomate import Octomate
 from octomate.auth import current_user
-from octomate.capabilities.harness.events import ArtifactAvailableEvent
 from octomate.config import OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.database import async_session
+from octomate.events import ArtifactAvailableEvent
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.artifacts import CapturedMcpAppSource, McpAppArtifact, McpAppView
 from octomate.schemas.conversation import ChannelAddress
@@ -204,7 +204,11 @@ async def test_driven_app_survives_its_session_and_reuses_the_owned_viewer(
 
         monkeypatch.setattr(tentacle.ink.client._client, "request", resource_request)
         async with tentacle.run_stream_events(
-            "Show the weather", conversation_address=address, thread_id=thread.id
+            "Show the weather",
+            conversation_address=address,
+            conversation=await tentacle.resolve_conversation(
+                thread.id, conversation_address=address
+            ),
         ) as stream:
             events = [event async for event in stream]
 

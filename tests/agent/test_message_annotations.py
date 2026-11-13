@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import StreamEvents, wire_event_adapter
+from octomate.events import StreamEvents, wire_event_adapter
 from octomate.nerve import Impulse
 from octomate.schemas.annotations import MessageAnnotations
 from octomate.schemas.messages import ModelRequest, ModelResponse

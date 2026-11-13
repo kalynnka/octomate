@@ -16,10 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.auth import current_user
-from octomate.capabilities.harness.events import ArtifactAvailableEvent
 from octomate.config import OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.database import async_session
+from octomate.events import ArtifactAvailableEvent
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.artifacts import Artifact, HtmlArtifact, HtmlView
 from octomate.schemas.files import Html
@@ -205,7 +205,11 @@ async def test_driven_html_reaches_the_owned_viewer_and_channel_card(
     async with (
         tentacle,
         tentacle.run_stream_events(
-            "Draw a chart", conversation_address=KEY, thread_id=thread.id
+            "Draw a chart",
+            conversation_address=KEY,
+            conversation=await tentacle.resolve_conversation(
+                thread.id, conversation_address=KEY
+            ),
         ) as stream,
     ):
         events = [event async for event in stream]

@@ -98,7 +98,12 @@ async def claude_run(octomate: Octomate, thread: Thread) -> ClaudeAgentOptions:
     """Drive one Claude run and answer with the options it handed the SDK."""
     tentacle = a_claude(octomate)
     async with tentacle.run_stream_events(
-        "do it", conversation_address=KEY, thread_id=thread.id, run_name="react"
+        "do it",
+        conversation_address=KEY,
+        conversation=await tentacle.resolve_conversation(
+            thread.id, conversation_address=KEY
+        ),
+        run_name="react",
     ) as stream:
         async for _event in stream:
             pass
@@ -127,7 +132,12 @@ async def codex_run(octomate: Octomate, thread: Thread) -> str | None:
     )
     async with tentacle:
         async with tentacle.run_stream_events(
-            "do it", conversation_address=KEY, thread_id=thread.id, run_name="react"
+            "do it",
+            conversation_address=KEY,
+            conversation=await tentacle.resolve_conversation(
+                thread.id, conversation_address=KEY
+            ),
+            run_name="react",
         ) as stream:
             async for _event in stream:
                 pass

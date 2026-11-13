@@ -15,12 +15,12 @@ import pytest
 from pydantic import AnyHttpUrl, JsonValue
 
 from octomate.base import Octomate
-from octomate.capabilities.harness.events import (
+from octomate.config.channels import NapcatChannelConfig
+from octomate.events import (
     LinkProfileAuthorizationEvent,
     OAuthAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,
 )
-from octomate.config.channels import NapcatChannelConfig
 from octomate.schemas.auth import LinkProfileAuthorization
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.user import UserProfile

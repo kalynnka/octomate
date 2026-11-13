@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ActionBatchEvent,
     DisplayEvent,
     ResultSegmentEvent,

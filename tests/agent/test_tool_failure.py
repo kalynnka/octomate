@@ -14,8 +14,8 @@ from pydantic_ai.models.function import (
 )
 from pydantic_ai.toolsets import FunctionToolset
 
-from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.tools import ToolFailureCapability
+from octomate.tentacles.inkling.agent import Agent
+from octomate.tentacles.inkling.capabilities.tools import ToolFailureCapability
 
 TOOL = "fetch_the_thing"
 

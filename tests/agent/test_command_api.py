@@ -33,7 +33,12 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.auth import current_user
-from octomate.capabilities.harness.events import (
+from octomate.commands import command_context, discover_commands
+from octomate.config.auth import AuthConfig
+from octomate.config.channels import TrunklineChannelConfig
+from octomate.database import async_session
+from octomate.dependencies import workspace_manager
+from octomate.events import (
     ActionBatchEvent,
     MessageSentEvent,
     ReflexAsleepEvent,
@@ -45,12 +50,6 @@ from octomate.capabilities.harness.events import (
     RunStartedEvent,
     WireEvent,
 )
-from octomate.capabilities.harness.react import ReactStreamEvent
-from octomate.commands import command_context, discover_commands
-from octomate.config.auth import AuthConfig
-from octomate.config.channels import TrunklineChannelConfig
-from octomate.database import async_session
-from octomate.dependencies import workspace_manager
 from octomate.managers.auth import AuthManager
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import Impulse, ThreadTopic
@@ -70,6 +69,7 @@ from octomate.schemas.segments import MessageSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadCommand, ThreadKey
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import ChannelOutput
+from octomate.tentacles.stream import ReactStreamEvent
 from octomate.tentacles.trunkline import TrunklineTentacle
 from octomate.types.permissions import PermissionMode
 from tests.agent.test_command_execution import ExecutingAgent
@@ -367,7 +367,7 @@ async def test_http_catalog_preserves_extensions_and_omits_runtime_history(
         assert data["descriptors"][0]["path"] == "skill"
         assert data["context"]["conversation"]["id"] == str(conversation.id)
         assert (
-            not {"runs", "messages", "external_id", "allowed_tools"}
+            not {"runs", "messages", "all_messages", "external_id", "allowed_tools"}
             & data["context"]["conversation"].keys()
         )
         schema = (await client.get("/openapi.json")).json()

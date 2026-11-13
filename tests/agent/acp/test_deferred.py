@@ -8,7 +8,7 @@ from acp import schema
 from anyio import Path as AsyncPath
 from pydantic import SecretStr, TypeAdapter
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
     ActionBatchUpdatedEvent,
@@ -166,7 +166,9 @@ async def test_form_roundtrip_preserves_typed_answers(
     async with tentacle.run_stream_events(
         "hello",
         conversation_address=thread.key.address(sender.channel_user_id),
-        thread_id=thread.id,
+        conversation=await tentacle.resolve_conversation(
+            thread.id, conversation_address=thread.key.address(sender.channel_user_id)
+        ),
         deferred_suspender=suspender,
     ) as events:
         async for event in events:
@@ -240,7 +242,9 @@ async def test_permission_returns_exact_selected_option(
     async with tentacle.run_stream_events(
         "hello",
         conversation_address=thread.key.address(sender.channel_user_id),
-        thread_id=thread.id,
+        conversation=await tentacle.resolve_conversation(
+            thread.id, conversation_address=thread.key.address(sender.channel_user_id)
+        ),
         deferred_suspender=suspender,
     ) as events:
         async for event in events:
@@ -340,7 +344,9 @@ async def test_modes_reach_new_and_loaded_provider_sessions(
             await tentacle.run(
                 "hello",
                 conversation_address=address,
-                thread_id=thread.id,
+                conversation=await tentacle.resolve_conversation(
+                    thread.id, conversation_address=address
+                ),
                 interactive=False,
             )
             messages = [
@@ -364,7 +370,9 @@ async def test_modes_reach_new_and_loaded_provider_sessions(
         await tentacle.run(
             "hello",
             conversation_address=address,
-            thread_id=thread.id,
+            conversation=await tentacle.resolve_conversation(
+                thread.id, conversation_address=address
+            ),
             interactive=False,
         )
         messages = [

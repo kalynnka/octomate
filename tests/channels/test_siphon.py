@@ -11,13 +11,13 @@ import pytest
 from anyio.abc import ObjectReceiveStream
 from pydantic_ai.usage import RunUsage
 
-from octomate.capabilities.harness.events import (
+from octomate.config import ChannelConfig, ChannelStreamConfig
+from octomate.events import (
     MessageSentEvent,
     RunEndedEvent,
     RunResultEvent,
     RunStartedEvent,
 )
-from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.nerve import ChannelTopic, Impulse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MarkdownSegment, MessageSegment

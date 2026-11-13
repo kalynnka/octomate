@@ -8,7 +8,7 @@ carry no state back and never redraw.
 
 from __future__ import annotations
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     LinkProfileAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,
 )

@@ -20,13 +20,13 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.capabilities.harness.events import (
+from octomate.config import ChannelStreamConfig
+from octomate.events import (
     SubagentActivityStatus,
     SubagentStartedEvent,
     TodoDeletedEvent,
     TodoEvent,
 )
-from octomate.config import ChannelStreamConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
     AtSegment,

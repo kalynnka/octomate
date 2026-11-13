@@ -6,16 +6,44 @@ from datetime import datetime
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 from arcanus.base import TransmuterProxiedMixin
-from pydantic import UUID7, JsonValue
-from sqlalchemy import JSON, ForeignKey, String, Uuid
+from pydantic import UUID7, ConfigDict, JsonValue, TypeAdapter
+from pydantic_ai.messages import ModelRequestPart, ModelResponsePart
+from sqlalchemy import JSON, CheckConstraint, Dialect, ForeignKey, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import TypeDecorator
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base, MapperArgs, UTCDateTime
 
 if TYPE_CHECKING:
+    from octomate.models.compactions import Compaction
     from octomate.models.runs import AgentRun
     from octomate.models.thread import ThreadMessage
+
+
+class MessageParts(TypeDecorator[list[ModelRequestPart | ModelResponsePart]]):
+    """Honor upstream's field serializers before parts reach generic JSON encoding."""
+
+    impl: type[JSON] = JSON
+    cache_ok: bool = True
+    adapter: ClassVar[TypeAdapter[list[ModelRequestPart | ModelResponsePart]]] = (
+        TypeAdapter(
+            list[ModelRequestPart | ModelResponsePart],
+            config=ConfigDict(ser_json_bytes="base64", val_json_bytes="base64"),
+        )
+    )
+
+    def process_bind_param(
+        self,
+        value: list[ModelRequestPart | ModelResponsePart] | None,
+        dialect: Dialect,
+    ) -> JsonValue:
+        return None if value is None else self.adapter.dump_python(value, mode="json")
+
+    def process_result_value(
+        self, value: JsonValue, dialect: Dialect
+    ) -> list[ModelRequestPart | ModelResponsePart] | None:
+        return None if value is None else self.adapter.validate_python(value)
 
 
 class ModelMessage(Base, TransmuterProxiedMixin):
@@ -23,21 +51,41 @@ class ModelMessage(Base, TransmuterProxiedMixin):
     or a response."""
 
     __tablename__ = "model_messages"
+    __table_args__ = (
+        CheckConstraint(
+            "(run_id IS NOT NULL AND compaction_id IS NULL) OR "
+            "(run_id IS NULL AND compaction_id IS NOT NULL)",
+            name="ck_model_messages_single_owner",
+        ),
+    )
     __mapper_args__: ClassVar[MapperArgs] = {
         "polymorphic_on": "kind",
         "polymorphic_abstract": True,
     }
 
     id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
-    run_id: Mapped[str] = mapped_column(
+    run_id: Mapped[str | None] = mapped_column(
         String,
         ForeignKey("agent_runs.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
+    )
+    compaction_id: Mapped[UUID7 | None] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "compactions.id",
+            name="fk_model_messages_compaction_id_compactions",
+            ondelete="CASCADE",
+        ),
+        nullable=True,
+        index=True,
+        comment="Compaction that created or rewrote this message; NULL for original run messages.",
     )
 
     kind: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    parts: Mapped[JsonValue] = mapped_column(JSON, nullable=False)
+    parts: Mapped[list[ModelRequestPart | ModelResponsePart]] = mapped_column(
+        MessageParts, nullable=False
+    )
     timestamp: Mapped[datetime | None] = mapped_column(
         UTCDateTime, nullable=True, index=True
     )
@@ -48,9 +96,20 @@ class ModelMessage(Base, TransmuterProxiedMixin):
     instructions: Mapped[str | None] = mapped_column(String, nullable=True)
 
     usage: Mapped[JsonValue] = mapped_column(JSON, nullable=True)
+    model_id: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment="Configured model identifier used for the request, distinct from the provider-reported model name.",
+    )
     model_name: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+
     provider_name: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     provider_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    canonical_system: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment="Provider system whose keys validate this response's signed or encrypted content, when distinct from provider_name.",
+    )
     provider_details: Mapped[JsonValue] = mapped_column(JSON, nullable=True)
     provider_response_id: Mapped[str | None] = mapped_column(
         String, nullable=True, index=True
@@ -88,8 +147,11 @@ class ModelMessage(Base, TransmuterProxiedMixin):
     )
     message_text: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
-    run: Mapped[AgentRun] = relationship(
+    run: Mapped[AgentRun | None] = relationship(
         "AgentRun", back_populates="messages", lazy="raise_on_sql"
+    )
+    compaction: Mapped[Compaction | None] = relationship(
+        "Compaction", back_populates="messages", lazy="raise_on_sql"
     )
     thread_messages: Mapped[list[ThreadMessage]] = relationship(
         "ThreadMessage",

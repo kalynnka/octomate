@@ -2,21 +2,32 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
+from uuid import UUID
 
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import UUID7
-from sqlalchemy import ARRAY, JSON, ForeignKey, String, UniqueConstraint, Uuid
+from pydantic_ai import DeferredToolRequests
+from pydantic_ai.usage import RunUsage
+from sqlalchemy import (
+    ARRAY,
+    JSON,
+    CheckConstraint,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    Uuid,
+)
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
-from octomate.models.base import Base
+from octomate.models.base import Base, MapperArgs
 from octomate.types.permissions import AgentPermissionMode
 
 if TYPE_CHECKING:
     from octomate.models.files import File
-    from octomate.models.messages import ModelMessage
     from octomate.models.runs import AgentRun
     from octomate.models.thread import Thread
 
@@ -48,6 +59,38 @@ class ConversationRun(Base, TransmuterProxiedMixin):
             "RESTRICT either, which SQLite checks mid-statement, before the deleted "
             "conversation's own references are sure to be gone."
         ),
+    )
+
+
+class ConversationCompaction(Base, TransmuterProxiedMixin):
+    """A compaction in a conversation's own or frozen inherited history."""
+
+    __tablename__ = "conversation_compactions"
+    __table_args__ = (
+        CheckConstraint("position >= 0", name="ck_conversation_compactions_position"),
+        UniqueConstraint(
+            "conversation_id", "position", name="uq_conversation_compactions_position"
+        ),
+    )
+
+    conversation_id: Mapped[UUID7] = mapped_column(
+        Uuid, ForeignKey("conversations.id", ondelete="CASCADE"), primary_key=True
+    )
+    compaction_id: Mapped[UUID7] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "compactions.id",
+            name="fk_conversation_compactions_compaction",
+            ondelete="NO ACTION",
+        ),
+        primary_key=True,
+        index=True,
+        comment="Shared compaction identity; deletion is blocked while a conversation still includes it.",
+    )
+    position: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="Zero-based compaction order in this conversation; NULL when the order has not been established.",
     )
 
 
@@ -159,6 +202,33 @@ class Conversation(Base, TransmuterProxiedMixin):
         default=list,
     )
 
+    version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
+        comment="ORM optimistic lock rejecting concurrent conversation updates at flush.",
+    )
+    revision: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment="Opaque token checked and replaced when conversation state is saved; NULL before its first save.",
+    )
+    usage: Mapped[RunUsage] = mapped_column(
+        JSON,
+        nullable=False,
+        default=RunUsage,
+        server_default="{}",
+        deferred=True,
+        comment="Cumulative RunUsage, including executed tool calls absent from response usage; survives context trimming and replaces the previous total on save.",
+    )
+    deferred_tool_requests: Mapped[DeferredToolRequests | None] = mapped_column(
+        JSON(none_as_null=True),
+        nullable=True,
+        deferred=True,
+        comment="Upstream deferred tool requests waiting for approval or external execution.",
+    )
+
     transcript_file: Mapped[File | None] = relationship("File", lazy="raise")
     # The runs of this conversation's history: the ones it ran, and the ones it was
     # forked with. Deleting the conversation leaves its `conversation_runs` rows to
@@ -177,18 +247,20 @@ class Conversation(Base, TransmuterProxiedMixin):
         back_populates="conversations",
         lazy="raise_on_sql",
     )
-    # Read-only flat view of every message in the conversation's history.
-    messages: Mapped[list[ModelMessage]] = relationship(
-        "ModelMessage",
-        secondary="join(ConversationRun, AgentRun, ConversationRun.run_id == AgentRun.id)",
-        primaryjoin="Conversation.id == ConversationRun.conversation_id",
-        secondaryjoin="AgentRun.id == ModelMessage.run_id",
-        order_by="(AgentRun.started_at, AgentRun.id, ModelMessage.id)",
-        viewonly=True,
-        lazy="selectin",
-    )
 
     @hybrid_property
     def latest_run(self) -> AgentRun | None:
         """The last run in the ordered history, or None before the first run."""
         return self.runs[-1] if self.runs else None
+
+    @property
+    def conversation_id(self) -> str:
+        return str(self.id)
+
+    @conversation_id.setter
+    def conversation_id(self, value: str) -> None:
+        if self.id is not None and value != str(self.id):
+            raise ValueError("conversation_id must identify the existing conversation")
+        self.id = UUID(value)
+
+    __mapper_args__: ClassVar[MapperArgs] = {"version_id_col": version}

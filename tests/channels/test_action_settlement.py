@@ -16,7 +16,7 @@ from pydantic import SecretStr
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
     ActionBatchUpdatedEvent,

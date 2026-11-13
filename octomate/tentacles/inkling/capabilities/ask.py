@@ -14,12 +14,7 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
 from octomate.schemas.deferred import QuestionRequest
-
-ASK_QUESTIONS_TOOL_NAME = "ask_questions"
-# Declared on the deferral so a reader can tell a question from the other things a
-# run defers — a `teleport` is one too, and only a human answers this one. Classified
-# by kind rather than by tool name, as `TELEPORT_KIND` is.
-ASK_DEFERR_KIND = "questions"
+from octomate.types.deferred import ASK_DEFERR_KIND, ASK_QUESTIONS_TOOL_NAME
 
 
 @dataclass

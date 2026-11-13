@@ -15,7 +15,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ActionBatchEvent,
     MessageSentEvent,
     OAuthDeviceAuthorizationEvent,

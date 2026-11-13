@@ -506,10 +506,12 @@ test('opening the same thread twice during connection renders each event once', 
 test('a failed connection releases the watch so the thread can be opened again', async () => {
   const id = 'failed-watch'
   mock.method(api, 'getThreadDetail', async () => ({ ...detail, key: id }))
+  mock.method(globalThis, 'fetch', async () => new Response(null, { status: 503 }))
   const actions = useConsole.getState().actions
   const opening = actions.selectThread('codex', id)
   LiveSocket.last().close()
   await opening
+  await tick()
   await actions.selectThread('codex', id)
   assert.equal(LiveSocket.opened.length, 2)
   assert.deepEqual(LiveSocket.opened.map(socket => socket.closed), [true, false])

@@ -1,6 +1,7 @@
 """Runtime command catalogs and explicit invocations, separate from chat text."""
 
 import uuid
+from copy import copy
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Annotated, Literal, Self
@@ -163,7 +164,7 @@ class CommandCatalog(BaseModel):
             update={
                 "context": replace(
                     self.context,
-                    conversation=conversation.model_copy()
+                    conversation=copy(conversation)
                     if conversation is not None
                     else None,
                 ),

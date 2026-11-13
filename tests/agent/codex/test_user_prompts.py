@@ -7,12 +7,13 @@ from anyio.abc import ObjectSendStream
 
 from octomate import Octomate
 from octomate.database import async_session
+from octomate.managers.conversation import ConversationManager
 from octomate.nerve import Impulse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.codex.hooks import CodexHookInput
 from octomate.tentacles.codex.tailer import OpenTurn
-from octomate.tentacles.codex.transcript import RolloutLine
+from octomate.tentacles.codex.transcript import RolloutLine, UserMessageIdentities
 from octomate.types.json import JsonObject
 from tests.agent.codex.test_native_ingest import (
     CHILD_THREAD_ID,
@@ -54,6 +55,87 @@ def user_item(
             },
         },
     }
+
+
+@pytest.mark.parametrize("next_turn", [False, True])
+def test_prompt_identity_pairing_distinguishes_repeated_text(next_turn: bool) -> None:
+    identities = UserMessageIdentities()
+    identities.consume(
+        RolloutLine.model_validate(event(0, "task_started", turn_id=TURN_ID)),
+        SESSION_ID,
+    )
+    expected: dict[str, str] = {}
+    for index in range(2):
+        turn_id = f"turn-{index}" if next_turn else TURN_ID
+        if next_turn:
+            identities.consume(
+                RolloutLine.model_validate(event(0, "task_started", turn_id=turn_id)),
+                SESSION_ID,
+            )
+        prompt = user_item(1, "identical prompt", turn_id=turn_id)
+        payload = prompt["payload"]
+        assert isinstance(payload, dict)
+        payload["id"] = f"transcript-{index}"
+        for record in (
+            prompt,
+            event(1, "user_message", message="identical prompt"),
+            event(
+                1,
+                "item_completed",
+                thread_id=SESSION_ID,
+                turn_id=turn_id,
+                item={"type": "UserMessage", "id": f"app-server-{index}"},
+            ),
+        ):
+            identities.consume(RolloutLine.model_validate(record), SESSION_ID)
+        expected[f"app-server-{index}"] = f"transcript-{index}"
+    assert identities.aliases == expected
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "foreign_session",
+        "foreign_turn",
+        "injected",
+        "ambiguous",
+        "ended",
+        "after_end",
+        "missing_id",
+    ],
+)
+def test_prompt_identity_pairing_requires_an_unambiguous_source_occurrence(
+    case: str,
+) -> None:
+    identities = UserMessageIdentities()
+    prompt = user_item(
+        1,
+        "identical prompt",
+        kind="agents_md.instructions" if case == "injected" else "user.text",
+    )
+    payload = prompt["payload"]
+    assert isinstance(payload, dict)
+    if case != "missing_id":
+        payload["id"] = "transcript-id"
+    records = [event(0, "task_started", turn_id=TURN_ID), prompt]
+    if case == "after_end":
+        records.insert(1, event(0, "task_complete", turn_id=TURN_ID))
+    elif case == "ambiguous":
+        records.append(prompt)
+    elif case == "ended":
+        records.append(event(1, "task_complete", turn_id=TURN_ID))
+    records.append(
+        event(
+            2,
+            "item_completed",
+            thread_id="foreign" if case == "foreign_session" else SESSION_ID,
+            turn_id="foreign" if case == "foreign_turn" else TURN_ID,
+            item={"type": "UserMessage", "id": "app-server-id"},
+        )
+    )
+    for record in records:
+        identities.consume(RolloutLine.model_validate(record), SESSION_ID)
+    assert not identities.aliases
 
 
 @pytest.mark.parametrize("format", ["current", "legacy", "both", "legacy-first"])
@@ -251,7 +333,10 @@ async def test_context_and_other_turns_are_not_human_prompts(
     )
     assert state.conversation is not None
     conversation = await octomate.conversations.get(state.conversation.id)
-    assert [message.message_text for message in conversation.messages] == [
+    assert [
+        message.message_text
+        for message in (await ConversationManager().history(conversation.id))
+    ] == [
         "actual prompt",
         "done",
     ]

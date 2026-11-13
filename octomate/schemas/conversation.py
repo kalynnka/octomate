@@ -6,14 +6,25 @@ from dataclasses import field, fields
 from functools import cached_property
 from typing import Annotated, NamedTuple
 
-from arcanus import BaseTransmuter, RelationCollection, Relationships
-from arcanus.base import Identity
+from arcanus import (
+    BaseTransmuter,
+    Identity,
+    RelationCollection,
+    Relationships,
+    Transient,
+    Transmuter,
+)
+from arcanus.dataclass import dataclass as arcanus_dataclass
 from pydantic import UUID7, ConfigDict, Field, with_config
 from pydantic.dataclasses import dataclass
+from pydantic_ai import Conversation as PydanticConversation
 from typing_extensions import TypedDict
 from uuid_utils.compat import uuid7
 
 from octomate.models.conversation import Conversation as ConversationModel
+from octomate.models.conversation import (
+    ConversationCompaction as ConversationCompactionModel,
+)
 from octomate.models.conversation import ConversationRun as ConversationRunModel
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.messages import ModelRequest, ModelResponse
@@ -107,14 +118,44 @@ class ConversationRun(BaseTransmuter):
     run_id: Annotated[str, Identity]
 
 
-@sqlalchemy_materia.bless(ConversationModel)
-class Conversation(BaseTransmuter):
-    """One agent's model context within a thread, keyed by thread, agent and
-    subagent."""
+@sqlalchemy_materia.bless(ConversationCompactionModel)
+class ConversationCompaction(BaseTransmuter):
+    """A shared compaction in a conversation's own or frozen inherited history."""
 
     model_config = ConfigDict(from_attributes=True)
 
+    conversation_id: Annotated[UUID7, Identity]
+    compaction_id: Annotated[UUID7, Identity] = Field(
+        description="Shared compaction identity; deletion is blocked while a conversation still includes it.",
+    )
+    position: int | None = Field(
+        default=None,
+        ge=0,
+        description="Zero-based compaction order in this conversation; None when the order has not been established.",
+    )
+
+    def __lt__(self, other: ConversationCompaction) -> bool:
+        return (self.position if self.position is not None else -1) < (
+            other.position if other.position is not None else -1
+        )
+
+    def __gt__(self, other: ConversationCompaction) -> bool:
+        return (self.position if self.position is not None else -1) > (
+            other.position if other.position is not None else -1
+        )
+
+
+@sqlalchemy_materia.bless(ConversationModel)
+@arcanus_dataclass(kw_only=True)
+class Conversation(Transmuter, PydanticConversation):
+    """One agent's model context within a thread, keyed by thread, agent and
+    subagent. messages is the effective context loaded by the store; the store's
+    history() reads the original run archive.
+    """
+
     id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
+    conversation_id: str = Field(default="", init=False)
+    version: int = Field(default=1, exclude=True, repr=False)
     external_id: str | None = None
     transcript_file_id: UUID7 | None = Field(
         default=None,
@@ -183,7 +224,16 @@ class Conversation(BaseTransmuter):
     )
 
     runs: RelationCollection[AgentRun | ExternalAgentRun] = Relationships()
-    messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()
+    messages: Annotated[list[ModelRequest | ModelResponse], Transient] = Field(
+        default_factory=list,
+        description="Effective context populated by ConversationManager.get with with_messages=True; an ordinary list, not a persistence relationship.",
+    )
+    new_message_index: Annotated[int | None, Transient] = field(
+        default=None, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        self.conversation_id = str(self.id)
 
     @property
     def native_run_ids(self) -> set[str]:

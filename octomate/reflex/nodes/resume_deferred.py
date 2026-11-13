@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pydantic_ai import AgentRunResult
 from pydantic_graph import BaseNode, End, GraphRunContext
 
-from octomate.capabilities.harness.events import ActionBatchAnsweredEvent
+from octomate.events import ActionBatchAnsweredEvent
 from octomate.nerve import Impulse
 from octomate.reflex.nodes.react import React
 from octomate.reflex.state import (

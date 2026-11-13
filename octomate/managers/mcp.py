@@ -22,9 +22,9 @@ from pydantic import UUID7, JsonValue
 from sqlalchemy.exc import IntegrityError
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.events import ArtifactAvailableEvent
 from octomate.config.mcp.pool import McpPoolConfig
 from octomate.database import async_session
+from octomate.events import ArtifactAvailableEvent
 from octomate.managers.base import Locks, Manager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.oauth import NoPendingAuthorization, OAuthLockKey, OAuthManager

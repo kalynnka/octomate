@@ -7,7 +7,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import UUID7
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     TodoCompletedEvent,
     TodoCreatedEvent,
     TodoDeletedEvent,

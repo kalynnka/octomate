@@ -46,7 +46,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from octomate.capabilities.harness.events import RunActivityChangedEvent, StreamEvents
+from octomate.events import RunActivityChangedEvent, StreamEvents
 from octomate.tentacles.codex.adapter import CodexRunAccumulator, map_usage
 from octomate.tentacles.feelers.output import render_stream_event_delta
 from octomate.types.json import JsonObject

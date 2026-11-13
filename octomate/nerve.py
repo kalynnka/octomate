@@ -47,7 +47,7 @@ from pydantic import (
 )
 from typing_extensions import TypeVar
 
-from octomate.capabilities.harness.events import WireEvent
+from octomate.events import WireEvent
 from octomate.fibers import FIBER_BUFFER as FIBER_BUFFER
 from octomate.fibers import Fiber, FiberError, MemoryFiber
 from octomate.schemas.conversation import ChannelAddress

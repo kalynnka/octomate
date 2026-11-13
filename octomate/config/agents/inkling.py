@@ -145,7 +145,7 @@ class InklingConfig(AgentConfig):
         description="Maximum model requests in one Inkling run.",
     )
 
-    claims: dict[KnownModelName, Claim] = Field(
+    claims: dict[KnownModelName | str, Claim] = Field(
         default_factory=dict,
         description="Optional per-model descriptions and supported thinking efforts. "
         "Every configured model is available to bound channels.",

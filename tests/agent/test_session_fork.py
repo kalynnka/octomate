@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
+from octomate.managers.conversation import ConversationManager
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.thread import ThreadKey
@@ -83,5 +84,7 @@ async def test_shared_fork_can_share_history_without_an_external_session(
         target_thread.id, agent_tentacle_id=agent.id
     )
     assert source.external_id is target.external_id is None
-    assert source.messages[0].id == target.messages[0].id
+    assert (await ConversationManager().history(source.id))[0].id == (
+        await ConversationManager().history(target.id)
+    )[0].id
     assert target_thread.active_model == "test"

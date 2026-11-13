@@ -24,7 +24,7 @@ from pydantic_ai.messages import (
 )
 from starlette.websockets import WebSocketState
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ActionBatchEvent,
     ReflexAsleepEvent,
     ReflexAwakeEvent,

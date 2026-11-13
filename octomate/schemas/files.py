@@ -7,8 +7,7 @@ from datetime import UTC, datetime
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Annotated, Literal
 
-from arcanus import BaseTransmuter
-from arcanus.base import Identity
+from arcanus import BaseTransmuter, Identity
 from pydantic import AwareDatetime, ConfigDict, Field, TypeAdapter, field_validator
 from uuid_utils.compat import uuid7
 
