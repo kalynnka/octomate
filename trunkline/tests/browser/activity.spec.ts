@@ -82,11 +82,16 @@ for (const width of [1280, 390]) {
     await expect(page).toHaveTitle('Trunkline · Octomate')
     await expect(page).toHaveURL(new RegExp(`/threads/${first.id}$`))
     const activity = page.locator('.trk-activity-dock .trk-activity')
-    // The status line rides the composer's top edge, outside the scrolling ledger, with nothing between them.
+    // The status line floats on the composer's top edge, outside the scrolling ledger, and takes no
+    // room from it: the ledger and its scrollbar still reach the composer.
     const docked = () => activity.evaluate(el => {
       const dock = el.closest('.trk-activity-dock')!
-      const composer = dock.nextElementSibling!
-      return { scrolls: dock.closest('#trk-chatlog') !== null, composer: composer.querySelector('.trk-composer-frame') !== null, gap: Math.round(composer.getBoundingClientRect().top - dock.getBoundingClientRect().bottom) }
+      const composer = dock.nextElementSibling!.getBoundingClientRect()
+      const above = composer.top - el.getBoundingClientRect().bottom
+      return {
+        scrolls: dock.closest('#trk-chatlog') !== null, composer: dock.nextElementSibling!.querySelector('.trk-composer-frame') !== null,
+        gap: Math.round(composer.top - document.querySelector('#trk-chatlog')!.getBoundingClientRect().bottom) + Number(above < 0 || above > 8),
+      }
     })
     const lastRow = () => page.locator('#trk-chatlog .trk-ledger-col').evaluate(el => el.lastElementChild?.textContent)
     const status = activity.locator('[data-text-current]')
@@ -246,12 +251,12 @@ for (const width of [1280, 390]) {
     expect(await lastRow()).toContain('Include a progress report?')
     await page.screenshot({ animations: 'disabled', path: `/private/tmp/trunkline-status/activity-tail-${width}.png` })
     await page.emulateMedia({ reducedMotion: 'no-preference' })
-    // A bar that joins the tail unfolds, so the rows above it are pushed up over a moment.
+    // A row that joins the tail unfolds, so the rows above it are pushed up over a moment.
     await page.evaluate(() => {
       const unfolded: string[] = []
       const animate = Element.prototype.animate
       Element.prototype.animate = function (keyframes, options) {
-        if (keyframes && 'height' in keyframes) unfolded.push(this.className)
+        if (Array.isArray(keyframes) && 'marginBottom' in keyframes[0]) unfolded.push(this.className)
         return animate.call(this, keyframes, options)
       }
       Object.assign(window, { unfolded })
@@ -261,12 +266,13 @@ for (const width of [1280, 390]) {
     const before = await bars.count()
     send(first, { event_kind: 'function_tool_call', part: { part_kind: 'tool-call', tool_call_id: 'unfolding-tool', tool_name: 'read', args: {} } })
     await expect.poll(() => bars.count()).toBeGreaterThan(before)
-    expect(await unfolded()).toEqual([expect.stringMatching(/^trk-trace-(row|group)$/)])
+    const opened = await unfolded()
+    expect(opened.some(name => /^trk-trace-(row|group)$/.test(name))).toBe(true)
     await page.emulateMedia({ reducedMotion: 'reduce' })
     const settled = await bars.count()
     send(first, { event_kind: 'function_tool_call', part: { part_kind: 'tool-call', tool_call_id: 'still-tool', tool_name: 'read', args: {} } })
     await expect.poll(() => bars.count()).toBeGreaterThan(settled)
-    expect(await unfolded()).toHaveLength(1)
+    expect(await unfolded()).toEqual(opened)
     await page.emulateMedia({ reducedMotion: 'no-preference' })
     const motion = page.locator('.trk-activity-dock')
     await motion.evaluate(el => {
@@ -280,7 +286,7 @@ for (const width of [1280, 390]) {
       const animation = el.getAnimations()[0]
       animation.currentTime = 75
       return { name: getComputedStyle(el).animationName, duration: animation.effect!.getTiming().duration, opacity: Number(getComputedStyle(el).opacity) }
-    })).toMatchObject({ name: 'lt-fade-out, trk-dock-shut', duration: 150 })
+    })).toMatchObject({ name: 'trk-dock-leave', duration: 380 })
     const opacity = await motion.evaluate(el => Number(getComputedStyle(el).opacity))
     expect(opacity).toBeGreaterThan(0)
     expect(opacity).toBeLessThan(1)
@@ -288,7 +294,7 @@ for (const width of [1280, 390]) {
     send(first, { event_kind: 'run_activity_changed', activity: 'thinking' })
     await expect(status).toHaveText('Thinking')
     await expect(motion).not.toHaveAttribute('data-exiting')
-    expect(await motion.evaluate(el => ({ name: getComputedStyle(el).animationName, duration: el.getAnimations()[0].effect!.getTiming().duration }))).toEqual({ name: 'lt-fade-up, trk-dock-open', duration: 240 })
+    expect(await motion.evaluate(el => ({ name: getComputedStyle(el).animationName, duration: el.getAnimations()[0].effect!.getTiming().duration }))).toEqual({ name: 'lt-fade-up', duration: 240 })
     await motion.evaluate(el => el.getAnimations().forEach(animation => animation.finish()))
     await expect(activity).toHaveCount(1)
     send(first, { event_kind: 'reflex_asleep' })

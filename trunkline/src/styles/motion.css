@@ -69,14 +69,16 @@
   .trk-activity .lt-text-swap > .lt-text-old { animation: var(--trk-roll-out); }
   .trk-activity .lt-text-swap > .lt-text-new { animation: var(--trk-roll-in); }
 }
-/* The status line opens and shuts on the composer's edge; its height travels
-   with the fade, so the ledger above it gives way instead of jumping. */
-.trk-activity-dock { display: grid; grid-template-rows: 1fr; padding-inline: 24px; --entry-rise: 4px; animation: lt-fade-up var(--motion-base) var(--ease-out) both, trk-dock-open var(--motion-base) var(--ease-out) both; }
-.trk-activity-dock[data-exiting] { animation: lt-fade-out var(--motion-fast) var(--ease-out) both, trk-dock-shut var(--motion-fast) var(--ease-out) both; pointer-events: none; }
-.trk-activity-dock > div { min-height: 0; overflow: hidden; }
-.trk-activity-dock .trk-activity { margin-bottom: 6px; }
+/* The status line floats over the foot of the ledger, on the composer's edge. It takes
+   no room of its own, so the ledger and its scrollbar always reach the composer; a
+   plate of the page color keeps it readable over rows scrolled beneath it. */
+.trk-activity-dock { position: relative; height: 0; --entry-rise: 4px; animation: lt-fade-up var(--motion-base) var(--ease-out) both; }
+.trk-activity-dock > div { position: absolute; bottom: 6px; left: 18px; box-sizing: border-box; max-width: calc(100% - 48px); padding: 0 6px; background: var(--page-bg); }
+/* It leaves slower than it arrives, sinking toward the composer as it fades. */
+.trk-activity-dock[data-exiting] { animation: trk-dock-leave var(--motion-entry) var(--ease-out) both; pointer-events: none; }
 @keyframes trk-dock-open { from { grid-template-rows: 0fr; } }
 @keyframes trk-dock-shut { to { grid-template-rows: 0fr; } }
+@keyframes trk-dock-leave { to { opacity: 0; transform: translateY(4px); } }
 @keyframes trk-text-shimmer {
   from { background-position: 100% 0; }
   85%, to { background-position: 0% 0; }

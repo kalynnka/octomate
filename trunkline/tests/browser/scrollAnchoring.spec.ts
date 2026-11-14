@@ -112,8 +112,15 @@ for (const width of [1280, 390]) {
         if (grouped) await expect(log.locator('details.trk-trace-group')).toHaveAttribute('open')
         else await expect(button).toHaveAttribute('aria-expanded', 'true')
         const { before, samples } = await positions
-        if (mode === 'expand-fit') expect(Math.max(...samples.map(top => Math.abs(top - before)))).toBeLessThan(2)
-        else await expect.poll(() => button.evaluate((el, mode) => {
+        const offTail = () => log.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)
+        const scrolled = await log.evaluate(el => el.scrollTop > 0)
+        if (mode === 'expand-fit') {
+          // Opening a card is not scrolling away: the tail stays pinned, the header just clicked
+          // never leaves the view, and it does not move at all while everything still fits.
+          expect(Math.min(...samples)).toBeGreaterThanOrEqual((await log.boundingBox())!.y)
+          if (!scrolled) expect(Math.max(...samples.map(top => Math.abs(top - before)))).toBeLessThan(2)
+          await expect.poll(offTail).toBeLessThan(2)
+        } else await expect.poll(() => button.evaluate((el, mode) => {
           const log = document.getElementById('trk-chatlog')!
           const viewport = log.getBoundingClientRect()
           const card = el.closest('.trk-trace-row, details.trk-trace-group')!.getBoundingClientRect()
@@ -125,12 +132,14 @@ for (const width of [1280, 390]) {
         expect(columnAfter.x - panelAfter.x).toBeCloseTo(columnBefore.x - panelBefore.x, 0)
         expect(panelAfter.x + panelAfter.width - columnAfter.x - columnAfter.width)
           .toBeCloseTo(panelBefore.x + panelBefore.width - columnBefore.x - columnBefore.width, 0)
-        if (!nearBottom) expect((await answer.boundingBox())!.y).toBeGreaterThan(answerBefore + 50)
+        if (!nearBottom && !scrolled) expect((await answer.boundingBox())!.y).toBeGreaterThan(answerBefore + 50)
         await log.screenshot({ animations: 'disabled', path: `/private/tmp/trunkline-tool-reading-${width}-${mode}-expanded.png` })
         const top = await log.evaluate(el => el.scrollTop)
         renderDiagrams()
         await expect(log.locator('svg.pele')).toBeVisible()
-        expect(Math.abs(await log.evaluate(el => el.scrollTop) - top)).toBeLessThan(2)
+        // A reader still on the tail follows the late layout; one holding a card stays put.
+        if (mode === 'expand-fit') await expect.poll(offTail).toBeLessThan(2)
+        else expect(Math.abs(await log.evaluate(el => el.scrollTop) - top)).toBeLessThan(2)
         if (mode !== 'expand-fit') {
           await log.evaluate(el => new Promise<void>(resolve => {
             el.addEventListener('scroll', () => requestAnimationFrame(() => resolve()), { once: true })

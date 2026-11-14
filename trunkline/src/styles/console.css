@@ -896,8 +896,10 @@ html[data-theme='dark'] .trk-reference-tooltip { --trk-reference-grain: 1.6%; }
 .trk-ledger-col > :is(.trk-trace-group, .trk-trace-row),
 .lt-message-entry > .trk-message-context { margin-inline-start: -10px; }
 .trk-trace-group,
-.trk-trace-items { display: flex; flex-direction: column; gap: 2px; }
-.trk-trace-items { padding-left: 16px; }
+.trk-trace-items { display: flex; flex-direction: column; }
+/* The space under the header belongs to the items, so a folded group is exactly its header. */
+.trk-trace-items { gap: 2px; padding-left: 16px; }
+.trk-trace-items > :first-child { margin-top: 2px; }
 .trk-trace-summary { position: relative; display: flex; align-items: center; gap: 8px; padding: 5px 10px; color: var(--fg-2); font: var(--meta); cursor: pointer; list-style: none; }
 .trk-trace-hover-brackets { position: absolute; inset: 1px; opacity: 0; pointer-events: none; }
 .trk-trace-summary:is(:hover, :focus-visible) > .trk-trace-hover-brackets,
@@ -1453,7 +1455,7 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
   #trk-chatlog {
     padding: 14px 12px 52px;
   }
-  .trk-activity-dock { padding-inline: 12px; }
+  .trk-activity-dock > div { left: 6px; max-width: calc(100% - 24px); }
 }
 @media (pointer: coarse) {
   :root { --trk-rail-w: 44px; --trk-rail-base-w: 44px; }

@@ -39,7 +39,9 @@ export function ActivityLine() {
       data-exiting={text === undefined ? '' : undefined}
       aria-hidden={text === undefined ? true : undefined}
       onAnimationEnd={(event) => {
-        if (event.target === event.currentTarget && text === undefined) setShown({ threadId, status: undefined })
+        // Gone once the last of its exit animations has played, however many the motion preference gives it.
+        const last = getComputedStyle(event.currentTarget).animationName.split(', ').at(-1)
+        if (event.target === event.currentTarget && text === undefined && event.animationName === last) setShown({ threadId, status: undefined })
       }}
     >
       <div>

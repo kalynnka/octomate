@@ -29,42 +29,64 @@ export function ChatLog() {
   const ledgerRef = useRef<HTMLDivElement>(null)
   const following = useRef(true)
   const revealing = useRef<HTMLElement | null>(null)
+  const opened = useRef<HTMLElement | null>(null)
   const dimensions = useRef({ height: 0, viewport: 0 })
 
   useLayoutEffect(() => {
     following.current = true
     revealing.current = null
+    opened.current = null
     const log = logRef.current!
+    let ledgerHeight = 0  // The ledger's height as last laid out, to tell what a swap took away.
     const observer = new ResizeObserver(() => {
-      if (following.current) log.scrollTop = log.scrollHeight
+      if (following.current) {
+        // Following never carries a card the reader just opened off the top: once it
+        // would, the card's header is held there and the tail is theirs to return to.
+        const card = opened.current?.isConnected ? opened.current : null
+        const viewport = log.getBoundingClientRect()
+        const room = card ? (card.getBoundingClientRect().top - viewport.top) * log.clientHeight / viewport.height - 8 : Infinity
+        if (log.scrollHeight - log.clientHeight - log.scrollTop > room) {
+          log.scrollTop += Math.max(0, Math.floor(room))
+          following.current = false
+        } else log.scrollTop = log.scrollHeight
+      }
       dimensions.current = { height: log.scrollHeight, viewport: log.clientHeight }
+      ledgerHeight = ledgerRef.current!.offsetHeight
     })
     observer.observe(log)
     observer.observe(ledgerRef.current!)
-    // A bar that joins the tail unfolds, so the rows above slide up to make room
-    // instead of jumping. History, replays and a row swapped for another land as they are.
+    // A row that joins the tail of the ledger, or of an open group, unfolds, so what is
+    // above it slides up to make room instead of jumping. A row swapped in for a taller
+    // one, as when a lone call leaves its group, gives the difference back over the same
+    // moment. History, older pages and replays land as they are.
     const arrivals = new MutationObserver(records => {
+      if (matchMedia('(prefers-reduced-motion: reduce)').matches) return
       const added = new Set(records.flatMap(record => [...record.addedNodes]))
-      const bars = [...added].filter((node): node is HTMLElement => node instanceof HTMLElement && node.matches('.trk-trace-row, .trk-trace-group'))
-      const [bar] = bars
-      const list = bar?.parentElement
-      if (bars.length !== 1 || !list || matchMedia('(prefers-reduced-motion: reduce)').matches) return
-      const replaced = records.some(record => record.target === list && record.removedNodes.length > 0)
-      const joined = [...list.children].some(child => !added.has(child))
-      const last = !bar.matches(':has(~ :is(.trk-trace-row, .trk-trace-group, [id^="pm-"]))')
-      // A bar inside a folded group has no height to open to.
-      if (replaced || !joined || !last || !parseFloat(getComputedStyle(bar).height)) return
       const tokens = getComputedStyle(log)
-      const heading = bar.previousElementSibling
-      // The agent label that opens a turn arrives with its first bar.
-      for (const row of heading?.matches('.trk-agent-label') && added.has(heading) ? [heading, bar] : [bar]) {
-        row.animate({
-          height: ['0px', getComputedStyle(row).height],
-          marginTop: [`-${getComputedStyle(list).rowGap}`, '0px'],
-          opacity: [0, 1],
-          clipPath: ['inset(0)', 'inset(0)'],
-        }, { duration: parseFloat(tokens.getPropertyValue('--motion-base')), easing: tokens.getPropertyValue('--ease-out').trim() })
+      const timing = { duration: parseFloat(tokens.getPropertyValue('--motion-base')), easing: tokens.getPropertyValue('--ease-out').trim() }
+      const swapped: HTMLElement[] = []
+      for (const list of new Set(records.map(record => record.target))) {
+        if (!(list instanceof HTMLElement) || !list.matches('.trk-ledger-col, .trk-trace-items')) continue
+        const rows = [...list.children].filter(row => row instanceof HTMLElement)
+        const fresh = rows.filter(row => added.has(row))
+        const removed = records.filter(record => record.target === list).flatMap(record => [...record.removedNodes]).filter(node => node instanceof HTMLElement).length
+        // One row may have taken another's place; the rest must be new rows at the tail.
+        const joining = fresh.slice(removed)
+        const first = rows.indexOf(joining[0])
+        if (removed > 1 || removed > fresh.length || joining.length > 8 || (joining.length && (first < 1 || rows.length - first !== joining.length))) continue
+        swapped.push(...fresh.slice(0, removed))
+        const gap = parseFloat(getComputedStyle(list).rowGap)
+        for (const row of joining) {
+          // The row keeps its own height while a shrinking margin and clip reveal it,
+          // so text that streams in, or a fold that starts meanwhile, is never fought.
+          row.animate([
+            { offset: 0, marginTop: `${parseFloat(getComputedStyle(row).marginTop) - gap}px`, marginBottom: `${parseFloat(getComputedStyle(row).marginBottom) - row.offsetHeight}px`, opacity: 0, clipPath: 'inset(0 0 100% 0)' },
+            { offset: 1, clipPath: 'inset(0)' },
+          ], timing)
+        }
       }
+      const collapsed = swapped.length === 1 ? ledgerHeight - ledgerRef.current!.offsetHeight : 0
+      if (collapsed > 2) swapped[0].animate([{ offset: 0, marginBottom: `${parseFloat(getComputedStyle(swapped[0]).marginBottom) + collapsed}px`, opacity: 0 }], timing)
     })
     arrivals.observe(ledgerRef.current!, { childList: true, subtree: true })
     const selectHistory = (event: MouseEvent) => {
@@ -115,10 +137,17 @@ export function ChatLog() {
       onClickCapture={(event) => {
         const toggle = event.target instanceof Element ? event.target.closest<HTMLElement>('button[aria-expanded], summary') : null
         if (!toggle) return
-        following.current = false
         revealing.current = null
         const card = toggle.closest<HTMLElement>('.trk-trace-row, details.trk-trace-group')
         const opening = toggle.tagName === 'SUMMARY' ? !card?.hasAttribute('open') : toggle.getAttribute('aria-expanded') === 'false'
+        if (following.current) {
+          // A fold or unfold is not the reader scrolling away, so the tail stays pinned
+          // through it; a card being opened is watched for as long as its unfolding lasts.
+          const watched = opening ? card ?? toggle.closest<HTMLElement>('.trk-ledger-col > *') : null
+          opened.current = watched
+          if (watched) window.setTimeout(() => { if (opened.current === watched) opened.current = null }, 600)
+          return
+        }
         if (!card || !opening) return
         const log = event.currentTarget
         revealing.current = card
