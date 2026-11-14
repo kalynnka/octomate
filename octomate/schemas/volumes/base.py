@@ -64,7 +64,7 @@ class Volume(BaseTransmuter):
     usage: VolumeUsage | None = Field(
         default=None,
         frozen=True,
-        description="Optional application use: working tree, host mirror, user memory or package cache.",
+        description="Optional application use: working tree, host mirror, user memory, package cache or agent configuration.",
     )
     ephemeral: bool = Field(
         default=False,

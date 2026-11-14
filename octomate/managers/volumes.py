@@ -14,6 +14,7 @@ from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.storages import HostStorageManager
 from octomate.schemas.volumes import GitVolume, Volume
+from octomate.types.volumes import VolumeUsage
 
 
 class VolumeManager(Manager, Locks[UUID7 | None]):
@@ -119,32 +120,28 @@ class VolumeManager(Manager, Locks[UUID7 | None]):
                 await session.commit()
             return volume
 
-    async def cache(self, owner_id: UUID7) -> Volume:
-        """This owner's package cache, its row written now when there is none, and
-        stamped as used either way.
+    async def slot(self, owner_id: UUID7, usage: VolumeUsage) -> Volume:
+        """This owner's one volume of this kind, its row written now when there is
+        none, and stamped as used either way.
 
-        One per owner and kept across threads, so every tree of theirs installs
-        from the same store. Registering it does not prepare its storage.
+        Kept across threads: every tree of theirs installs from the same cache,
+        and every sandbox of theirs finds the same agent configuration.
+        Registering it does not prepare its storage.
         """
         async with self.lock(owner_id), async_session() as session:
             volume = await session.one_or_none(
                 Volume,
                 expressions=[
-                    Volume["usage"] == "cache",
+                    Volume["usage"] == usage,
                     Volume["owner_id"] == owner_id,
                 ],
             )
             if volume is None:
-                volume_id = uuid7()
                 volume = Volume(
-                    id=volume_id,
                     storage=self.host_storage.get(
-                        self.host_storage.volumes_dir
-                        / str(owner_id)
-                        / "cache"
-                        / str(volume_id)
+                        self.host_storage.slot(owner_id, usage)
                     ),
-                    usage="cache",
+                    usage=usage,
                     owner_id=owner_id,
                 )
             else:

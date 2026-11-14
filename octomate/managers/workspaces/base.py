@@ -108,7 +108,8 @@ class WorkspaceManager(Manager):
     ) -> Workspace:
         """Record the owner's volumes and settle their paths without making files.
 
-        A registered owner's tree comes with their package cache. Unregistered
+        A registered owner's tree comes with their package cache and their agent
+        configuration. Unregistered
         senders receive a temporary chat path alone and cannot resolve project
         workspaces. This writes or stamps registered volume rows; use
         `volumes.find` for read-only inspection.
@@ -124,10 +125,11 @@ class WorkspaceManager(Manager):
                 )
             }
         else:
-            # The cache needs nothing from the mirror or the tree, so it is
-            # settled while they are.
+            # The owner's own volumes need nothing from the mirror or the tree,
+            # so they are settled while those are.
             async with asyncio.TaskGroup() as tasks:
-                cache = tasks.create_task(self.volumes.cache(owner_id))
+                cache = tasks.create_task(self.volumes.slot(owner_id, "cache"))
+                config = tasks.create_task(self.volumes.slot(owner_id, "config"))
                 work = await self.volumes.tree(
                     owner_id,
                     thread_id,
@@ -135,7 +137,11 @@ class WorkspaceManager(Manager):
                     ref,
                     mirror=await self.mirrors.resolve(project),
                 )
-            volumes = {"work": work, "cache": cache.result()}
+            volumes = {
+                "work": work,
+                "cache": cache.result(),
+                "config": config.result(),
+            }
         return Workspace(
             thread_id=thread_id,
             project=project,

@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import anyio
+import pytest
 from pydantic import TypeAdapter
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
@@ -15,6 +16,7 @@ from octomate.managers.volumes import VolumeManager
 from octomate.managers.workspaces.mirrors import MirrorManager
 from octomate.schemas.volumes import GitVolume, Volume
 from octomate.schemas.volumes.storage import HostDirectory
+from octomate.types.volumes import VolumeUsage
 from tests.support.managers import a_project, a_registry, a_thread, a_workspace_manager
 from tests.support.users import a_user
 
@@ -93,9 +95,10 @@ async def test_shared_registry_serializes_allocation_across_workspace_managers(
     assert first_cache is not None
     assert second_cache is not None
     assert first_cache.id == second_cache.id
-    # The tree, the owner's cache and the blank mirror the tree forks from.
+    # The tree, the owner's cache and configuration, and the blank mirror the
+    # tree forks from.
     async with async_session() as session:
-        assert await session.count(Volume) == 3
+        assert await session.count(Volume) == 4
     assert first.volumes is second.volumes is volumes
 
 
@@ -141,27 +144,26 @@ async def test_recorded_storage_moves_with_the_root(
     assert not reloaded.path.exists()
 
 
-async def test_an_owner_keeps_one_cache_apart_from_other_owners(
-    in_memory_engine: AsyncEngine, tmp_path: Path
+@pytest.mark.parametrize("usage", ["cache", "config"])
+async def test_an_owner_keeps_one_volume_of_a_kind_apart_from_other_owners(
+    in_memory_engine: AsyncEngine, tmp_path: Path, usage: VolumeUsage
 ) -> None:
     alice, bob = await a_user("alice"), await a_user("bob")
     volumes = VolumeManager(host_storage=HostStorageManager(root=tmp_path))
 
     first, again = await asyncio.gather(
-        volumes.cache(alice.id), volumes.cache(alice.id)
+        volumes.slot(alice.id, usage), volumes.slot(alice.id, usage)
     )
-    other = await volumes.cache(bob.id)
-    reloaded = await VolumeManager(
-        host_storage=HostStorageManager(root=tmp_path)
-    ).cache(alice.id)
+    other = await volumes.slot(bob.id, usage)
+    reloaded = await VolumeManager(host_storage=HostStorageManager(root=tmp_path)).slot(
+        alice.id, usage
+    )
 
     assert first.id == again.id == reloaded.id != other.id
     assert first.storage is again.storage
-    assert first.path == (
-        tmp_path / "volumes" / str(alice.id) / "cache" / str(first.id)
-    )
+    assert first.path == tmp_path / "volumes" / str(alice.id) / usage
     assert reloaded.path == first.path
-    assert other.path.is_relative_to(tmp_path / "volumes" / str(bob.id))
+    assert other.path == tmp_path / "volumes" / str(bob.id) / usage
     assert not first.ephemeral
     assert not first.path.exists()
     async with async_session() as session:

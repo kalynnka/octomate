@@ -69,6 +69,7 @@ from octomate.schemas.user import UserProfile
 from octomate.schemas.volumes import GitVolume, Volume
 from octomate.types.deferred import DeferredBatchStatus, DeferredResponseMode
 from octomate.types.permissions import AgentPermissionMode
+from octomate.types.volumes import VolumeUsage
 
 
 def a_habitat_manager(workspaces: WorkspaceManager) -> HabitatManager:
@@ -760,7 +761,7 @@ class FakeVolumeManager(VolumeManager):
             else HostStorageManager()
         )
         self.store: dict[tuple[UUID7, UUID7, UUID7 | None], GitVolume] = {}
-        self.caches: dict[UUID7, Volume] = {}
+        self.slots: dict[tuple[UUID7, VolumeUsage], Volume] = {}
         self.mirrors: dict[UUID7 | None, GitVolume] = {}
 
     async def mirror(self, project_id: UUID7 | None, path: Path) -> GitVolume:
@@ -777,21 +778,14 @@ class FakeVolumeManager(VolumeManager):
     ) -> GitVolume | None:
         return self.store.get((owner_id, thread_id, project_id))
 
-    async def cache(self, owner_id: UUID7) -> Volume:
-        if owner_id not in self.caches:
-            volume_id = uuid7()
-            self.caches[owner_id] = Volume(
-                id=volume_id,
-                storage=self.host_storage.get(
-                    self.host_storage.volumes_dir
-                    / str(owner_id)
-                    / "cache"
-                    / str(volume_id)
-                ),
-                usage="cache",
+    async def slot(self, owner_id: UUID7, usage: VolumeUsage) -> Volume:
+        if (owner_id, usage) not in self.slots:
+            self.slots[owner_id, usage] = Volume(
+                storage=self.host_storage.get(self.host_storage.slot(owner_id, usage)),
+                usage=usage,
                 owner_id=owner_id,
             )
-        return self.caches[owner_id]
+        return self.slots[owner_id, usage]
 
     async def tree(
         self,

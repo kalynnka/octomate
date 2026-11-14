@@ -68,20 +68,30 @@ class Invocation:
 
     @property
     def environment(self) -> dict[str, str]:
-        """Settings that point package managers at the owner's cache, as the
-        harness sees it; empty for a workspace without one.
+        """Settings that point the harness at the owner's own volumes, as the
+        habitat shows them.
 
-        Each manager keeps its own store format beneath its own directory.
+        Package managers keep their stores beneath the cache. A sandbox is
+        another machine, so its agents keep their configuration in the owner's
+        volume; a native run uses the host's own.
         """
+        settings: dict[str, str] = {}
         cache = self.workspace.volumes.get("cache")
-        if cache is None:
-            return {}
-        path = self.habitat.path(cache)
-        return {
-            "UV_CACHE_DIR": str(path / "uv"),
-            "npm_config_cache": str(path / "npm"),
-            "npm_config_store_dir": str(path / "pnpm"),
-        }
+        if cache is not None:
+            path = self.habitat.path(cache)
+            settings.update(
+                UV_CACHE_DIR=str(path / "uv"),
+                npm_config_cache=str(path / "npm"),
+                npm_config_store_dir=str(path / "pnpm"),
+            )
+        config = self.workspace.volumes.get("config")
+        if config is not None and isinstance(self.habitat, ManagedHabitat):
+            path = self.habitat.path(config)
+            settings.update(
+                CLAUDE_CONFIG_DIR=str(path / ".claude"),
+                CODEX_HOME=str(path / ".codex"),
+            )
+        return settings
 
     @property
     def cwd(self) -> Path | PurePosixPath:
@@ -157,6 +167,9 @@ class HabitatManager:
                         config=config,
                         user_id=scope.user_id,
                         root=self.workspaces.root(scope.user_id),
+                        config_dir=self.workspaces.host_storage.slot(
+                            scope.user_id, "config"
+                        ),
                     )
                 case NativeHabitatConfig():
                     raise HabitatError("Habitat mode is 'native'; no habitat runs")

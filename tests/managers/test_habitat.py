@@ -53,7 +53,8 @@ def manager(monkeypatch: pytest.MonkeyPatch, scope: InvocationScope) -> HabitatM
             internet_access = str(manager.config.internet_access).lower()
             root = manager.workspaces.root(scope.user_id)
             return (
-                f"{scope.user_id}\n{root}\n{IMAGE}\n2\n2048\n{internet_access}\n"
+                f"{scope.user_id}\n{root}\n{root / 'config'}\n{IMAGE}\n"
+                f"2\n2048\n{internet_access}\n"
             ).encode()
         return "\n".join(sorted(names)).encode() if args[0] == "ls" else b""
 
@@ -189,6 +190,7 @@ async def test_create_mounts_only_the_owners_root_scoped_and_budgeted(
     assert create.kwargs["kit_arg"] == [
         f"user_id={scope.user_id}",
         f"root={root}",
+        f"config={root / 'config'}",
         f"image={IMAGE}",
         "cpus=2",
         "memory_mib=2048",
@@ -261,7 +263,7 @@ async def test_reuse_does_not_create_or_replace_a_habitat(
     assert "create" not in [c.args[0] for c in command.await_args_list]
 
 
-@pytest.mark.parametrize("field", [0, 1, 2, 3, 4, 5])
+@pytest.mark.parametrize("field", [0, 1, 2, 3, 4, 5, 6])
 async def test_configuration_mismatch_stops_runtime_without_replacing_it(
     manager: HabitatManager, scope: InvocationScope, field: int
 ) -> None:
@@ -270,6 +272,7 @@ async def test_configuration_mismatch_stops_runtime_without_replacing_it(
     metadata = [
         str(scope.user_id).encode(),
         str(manager.workspaces.root(scope.user_id)).encode(),
+        str(manager.workspaces.root(scope.user_id) / "config").encode(),
         IMAGE.encode(),
         b"2",
         b"2048",
@@ -451,7 +454,9 @@ async def test_preflight_checks_host_cli_version_and_ssh_forwarding(
     error: str | None,
     prefix: str,
 ) -> None:
-    habitat = SbxHabitat(SbxHabitatConfig(image=IMAGE), uuid7(), Path("root"))
+    habitat = SbxHabitat(
+        SbxHabitatConfig(image=IMAGE), uuid7(), Path("root"), Path("root/config")
+    )
     monkeypatch.setattr(sbx_module.platform, "system", lambda: system)
     monkeypatch.setattr(sbx_module.platform, "machine", lambda: machine)
     monkeypatch.setattr(sbx_module.platform, "mac_ver", lambda: ("14.1", (), ""))
@@ -484,7 +489,9 @@ async def test_linux_preflight_requires_supported_host_and_accessible_kvm(
     kvm: bool,
     error: str | None,
 ) -> None:
-    habitat = SbxHabitat(SbxHabitatConfig(image=IMAGE), uuid7(), Path("root"))
+    habitat = SbxHabitat(
+        SbxHabitatConfig(image=IMAGE), uuid7(), Path("root"), Path("root/config")
+    )
     monkeypatch.setattr(sbx_module.platform, "system", lambda: "Linux")
     monkeypatch.setattr(sbx_module.platform, "machine", lambda: machine)
     monkeypatch.setattr(

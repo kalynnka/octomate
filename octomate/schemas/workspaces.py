@@ -20,6 +20,8 @@ class WorkspaceVolumes(TypedDict):
 
     work: Volume  # The harness's working directory.
     cache: NotRequired[Volume]  # The owner's package cache; registered owners only.
+    # The owner's agent configuration, which a sandbox's agents keep theirs in.
+    config: NotRequired[Volume]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -51,8 +53,8 @@ class Workspace:
     @property
     def entries(self) -> list[Volume]:
         """The volumes present, in the order a run enters them."""
-        cache = self.volumes.get("cache")
-        return [self.volume] if cache is None else [self.volume, cache]
+        kept = (self.volumes.get("cache"), self.volumes.get("config"))
+        return [self.volume, *(volume for volume in kept if volume is not None)]
 
     @property
     def owner_id(self) -> UUID7 | None:

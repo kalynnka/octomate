@@ -31,6 +31,7 @@ class SbxKitArgs(TypedDict):
 
     user_id: UUID7
     root: Path
+    config: Path
     image: str
     cpus: int
     memory_mib: int
@@ -54,6 +55,7 @@ class SbxHabitat(ManagedHabitat):
     config: SbxHabitatConfig
     user_id: UUID7
     root: Path  # The owner's storage on the host, mounted when the sandbox is made.
+    config_dir: Path  # The owner's agent-configuration volume, beneath the root.
     managed: bool = field(default=False, init=False)  # Name found or create tried.
 
     @property
@@ -165,6 +167,7 @@ class SbxHabitat(ManagedHabitat):
         kit_args: SbxKitArgs = {
             "user_id": self.user_id,
             "root": self.root,
+            "config": self.config_dir,
             "image": self.config.image,
             "cpus": self.config.cpus,
             "memory_mib": self.config.memory_mib,
@@ -174,7 +177,9 @@ class SbxHabitat(ManagedHabitat):
         if self.name not in names:
             # sbx takes host paths only when it makes the sandbox, so the whole
             # root is mounted now and every volume made under it later is seen.
-            await anyio.Path(self.root).mkdir(parents=True, exist_ok=True)
+            # The agents' credential file is written beneath the configuration
+            # volume, where the harness is told to keep its configuration.
+            await anyio.Path(self.config_dir).mkdir(parents=True, exist_ok=True)
             await self.command(
                 "create",
                 str(Path(__file__).parent),
@@ -196,7 +201,7 @@ class SbxHabitat(ManagedHabitat):
             str(value).encode() for value in kit_args.values()
         ]:
             raise HabitatError(
-                "Existing sandbox owner, storage root, image, resource or network settings differ; no automatic replacement is allowed"
+                "Existing sandbox owner, storage, image, resource or network settings differ; no automatic replacement is allowed"
             )
 
     @asynccontextmanager

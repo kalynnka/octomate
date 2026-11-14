@@ -60,7 +60,7 @@ async def guest() -> AsyncGenerator[tuple[HabitatManager, InvocationScope, SbxHa
                 "/opt/octomate/.venv/bin/python",
                 "-c",
                 "import json; from pathlib import Path; "
-                "oauth = json.loads(Path('/home/agent/.claude/.credentials.json').read_text())['claudeAiOauth']; "
+                f"oauth = json.loads(Path('{sandbox.config_dir}/.claude/.credentials.json').read_text())['claudeAiOauth']; "
                 "assert oauth['accessToken'] == 'sk-ant-oat01-proxy-managed'; "
                 "assert oauth['refreshToken'] == 'sk-ant-ort01-proxy-managed'",
             )

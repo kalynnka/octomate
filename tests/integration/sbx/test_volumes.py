@@ -1,5 +1,6 @@
 """Explicit local VM acceptance of the owner's mounted storage root."""
 
+import json
 import os
 from shlex import quote
 
@@ -36,9 +37,19 @@ async def test_guest_writes_land_in_the_owners_volumes_and_nowhere_else(
             manager.enter(scope, uuid7()),
         ):
             cache = workspace.volumes.get("cache")
+            config = workspace.volumes.get("config")
             mirror = await workspace.volume.mirror
             assert cache is not None
+            assert config is not None
             assert mirror is not None
+            # The kit puts the agent's credential file in the configuration
+            # volume, holding only the proxy's placeholder tokens.
+            credential = json.loads(
+                (config.path / ".claude" / ".credentials.json").read_text()
+            )
+            assert credential["claudeAiOauth"]["accessToken"] == (
+                "sk-ant-oat01-proxy-managed"
+            )
             assert mirror.path.is_dir()
             await sandbox.command(
                 "exec",

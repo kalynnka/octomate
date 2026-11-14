@@ -6,6 +6,8 @@ args:
     required: true
   root:
     required: true
+  config:
+    required: true
   image:
     required: true
   cpus:
@@ -25,6 +27,7 @@ environment:
   variables:
     OCTOMATE_HABITAT_USER_ID: "${{ kit.args.user_id }}"
     OCTOMATE_HABITAT_ROOT: "${{ kit.args.root }}"
+    OCTOMATE_HABITAT_CONFIG: "${{ kit.args.config }}"
     OCTOMATE_HABITAT_IMAGE: "${{ kit.args.image }}"
     OCTOMATE_HABITAT_CPUS: "${{ kit.args.cpus }}"
     OCTOMATE_HABITAT_MEMORY_MIB: "${{ kit.args.memory_mib }}"
@@ -45,7 +48,7 @@ credentials:
         accessToken: sk-ant-oat01-proxy-managed
         refreshToken: sk-ant-ort01-proxy-managed
       credentialFile:
-        path: ~/.claude/.credentials.json
+        path: "${{ kit.args.config }}/.claude/.credentials.json"
         structure:
           claudeAiOauth:
             accessToken: "{{.AccessToken}}"

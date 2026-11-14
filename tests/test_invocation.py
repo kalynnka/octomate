@@ -131,6 +131,7 @@ async def test_invocation_borrows_the_habitat_without_managing_its_lifetime(
         config=SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64),
         user_id=owner.id,
         root=workspaces.root(owner.id),
+        config_dir=workspaces.host_storage.slot(owner.id, "config"),
     )
     prepare = AsyncMock()
     stop = AsyncMock()
@@ -150,9 +151,17 @@ async def test_invocation_borrows_the_habitat_without_managing_its_lifetime(
         assert isinstance(workspace.volume, GitVolume)
         # Local sbx shows the owner's mounted root at its host path.
         assert invocation.cwd == PurePosixPath(workspace.path)
-        assert invocation.environment["UV_CACHE_DIR"].startswith(
-            str(workspaces.root(owner.id) / "cache")
-        )
+        # A sandbox is another machine: its agents keep their configuration in
+        # the owner's volume, where the kit puts their credential file.
+        root = workspaces.root(owner.id)
+        assert habitat.config_dir == root / "config"
+        assert invocation.environment == {
+            "UV_CACHE_DIR": str(root / "cache" / "uv"),
+            "npm_config_cache": str(root / "cache" / "npm"),
+            "npm_config_store_dir": str(root / "cache" / "pnpm"),
+            "CLAUDE_CONFIG_DIR": str(root / "config" / ".claude"),
+            "CODEX_HOME": str(root / "config" / ".codex"),
+        }
         mirror = await workspace.volume.mirror
         assert mirror is not None
         with pytest.raises(HabitatError, match="owner's own volumes"):
@@ -203,6 +212,7 @@ async def test_invocation_rejects_an_unregistered_or_different_habitat_owner(
         config=SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64),
         user_id=uuid7(),
         root=workspaces.root(uuid7()),
+        config_dir=workspaces.root(uuid7()) / "config",
     )
     workspace = await workspaces.resolve(await a_thread(), None, owner_id)
     message = "owners do not match" if registered else "registered user"

@@ -54,6 +54,7 @@ def sandbox(tmp_path: Path) -> SbxHabitat:
         config=SbxHabitatConfig(image=IMAGE, executable=str(executable)),
         user_id=uuid7(),
         root=tmp_path / "root",
+        config_dir=tmp_path / "root" / "config",
     )
 
 
@@ -228,6 +229,7 @@ async def test_missing_sbx_has_an_actionable_error(
         config=SbxHabitatConfig(image=IMAGE, executable=str(tmp_path / "missing")),
         user_id=uuid7(),
         root=tmp_path / "root",
+        config_dir=tmp_path / "root" / "config",
     )
     if attach:
         with pytest.raises(HabitatError, match="configured executable"):

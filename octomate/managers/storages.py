@@ -8,6 +8,7 @@ from pydantic import UUID7
 
 from octomate.managers.base import Manager
 from octomate.schemas.volumes.storage import HostDirectory
+from octomate.types.volumes import VolumeUsage
 
 
 @dataclass
@@ -29,6 +30,14 @@ class HostStorageManager(Manager):
     def mirrors_dir(self) -> Path:
         """Where the service's project mirrors are kept."""
         return self.root / "mirrors"
+
+    def slot(self, owner_id: UUID7, usage: VolumeUsage) -> Path:
+        """Where an owner's one volume of this kind lives.
+
+        Fixed by owner and kind, so a sandbox can be told where it is before the
+        volume's row exists.
+        """
+        return self.volumes_dir / str(owner_id) / usage
 
     def get(self, path: Path) -> HostDirectory:
         """Reuse one lock and use count for every reference to this directory.
