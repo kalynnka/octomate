@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.1](https://github.com/kalynnka/octomate/compare/octomate-v0.1.0...octomate-v0.1.1) (2026-11-14)
+
+
+### Features
+
+* **habitat:** one habitat mode per service and a provider-agnostic manager ([#166](https://github.com/kalynnka/octomate/issues/166)) ([02d1c8a](https://github.com/kalynnka/octomate/commit/02d1c8ab5f36a8ace25fcd98a2244d978ff4c1cb))
+* persist compactions and effective agent context ([#173](https://github.com/kalynnka/octomate/issues/173)) ([bbd290e](https://github.com/kalynnka/octomate/commit/bbd290edc5fafc248c99029932a3efd26ceccce4))
+* **sandbox:** add sbx lifecycle and Claude transport ([#169](https://github.com/kalynnka/octomate/issues/169)) ([3048cbd](https://github.com/kalynnka/octomate/commit/3048cbd28c501a9351ff40504d65346c6d590d0f))
+* **volumes:** one storage root, per-owner slots and sandbox dispatch ([#176](https://github.com/kalynnka/octomate/issues/176)) ([d8c9e87](https://github.com/kalynnka/octomate/commit/d8c9e878d984e183feaebf313d8073b59272bd01))
+* **volumes:** record volumes and prepare each run's workspace in core ([#175](https://github.com/kalynnka/octomate/issues/175)) ([26a478b](https://github.com/kalynnka/octomate/commit/26a478bfd24a76e33e4a17149f6317c224f67971))
+
+
+### Bug Fixes
+
+* normalize harness annotations and refine chat rendering ([#171](https://github.com/kalynnka/octomate/issues/171)) ([f21019c](https://github.com/kalynnka/octomate/commit/f21019c7607a4139fef9f74448adfe1fc773872b))
+
 ## [0.1.0](https://github.com/kalynnka/octomate/compare/octomate-v0.0.6...octomate-v0.1.0) (2026-11-07)
 
 
