@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/Button'
 import { TextSwap } from '@/components/TextSwap'
 import { useConsole } from '@/state/console'
@@ -17,6 +17,8 @@ export function ConsoleShell() {
   const [reconnecting, setReconnecting] = useState(false)
   const [connected, setConnected] = useState(false)
   const [connectionAttempt, setConnectionAttempt] = useState(0)
+  // Whether live updates were lost: only coming back from that is worth announcing.
+  const dropped = useRef(false)
   const actions = useConsole((s) => s.actions)
   const { applyViewport, closeOverlays, cyclePermissionMode, resumeLiveUpdates } = actions
   useEffect(() => {
@@ -31,13 +33,15 @@ export function ConsoleShell() {
         setConnected(false)
         stop = watchThreads(message => {
           disconnected = true
+          dropped.current = true
           setReconnecting(false)
           setConnected(false)
           setThreadListError(message)
         }, () => {
           setReconnecting(false)
           setThreadListError(null)
-          setConnected(true)
+          setConnected(dropped.current)
+          dropped.current = false
         })
       }
       resumeActivity()
@@ -54,7 +58,8 @@ export function ConsoleShell() {
   }, [resumeLiveUpdates, connectionAttempt])
   useEffect(() => {
     if (!connected) return
-    const timeout = window.setTimeout(() => setConnected(false), 1000)
+    // Long enough to read, then for the banner's exit to play out.
+    const timeout = window.setTimeout(() => setConnected(false), 1200)
     return () => window.clearTimeout(timeout)
   }, [connected])
   const overlayOpen = useConsole(
@@ -108,7 +113,7 @@ export function ConsoleShell() {
       }}
     >
       {(threadListError || connected) && (
-        <div className="trk-thread-list-alert trk-connection-motion" data-connected={connected || undefined} role={reconnecting || connected ? 'status' : 'alert'}>
+        <div className="trk-connection-motion"><div><div className="trk-thread-list-alert" data-connected={connected || undefined} role={reconnecting || connected ? 'status' : 'alert'}>
           <svg className={reconnecting ? 'lt-spin' : undefined} aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             {connected ? <path d="m5 12 4 4L19 6" /> : reconnecting ? <path d="M20 12a8 8 0 1 1-8-8" /> : <>
               <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
@@ -122,7 +127,7 @@ export function ConsoleShell() {
           {!connected && <Button disabled={reconnecting} onClick={() => setConnectionAttempt(attempt => attempt + 1)} style={{ flexShrink: 0 }}>
             {reconnecting ? 'Connecting…' : 'Reconnect'}
           </Button>}
-        </div>
+        </div></div></div>
       )}
       <div className="trk-shell-row" style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative' }}>
         <ThreadsSidebar />
