@@ -29,7 +29,7 @@ from octomate.schemas.volumes.git import (
     Snapshot,
     run_git,
 )
-from octomate.schemas.workspaces import Workspace
+from octomate.schemas.workspaces import Workspace, WorkspaceVolumes
 from octomate.telemetry import workspace_logfire
 
 logger = logging.getLogger(__name__)
@@ -106,31 +106,40 @@ class WorkspaceManager(Manager):
         owner_id: UUID7 | None,
         ref: str | None = None,
     ) -> Workspace:
-        """Record the owner's volume and settle its path without making files.
+        """Record the owner's volumes and settle their paths without making files.
 
-        Unregistered senders receive a temporary chat path and cannot resolve
-        project workspaces. This writes or stamps a registered volume row; use
+        A registered owner's tree comes with their package cache. Unregistered
+        senders receive a temporary chat path alone and cannot resolve project
+        workspaces. This writes or stamps registered volume rows; use
         `volumes.find` for read-only inspection.
         """
         if owner_id is None and project is not None:
             raise UnregisteredProjectError(
                 f"project {project.name!r} needs a registered user"
             )
-        volume = (
-            await self.volumes.tree(
-                owner_id,
-                thread_id,
-                project.id if project else None,
-                ref,
-                mirror=await self.mirrors.resolve(project),
-            )
-            if owner_id is not None
-            else Volume(storage=self.host_storage.temporary(thread_id), ephemeral=True)
-        )
+        if owner_id is None:
+            volumes: WorkspaceVolumes = {
+                "work": Volume(
+                    storage=self.host_storage.temporary(thread_id), ephemeral=True
+                )
+            }
+        else:
+            # The cache needs nothing from the mirror or the tree, so it is
+            # settled while they are.
+            async with asyncio.TaskGroup() as tasks:
+                cache = tasks.create_task(self.volumes.cache(owner_id))
+                work = await self.volumes.tree(
+                    owner_id,
+                    thread_id,
+                    project.id if project else None,
+                    ref,
+                    mirror=await self.mirrors.resolve(project),
+                )
+            volumes = {"work": work, "cache": cache.result()}
         return Workspace(
             thread_id=thread_id,
             project=project,
-            volumes={"work": volume},
+            volumes=volumes,
             identity=self.identity,
         )
 

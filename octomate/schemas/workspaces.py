@@ -6,12 +6,20 @@ from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NotRequired, TypedDict
 
 from pydantic import UUID7
 
 from octomate.config.mirrors import GitIdentity
 from octomate.schemas.project import Project
 from octomate.schemas.volumes import GitVolume, Volume
+
+
+class WorkspaceVolumes(TypedDict):
+    """A run's volumes by the part each plays; mirrors stay outside."""
+
+    work: Volume  # The harness's working directory.
+    cache: NotRequired[Volume]  # The owner's package cache; registered owners only.
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -23,15 +31,12 @@ class Workspace:
     """
 
     thread_id: UUID7
-    volumes: dict[str, Volume]  # Working volumes in entry order; mirrors stay outside.
+    volumes: WorkspaceVolumes
     identity: GitIdentity | None = None  # Identity used when checkpointing Git volumes.
-    directory: str = "work"  # Entry selected as the harness working directory.
     project: Project | None = None
 
     def __post_init__(self) -> None:
-        if self.directory not in self.volumes:
-            raise ValueError("The workspace working directory must name a volume entry")
-        for volume in self.volumes.values():
+        for volume in self.entries:
             if volume.usage == "mirror":
                 raise ValueError(
                     "Host mirrors cannot be included in an agent workspace"
@@ -41,7 +46,13 @@ class Workspace:
 
     @property
     def volume(self) -> Volume:
-        return self.volumes[self.directory]
+        return self.volumes["work"]
+
+    @property
+    def entries(self) -> list[Volume]:
+        """The volumes present, in the order a run enters them."""
+        cache = self.volumes.get("cache")
+        return [self.volume] if cache is None else [self.volume, cache]
 
     @property
     def owner_id(self) -> UUID7 | None:
@@ -56,7 +67,7 @@ class Workspace:
     async def __call__(self) -> AsyncGenerator[Workspace]:
         """Prepare all entries and unwind them in reverse order, including on failure."""
         async with AsyncExitStack() as resources:
-            for volume in self.volumes.values():
+            for volume in self.entries:
                 if isinstance(volume, GitVolume):
                     await resources.enter_async_context(volume(identity=self.identity))
                 else:

@@ -50,6 +50,55 @@ async def test_native_invocation_borrows_the_owners_chat_workspace(
     assert not invocation.workspace.path.exists()
 
 
+async def test_a_registered_owners_cache_outlives_their_chat_workspace(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    owner = await a_user()
+    workspaces = a_workspace_manager()
+    async with workspaces.open(await a_thread(), None, owner.id) as workspace:
+        invocation = Invocation(
+            id=uuid7(),
+            conversation=Conversation(
+                thread_id=workspace.thread_id, agent_tentacle_id="inkling"
+            ),
+            workspace=workspace,
+            habitat=NativeHabitat(),
+        )
+        volume = workspace.volumes.get("cache")
+        assert volume is not None
+        cache = volume.path
+        assert cache.is_dir()
+        assert invocation.environment == {
+            "UV_CACHE_DIR": str(cache / "uv"),
+            "npm_config_cache": str(cache / "npm"),
+            "npm_config_store_dir": str(cache / "pnpm"),
+        }
+
+    assert not workspace.path.exists()
+    assert cache.is_dir()
+    async with workspaces.open(await a_thread("later"), None, owner.id) as later:
+        kept = later.volumes.get("cache")
+        assert kept is not None
+        assert kept.path == cache
+
+
+async def test_an_unregistered_workspace_has_no_cache(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    workspaces = a_workspace_manager()
+    async with workspaces.open(await a_thread(), None, None) as workspace:
+        invocation = Invocation(
+            id=uuid7(),
+            conversation=Conversation(
+                thread_id=workspace.thread_id, agent_tentacle_id="inkling"
+            ),
+            workspace=workspace,
+            habitat=NativeHabitat(),
+        )
+        assert list(workspace.volumes) == ["work"]
+        assert invocation.environment == {}
+
+
 async def test_native_invocation_keeps_the_project_workspace_owner(
     in_memory_engine: AsyncEngine, tmp_path: Path
 ) -> None:

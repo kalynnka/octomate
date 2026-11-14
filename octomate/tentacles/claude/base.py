@@ -1194,6 +1194,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             if part
         )
         env = {
+            **invocation.environment,
             "CLAUDE_CODE_ENTRYPOINT": "cli",
             # The CLI ends with the turn, killing any background task it started;
             # the stopped task's notice then opens the next turn ahead of its prompt.

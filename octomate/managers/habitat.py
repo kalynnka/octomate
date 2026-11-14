@@ -67,6 +67,23 @@ class Invocation:
         return self.workspace.owner_id
 
     @property
+    def environment(self) -> dict[str, str]:
+        """Settings that point package managers at the owner's cache, as the
+        harness sees it; empty for a workspace without one.
+
+        Each manager keeps its own store format beneath its own directory.
+        """
+        cache = self.workspace.volumes.get("cache")
+        if cache is None:
+            return {}
+        path = self.habitat.path(cache)
+        return {
+            "UV_CACHE_DIR": str(path / "uv"),
+            "npm_config_cache": str(path / "npm"),
+            "npm_config_store_dir": str(path / "pnpm"),
+        }
+
+    @property
     def cwd(self) -> Path | PurePosixPath:
         """The harness's working directory; `workspace.path` remains host-side."""
         return self.habitat.path(self.volume)

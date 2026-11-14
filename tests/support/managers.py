@@ -66,7 +66,7 @@ from octomate.schemas.thread import (
 )
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.schemas.user import UserProfile
-from octomate.schemas.volumes import GitVolume
+from octomate.schemas.volumes import GitVolume, Volume
 from octomate.types.deferred import DeferredBatchStatus, DeferredResponseMode
 from octomate.types.permissions import AgentPermissionMode
 
@@ -760,6 +760,7 @@ class FakeVolumeManager(VolumeManager):
             else HostStorageManager()
         )
         self.store: dict[tuple[UUID7, UUID7, UUID7 | None], GitVolume] = {}
+        self.caches: dict[UUID7, Volume] = {}
         self.mirrors: dict[UUID7 | None, GitVolume] = {}
 
     async def mirror(self, project_id: UUID7 | None, path: Path) -> GitVolume:
@@ -775,6 +776,22 @@ class FakeVolumeManager(VolumeManager):
         self, owner_id: UUID7, thread_id: UUID7, project_id: UUID7 | None
     ) -> GitVolume | None:
         return self.store.get((owner_id, thread_id, project_id))
+
+    async def cache(self, owner_id: UUID7) -> Volume:
+        if owner_id not in self.caches:
+            volume_id = uuid7()
+            self.caches[owner_id] = Volume(
+                id=volume_id,
+                storage=self.host_storage.get(
+                    self.host_storage.volumes_dir
+                    / str(owner_id)
+                    / "cache"
+                    / str(volume_id)
+                ),
+                usage="cache",
+                owner_id=owner_id,
+            )
+        return self.caches[owner_id]
 
     async def tree(
         self,

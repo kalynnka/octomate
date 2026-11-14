@@ -129,25 +129,6 @@ async def test_git_volume_checkpoints_inside_a_composed_workspace(
     assert work.uses == cache.uses == 0
 
 
-def test_workspace_selects_a_working_volume(tmp_path: Path) -> None:
-    storage = HostDirectory(tmp_path / "source")
-    workspace = Workspace(
-        thread_id=uuid7(),
-        directory="source",
-        volumes={"source": Volume(owner_id=uuid7(), storage=storage)},
-    )
-    assert workspace.path == storage.path
-    assert not storage.path.exists()
-
-
-def test_workspace_rejects_missing_working_directory() -> None:
-    with pytest.raises(ValueError, match="working directory"):
-        Workspace(
-            thread_id=uuid7(),
-            volumes={},
-        )
-
-
 def test_workspace_rejects_host_mirrors(tmp_path: Path) -> None:
     mirror = GitVolume(usage="mirror", storage=HostDirectory(tmp_path / "mirror"))
     with pytest.raises(ValueError, match="Host mirrors"):
@@ -162,6 +143,6 @@ def test_workspace_rejects_different_volume_owners(tmp_path: Path) -> None:
             thread_id=uuid7(),
             volumes={
                 "work": Volume(owner_id=uuid7(), storage=work),
-                "other": Volume(owner_id=uuid7(), storage=other),
+                "cache": Volume(owner_id=uuid7(), storage=other),
             },
         )

@@ -88,8 +88,14 @@ async def test_shared_registry_serializes_allocation_across_workspace_managers(
     assert resolved[0].volume.id == resolved[1].volume.id
     assert resolved[0].path == resolved[1].path
     assert not resolved[0].path.exists()
+    first_cache = resolved[0].volumes.get("cache")
+    second_cache = resolved[1].volumes.get("cache")
+    assert first_cache is not None
+    assert second_cache is not None
+    assert first_cache.id == second_cache.id
+    # The tree, the owner's cache and the blank mirror the tree forks from.
     async with async_session() as session:
-        assert await session.count(Volume) == 2
+        assert await session.count(Volume) == 3
     assert first.volumes is second.volumes is volumes
 
 
@@ -133,6 +139,33 @@ async def test_recorded_storage_moves_with_the_root(
     assert reloaded is not None
     assert reloaded.path == tmp_path / "second" / beneath
     assert not reloaded.path.exists()
+
+
+async def test_an_owner_keeps_one_cache_apart_from_other_owners(
+    in_memory_engine: AsyncEngine, tmp_path: Path
+) -> None:
+    alice, bob = await a_user("alice"), await a_user("bob")
+    volumes = VolumeManager(host_storage=HostStorageManager(root=tmp_path))
+
+    first, again = await asyncio.gather(
+        volumes.cache(alice.id), volumes.cache(alice.id)
+    )
+    other = await volumes.cache(bob.id)
+    reloaded = await VolumeManager(
+        host_storage=HostStorageManager(root=tmp_path)
+    ).cache(alice.id)
+
+    assert first.id == again.id == reloaded.id != other.id
+    assert first.storage is again.storage
+    assert first.path == (
+        tmp_path / "volumes" / str(alice.id) / "cache" / str(first.id)
+    )
+    assert reloaded.path == first.path
+    assert other.path.is_relative_to(tmp_path / "volumes" / str(bob.id))
+    assert not first.ephemeral
+    assert not first.path.exists()
+    async with async_session() as session:
+        assert await session.count(Volume) == 2
 
 
 async def test_scopes_and_retention_queries_preserve_volume_identity(
