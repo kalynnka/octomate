@@ -124,6 +124,11 @@ class Volume(BaseTransmuter):
             await anyio.Path(path).mkdir(parents=True, exist_ok=True)
             yield path
 
+    @property
+    def path(self) -> Path:
+        """Where the contents are on the host; a harness may see them elsewhere."""
+        return self.storage.path
+
     def touch(self) -> None:
         """Record application use; the caller commits it with the owning session."""
         self.last_used_at = datetime.now(UTC)

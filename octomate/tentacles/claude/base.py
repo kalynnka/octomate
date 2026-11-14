@@ -1170,9 +1170,8 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             prompt_id = event.prompt_id
             return {}
 
-        storage = invocation.storage
         project = invocation.project
-        run_cwd = str(storage.path)
+        run_cwd = str(invocation.workspace.path)
         octomate_session = self.octomate.gateway.get(conversation.id)
         # The turn's server, mounted in process with the session closed over —
         # identity by closure, nothing on the wire names it. Its tools take the
@@ -1315,7 +1314,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                     await self.record_compaction(
                         conversation,
                         message,
-                        cwd=storage.path,
+                        cwd=invocation.workspace.path,
                     )
                     for event in accumulator.consume(
                         message, command=command is not None

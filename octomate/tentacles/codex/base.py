@@ -1104,7 +1104,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 conversation_id=conversation.id,
                 api_key_id=api_key.key.id if api_key is not None else None,
                 mcp_bearer=api_key.token if api_key is not None else None,
-                cwd=str(invocation.storage.path),
+                cwd=str(invocation.workspace.path),
                 approval_mode=ApprovalMode.auto_review
                 if permission_mode == "auto_review"
                 else ApprovalMode.deny_all
@@ -1839,8 +1839,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         # writes to it, so for Codex the directory is the whole of running inside a
         # project — and the workspace is what makes that boundary this run's rather
         # than everyone's checkout.
-        storage = invocation.storage
-        run_cwd = str(storage.path)
+        run_cwd = str(invocation.workspace.path)
 
         async with contextlib.AsyncExitStack() as resources:
             resources.enter_context(
@@ -1962,7 +1961,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                     )
                 artifacts = await self.capture_html(
                     notification,
-                    workspace=storage.path,
+                    workspace=invocation.workspace.path,
                     session=session,
                     address=conversation_address,
                     thread_id=conversation.thread_id,

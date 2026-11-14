@@ -71,14 +71,11 @@ class WorkspaceManager(Manager):
         volumes: VolumeManager,
         mirrors: MirrorManager,
         config: WorkspacesConfig | None = None,
-        volumes_dir: Path | None = None,
     ) -> None:
         self.projects: ProjectManager = projects
         self.volumes: VolumeManager = volumes
         self.mirrors: MirrorManager = mirrors
         self.config = config if config is not None else WorkspacesConfig()
-        if volumes_dir is not None:
-            self.volumes.host_storage.root = volumes_dir.resolve()
 
     @property
     def host_storage(self) -> HostStorageManager:
@@ -86,7 +83,7 @@ class WorkspaceManager(Manager):
 
     @property
     def volumes_dir(self) -> Path:
-        return self.host_storage.root
+        return self.host_storage.volumes_dir
 
     @property
     def identity(self) -> GitIdentity:
@@ -102,10 +99,6 @@ class WorkspaceManager(Manager):
         """
         return self.volumes_dir / str(owner_id)
 
-    def path(self, volume: Volume) -> Path:
-        """The recorded host location, independent of the current allocation root."""
-        return volume.storage.path
-
     async def resolve(
         self,
         thread_id: UUID7,
@@ -117,7 +110,7 @@ class WorkspaceManager(Manager):
 
         Unregistered senders receive a temporary chat path and cannot resolve
         project workspaces. This writes or stamps a registered volume row; use
-        `volumes.find` and `path` for read-only inspection.
+        `volumes.find` for read-only inspection.
         """
         if owner_id is None and project is not None:
             raise UnregisteredProjectError(
@@ -222,7 +215,7 @@ class WorkspaceManager(Manager):
         )
         if project is None:
             return False
-        mirror = (await self.mirrors.resolve(project)).storage.path
+        mirror = (await self.mirrors.resolve(project)).path
         if not mirror.is_dir():
             return False
         ref = volume.snapshot_ref
@@ -231,7 +224,7 @@ class WorkspaceManager(Manager):
                 "for-each-ref", "--format=%(objectname)", ref, cwd=mirror, isolated=True
             ):
                 return False
-            async with Snapshot.capture(self.path(volume), self.identity) as snapshot:
+            async with Snapshot.capture(volume.path, self.identity) as snapshot:
                 return await snapshot.matches(mirror, ref)
         except (GitCommandError, OSError):
             logger.exception(
@@ -285,7 +278,7 @@ class WorkspaceManager(Manager):
         with workspace_logfire.span("workspace.prune", idle=idle) as span:
             trees = await self.volumes.project_trees()
             for volume in trees:
-                path = self.path(volume)
+                path = volume.path
                 if not path.is_dir():
                     continue
                 if volume.last_used_at > cutoff:
@@ -362,7 +355,7 @@ class WorkspaceManager(Manager):
         volume = landing.volume
         if not isinstance(volume, GitVolume):
             raise ValueError("A project handoff requires a Git working volume")
-        mirror = (await self.mirrors.resolve(project)).storage.path
+        mirror = (await self.mirrors.resolve(project)).path
         if origin is not None and await run_git(
             "ls-remote", str(mirror), origin.snapshot_ref, isolated=True
         ):
@@ -391,9 +384,9 @@ class WorkspaceManager(Manager):
                 isolated=True,
             )
         landed = await self.prepare(landing)
-        if origin is None or not self.path(origin).is_dir():
+        if origin is None or not origin.path.is_dir():
             return
-        await copy_ignored(self.path(origin), landed)
+        await copy_ignored(origin.path, landed)
 
     async def dismiss(self, thread: Thread, owner_id: UUID7) -> bool:
         """Release this owner's tree on their agent's word that the work in it is
@@ -413,7 +406,7 @@ class WorkspaceManager(Manager):
             if project is None:
                 return False
             volume = await self.volumes.find(owner_id, thread.id, project.id)
-            if volume is None or not self.path(volume).is_dir():
+            if volume is None or not volume.path.is_dir():
                 return False
             released = await self.reclaim(volume)
             span.set_attribute("released", released)

@@ -300,7 +300,7 @@ class CommandManager(Manager):
                 current = replace(
                     context,
                     conversation=conversation,
-                    cwd=self.workspaces.path(volume) if volume is not None else None,
+                    cwd=volume.path if volume is not None else None,
                     model=surface.active_model,
                     permission_mode=conversation.permission_mode
                     or agent.default_permission_mode,

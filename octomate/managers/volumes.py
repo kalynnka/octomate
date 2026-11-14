@@ -96,7 +96,7 @@ class VolumeManager(Manager, Locks[UUID7 | None]):
                     volume = GitVolume(
                         id=volume_id,
                         storage=self.host_storage.get(
-                            self.host_storage.root
+                            self.host_storage.volumes_dir
                             / str(owner_id)
                             / "tree"
                             / str(volume_id)

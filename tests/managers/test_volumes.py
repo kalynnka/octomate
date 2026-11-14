@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import anyio
+from pydantic import TypeAdapter
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
@@ -73,9 +74,9 @@ async def test_shared_registry_serializes_allocation_across_workspace_managers(
 ) -> None:
     owner = await a_user()
     thread_id = await a_thread()
-    volumes = VolumeManager(host_storage=HostStorageManager())
-    first = a_workspace_manager(volumes=volumes, volumes_dir=tmp_path / "volumes")
-    second = a_workspace_manager(volumes=volumes, volumes_dir=tmp_path / "volumes")
+    volumes = VolumeManager(host_storage=HostStorageManager(root=tmp_path))
+    first = a_workspace_manager(volumes=volumes)
+    second = a_workspace_manager(volumes=volumes)
 
     resolved = await asyncio.gather(
         first.resolve(thread_id, None, owner.id),
@@ -115,24 +116,23 @@ async def test_reloaded_volumes_share_active_storage_lifetime(
     assert not path.exists()
 
 
-async def test_recorded_storage_survives_allocation_root_changes(
+async def test_recorded_storage_moves_with_the_root(
     in_memory_engine: AsyncEngine, tmp_path: Path
 ) -> None:
     owner = await a_user()
-    volumes = VolumeManager(host_storage=HostStorageManager())
+    volumes = VolumeManager(host_storage=HostStorageManager(root=tmp_path / "first"))
     original = await volumes.tree(owner.id, await a_thread(), None)
-    original_path = original.storage.path
-    volumes.host_storage.root = tmp_path / "new-root"
     assert original.thread_id is not None
+    beneath = original.path.relative_to(tmp_path / "first")
+    recorded = TypeAdapter(HostDirectory).dump_python(original.storage, mode="json")
+    assert recorded == {"kind": "host-directory", "path": str(beneath)}
 
-    reused = await volumes.tree(owner.id, original.thread_id, None)
-    fresh = await volumes.tree(owner.id, await a_thread("fresh"), None)
+    moved = VolumeManager(host_storage=HostStorageManager(root=tmp_path / "second"))
+    reloaded = await moved.find(owner.id, original.thread_id, None)
 
-    assert reused.storage.path == original_path
-    assert reused.storage is original.storage
-    assert fresh.storage.path.is_relative_to(volumes.host_storage.root)
-    assert not original_path.exists()
-    assert not fresh.storage.path.exists()
+    assert reloaded is not None
+    assert reloaded.path == tmp_path / "second" / beneath
+    assert not reloaded.path.exists()
 
 
 async def test_scopes_and_retention_queries_preserve_volume_identity(
@@ -186,7 +186,7 @@ async def test_mirror_identity_and_location_survive_registry_recreation(
     assert reloaded.usage == "mirror"
     assert not reloaded.ephemeral
     assert reloaded.storage.path == tmp_path / "original"
-    assert not reloaded.storage.path.exists()
+    assert not reloaded.path.exists()
     async with async_session() as session:
         assert await session.count(Volume) == 1
 

@@ -126,7 +126,7 @@ class ExecutingAgent(DiscoveringAgent):
             self.stream_closed = True
             if self.prepared_invocation is not None:
                 self.workspace_at_cleanup = await asyncio.to_thread(
-                    self.prepared_invocation.storage.path.is_dir
+                    self.prepared_invocation.workspace.path.is_dir
                 )
             if self.behavior == "direct_cleanup_error":
                 raise RuntimeError("private cleanup details")
@@ -143,7 +143,7 @@ class ExecutingAgent(DiscoveringAgent):
             self.stream_closed = True
             if self.prepared_invocation is not None:
                 self.workspace_at_cleanup = await asyncio.to_thread(
-                    self.prepared_invocation.storage.path.is_dir
+                    self.prepared_invocation.workspace.path.is_dir
                 )
             if self.behavior == "stream_cleanup_error":
                 raise RuntimeError("private cleanup details")
@@ -585,7 +585,7 @@ async def test_stream_owns_guard_until_cleanup_and_forwards_run_hooks(
     assert agent.stream_closed
     assert agent.prepared_invocation is not None
     assert agent.workspace_at_cleanup is True
-    assert not await asyncio.to_thread(agent.prepared_invocation.storage.path.exists)
+    assert not await asyncio.to_thread(agent.prepared_invocation.workspace.path.exists)
     assert not app.gateway.sessions
     assert not app.commands.catalogs
 
@@ -943,7 +943,7 @@ async def test_stream_outcome_is_recorded_after_consumption_and_cleanup(
     assert agent.stream_closed
     assert agent.prepared_invocation is not None
     assert agent.workspace_at_cleanup is True
-    assert not await asyncio.to_thread(agent.prepared_invocation.storage.path.exists)
+    assert not await asyncio.to_thread(agent.prepared_invocation.workspace.path.exists)
     assert not app.gateway.sessions
     assert not app.commands.catalogs
     async with app.commands.validate(
@@ -1021,13 +1021,13 @@ async def test_core_keeps_command_workspace_until_adapter_cleanup(
             assert prepared.thread_id == context.conversation.thread_id
             assert prepared.conversation.id == context.conversation.id
             if not isinstance(result, CommandResult | CommandError):
-                assert await asyncio.to_thread(prepared.storage.path.is_dir)
+                assert await asyncio.to_thread(prepared.workspace.path.is_dir)
                 assert len([event async for event in result]) == 1
             assert agent.workspace_at_cleanup is True
-            assert await asyncio.to_thread(prepared.storage.path.exists) == (
+            assert await asyncio.to_thread(prepared.workspace.path.exists) == (
                 behavior == "stream_complete"
             )
-        assert not await asyncio.to_thread(prepared.storage.path.exists)
+        assert not await asyncio.to_thread(prepared.workspace.path.exists)
     async with app.commands.validate(
         agent, context, command, delivery_id="runtime-command"
     ) as repeated:
@@ -1097,7 +1097,7 @@ async def test_workspace_cleanup_failure_is_recorded_as_command_failure(
                 assert len([event async for event in result]) == 1
     assert agent.prepared_invocation is not None
     assert agent.workspace_at_cleanup is True
-    assert not await asyncio.to_thread(agent.prepared_invocation.storage.path.exists)
+    assert not await asyncio.to_thread(agent.prepared_invocation.workspace.path.exists)
     async with app.commands.validate(
         agent, context, command, delivery_id="cleanup-failure"
     ) as repeated:

@@ -596,7 +596,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             )
             if (
                 await self.conversations.latest_cwd(conversation.id)
-                != invocation.storage.path
+                != invocation.workspace.path
             ):
                 raise ValueError(
                     "DeepSeek cannot resume a session in a different or unverified workspace"
@@ -1103,8 +1103,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         if isinstance(instructions, str) and instructions:
             prompt_text = f"{tagged('instructions', instructions)}\n\n{prompt_text}"
 
-        storage = invocation.storage
-        run_cwd = str(storage.path)
+        run_cwd = str(invocation.workspace.path)
 
         with deepseek_logfire.span(
             "DeepseekTentacle {agent_id} {run_name} [{conversation_address}]",
@@ -1128,7 +1127,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 if (
                     session_id
                     and await self.conversations.latest_cwd(conversation.id)
-                    != storage.path
+                    != invocation.workspace.path
                 ):
                     raise ValueError(
                         "DeepSeek cannot resume a session in a different or unverified workspace"

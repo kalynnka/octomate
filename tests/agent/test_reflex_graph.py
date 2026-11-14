@@ -2417,8 +2417,7 @@ async def test_a_dismiss_releases_the_workspace_once_the_turn_is_saved(
     workspaces = a_workspace_manager(
         projects=await a_registry(a_project(root)),
         mirror_config=MirrorsConfig(),
-        mirrors_dir=tmp_path / "mirrors",
-        volumes_dir=tmp_path / "workspaces",
+        root=tmp_path,
     )
     project = workspaces.projects.get("inky")
     assert project is not None
@@ -2484,8 +2483,7 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
     workspaces = a_workspace_manager(
         projects=await a_registry(a_project(root)),
         mirror_config=MirrorsConfig(),
-        mirrors_dir=tmp_path / "mirrors",
-        volumes_dir=tmp_path / "workspaces",
+        root=tmp_path,
     )
     owner = await a_user("alice", profiles={"im": "alice"})
     threads = ThreadManager(nerve=Nerve(), users=UserManager())
@@ -2541,7 +2539,7 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
     attributed = await bound.project
     assert attributed is not None
     assert attributed.name == "inky"
-    workspace = workspaces.path(await volume_for(workspaces, thread.id, owner.id))
+    workspace = (await volume_for(workspaces, thread.id, owner.id)).path
     assert workspace is not None
     assert (workspace / "readme.md").read_text() == "hello"
     # And the agent's session was relocated to where the resumed run happens.
@@ -2564,8 +2562,7 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
     workspaces = a_workspace_manager(
         projects=await a_registry(a_project(root)),
         mirror_config=MirrorsConfig(),
-        mirrors_dir=tmp_path / "mirrors",
-        volumes_dir=tmp_path / "workspaces",
+        root=tmp_path,
     )
     project = workspaces.projects.get("inky")
     assert project is not None
@@ -2627,7 +2624,7 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
     attributed = await landed.project
     assert attributed is not None
     assert attributed.name == "inky"
-    carried = workspaces.path(await volume_for(workspaces, landed.id, owner.id))
+    carried = (await volume_for(workspaces, landed.id, owner.id)).path
     assert carried is not None
     assert (carried / "work.md").read_text() == "unfinished"
     assert "work.md" in await run_git("status", "--porcelain", cwd=carried)
@@ -2638,7 +2635,7 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
     branch = await run_git("rev-parse", "--abbrev-ref", "HEAD", cwd=carried)
     assert branch.strip() == f"octomate/thread-{landed.id}"
     # The source is left as it was, in a tree of its own.
-    assert workspaces.path(await volume_for(workspaces, thread.id, owner.id)) not in (
+    assert (await volume_for(workspaces, thread.id, owner.id)).path not in (
         None,
         carried,
     )
@@ -2745,9 +2742,9 @@ async def test_react_prepares_each_senders_project_workspace(
     first, second = [turn.invocation for turn in agent.turns]
     assert first.owner_id == alice.id
     assert second.owner_id == bob.id
-    assert first.storage.path != second.storage.path
-    assert first.storage.path.is_dir()
-    assert second.storage.path.is_dir()
+    assert first.workspace.path != second.workspace.path
+    assert first.workspace.path.is_dir()
+    assert second.workspace.path.is_dir()
     assert bool(agent.turns[0].session) is gateway
     assert bool(agent.turns[1].session) is gateway
 

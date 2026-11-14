@@ -38,7 +38,6 @@ from octomate.schemas.habitat import (
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
 from octomate.schemas.volumes import Volume
-from octomate.schemas.volumes.storage import Storage
 from octomate.schemas.workspaces import Workspace
 
 
@@ -68,12 +67,8 @@ class Invocation:
         return self.workspace.owner_id
 
     @property
-    def storage(self) -> Storage:
-        return self.volume.storage
-
-    @property
     def cwd(self) -> Path | PurePosixPath:
-        """The harness's working directory; `storage.path` remains host-side."""
+        """The harness's working directory; `workspace.path` remains host-side."""
         return self.habitat.path(self.volume)
 
     @property

@@ -14,7 +14,7 @@ class NativeHabitat(Habitat):
         return "native"
 
     def path(self, volume: Volume) -> Path:
-        return volume.storage.path
+        return volume.path
 
     async def prepare(self) -> None:
         return

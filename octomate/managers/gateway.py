@@ -833,7 +833,7 @@ class OctomateSession:
                 )
             mirror = await self.workspaces.mirrors.sync(registered)
             if ref is not None and not await run_git(
-                "ls-remote", str(mirror.storage.path), ref
+                "ls-remote", str(mirror.path), ref
             ):
                 raise GatewayRefusal(
                     f"{registered.name!r} has no {ref!r} to start from. Name a "
@@ -983,7 +983,7 @@ class OctomateSession:
             # project with no way to ask again for the branch that was meant.
             mirror = await self.workspaces.mirrors.sync(registered)
             if ref is not None and not await run_git(
-                "ls-remote", str(mirror.storage.path), ref
+                "ls-remote", str(mirror.path), ref
             ):
                 raise GatewayRefusal(
                     f"{registered.name!r} has no {ref!r} to start from. Name a "

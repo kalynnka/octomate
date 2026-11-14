@@ -110,9 +110,7 @@ async def test_git_volume_checkpoints_inside_a_composed_workspace(
     owner_id = uuid7()
     work = HostDirectory(tmp_path / "work")
     cache = HostDirectory(tmp_path / "cache")
-    mirror = await MirrorManager(
-        volumes=FakeVolumeManager(), mirrors_dir=tmp_path / "mirrors"
-    ).create()
+    mirror = await MirrorManager(volumes=FakeVolumeManager(root=tmp_path)).create()
     volume = GitVolume(
         owner_id=owner_id, storage=work, mirror_id=mirror.id, mirror=Relation(mirror)
     )

@@ -95,8 +95,7 @@ async def a_harness(
     workspaces = a_workspace_manager(
         projects=await a_registry(a_project(root), a_project(off, enabled=False)),
         mirror_config=MirrorsConfig(),
-        mirrors_dir=tmp_path / "mirrors",
-        volumes_dir=tmp_path / "volumes",
+        root=tmp_path,
     )
     users, profile = await a_registered_profile()
     threads = ThreadManager(nerve=Nerve(), users=users)

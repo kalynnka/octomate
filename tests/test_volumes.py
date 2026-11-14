@@ -40,7 +40,7 @@ async def test_user_root_and_volume_paths_do_not_create_rows_or_directories(
     project: Project, tmp_path: Path
 ) -> None:
     alice, bob = await a_user("alice"), await a_user("bob")
-    manager = a_workspace_manager(volumes_dir=tmp_path / "volumes")
+    manager = a_workspace_manager(root=tmp_path)
     root = manager.root(alice.id)
     assert root == tmp_path / "volumes" / str(alice.id)
     assert root != manager.root(bob.id)
@@ -64,8 +64,7 @@ async def test_user_root_and_volume_paths_do_not_create_rows_or_directories(
         ),
     )
     for volume in volumes:
-        assert manager.path(volume) == volume.storage.path
-        assert not manager.path(volume).is_relative_to(manager.root(bob.id))
+        assert not volume.path.is_relative_to(manager.root(bob.id))
     async with async_session() as session:
         assert await session.count(Volume) == 0
     assert not manager.volumes_dir.exists()
@@ -281,7 +280,7 @@ async def test_workspace_runtime_refuses_an_existing_plain_tree(
     manager = a_workspace_manager()
     with pytest.raises(TypeError, match="requires a Git working volume"):
         await manager.volumes.tree(owner.id, thread_id, None)
-    manager.path(volume).mkdir(parents=True)
+    volume.path.mkdir(parents=True)
     assert await manager.report_unowned() == 0
 
 

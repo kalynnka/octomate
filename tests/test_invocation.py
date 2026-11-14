@@ -40,14 +40,14 @@ async def test_native_invocation_borrows_the_owners_chat_workspace(
         )
         assert invocation.owner_id == owner_id
         assert invocation.thread_id == thread_id
-        assert invocation.storage is workspaces.host_storage.get(workspace.path)
-        assert invocation.storage.path.is_dir()
+        assert invocation.volume.storage is workspaces.host_storage.get(workspace.path)
+        assert invocation.workspace.path.is_dir()
         assert invocation.habitat is habitat
         assert invocation.cwd == workspace.path
         assert isinstance(invocation.cwd, Path)
 
     await habitat.stop()
-    assert not invocation.storage.path.exists()
+    assert not invocation.workspace.path.exists()
 
 
 async def test_native_invocation_keeps_the_project_workspace_owner(
@@ -131,7 +131,7 @@ async def test_project_native_cwd_is_known_before_materialization(
         ),
         habitat=NativeHabitat(),
     )
-    assert invocation.storage is storage
+    assert invocation.volume.storage is storage
     assert invocation.cwd == volume.storage.path
     assert not storage.path.exists()
 
@@ -176,9 +176,9 @@ async def test_core_prepares_and_releases_native_chat(
         assert invocation.thread_id == thread.id
         assert invocation.conversation is conversation
         assert isinstance(invocation.habitat, NativeHabitat)
-        assert invocation.cwd == invocation.storage.path
-        assert invocation.storage.path.is_dir()
-    assert not invocation.storage.path.exists()
+        assert invocation.cwd == invocation.workspace.path
+        assert invocation.workspace.path.is_dir()
+    assert not invocation.workspace.path.exists()
 
 
 @pytest.mark.parametrize(
@@ -208,23 +208,23 @@ async def test_core_uses_the_workspace_volume_lifecycle(
         owner_id=owner_id,
     ) as invocation:
         assert invocation.owner_id == owner_id
-        assert invocation.storage.path.is_dir()
-        assert invocation.storage is app.volumes.host_storage.get(
-            invocation.storage.path
+        assert invocation.workspace.path.is_dir()
+        assert invocation.volume.storage is app.volumes.host_storage.get(
+            invocation.workspace.path
         )
         if project_thread:
             assert (
-                invocation.storage.path / "source.txt"
+                invocation.workspace.path / "source.txt"
             ).read_text() == "project contents"
-        (invocation.storage.path / "work.txt").write_text("turn contents")
+        (invocation.workspace.path / "work.txt").write_text("turn contents")
 
-    assert invocation.storage.uses == 0
+    assert invocation.volume.storage.uses == 0
     if project_thread:
         assert isinstance(invocation.volume, GitVolume)
-        assert (invocation.storage.path / "work.txt").read_text() == "turn contents"
+        assert (invocation.workspace.path / "work.txt").read_text() == "turn contents"
         assert await app.workspaces.saved(invocation.volume)
     else:
-        assert not invocation.storage.path.exists()
+        assert not invocation.workspace.path.exists()
 
 
 async def test_core_stops_native_habitat_when_volume_preparation_fails(
@@ -265,15 +265,18 @@ async def test_core_and_workspace_contexts_share_the_same_storage(
         conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
         owner_id=owner.id,
     ) as invocation:
-        (invocation.storage.path / "work").write_text("retained")
+        (invocation.workspace.path / "work").write_text("retained")
         async with app.workspaces.open(thread.id, None, owner.id) as workspace:
-            assert app.workspaces.host_storage.get(workspace.path) is invocation.storage
-            assert invocation.storage.uses == 2
+            assert (
+                app.workspaces.host_storage.get(workspace.path)
+                is invocation.volume.storage
+            )
+            assert invocation.volume.storage.uses == 2
             assert (workspace.path / "work").read_text() == "retained"
-        assert invocation.storage.uses == 1
-        assert invocation.storage.path.exists()
-    assert invocation.storage.uses == 0
-    assert not invocation.storage.path.exists()
+        assert invocation.volume.storage.uses == 1
+        assert invocation.workspace.path.exists()
+    assert invocation.volume.storage.uses == 0
+    assert not invocation.workspace.path.exists()
 
 
 async def test_core_isolates_two_owners_in_a_shared_thread(
@@ -296,11 +299,11 @@ async def test_core_isolates_two_owners_in_a_shared_thread(
         ) as second,
     ):
         assert first.id != second.id
-        assert first.storage.path != second.storage.path
-        (first.storage.path / "alice.txt").write_text("private work")
-        assert not (second.storage.path / "alice.txt").exists()
-    assert not first.storage.path.exists()
-    assert not second.storage.path.exists()
+        assert first.workspace.path != second.workspace.path
+        (first.workspace.path / "alice.txt").write_text("private work")
+        assert not (second.workspace.path / "alice.txt").exists()
+    assert not first.workspace.path.exists()
+    assert not second.workspace.path.exists()
 
 
 @pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])
@@ -316,7 +319,7 @@ async def test_core_releases_chat_on_failure_and_cancellation(
             owner_id=None,
         ) as invocation:
             raise error()
-    assert not invocation.storage.path.exists()
+    assert not invocation.workspace.path.exists()
 
 
 async def test_core_refuses_anonymous_project_and_managed_dispatch(
@@ -367,7 +370,7 @@ async def test_core_checkpoints_an_empty_project_without_a_git_index(
         conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
         owner_id=(await a_user()).id,
     ) as invocation:
-        (invocation.storage.path / ".git" / "index").unlink(missing_ok=True)
+        (invocation.workspace.path / ".git" / "index").unlink(missing_ok=True)
         assert await app.workspaces.prune(0) == []
         assert invocation.owner_id is not None
         assert not await app.workspaces.dismiss(thread, invocation.owner_id)

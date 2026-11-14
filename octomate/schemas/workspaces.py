@@ -50,7 +50,7 @@ class Workspace:
     @property
     def path(self) -> Path:
         """The working directory on the host."""
-        return self.volume.storage.path
+        return self.volume.path
 
     @asynccontextmanager
     async def __call__(self) -> AsyncGenerator[Workspace]:

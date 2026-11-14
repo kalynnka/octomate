@@ -332,9 +332,7 @@ async def test_a_run_in_a_project_records_its_workspace(tmp_path: Path) -> None:
     await inkling_run(octomate, thread, Scripted())
 
     [run] = await runs_of(octomate, thread)
-    assert run.cwd == octomate.workspaces.path(
-        await volume_for(octomate.workspaces, thread.id, OWNER_ID)
-    )
+    assert run.cwd == (await volume_for(octomate.workspaces, thread.id, OWNER_ID)).path
 
 
 async def test_a_run_outside_every_project_records_its_temporary_directory() -> None:

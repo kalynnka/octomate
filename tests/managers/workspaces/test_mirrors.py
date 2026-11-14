@@ -38,9 +38,8 @@ IDENTITY = (
 
 def a_mirror_manager(tmp_path: Path, window: float = 0.0) -> MirrorManager:
     return MirrorManager(
-        volumes=FakeVolumeManager(),
+        volumes=FakeVolumeManager(root=tmp_path),
         config=MirrorsConfig(freshness_window=window),
-        mirrors_dir=tmp_path / "mirrors",
     )
 
 
@@ -191,11 +190,10 @@ async def test_sync_commits_default_to_the_machine_identity(tmp_path: Path) -> N
 async def test_sync_commits_carry_the_configured_identity(tmp_path: Path) -> None:
     folder = a_folder(tmp_path / "docs", {"notes.md": "keep"})
     manager = MirrorManager(
-        volumes=FakeVolumeManager(),
+        volumes=FakeVolumeManager(root=tmp_path),
         config=MirrorsConfig(
             identity=GitIdentity(name="Lu Hui", email="lu@example.com")
         ),
-        mirrors_dir=tmp_path / "mirrors",
     )
 
     mirror = (await manager.sync(a_project(folder))).storage.path
@@ -301,9 +299,7 @@ async def test_two_syncs_of_one_mirror_serialize(tmp_path: Path) -> None:
 
 async def test_reconcile_mirrors_every_enabled_project(tmp_path: Path) -> None:
     folder = a_folder(tmp_path / "inky", {"readme.md": "hello"})
-    manager = MirrorManager(
-        volumes=FakeVolumeManager(), mirrors_dir=tmp_path / "mirrors"
-    )
+    manager = MirrorManager(volumes=FakeVolumeManager(root=tmp_path))
 
     await manager.reconcile(
         [a_project(folder), a_project(tmp_path / "gone", enabled=False)]
@@ -318,9 +314,7 @@ async def test_reconcile_continues_past_a_failing_project(
 ) -> None:
     bad = a_remote_project(tmp_path / "missing", name="bad")
     good = a_project(a_folder(tmp_path / "good", {"readme.md": "hello"}))
-    manager = MirrorManager(
-        volumes=FakeVolumeManager(), mirrors_dir=tmp_path / "mirrors"
-    )
+    manager = MirrorManager(volumes=FakeVolumeManager(root=tmp_path))
 
     with caplog.at_level(logging.ERROR):
         await manager.reconcile([bad, good])

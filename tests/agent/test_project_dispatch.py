@@ -283,9 +283,7 @@ async def test_a_thread_in_a_project_runs_claude_in_its_workspace(
 
     options = await claude_run(octomate, thread)
 
-    workspace = octomate.workspaces.path(
-        await volume_for(octomate.workspaces, thread.id, OWNER_ID)
-    )
+    workspace = (await volume_for(octomate.workspaces, thread.id, OWNER_ID)).path
     assert options.cwd == str(workspace)
     # A fork of the project, not an empty directory named after the thread.
     assert (workspace / "readme.md").read_text() == "hello"
@@ -301,9 +299,7 @@ async def test_a_thread_in_a_project_runs_codex_in_its_workspace(
     thread = await a_thread(octomate, "chat", "inky")
 
     assert await codex_run(octomate, thread) == str(
-        octomate.workspaces.path(
-            await volume_for(octomate.workspaces, thread.id, OWNER_ID)
-        )
+        (await volume_for(octomate.workspaces, thread.id, OWNER_ID)).path
     )
 
 
@@ -423,9 +419,7 @@ async def test_a_turn_stamps_its_workspace_as_in_use(tmp_path: Path) -> None:
     octomate, thread, _inky = await a_project_thread(tmp_path)
     await claude_run(octomate, thread)
     await octomate.workspaces.save(thread, OWNER_ID)
-    workspace = octomate.workspaces.path(
-        await volume_for(octomate.workspaces, thread.id, OWNER_ID)
-    )
+    workspace = (await volume_for(octomate.workspaces, thread.id, OWNER_ID)).path
     long_ago = time.time() - 30 * 24 * 60 * 60
     os.utime(workspace, (long_ago, long_ago))
 
@@ -502,17 +496,13 @@ async def test_a_turn_whose_work_cannot_be_saved_says_so_and_carries_on(
     await claude_run(octomate, thread)
     shutil.rmtree(mirror_of(octomate, "inky"))
     volume = await volume_for(octomate.workspaces, thread.id, OWNER_ID)
-    (octomate.workspaces.path(volume) / "new-work.txt").write_text("unsaved")
+    (volume.path / "new-work.txt").write_text("unsaved")
 
     with caplog.at_level(logging.ERROR):
         await octomate.workspaces.save(thread, OWNER_ID)
 
     assert "could not be saved" in caplog.text
     assert (
-        str(
-            octomate.workspaces.path(
-                await volume_for(octomate.workspaces, thread.id, OWNER_ID)
-            )
-        )
+        str((await volume_for(octomate.workspaces, thread.id, OWNER_ID)).path)
         in caplog.text
     )

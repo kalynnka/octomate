@@ -283,7 +283,7 @@ async def test_a_native_session_lands_on_its_project_only_where_it_is_served(
         case.owner_id, stored.id, project.id if available else None
     )
     assert volume is not None
-    assert case.fork.call_args.kwargs["cwd"] == app.workspaces.path(volume)
+    assert case.fork.call_args.kwargs["cwd"] == volume.path
     stored_source = await app.threads.get(case.source.thread_id)
     assert stored_source is not None
     assert stored_source.project_id == project.id

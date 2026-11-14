@@ -995,7 +995,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 max_retries=2,
             )
             capabilities.extend(OctomateTools.capabilities(client))
-        workspace = invocation.storage.path
+        workspace = invocation.workspace.path
         if invocation.project is not None:
             capabilities.extend(self.workspace_capabilities(workspace))
         graph_deps = ReactDeps(

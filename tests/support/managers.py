@@ -81,24 +81,24 @@ def a_workspace_manager(
     projects: ProjectManager | None = None,
     volumes: VolumeManager | None = None,
     config: WorkspacesConfig | None = None,
-    volumes_dir: Path | None = None,
-    mirrors_dir: Path = Path(".octomate/mirrors"),
+    root: Path | None = None,
     mirror_config: MirrorsConfig | None = None,
 ) -> WorkspaceManager:
-    """Compose real test services sharing one volume registry and storage manager."""
-    volumes = (
-        volumes
-        if volumes is not None
-        else VolumeManager(host_storage=HostStorageManager())
-    )
+    """Compose real test services sharing one volume registry and storage manager.
+
+    `root` places a registry made here; one passed in keeps its own.
+    """
+    if volumes is None:
+        volumes = VolumeManager(
+            host_storage=HostStorageManager(root=root)
+            if root is not None
+            else HostStorageManager()
+        )
     return WorkspaceManager(
         projects=projects if projects is not None else ProjectManager(),
         volumes=volumes,
-        mirrors=MirrorManager(
-            volumes=volumes, config=mirror_config, mirrors_dir=mirrors_dir
-        ),
+        mirrors=MirrorManager(volumes=volumes, config=mirror_config),
         config=config,
-        volumes_dir=volumes_dir,
     )
 
 
@@ -753,8 +753,12 @@ class FakeActionManager:
 class FakeVolumeManager(VolumeManager):
     """Volume records for graph tests without database persistence."""
 
-    def __init__(self) -> None:
-        super().__init__(host_storage=HostStorageManager())
+    def __init__(self, root: Path | None = None) -> None:
+        super().__init__(
+            host_storage=HostStorageManager(root=root)
+            if root is not None
+            else HostStorageManager()
+        )
         self.store: dict[tuple[UUID7, UUID7, UUID7 | None], GitVolume] = {}
         self.mirrors: dict[UUID7 | None, GitVolume] = {}
 
@@ -787,7 +791,10 @@ class FakeVolumeManager(VolumeManager):
             self.store[key] = GitVolume(
                 id=volume_id,
                 storage=self.host_storage.get(
-                    self.host_storage.root / str(owner_id) / "tree" / str(volume_id)
+                    self.host_storage.volumes_dir
+                    / str(owner_id)
+                    / "tree"
+                    / str(volume_id)
                 ),
                 usage="tree",
                 owner_id=owner_id,

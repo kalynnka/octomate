@@ -128,12 +128,13 @@ async def test_project_preparation_uses_the_sender_and_starting_ref(
     assert volume.thread_id == state.thread.id
     assert volume.project_id == state.thread.project_id
     assert volume.base_ref == "HEAD"
+    volume = await context.deps.workspaces.volumes.resolve(volume)
     mirror = await volume.mirror
     assert mirror is not None
     assert mirror.id == volume.mirror_id
     assert mirror.usage == "mirror"
     assert mirror.owner_id is None
-    assert (context.deps.workspaces.path(volume) / "work.txt").read_text() == "Original"
+    assert (volume.path / "work.txt").read_text() == "Original"
 
 
 @pytest.mark.parametrize("registered", [False, True])
@@ -228,9 +229,7 @@ async def test_workspace_operations_leave_the_other_senders_tree_untouched(
             state.user_profile.user_id, state.thread.id, project.id
         )
         assert carried is not None
-        assert (
-            deps.workspaces.path(carried) / "work.txt"
-        ).read_text() == "Alice's unfinished work"
+        assert (carried.path / "work.txt").read_text() == "Alice's unfinished work"
         assert (
             await deps.workspaces.volumes.find(
                 other_user.id, state.thread.id, project.id
