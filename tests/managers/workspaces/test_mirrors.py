@@ -19,12 +19,9 @@ from pathlib import Path
 import pytest
 
 from octomate.config.mirrors import GitIdentity, MirrorsConfig
-from octomate.managers.workspaces.mirrors import (
-    GitCommandError,
-    MirrorManager,
-    run_git,
-)
+from octomate.managers.workspaces.mirrors import MirrorManager
 from octomate.schemas.project import DirectoryUpstream, Project, RemoteUpstream
+from octomate.schemas.volumes.git import GitCommandError, run_git
 from tests.support.managers import FakeVolumeManager, a_project
 
 # For commits the *tests* make in their upstream repos — a person's, distinct from

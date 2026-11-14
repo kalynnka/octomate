@@ -18,16 +18,17 @@ from octomate.managers.base import Manager
 from octomate.managers.project import ProjectManager
 from octomate.managers.storages import HostStorageManager
 from octomate.managers.volumes import VolumeManager
-from octomate.managers.workspaces.mirrors import (
-    GitCommandError,
-    MirrorManager,
-    run_git,
-)
-from octomate.managers.workspaces.snapshots import SNAPSHOT_PREFIX, Snapshot
+from octomate.managers.workspaces.mirrors import MirrorManager
 from octomate.managers.workspaces.transfers import copy_ignored
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
 from octomate.schemas.volumes import GitVolume, UnregisteredProjectError, Volume
+from octomate.schemas.volumes.git import (
+    SNAPSHOT_PREFIX,
+    GitCommandError,
+    Snapshot,
+    run_git,
+)
 from octomate.schemas.workspaces import Workspace
 from octomate.telemetry import workspace_logfire
 

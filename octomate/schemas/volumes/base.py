@@ -18,6 +18,13 @@ from uuid_utils.compat import uuid7
 from octomate.config.mirrors import GitIdentity
 from octomate.models import volumes as volume_models
 from octomate.schemas.base import sqlalchemy_materia
+from octomate.schemas.volumes.git import (
+    SNAPSHOT_PREFIX,
+    GitCommandError,
+    Snapshot,
+    export,
+    run_git,
+)
 from octomate.schemas.volumes.storage import HostDirectory
 from octomate.telemetry import volume_logfire
 from octomate.types.volumes import VolumeKind, VolumeUsage
@@ -184,9 +191,6 @@ class GitVolume(Volume):
 
     async def materialize(self, mirror: GitVolume) -> Path:
         """Export only authorized history and this volume's snapshot atomically."""
-        # The legacy workspace package imports this schema during initialization.
-        from octomate.managers.workspaces.mirrors import MirrorManager
-
         if mirror.usage != "mirror":
             raise ValueError("A working tree requires a service-owned mirror")
         source = mirror.storage.path
@@ -216,7 +220,7 @@ class GitVolume(Volume):
                 if staging.exists():
                     shutil.rmtree(staging)
                 try:
-                    await MirrorManager.export(source, staging, self.snapshot_ref)
+                    await export(source, staging, self.snapshot_ref)
                     await self.inherit_remotes(source, staging)
                     await self.checkout(staging)
                     staging.rename(path)
@@ -238,9 +242,6 @@ class GitVolume(Volume):
         fork. There is nowhere to push a directory, and saying so by having no
         remote is clearer to an agent than an `origin` that fails when it is used.
         """
-        # The legacy workspace package imports this schema during initialization.
-        from octomate.managers.workspaces.mirrors import run_git
-
         if "origin" in (await run_git("remote", cwd=workspace)).split():
             await run_git("remote", "remove", "origin", cwd=workspace)
         if "origin" not in (await run_git("remote", cwd=mirror)).split():
@@ -269,10 +270,6 @@ class GitVolume(Volume):
         into its own snapshot, which is where its work is, and no starting point
         competes with that.
         """
-        # The legacy workspace package imports this schema during initialization.
-        from octomate.managers.workspaces.mirrors import run_git
-        from octomate.managers.workspaces.snapshots import SNAPSHOT_PREFIX
-
         thread_id, ref = self.thread_id, self.base_ref
         saved = self.snapshot_ref
         # The fork's two endings, and the only place that knows which this is: a
@@ -344,10 +341,6 @@ class GitVolume(Volume):
 
     async def checkpoint(self, mirror: GitVolume, identity: GitIdentity) -> None:
         """Import a validated snapshot; retain the working tree when capture fails."""
-        # The legacy workspace package imports this schema during initialization.
-        from octomate.managers.workspaces.mirrors import GitCommandError
-        from octomate.managers.workspaces.snapshots import Snapshot
-
         if mirror.usage != "mirror":
             raise ValueError("A working tree requires a service-owned mirror")
         path = self.storage.path

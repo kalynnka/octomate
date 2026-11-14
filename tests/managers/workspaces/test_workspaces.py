@@ -38,18 +38,18 @@ from octomate.config.workspaces import WorkspacesConfig
 from octomate.database import async_session
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
-from octomate.managers.workspaces import snapshots
 from octomate.managers.workspaces.base import (
     WorkspaceManager,
-)
-from octomate.managers.workspaces.mirrors import (
-    GitCommandError,
-    run_git,
 )
 from octomate.nerve import Nerve
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import User
-from octomate.schemas.volumes import GitVolume, UnregisteredProjectError, Volume
+from octomate.schemas.volumes import (
+    GitVolume,
+    UnregisteredProjectError,
+    Volume,
+)
+from octomate.schemas.volumes.git import GitCommandError, run_git
 from octomate.schemas.volumes.storage import HostDirectory
 from octomate.schemas.workspaces import Workspace
 from tests.support.managers import a_project, a_registry, a_thread, a_workspace_manager
@@ -1753,9 +1753,10 @@ async def test_checkpoint_skips_unchanged_work_but_keeps_branch_changes(
     workspace = await a_workspace(manager, thread, owner)
     assert workspace.project is not None
     (workspace.project.root / "readme.md").write_text("hello")
-    git = AsyncMock(wraps=snapshots.run_git)
-    monkeypatch.setattr(snapshots, "run_git", git)
+    git = AsyncMock(wraps=run_git)
     async with manager.enter(workspace):
+        # Wrapped once the tree is forked: the fork's export fetches too.
+        monkeypatch.setattr("octomate.schemas.volumes.git.run_git", git)
         (workspace.path / "work.md").write_text("unfinished")
     await manager.save(thread, owner.id)
     assert sum(call.args[0] == "fetch" for call in git.await_args_list) == 1

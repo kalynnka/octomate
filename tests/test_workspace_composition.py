@@ -10,8 +10,9 @@ from arcanus import Relation
 from pydantic.dataclasses import dataclass
 from uuid_utils.compat import uuid7
 
-from octomate.managers.workspaces.mirrors import MirrorManager, run_git
+from octomate.managers.workspaces.mirrors import MirrorManager
 from octomate.schemas.volumes import GitVolume, Volume
+from octomate.schemas.volumes.git import run_git
 from octomate.schemas.volumes.storage import HostDirectory
 from octomate.schemas.workspaces import Workspace
 from tests.support.managers import FakeVolumeManager

@@ -32,13 +32,13 @@ from octomate.managers import ThreadManager, UserManager
 from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.managers.mcp import McpManager
 from octomate.managers.workspaces import WorkspaceManager
-from octomate.managers.workspaces.mirrors import run_git
 from octomate.mcp.server import octomate_mcp
 from octomate.nerve import Nerve
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import ProjectSummary, TeleportDecision
 from octomate.schemas.user import UserProfile
+from octomate.schemas.volumes.git import run_git
 from octomate.tentacles.inkling.mcp import OctomateTools
 from octomate.types.json import JsonObject
 from tests.support.managers import (

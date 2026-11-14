@@ -10,8 +10,12 @@ import tempfile
 from contextlib import ExitStack, suppress
 from pathlib import Path
 
-from octomate.managers.workspaces.mirrors import GitCommandError, run_git
-from octomate.managers.workspaces.snapshots import copy_metadata, directory
+from octomate.schemas.volumes.git import (
+    GitCommandError,
+    copy_metadata,
+    directory,
+    run_git,
+)
 
 
 async def copy_ignored(source: Path, target: Path) -> None:

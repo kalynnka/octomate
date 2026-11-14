@@ -23,7 +23,6 @@ from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.events import WireEvent
 from octomate.managers.base import Manager
-from octomate.managers.workspaces.mirrors import run_git
 from octomate.nerve import ChannelTopic, Impulse, Nerve, ThreadTopic
 from octomate.schemas.awakes import (
     DrivenGatewaySignal,
@@ -51,6 +50,7 @@ from octomate.schemas.triage import (
     TeleportDecision,
 )
 from octomate.schemas.user import UserProfile
+from octomate.schemas.volumes.git import run_git
 from octomate.tentacles.agent import AgentTentacle
 from octomate.types.threads import NATIVE_CHANNEL_USER_ID
 

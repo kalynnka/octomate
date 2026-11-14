@@ -33,10 +33,10 @@ from octomate.config import OctomateConfig
 from octomate.config.agents import ClaudeCodeConfig, CodexConfig
 from octomate.config.workspaces import WorkspacesConfig
 from octomate.database import async_session
-from octomate.managers.workspaces.mirrors import run_git
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import User
+from octomate.schemas.volumes.git import run_git
 from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.codex import CodexTentacle

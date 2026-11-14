@@ -35,7 +35,6 @@ from octomate.managers.gateway import GatewayManager, OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import WorkspaceManager
-from octomate.managers.workspaces.mirrors import run_git
 from octomate.nerve import Nerve
 from octomate.reflex import (
     DeferredResult,
@@ -78,6 +77,7 @@ from octomate.schemas.triage import (
 )
 from octomate.schemas.user import UserProfile
 from octomate.schemas.volumes import GitVolume, UnregisteredProjectError
+from octomate.schemas.volumes.git import run_git
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.channel import ChannelOutput, ChannelSurfaces
 from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent

@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from octomate.managers.workspaces.mirrors import GitCommandError, run_git
 from octomate.managers.workspaces.transfers import copy_ignored, copy_ignored_files
+from octomate.schemas.volumes.git import GitCommandError, run_git
 
 
 async def test_ignored_transfer_preserves_files_and_skips_directories(

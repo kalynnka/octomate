@@ -12,8 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
-from octomate.managers.workspaces.mirrors import MirrorManager, run_git
+from octomate.managers.workspaces.mirrors import MirrorManager
 from octomate.schemas.volumes import GitVolume, Volume
+from octomate.schemas.volumes.git import run_git
 from octomate.schemas.volumes.storage import HostDirectory
 from tests.support.managers import FakeVolumeManager
 from tests.support.users import a_user

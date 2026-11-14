@@ -3,9 +3,7 @@ plumbing that syncs them."""
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
 import shutil
 import time
 from pathlib import Path
@@ -15,6 +13,7 @@ from octomate.managers.base import Locks, Manager
 from octomate.managers.volumes import VolumeManager
 from octomate.schemas.project import Project, RemoteUpstream
 from octomate.schemas.volumes import GitVolume
+from octomate.schemas.volumes.git import GitCommandError, run_git
 
 logger = logging.getLogger(__name__)
 
@@ -29,68 +28,6 @@ BATCH_GIT_ENV = {
 # it out of the way of the project mirrors it sits among, which are named after
 # projects and so after directories people actually have.
 BLANK_MIRROR = ".blank"
-
-
-class GitCommandError(RuntimeError):
-    """A git command exited nonzero; the message carries its stderr."""
-
-
-async def run_git(
-    *args: str,
-    cwd: Path | None = None,
-    env: dict[str, str] | None = None,
-    isolated: bool = False,
-) -> str:
-    """Run one git command and answer its stdout, raising `GitCommandError` with
-    the command and its stderr when it exits nonzero.
-
-    Isolated operations use a host-owned repository with no inherited Git
-    environment or global configuration. Local configuration is still read, so
-    callers must never use this option directly on a writable guest repository.
-    """
-    environment = dict(os.environ)
-    if isolated:
-        environment = {
-            key: value
-            for key, value in environment.items()
-            if not key.startswith("GIT_")
-        }
-        environment.update(
-            GIT_CONFIG_GLOBAL=os.devnull,
-            GIT_CONFIG_SYSTEM=os.devnull,
-            GIT_NO_REPLACE_OBJECTS="1",
-            GIT_TERMINAL_PROMPT="0",
-        )
-        args = (
-            "-c",
-            f"core.hooksPath={os.devnull}",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            f"core.attributesFile={os.devnull}",
-            "-c",
-            "protocol.allow=never",
-            "-c",
-            "protocol.file.allow=always",
-            "-c",
-            "fetch.fsckObjects=true",
-            *args,
-        )
-    environment.update(env or {})
-    process = await asyncio.create_subprocess_exec(
-        "git",
-        *args,
-        cwd=cwd,
-        env=environment,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await process.communicate()
-    if process.returncode != 0:
-        raise GitCommandError(
-            f"git {' '.join(args)} failed: {stderr.decode(errors='replace').strip()}"
-        )
-    return stdout.decode(errors="replace")
 
 
 class MirrorManager(Manager, Locks[str]):
@@ -141,48 +78,6 @@ class MirrorManager(Manager, Locks[str]):
         out of the way of the mirrors it sits among — those are named after
         projects, and so after directories people actually have."""
         return project.name if project is not None else BLANK_MIRROR
-
-    @staticmethod
-    async def export(source: Path, target: Path, snapshot: str) -> None:
-        """Export project refs and one core-selected snapshot to a fresh repository.
-
-        Copying or locally cloning the mirror would expose every cached object,
-        including other users' snapshots. Fetch into an empty object store so
-        only history reachable from the selected refs crosses the boundary.
-        The caller supplies the snapshot ref from its resolved tree volume.
-        """
-        branch = (
-            await run_git("symbolic-ref", "HEAD", cwd=source, isolated=True)
-        ).strip()
-        if not branch.startswith("refs/heads/"):
-            raise GitCommandError("The mirror's HEAD must name a project branch")
-        await run_git(
-            "init",
-            "--template=",
-            "-b",
-            branch.removeprefix("refs/heads/"),
-            str(target),
-            isolated=True,
-        )
-        refs = [
-            "+refs/heads/*:refs/heads/*",
-            "+refs/tags/*:refs/tags/*",
-            "+refs/remotes/origin/*:refs/remotes/origin/*",
-        ]
-        if await run_git("ls-remote", str(source), snapshot, isolated=True):
-            refs.append(f"+{snapshot}:{snapshot}")
-        await run_git(
-            "fetch",
-            "--update-head-ok",
-            "--no-tags",
-            "--no-recurse-submodules",
-            "--no-auto-maintenance",
-            "--no-write-fetch-head",
-            str(source),
-            *refs,
-            cwd=target,
-            isolated=True,
-        )
 
     async def sync(self, project: Project) -> GitVolume:
         """The mirror, current enough to fork from: created from the upstream when
