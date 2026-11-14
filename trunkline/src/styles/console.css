@@ -1451,6 +1451,7 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
   #trk-chatlog {
     padding: 14px 12px 52px;
   }
+  .trk-activity-dock { padding-inline: 12px; }
 }
 @media (pointer: coarse) {
   :root { --trk-rail-w: 44px; --trk-rail-base-w: 44px; }

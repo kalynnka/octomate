@@ -6,6 +6,8 @@ import type { WireEvent } from '@/lib/api/events'
 interface Activity {
   text: string
   attention: boolean
+  /** Browser timestamp (ms) of when the kick behind this status woke, when the server knows it. */
+  startedAt?: number
 }
 
 export const useActivity = create<Record<string, Activity | undefined>>(() => ({}))
@@ -13,6 +15,7 @@ interface ActivityUpdate {
   key: string
   event: Extract<WireEvent, { event_kind: 'run_activity_changed' | 'reflex_phase_changed' | 'run_ended' }>
   attention: boolean
+  started_at?: string | null
 }
 
 const observers = new Map<string, { readers: number; receive: (update: ActivityUpdate) => void; stop: () => void }>()
@@ -141,13 +144,14 @@ export function observeActivity(id: string, byKey = false): () => void {
     }
     observer = {
       readers: 0,
-      receive: ({ event, attention }) => {
+      receive: ({ event, attention, started_at }) => {
         if (stopped) return
         const text = activityText(event)
         if (text === '') return clear()
         if (text === undefined) return
         const previous = useActivity.getState()[key]
-        if (text !== previous?.text || attention !== previous?.attention) useActivity.setState({ [key]: { text, attention } })
+        const startedAt = started_at ? Date.parse(started_at) : undefined
+        if (text !== previous?.text || attention !== previous?.attention || startedAt !== previous?.startedAt) useActivity.setState({ [key]: { text, attention, startedAt } })
         clearTimeout(expiry)
         const timer = setTimeout(() => {
           if (!stopped && expiry === timer) clear()
