@@ -4,6 +4,8 @@ name: octomate
 args:
   user_id:
     required: true
+  root:
+    required: true
   image:
     required: true
   cpus:
@@ -22,6 +24,7 @@ sandbox:
 environment:
   variables:
     OCTOMATE_HABITAT_USER_ID: "${{ kit.args.user_id }}"
+    OCTOMATE_HABITAT_ROOT: "${{ kit.args.root }}"
     OCTOMATE_HABITAT_IMAGE: "${{ kit.args.image }}"
     OCTOMATE_HABITAT_CPUS: "${{ kit.args.cpus }}"
     OCTOMATE_HABITAT_MEMORY_MIB: "${{ kit.args.memory_mib }}"

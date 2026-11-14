@@ -153,7 +153,11 @@ class HabitatManager:
         if scope.user_id not in self.residences:
             match self.config:
                 case SbxHabitatConfig() as config:
-                    habitat = SbxHabitat(config=config, user_id=scope.user_id)
+                    habitat = SbxHabitat(
+                        config=config,
+                        user_id=scope.user_id,
+                        root=self.workspaces.root(scope.user_id),
+                    )
                 case NativeHabitatConfig():
                     raise HabitatError("Habitat mode is 'native'; no habitat runs")
             self.residences[scope.user_id] = Residence(

@@ -51,7 +51,10 @@ def manager(monkeypatch: pytest.MonkeyPatch, scope: InvocationScope) -> HabitatM
             assert args[2] == "printenv"
             assert isinstance(manager.config, SbxHabitatConfig)
             internet_access = str(manager.config.internet_access).lower()
-            return f"{scope.user_id}\n{IMAGE}\n2\n2048\n{internet_access}\n".encode()
+            root = manager.workspaces.root(scope.user_id)
+            return (
+                f"{scope.user_id}\n{root}\n{IMAGE}\n2\n2048\n{internet_access}\n"
+            ).encode()
         return "\n".join(sorted(names)).encode() if args[0] == "ls" else b""
 
     monkeypatch.setattr(SbxHabitat, "command", AsyncMock(side_effect=command))
@@ -155,7 +158,7 @@ async def test_cancel_scope_during_prepare_finishes_cleanup(
 
 
 @pytest.mark.parametrize("internet_access", [True, False])
-async def test_create_is_mountless_scoped_and_budgeted(
+async def test_create_mounts_only_the_owners_root_scoped_and_budgeted(
     manager: HabitatManager, scope: InvocationScope, internet_access: bool
 ) -> None:
     manager.config = SbxHabitatConfig(
@@ -179,8 +182,13 @@ async def test_create_is_mountless_scoped_and_budgeted(
     create = next(c for c in command.await_args_list if c.args[0] == "create")
     assert create.args[0] == "create"
     assert (Path(create.args[1]) / "spec.yaml").is_file()
+    root = manager.workspaces.root(scope.user_id)
+    # The owner's root is the one host path given, and it exists by then.
+    assert create.args[2:] == (str(root),)
+    assert root.is_dir()
     assert create.kwargs["kit_arg"] == [
         f"user_id={scope.user_id}",
+        f"root={root}",
         f"image={IMAGE}",
         "cpus=2",
         "memory_mib=2048",
@@ -253,7 +261,7 @@ async def test_reuse_does_not_create_or_replace_a_habitat(
     assert "create" not in [c.args[0] for c in command.await_args_list]
 
 
-@pytest.mark.parametrize("field", [0, 1, 2, 3, 4])
+@pytest.mark.parametrize("field", [0, 1, 2, 3, 4, 5])
 async def test_configuration_mismatch_stops_runtime_without_replacing_it(
     manager: HabitatManager, scope: InvocationScope, field: int
 ) -> None:
@@ -261,6 +269,7 @@ async def test_configuration_mismatch_stops_runtime_without_replacing_it(
     assert isinstance(command, AsyncMock)
     metadata = [
         str(scope.user_id).encode(),
+        str(manager.workspaces.root(scope.user_id)).encode(),
         IMAGE.encode(),
         b"2",
         b"2048",
@@ -442,7 +451,7 @@ async def test_preflight_checks_host_cli_version_and_ssh_forwarding(
     error: str | None,
     prefix: str,
 ) -> None:
-    habitat = SbxHabitat(SbxHabitatConfig(image=IMAGE), uuid7())
+    habitat = SbxHabitat(SbxHabitatConfig(image=IMAGE), uuid7(), Path("root"))
     monkeypatch.setattr(sbx_module.platform, "system", lambda: system)
     monkeypatch.setattr(sbx_module.platform, "machine", lambda: machine)
     monkeypatch.setattr(sbx_module.platform, "mac_ver", lambda: ("14.1", (), ""))
@@ -475,7 +484,7 @@ async def test_linux_preflight_requires_supported_host_and_accessible_kvm(
     kvm: bool,
     error: str | None,
 ) -> None:
-    habitat = SbxHabitat(SbxHabitatConfig(image=IMAGE), uuid7())
+    habitat = SbxHabitat(SbxHabitatConfig(image=IMAGE), uuid7(), Path("root"))
     monkeypatch.setattr(sbx_module.platform, "system", lambda: "Linux")
     monkeypatch.setattr(sbx_module.platform, "machine", lambda: machine)
     monkeypatch.setattr(

@@ -1,5 +1,5 @@
 import asyncio
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import AsyncMock
 
 import pytest
@@ -126,15 +126,16 @@ async def test_invocation_borrows_the_habitat_without_managing_its_lifetime(
     in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     owner = await a_user()
+    workspaces = a_workspace_manager()
     habitat = SbxHabitat(
         config=SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64),
         user_id=owner.id,
+        root=workspaces.root(owner.id),
     )
     prepare = AsyncMock()
     stop = AsyncMock()
     monkeypatch.setattr(habitat, "prepare", prepare)
     monkeypatch.setattr(habitat, "stop", stop)
-    workspaces = a_workspace_manager()
     async with workspaces.open(await a_thread(), None, owner.id) as workspace:
         assert isinstance(workspace.volume, GitVolume)
         invocation = Invocation(
@@ -147,8 +148,15 @@ async def test_invocation_borrows_the_habitat_without_managing_its_lifetime(
         )
         assert invocation.habitat is habitat
         assert isinstance(workspace.volume, GitVolume)
-        with pytest.raises(HabitatError, match="volume mounts"):
-            _ = invocation.cwd
+        # Local sbx shows the owner's mounted root at its host path.
+        assert invocation.cwd == PurePosixPath(workspace.path)
+        assert invocation.environment["UV_CACHE_DIR"].startswith(
+            str(workspaces.root(owner.id) / "cache")
+        )
+        mirror = await workspace.volume.mirror
+        assert mirror is not None
+        with pytest.raises(HabitatError, match="owner's own volumes"):
+            habitat.path(mirror)
 
     prepare.assert_not_called()
     stop.assert_not_called()
@@ -190,11 +198,12 @@ async def test_invocation_rejects_an_unregistered_or_different_habitat_owner(
     in_memory_engine: AsyncEngine, registered: bool
 ) -> None:
     owner_id = (await a_user()).id if registered else None
+    workspaces = a_workspace_manager()
     habitat = SbxHabitat(
         config=SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64),
         user_id=uuid7(),
+        root=workspaces.root(uuid7()),
     )
-    workspaces = a_workspace_manager()
     workspace = await workspaces.resolve(await a_thread(), None, owner_id)
     message = "owners do not match" if registered else "registered user"
     with pytest.raises(ValueError, match=message):
