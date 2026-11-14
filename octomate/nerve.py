@@ -21,12 +21,13 @@ memory. Publishing is one way and knows nothing of who subscribed, and
 nothing is kept for a reader that is not there: an event published to a
 thread nobody subscribes to goes nowhere, and a console re-reads the thread
 ledger when it opens. The one exception is asked for on both sides. A publisher
-opened with `retain` has what it routes to the thread it was asked on kept
-together, in order, for as long as its block is open, and that thread's
-subscriber opened with `replay` starts with what is kept past the offset it
-names. The nerve does not know what the block or an impulse stands for: whoever
-opens the block ends it once the ledger holds what it said, and the reader
-counts its offset in what is kept.
+opened with `retain` has what it routes to the thread it was asked on kept, in
+order, and that thread's subscriber opened with `replay` starts with what is
+kept past the offset it names. The retaining publishers open on one thread keep
+in one stream, which lasts until the last of them closes. The nerve does not
+know what a block or an impulse stands for: whoever opens a block decides how
+long what is said in it is worth keeping, and the reader counts its offset in
+what is kept.
 
 `Nerve.deliver` reaches every subscriber of exactly one topic. A publisher sends
 user notifications by delivering separately to each authorized user's topic.
@@ -37,7 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, replace
@@ -128,9 +129,12 @@ class Nerve(Generic[NerveEventT]):
         self.subscribers: defaultdict[Topic, set[Fiber[Impulse[NerveEventT]]]] = (
             defaultdict(set)
         )
-        # What the retaining publisher open on each thread has routed to it, in
-        # order, by the thread's topic. A subscriber's `replay` counts into it.
+        # What retaining publishers have routed to the thread they were asked
+        # on, in order, by the thread's topic, for as long as one of them is open
+        # there. A subscriber's `replay` counts into it.
         self.retained: dict[Topic, list[Impulse[NerveEventT]]] = {}
+        # How many retaining publishers are open on a thread, by its topic.
+        self.retaining: Counter[Topic] = Counter()
 
     @asynccontextmanager
     async def subscribe(
@@ -203,9 +207,10 @@ class Nerve(Generic[NerveEventT]):
         the block ends is published; closing emits no lifecycle events of its own.
 
         With `retain`, what an addressed publisher routes to the thread it was
-        asked on is kept for that thread's replaying subscribers until the block
-        ends, or until the next retaining publisher opens there. Leave the block
-        once the ledger holds what was said in it.
+        asked on is kept for that thread's replaying subscribers. The retaining
+        publishers open on one thread keep in one stream, in the order the nerve
+        routed, and it is dropped when the last of them closes: what one kept
+        outlasts its block while another is still open there.
 
         A topic publishes impulses unchanged to that topic. A supplied fiber is
         read for the block's lifetime and remains owned by its caller. Its incoming
@@ -228,9 +233,8 @@ class Nerve(Generic[NerveEventT]):
         retaining = ThreadTopic(asked) if retain and asked is not None else None
 
         async def pump() -> None:
-            kept: list[Impulse[NerveEventT]] = []
             if retaining is not None:
-                self.retained[retaining] = kept
+                self.retaining[retaining] += 1
             try:
                 async for sent in publisher:
                     if topic is not None:
@@ -243,15 +247,18 @@ class Nerve(Generic[NerveEventT]):
                         topics.add(ThreadTopic(ThreadKey.from_address(impulse.address)))
                     if not impulse.private and asked is not None:
                         topics.add(ThreadTopic(asked))
-                    if retaining in topics:
-                        kept.append(impulse)
+                    if retaining is not None and retaining in topics:
+                        self.retained.setdefault(retaining, []).append(impulse)
                     for destination in topics:
                         self.deliver(destination, impulse)
             except (anyio.BrokenResourceError, anyio.ClosedResourceError):
                 pass  # The owner closed the supplied fiber while its pump was waiting.
             finally:
-                if retaining is not None and self.retained.get(retaining) is kept:
-                    del self.retained[retaining]
+                if retaining is not None:
+                    self.retaining[retaining] -= 1
+                    if not self.retaining[retaining]:
+                        del self.retaining[retaining]
+                        self.retained.pop(retaining, None)
                 if fiber is None:
                     publisher.close()
 

@@ -246,7 +246,7 @@ async def test_a_publisher_that_does_not_retain_is_not_replayed() -> None:
             assert held(late) == []
 
 
-async def test_a_publisher_ending_after_the_next_opened_leaves_what_the_next_kept() -> (
+async def test_retaining_publishers_on_one_thread_keep_in_one_stream_until_the_last_closes() -> (
     None
 ):
     nerve = Nerve()
@@ -259,11 +259,18 @@ async def test_a_publisher_ending_after_the_next_opened_leaves_what_the_next_kep
         async with nerve.publish(HERE, retain=True) as following:
             await following.send(Impulse(LATER, HERE))
             await routed.receive()
+            await first.send(Impulse(EVENT, HERE))
+            await routed.receive()
             await ending.__aexit__(None, None, None)
 
             async with nerve.subscribe(thread, replay=0) as late:
-                assert [impulse.event for impulse in held(late)] == [LATER]
+                assert [impulse.event for impulse in held(late)] == [
+                    EVENT,
+                    LATER,
+                    EVENT,
+                ]
     assert nerve.retained == {}
+    assert nerve.retaining == {}
 
 
 async def test_the_replay_does_not_count_against_the_backlog() -> None:
