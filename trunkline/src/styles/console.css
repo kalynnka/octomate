@@ -811,7 +811,7 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
 .trk-user-message > .trk-message-references .trk-reference-tags { justify-content: flex-end; }
 .trk-reference-tags { position: relative; display: flex; flex-wrap: wrap; gap: 4px; }
 .trk-reference { display: inline-flex; max-width: min(100%, 28ch); font: 10px/1.4 var(--font-mono); }
-.trk-file-reference { display: inline-block; max-width: 100%; border: 0; padding: 0; background: transparent; color: var(--info-strong); font: inherit; text-align: inherit; text-decoration: none; cursor: pointer; }
+.trk-file-reference { display: inline-block; box-sizing: border-box; max-width: 100%; border: 0; padding: 0; background: transparent; color: var(--info-strong); font: inherit; text-align: inherit; text-decoration: none; cursor: pointer; }
 .trk-file-reference:focus-visible { outline: 2px solid var(--fg-2); outline-offset: 2px; }
 .trk-reference-chip { display: inline-flex; align-items: center; min-width: 0; gap: 4px; padding: 2px 5px; min-height: 24px; border-radius: var(--radius-soft-sm); font: 10px/1.4 var(--font-mono); white-space: nowrap; }
 .trk-reference-link:not([data-unavailable]) { text-decoration: underline; text-underline-offset: 2px; }
