@@ -444,7 +444,7 @@ async def test_driven_names_are_persisted_and_revised(
                     monkeypatch.setattr(
                         octomate.conversations,
                         "latest_cwd",
-                        AsyncMock(return_value=invocation.storage.path),
+                        AsyncMock(return_value=invocation.workspace.path),
                     )
                 result = await tentacle.run(
                     "work", conversation_address=KEY, invocation=invocation
@@ -670,7 +670,7 @@ async def test_run_reuses_the_stored_session_and_skips_create(
         monkeypatch.setattr(
             conversations,
             "latest_cwd",
-            AsyncMock(return_value=invocation.storage.path),
+            AsyncMock(return_value=invocation.workspace.path),
         )
         result = await tentacle.run(
             "more", conversation_address=KEY, invocation=invocation
@@ -1967,7 +1967,7 @@ async def test_shared_thread_cannot_resume_dsh_in_the_previous_owners_tree(
             await agent.run("start", conversation_address=KEY, invocation=initial)
         assert (
             await app.conversations.latest_cwd(initial.conversation.id)
-            == initial.storage.path
+            == initial.workspace.path
         )
         FakeDeepseekApi.calls.clear()
         async with invocation_for(
@@ -1977,5 +1977,5 @@ async def test_shared_thread_cannot_resume_dsh_in_the_previous_owners_tree(
                 await agent.run(
                     "continue", conversation_address=KEY, invocation=subsequent
                 )
-        assert subsequent.storage.path != initial.storage.path
+        assert subsequent.workspace.path != initial.workspace.path
         assert calls_of("session/prompt") == []

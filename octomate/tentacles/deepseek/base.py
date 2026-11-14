@@ -89,7 +89,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import Thread, ThreadKey
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import agent_input_message_attributes, deepseek_logfire
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
@@ -524,23 +524,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             },
         )
 
-    def command_invocation(
-        self,
-        context: CommandContext,
-        intent: CommandIntent,
-        descriptor: CommandDescriptor,
-        *,
-        thread: Thread | None,
-    ) -> contextlib.AbstractAsyncContextManager[Invocation | None]:
-        if not isinstance(descriptor, DeepseekCommandDescriptor):
-            return contextlib.nullcontext(None)
-        if thread is None or context.conversation is None:
-            raise ValueError("A runtime command requires a conversation")
-        return self.habitats.invoke(
-            thread=thread,
-            conversation=context.conversation,
-            owner_id=context.user_id,
-        )
+    def needs_invocation(self, descriptor: CommandDescriptor) -> bool:
+        return isinstance(descriptor, DeepseekCommandDescriptor)
 
     async def execute_command(
         self,
@@ -596,7 +581,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             )
             if (
                 await self.conversations.latest_cwd(conversation.id)
-                != invocation.storage.path
+                != invocation.workspace.path
             ):
                 raise ValueError(
                     "DeepSeek cannot resume a session in a different or unverified workspace"
@@ -1103,8 +1088,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         if isinstance(instructions, str) and instructions:
             prompt_text = f"{tagged('instructions', instructions)}\n\n{prompt_text}"
 
-        storage = invocation.storage
-        run_cwd = str(storage.path)
+        run_cwd = str(invocation.workspace.path)
 
         with deepseek_logfire.span(
             "DeepseekTentacle {agent_id} {run_name} [{conversation_address}]",
@@ -1128,7 +1112,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 if (
                     session_id
                     and await self.conversations.latest_cwd(conversation.id)
-                    != storage.path
+                    != invocation.workspace.path
                 ):
                     raise ValueError(
                         "DeepSeek cannot resume a session in a different or unverified workspace"

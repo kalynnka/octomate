@@ -492,9 +492,7 @@ async def test_a_driven_claude_run_records_where_it_dispatched(
 
     options: ClaudeAgentOptions | None = RecordingClaudeClient.last_options
     assert options is not None
-    workspace = octomate.workspaces.path(
-        await volume_for(octomate.workspaces, thread.id, OWNER_ID)
-    )
+    workspace = (await volume_for(octomate.workspaces, thread.id, OWNER_ID)).path
     assert options.cwd == str(workspace)
     [run] = await driven_runs(octomate, thread, "claude")
     # The same directory the run was launched in, so a driven run answers "where did

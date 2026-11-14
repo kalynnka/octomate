@@ -104,7 +104,7 @@ async def command_context(
         volume = await workspaces.volumes.find(
             user.id, thread.id, project.id if project is not None else None
         )
-        cwd = workspaces.path(volume) if volume is not None else None
+        cwd = volume.path if volume is not None else None
 
     try:
         model = agent.resolve_model(model)

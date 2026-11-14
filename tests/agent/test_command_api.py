@@ -395,7 +395,7 @@ async def test_http_uses_injected_managers(
     conversation: Conversation,
     tmp_path: Path,
 ) -> None:
-    workspaces = a_workspace_manager(volumes_dir=tmp_path / "injected")
+    workspaces = a_workspace_manager(root=tmp_path / "injected")
     workspace = await workspaces.resolve(conversation.thread_id, None, user.id)
     app.dependency_overrides[workspace_manager] = lambda: workspaces
     body = {

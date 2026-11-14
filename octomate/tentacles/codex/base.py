@@ -132,7 +132,7 @@ from octomate.schemas.mcp import McpAppInvocation, McpAppResultMeta
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import Thread, ThreadKey
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
 from octomate.streaming.files import FileTransferError, FileTransferSlot
@@ -840,30 +840,15 @@ class CodexTentacle(AgentTentacle[str, None]):
         )
         return catalog
 
-    def command_invocation(
-        self,
-        context: CommandContext,
-        intent: CommandIntent,
-        descriptor: CommandDescriptor,
-        *,
-        thread: Thread | None,
-    ) -> contextlib.AbstractAsyncContextManager[Invocation | None]:
-        if not isinstance(descriptor, CodexCommandDescriptor) and descriptor.id not in {
+    def needs_invocation(self, descriptor: CommandDescriptor) -> bool:
+        return isinstance(descriptor, CodexCommandDescriptor) or descriptor.id in {
             "builtin:init",
             "builtin:approve",
             "builtin:review",
             "builtin:mcp",
             "builtin:plan",
             "builtin:compact",
-        }:
-            return contextlib.nullcontext(None)
-        if thread is None or context.conversation is None:
-            raise ValueError("A runtime command requires a conversation")
-        return self.habitats.invoke(
-            thread=thread,
-            conversation=context.conversation,
-            owner_id=context.user_id,
-        )
+        }
 
     async def execute_command(
         self,
@@ -1104,7 +1089,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 conversation_id=conversation.id,
                 api_key_id=api_key.key.id if api_key is not None else None,
                 mcp_bearer=api_key.token if api_key is not None else None,
-                cwd=str(invocation.storage.path),
+                cwd=str(invocation.workspace.path),
                 approval_mode=ApprovalMode.auto_review
                 if permission_mode == "auto_review"
                 else ApprovalMode.deny_all
@@ -1839,8 +1824,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         # writes to it, so for Codex the directory is the whole of running inside a
         # project — and the workspace is what makes that boundary this run's rather
         # than everyone's checkout.
-        storage = invocation.storage
-        run_cwd = str(storage.path)
+        run_cwd = str(invocation.workspace.path)
 
         async with contextlib.AsyncExitStack() as resources:
             resources.enter_context(
@@ -1962,7 +1946,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                     )
                 artifacts = await self.capture_html(
                     notification,
-                    workspace=storage.path,
+                    workspace=invocation.workspace.path,
                     session=session,
                     address=conversation_address,
                     thread_id=conversation.thread_id,

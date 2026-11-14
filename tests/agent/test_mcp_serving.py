@@ -190,7 +190,6 @@ async def a_driven_turn(octomate: Octomate) -> OctomateSession:
         user_profile=await octomate.users.profile("im", "alice"),
         threads=octomate.threads,
         workspaces=octomate.workspaces,
-        habitats=octomate.habitats,
     )
     octomate.gateway.register(session)
     return session

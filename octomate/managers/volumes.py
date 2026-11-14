@@ -14,6 +14,7 @@ from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.storages import HostStorageManager
 from octomate.schemas.volumes import GitVolume, Volume
+from octomate.types.volumes import VolumeUsage
 
 
 class VolumeManager(Manager, Locks[UUID7 | None]):
@@ -96,7 +97,7 @@ class VolumeManager(Manager, Locks[UUID7 | None]):
                     volume = GitVolume(
                         id=volume_id,
                         storage=self.host_storage.get(
-                            self.host_storage.root
+                            self.host_storage.volumes_dir
                             / str(owner_id)
                             / "tree"
                             / str(volume_id)
@@ -118,6 +119,36 @@ class VolumeManager(Manager, Locks[UUID7 | None]):
                 session.add(volume)
                 await session.commit()
             return volume
+
+    async def slot(self, owner_id: UUID7, usage: VolumeUsage) -> Volume:
+        """This owner's one volume of this kind, its row written now when there is
+        none, and stamped as used either way.
+
+        Kept across threads: every tree of theirs installs from the same cache,
+        and every sandbox of theirs finds the same agent configuration.
+        Registering it does not prepare its storage.
+        """
+        async with self.lock(owner_id), async_session() as session:
+            volume = await session.one_or_none(
+                Volume,
+                expressions=[
+                    Volume["usage"] == usage,
+                    Volume["owner_id"] == owner_id,
+                ],
+            )
+            if volume is None:
+                volume = Volume(
+                    storage=self.host_storage.get(
+                        self.host_storage.slot(owner_id, usage)
+                    ),
+                    usage=usage,
+                    owner_id=owner_id,
+                )
+            else:
+                volume.touch()
+            session.add(volume)
+            await session.commit()
+            return await self.resolve(volume)
 
     async def project_trees(self) -> Sequence[GitVolume]:
         """Registered Git working volumes eligible for project retention checks."""

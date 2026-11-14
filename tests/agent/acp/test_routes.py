@@ -638,7 +638,7 @@ async def test_workspace_filter_distinguishes_one_checkout_from_project(
     root = tmp_path / "project"
     root.mkdir()
     app.workspaces.projects = await a_registry(a_project(root, name="demo"))
-    app.workspaces.host_storage.root = root / ".octomate" / "volumes"
+    app.workspaces.host_storage.root = root / ".octomate"
     alias = tmp_path / "project-alias"
     alias.symlink_to(root, target_is_directory=True)
     with client.websocket_connect("/api/acp") as socket:
@@ -658,7 +658,7 @@ async def test_workspace_filter_distinguishes_one_checkout_from_project(
                 expressions=[GitVolume["thread_id"] == UUID(first["sessionId"])],
             )
         assert volume is not None
-        checkout = app.workspaces.path(volume)
+        checkout = (await app.volumes.resolve(volume)).path
         workspace_alias = tmp_path / "workspace-alias"
         workspace_alias.symlink_to(checkout, target_is_directory=True)
         single = rpc(socket, "session/list", {"cwd": str(workspace_alias)})

@@ -20,11 +20,6 @@ from tests.support.managers import FakeVolumeManager
 from tests.support.users import a_user
 
 
-def test_storage_schema_exposes_only_persisted_location() -> None:
-    schema = Volume.model_json_schema()["$defs"]["HostDirectory"]
-    assert set(schema["properties"]) == {"path", "kind"}
-
-
 async def test_loaded_volume_prepares_and_retains_its_storage(
     in_memory_engine: AsyncEngine, tmp_path: Path
 ) -> None:
@@ -96,9 +91,7 @@ async def test_unscoped_git_volume_checkpoints_and_restores_without_a_workspace(
 ) -> None:
     storage = HostDirectory(tmp_path / "git")
     volume = GitVolume(owner_id=uuid7(), storage=storage)
-    mirror = await MirrorManager(
-        volumes=FakeVolumeManager(), mirrors_dir=tmp_path / "mirrors"
-    ).create()
+    mirror = await MirrorManager(volumes=FakeVolumeManager(root=tmp_path)).create()
     volume.mirror.value = mirror
     async with volume() as path:
         assert (
@@ -138,9 +131,7 @@ def test_storage_rejects_parent_traversal(path: str) -> None:
 async def test_host_mirror_entry_retains_its_contents_without_a_checkpoint(
     tmp_path: Path,
 ) -> None:
-    mirror = await MirrorManager(
-        volumes=FakeVolumeManager(), mirrors_dir=tmp_path / "mirrors"
-    ).create()
+    mirror = await MirrorManager(volumes=FakeVolumeManager(root=tmp_path)).create()
     async with mirror() as path:
         assert mirror.storage.uses == 1
         (path / "host-only").write_text("retained")

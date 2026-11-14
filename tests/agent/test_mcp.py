@@ -80,7 +80,6 @@ from tests.support.invocations import invocation_for
 from tests.support.managers import (
     FakeConversationManager,
     FakeThreadManager,
-    a_habitat_manager,
     a_workspace_manager,
     fixed_session,
 )
@@ -183,15 +182,13 @@ def a_turn(profile: UserProfile | None = None) -> OctomateSession:
     """A turn by `profile`, or by nobody registered — the session a proxied call
     resolves to."""
     threads = FakeThreadManager()
-    workspaces = a_workspace_manager()
     return OctomateSession(
         channel_routes={},
         current_agent_id="inkling",
         user_profile=profile,
         users=threads.users,
         threads=threads,
-        workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
+        workspaces=a_workspace_manager(),
     )
 
 

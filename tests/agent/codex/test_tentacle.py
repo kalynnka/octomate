@@ -1014,7 +1014,6 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
         gateway=octomate.gateway,
         impulses=unwired(),
         workspaces=octomate.workspaces,
-        habitats=octomate.habitats,
     )
     async with tentacle:
         async with invocation_for(
@@ -2465,7 +2464,6 @@ async def test_shared_client_reuses_keys_per_user(
                 users=octomate.users,
                 threads=octomate.threads,
                 workspaces=octomate.workspaces,
-                habitats=octomate.habitats,
             )
         )
     first_started = list(principals)[start_first]
@@ -2613,7 +2611,6 @@ async def test_expired_user_key_is_replaced_once_and_applied_to_each_thread(
                 users=octomate.users,
                 threads=octomate.threads,
                 workspaces=octomate.workspaces,
-                habitats=octomate.habitats,
             )
         )
     assert octomate.auth is not None
@@ -2729,7 +2726,6 @@ async def test_cached_binding_reconfigures_a_changed_caller(
         users=octomate.users,
         threads=octomate.threads,
         workspaces=octomate.workspaces,
-        habitats=octomate.habitats,
     )
     octomate.gateway.register(session)
     tentacle = CodexTentacle(
@@ -2769,7 +2765,6 @@ async def test_cached_binding_reconfigures_a_changed_caller(
                 users=octomate.users,
                 threads=octomate.threads,
                 workspaces=octomate.workspaces,
-                habitats=octomate.habitats,
             )
             octomate.gateway.register(session)
         else:
@@ -2847,7 +2842,6 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
             users=octomate.users,
             threads=octomate.threads,
             workspaces=octomate.workspaces,
-            habitats=octomate.habitats,
         )
     )
     tentacle = CodexTentacle(
@@ -3053,7 +3047,6 @@ async def test_a_turn_kicked_by_an_unregistered_user_launches_clean(
             users=octomate.users,
             threads=octomate.threads,
             workspaces=octomate.workspaces,
-            habitats=octomate.habitats,
         )
     )
     tentacle = CodexTentacle(
@@ -3134,7 +3127,6 @@ async def test_an_mcp_wiring_flip_reloads_only_the_conversations_thread(
             users=octomate.users,
             threads=octomate.threads,
             workspaces=octomate.workspaces,
-            habitats=octomate.habitats,
         )
         octomate.gateway.register(session)
         async with invocation_for(
@@ -3182,7 +3174,6 @@ async def test_a_registered_gateway_uses_the_default_served_endpoint(
             users=octomate.users,
             threads=octomate.threads,
             workspaces=octomate.workspaces,
-            habitats=octomate.habitats,
         )
     )
     tentacle = CodexTentacle(
@@ -3272,7 +3263,6 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
         users=octomate.users,
         threads=octomate.threads,
         workspaces=octomate.workspaces,
-        habitats=octomate.habitats,
     )
     octomate.gateway.register(session)
     BindingFakeTurn.session = session

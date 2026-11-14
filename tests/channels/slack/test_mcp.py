@@ -160,7 +160,6 @@ async def a_slack_turn(
         user_profile=await octomate.users.profile(channel.id, "U1"),
         threads=octomate.threads,
         workspaces=octomate.workspaces,
-        habitats=octomate.habitats,
     )
     assert session.user_profile is not None
     await install_tentacle(channel, session.user_profile)

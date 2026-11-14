@@ -47,12 +47,10 @@ class MirrorManager(Manager, Locks[str]):
     def __init__(
         self,
         config: MirrorsConfig | None = None,
-        mirrors_dir: Path = Path(".octomate/mirrors"),
         *,
         volumes: VolumeManager,
     ) -> None:
         self.config = config if config is not None else MirrorsConfig()
-        self.mirrors_dir = mirrors_dir
         self.synced: dict[str, float] = {}
         self.volumes: VolumeManager = volumes
 
@@ -64,7 +62,7 @@ class MirrorManager(Manager, Locks[str]):
         Absolute, because directory sync points `GIT_DIR` here while running in the
         upstream folder, where a relative path would resolve against the wrong tree.
         """
-        return (self.mirrors_dir / self.name(project)).resolve()
+        return self.volumes.host_storage.mirrors_dir / self.name(project)
 
     async def resolve(self, project: Project | None = None) -> GitVolume:
         """The service-owned mirror volume, without synchronizing its files."""
@@ -96,9 +94,9 @@ class MirrorManager(Manager, Locks[str]):
         # Asked before `create`, which is where the waiting happens: a mirror this
         # call had to make is one nothing can be behind, so it is not fetched again
         # for the sync that made it.
-        missing = not (await self.resolve(project)).storage.path.is_dir()
+        missing = not (await self.resolve(project)).path.is_dir()
         volume = await self.create(project)
-        path = volume.storage.path
+        path = volume.path
         async with self.lock(project.name):
             if missing:
                 self.synced[project.name] = time.monotonic()
@@ -136,7 +134,7 @@ class MirrorManager(Manager, Locks[str]):
         is cancelled removes what it left before the error travels on.
         """
         volume = await self.resolve(project)
-        path = volume.storage.path
+        path = volume.path
         async with self.lock(self.name(project)):
             if path.is_dir():
                 return volume

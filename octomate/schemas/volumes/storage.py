@@ -11,9 +11,8 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 import anyio
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, field_serializer
 from pydantic.dataclasses import dataclass as pydantic_dataclass
-from pydantic.json_schema import SkipJsonSchema
 
 
 class Storage(Protocol):
@@ -49,24 +48,33 @@ class Storage(Protocol):
 
 @pydantic_dataclass(config=ConfigDict(arbitrary_types_allowed=True))
 class HostDirectory:
-    """Persisted host location with runtime coordination excluded from serialization."""
+    """A host location, recorded relative to its storage root; runtime coordination
+    is excluded from serialization."""
 
-    path: Path  # Absolute host path; habitat destinations are separate.
+    path: Path  # Absolute once resolved; relative to the root as a row records it.
     kind: Literal["host-directory"] = field(default="host-directory", kw_only=True)
-    lock: SkipJsonSchema[asyncio.Lock] = Field(
-        default_factory=asyncio.Lock, exclude=True, init=False
-    )
-    uses: SkipJsonSchema[int] = Field(
+    root: Path | None = Field(
+        default=None, exclude=True, kw_only=True
+    )  # The storage root this directory is under; None outside it or unresolved.
+    lock: asyncio.Lock = Field(default_factory=asyncio.Lock, exclude=True, init=False)
+    uses: int = Field(
         default=0, exclude=True, init=False
     )  # Active uses; never persisted.
 
     def __post_init__(self) -> None:
-        self.path = self.path.absolute()
         if ".." in self.path.parts:
             raise ValueError("Storage paths cannot contain parent traversal")
 
+    @field_serializer("path")
+    def record(self, path: Path) -> Path:
+        """Record a directory under the root by its path beneath it, so the root
+        can move without touching a row."""
+        return path.relative_to(self.root) if self.root is not None else path
+
     async def claim(self, *, ephemeral: bool) -> None:
         """Retain this storage, clearing abandoned temporary contents first."""
+        if not self.path.is_absolute():
+            raise RuntimeError("A recorded host directory must be resolved before use")
         async with self.lock:
             if ephemeral and not self.uses and self.path.exists():
                 await asyncio.to_thread(shutil.rmtree, self.path)

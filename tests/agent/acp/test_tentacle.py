@@ -544,7 +544,7 @@ async def test_reflex_owns_dispatch_and_history(
     assert sender.user_id is not None
     volume = await app.volumes.find(sender.user_id, thread.id, thread.project_id)
     assert volume is not None
-    assert new["cwd"] == str(app.workspaces.path(volume))
+    assert new["cwd"] == str(volume.path)
     [mcp] = new["mcpServers"]
     headers = {item["name"]: item["value"] for item in mcp["headers"]}
     assert headers[CONVERSATION_HEADER] == str(conversation.id)

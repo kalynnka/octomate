@@ -37,6 +37,7 @@ from pydantic_ai.messages import (
     PartStartEvent,
 )
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
@@ -57,7 +58,9 @@ from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
     RecordingSuspender,
+    a_thread,
 )
+from tests.support.users import a_user
 
 SummonDecisionAdapter = TypeAdapter(SummonDecision)
 
@@ -160,6 +163,32 @@ def _tentacle(
         bearers=host.bearers,
         mcp=host.mcp,
     )
+
+
+async def test_a_registered_owners_run_points_package_managers_at_their_cache(
+    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
+    owner = await a_user()
+    tentacle = _tentacle(FakeConversationManager())
+    async with (
+        invocation_for(
+            tentacle,
+            conversation_address=KEY,
+            thread_id=await a_thread(),
+            owner_id=owner.id,
+        ) as invocation,
+        tentacle.run_stream_events(
+            "fix it", conversation_address=KEY, invocation=invocation, run_name="react"
+        ) as stream,
+    ):
+        async for _ in stream:
+            pass
+
+    options = FakeClaudeClient.last_options
+    assert isinstance(options, ClaudeAgentOptions)
+    assert invocation.environment
+    assert invocation.environment.items() <= options.env.items()
 
 
 @pytest.mark.parametrize("instrument", [False, True])
@@ -975,7 +1004,6 @@ async def test_a_registered_gateway_mounts_the_in_process_server(
         users=tentacle.users,
         threads=tentacle.threads,
         workspaces=tentacle.workspaces,
-        habitats=tentacle.habitats,
     )
 
     async with (
@@ -1107,7 +1135,6 @@ async def test_a_teleport_mid_run_interrupts_the_turn_and_ends_it_as_a_deferral(
         users=tentacle.users,
         threads=tentacle.threads,
         workspaces=tentacle.workspaces,
-        habitats=tentacle.habitats,
     )
     BindingClaudeClient.session = session
     suspender = RecordingSuspender(agent_tentacle_id="claude")

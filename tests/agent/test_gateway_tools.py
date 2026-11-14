@@ -61,7 +61,6 @@ from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
     FakeConversationManager,
     FakeThreadManager,
-    a_habitat_manager,
     a_workspace_manager,
     fixed_session,
 )
@@ -92,7 +91,6 @@ def a_turn(
     fixed session, delivering through the fakes handed back."""
     channel = FakeChannelTentacle()
     threads = FakeThreadManager()
-    workspaces = a_workspace_manager()
     session = OctomateSession(
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id="inkling",
@@ -108,8 +106,7 @@ def a_turn(
         ),
         users=threads.users,
         threads=threads,
-        workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
+        workspaces=a_workspace_manager(),
     )
     server = octomate_mcp(
         fixed_session(session),
@@ -138,7 +135,6 @@ async def a_native_call(
     users = UserManager()
     channel = FakeChannelTentacle()
     threads = FakeThreadManager()
-    workspaces = a_workspace_manager()
     session = OctomateSession(
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id="coding",
@@ -148,8 +144,7 @@ async def a_native_call(
         user_profile=await users.native_profile("coding", "luhui"),
         native=True,
         threads=threads,
-        workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
+        workspaces=a_workspace_manager(),
     )
 
     async def kick(signal: NativeGatewaySignal) -> None:
@@ -487,7 +482,6 @@ async def test_send_here_reaches_the_console_watching_a_trunkline_thread() -> No
         users=octomate.users,
         threads=octomate.threads,
         workspaces=octomate.workspaces,
-        habitats=octomate.habitats,
     )
     server = octomate_mcp(
         fixed_session(session),
@@ -744,7 +738,6 @@ async def a_turn_of_alices(in_memory_engine: AsyncEngine) -> FastMCP:
     await threads.record_inbound(said("b1", "bob", "bob", "a bug of my own"))
     alice = await threads.users.profile("im", "alice")
     assert alice is not None
-    workspaces = a_workspace_manager()
     session = OctomateSession(
         channel_routes={"im": []},
         current_agent_id="claude",
@@ -755,8 +748,7 @@ async def a_turn_of_alices(in_memory_engine: AsyncEngine) -> FastMCP:
         ),
         users=threads.users,
         threads=threads,
-        workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
+        workspaces=a_workspace_manager(),
     )
     return octomate_mcp(
         fixed_session(session),
@@ -814,7 +806,6 @@ async def test_a_native_session_reads_its_users_history(
             segments=[TextSegment(data={"text": "remember the auth bug"})],
         )
     )
-    workspaces = a_workspace_manager()
     session = OctomateSession(
         channel_routes={"im": []},
         current_agent_id="coding",
@@ -823,8 +814,7 @@ async def test_a_native_session_reads_its_users_history(
         user_profile=await users.native_profile("coding", "luhui"),
         native=True,
         threads=threads,
-        workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
+        workspaces=a_workspace_manager(),
     )
     server = octomate_mcp(
         fixed_session(session),

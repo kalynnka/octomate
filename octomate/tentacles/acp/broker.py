@@ -443,7 +443,7 @@ class AcpBroker:
             )
             if volume is None:
                 continue
-            workspace = str(app.workspaces.path(volume))
+            workspace = str(volume.path)
             if (
                 cwd
                 and cwd != workspace

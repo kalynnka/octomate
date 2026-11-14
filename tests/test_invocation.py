@@ -1,5 +1,5 @@
 import asyncio
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import AsyncMock
 
 import pytest
@@ -16,6 +16,7 @@ from octomate.schemas.thread import ThreadKey
 from octomate.schemas.volumes import GitVolume, UnregisteredProjectError
 from octomate.schemas.volumes.storage import HostDirectory
 from octomate.schemas.workspaces import Workspace
+from tests.support.agents import FakeAgent
 from tests.support.managers import a_project, a_registry, a_thread, a_workspace_manager
 from tests.support.users import a_user
 
@@ -40,14 +41,63 @@ async def test_native_invocation_borrows_the_owners_chat_workspace(
         )
         assert invocation.owner_id == owner_id
         assert invocation.thread_id == thread_id
-        assert invocation.storage is workspaces.host_storage.get(workspace.path)
-        assert invocation.storage.path.is_dir()
+        assert invocation.volume.storage is workspaces.host_storage.get(workspace.path)
+        assert invocation.workspace.path.is_dir()
         assert invocation.habitat is habitat
         assert invocation.cwd == workspace.path
         assert isinstance(invocation.cwd, Path)
 
     await habitat.stop()
-    assert not invocation.storage.path.exists()
+    assert not invocation.workspace.path.exists()
+
+
+async def test_a_registered_owners_cache_outlives_their_chat_workspace(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    owner = await a_user()
+    workspaces = a_workspace_manager()
+    async with workspaces.open(await a_thread(), None, owner.id) as workspace:
+        invocation = Invocation(
+            id=uuid7(),
+            conversation=Conversation(
+                thread_id=workspace.thread_id, agent_tentacle_id="inkling"
+            ),
+            workspace=workspace,
+            habitat=NativeHabitat(),
+        )
+        volume = workspace.volumes.get("cache")
+        assert volume is not None
+        cache = volume.path
+        assert cache.is_dir()
+        assert invocation.environment == {
+            "UV_CACHE_DIR": str(cache / "uv"),
+            "npm_config_cache": str(cache / "npm"),
+            "npm_config_store_dir": str(cache / "pnpm"),
+        }
+
+    assert not workspace.path.exists()
+    assert cache.is_dir()
+    async with workspaces.open(await a_thread("later"), None, owner.id) as later:
+        kept = later.volumes.get("cache")
+        assert kept is not None
+        assert kept.path == cache
+
+
+async def test_an_unregistered_workspace_has_no_cache(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    workspaces = a_workspace_manager()
+    async with workspaces.open(await a_thread(), None, None) as workspace:
+        invocation = Invocation(
+            id=uuid7(),
+            conversation=Conversation(
+                thread_id=workspace.thread_id, agent_tentacle_id="inkling"
+            ),
+            workspace=workspace,
+            habitat=NativeHabitat(),
+        )
+        assert list(workspace.volumes) == ["work"]
+        assert invocation.environment == {}
 
 
 async def test_native_invocation_keeps_the_project_workspace_owner(
@@ -77,15 +127,17 @@ async def test_invocation_borrows_the_habitat_without_managing_its_lifetime(
     in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     owner = await a_user()
+    workspaces = a_workspace_manager()
     habitat = SbxHabitat(
         config=SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64),
         user_id=owner.id,
+        root=workspaces.root(owner.id),
+        config_dir=workspaces.host_storage.slot(owner.id, "config"),
     )
     prepare = AsyncMock()
     stop = AsyncMock()
     monkeypatch.setattr(habitat, "prepare", prepare)
     monkeypatch.setattr(habitat, "stop", stop)
-    workspaces = a_workspace_manager()
     async with workspaces.open(await a_thread(), None, owner.id) as workspace:
         assert isinstance(workspace.volume, GitVolume)
         invocation = Invocation(
@@ -98,8 +150,23 @@ async def test_invocation_borrows_the_habitat_without_managing_its_lifetime(
         )
         assert invocation.habitat is habitat
         assert isinstance(workspace.volume, GitVolume)
-        with pytest.raises(HabitatError, match="volume mounts"):
-            _ = invocation.cwd
+        # Local sbx shows the owner's mounted root at its host path.
+        assert invocation.cwd == PurePosixPath(workspace.path)
+        # A sandbox is another machine: its agents keep their configuration in
+        # the owner's volume, where the kit puts their credential file.
+        root = workspaces.root(owner.id)
+        assert habitat.config_dir == root / "config"
+        assert invocation.environment == {
+            "UV_CACHE_DIR": str(root / "cache" / "uv"),
+            "npm_config_cache": str(root / "cache" / "npm"),
+            "npm_config_store_dir": str(root / "cache" / "pnpm"),
+            "CLAUDE_CONFIG_DIR": str(root / "config" / ".claude"),
+            "CODEX_HOME": str(root / "config" / ".codex"),
+        }
+        mirror = await workspace.volume.mirror
+        assert mirror is not None
+        with pytest.raises(HabitatError, match="owner's own volumes"):
+            habitat.path(mirror)
 
     prepare.assert_not_called()
     stop.assert_not_called()
@@ -131,7 +198,7 @@ async def test_project_native_cwd_is_known_before_materialization(
         ),
         habitat=NativeHabitat(),
     )
-    assert invocation.storage is storage
+    assert invocation.volume.storage is storage
     assert invocation.cwd == volume.storage.path
     assert not storage.path.exists()
 
@@ -141,11 +208,13 @@ async def test_invocation_rejects_an_unregistered_or_different_habitat_owner(
     in_memory_engine: AsyncEngine, registered: bool
 ) -> None:
     owner_id = (await a_user()).id if registered else None
+    workspaces = a_workspace_manager()
     habitat = SbxHabitat(
         config=SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64),
         user_id=uuid7(),
+        root=workspaces.root(uuid7()),
+        config_dir=workspaces.root(uuid7()) / "config",
     )
-    workspaces = a_workspace_manager()
     workspace = await workspaces.resolve(await a_thread(), None, owner_id)
     message = "owners do not match" if registered else "registered user"
     with pytest.raises(ValueError, match=message):
@@ -176,9 +245,9 @@ async def test_core_prepares_and_releases_native_chat(
         assert invocation.thread_id == thread.id
         assert invocation.conversation is conversation
         assert isinstance(invocation.habitat, NativeHabitat)
-        assert invocation.cwd == invocation.storage.path
-        assert invocation.storage.path.is_dir()
-    assert not invocation.storage.path.exists()
+        assert invocation.cwd == invocation.workspace.path
+        assert invocation.workspace.path.is_dir()
+    assert not invocation.workspace.path.exists()
 
 
 @pytest.mark.parametrize(
@@ -208,23 +277,23 @@ async def test_core_uses_the_workspace_volume_lifecycle(
         owner_id=owner_id,
     ) as invocation:
         assert invocation.owner_id == owner_id
-        assert invocation.storage.path.is_dir()
-        assert invocation.storage is app.volumes.host_storage.get(
-            invocation.storage.path
+        assert invocation.workspace.path.is_dir()
+        assert invocation.volume.storage is app.volumes.host_storage.get(
+            invocation.workspace.path
         )
         if project_thread:
             assert (
-                invocation.storage.path / "source.txt"
+                invocation.workspace.path / "source.txt"
             ).read_text() == "project contents"
-        (invocation.storage.path / "work.txt").write_text("turn contents")
+        (invocation.workspace.path / "work.txt").write_text("turn contents")
 
-    assert invocation.storage.uses == 0
+    assert invocation.volume.storage.uses == 0
     if project_thread:
         assert isinstance(invocation.volume, GitVolume)
-        assert (invocation.storage.path / "work.txt").read_text() == "turn contents"
+        assert (invocation.workspace.path / "work.txt").read_text() == "turn contents"
         assert await app.workspaces.saved(invocation.volume)
     else:
-        assert not invocation.storage.path.exists()
+        assert not invocation.workspace.path.exists()
 
 
 async def test_core_stops_native_habitat_when_volume_preparation_fails(
@@ -265,15 +334,18 @@ async def test_core_and_workspace_contexts_share_the_same_storage(
         conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
         owner_id=owner.id,
     ) as invocation:
-        (invocation.storage.path / "work").write_text("retained")
+        (invocation.workspace.path / "work").write_text("retained")
         async with app.workspaces.open(thread.id, None, owner.id) as workspace:
-            assert app.workspaces.host_storage.get(workspace.path) is invocation.storage
-            assert invocation.storage.uses == 2
+            assert (
+                app.workspaces.host_storage.get(workspace.path)
+                is invocation.volume.storage
+            )
+            assert invocation.volume.storage.uses == 2
             assert (workspace.path / "work").read_text() == "retained"
-        assert invocation.storage.uses == 1
-        assert invocation.storage.path.exists()
-    assert invocation.storage.uses == 0
-    assert not invocation.storage.path.exists()
+        assert invocation.volume.storage.uses == 1
+        assert invocation.workspace.path.exists()
+    assert invocation.volume.storage.uses == 0
+    assert not invocation.workspace.path.exists()
 
 
 async def test_core_isolates_two_owners_in_a_shared_thread(
@@ -296,11 +368,11 @@ async def test_core_isolates_two_owners_in_a_shared_thread(
         ) as second,
     ):
         assert first.id != second.id
-        assert first.storage.path != second.storage.path
-        (first.storage.path / "alice.txt").write_text("private work")
-        assert not (second.storage.path / "alice.txt").exists()
-    assert not first.storage.path.exists()
-    assert not second.storage.path.exists()
+        assert first.workspace.path != second.workspace.path
+        (first.workspace.path / "alice.txt").write_text("private work")
+        assert not (second.workspace.path / "alice.txt").exists()
+    assert not first.workspace.path.exists()
+    assert not second.workspace.path.exists()
 
 
 @pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])
@@ -316,10 +388,10 @@ async def test_core_releases_chat_on_failure_and_cancellation(
             owner_id=None,
         ) as invocation:
             raise error()
-    assert not invocation.storage.path.exists()
+    assert not invocation.workspace.path.exists()
 
 
-async def test_core_refuses_anonymous_project_and_managed_dispatch(
+async def test_core_refuses_an_anonymous_project(
     in_memory_engine: AsyncEngine,
     tmp_path: Path,
 ) -> None:
@@ -339,14 +411,71 @@ async def test_core_refuses_anonymous_project_and_managed_dispatch(
             owner_id=None,
         ):
             pytest.fail("An anonymous project invocation must not start")
+
+
+class SandboxAgent(FakeAgent):
+    supports_managed_habitat = True
+
+
+@pytest.mark.parametrize("registered", [False, True])
+async def test_sandbox_dispatch_refuses_before_preparing_anything(
+    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch, registered: bool
+) -> None:
+    app = Octomate()
     app.habitats.config = SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64)
-    with pytest.raises(HabitatError, match="Managed habitat dispatch"):
-        async with app.habitats.invoke(
+    prepare = AsyncMock()
+    monkeypatch.setattr(SbxHabitat, "prepare", prepare)
+    thread = await app.threads.ensure(ThreadKey("im", "thread", "room", "turn"))
+    # The manager refuses an unregistered sender whatever the agent; an agent
+    # that cannot run in a sandbox refuses a registered one itself.
+    agent = FakeAgent() if registered else SandboxAgent()
+    agent.habitats = app.habitats
+    message = "cannot run in a sandbox" if registered else "registered user"
+    with pytest.raises(HabitatError, match=message):
+        async with agent.inhabit(
             thread=thread,
             conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
-            owner_id=(await a_user()).id,
+            owner_id=(await a_user()).id if registered else None,
         ):
-            pytest.fail("Managed execution must not fall back to native")
+            pytest.fail("Sandbox execution must not fall back to the host")
+    prepare.assert_not_awaited()
+    assert not app.habitats.residences
+    assert not app.workspaces.volumes_dir.exists()
+    assert not app.workspaces.host_storage.mirrors_dir.exists()
+
+
+async def test_a_capable_agent_leases_the_owners_sandbox(
+    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = Octomate()
+    app.habitats.config = SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64)
+    monkeypatch.setattr(SbxHabitat, "prepare", AsyncMock())
+    monkeypatch.setattr(SbxHabitat, "stop", AsyncMock())
+    owner = await a_user()
+    thread = await app.threads.ensure(ThreadKey("im", "thread", "room", "turn"))
+    agent = SandboxAgent()
+    agent.habitats = app.habitats
+    try:
+        async with agent.inhabit(
+            thread=thread,
+            conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
+            owner_id=owner.id,
+        ) as invocation:
+            habitat = invocation.habitat
+            assert isinstance(habitat, SbxHabitat)
+            assert habitat.user_id == owner.id
+            assert habitat.root == app.workspaces.root(owner.id)
+            assert invocation.workspace.path.is_dir()
+            assert invocation.cwd == PurePosixPath(invocation.workspace.path)
+            assert invocation.environment["CLAUDE_CONFIG_DIR"] == str(
+                habitat.config_dir / ".claude"
+            )
+            residence = app.habitats.residences[owner.id]
+            assert residence.invocations == {invocation.id}
+        assert not residence.invocations
+        assert not invocation.workspace.path.exists()
+    finally:
+        await app.habitats.close()
 
 
 async def test_core_checkpoints_an_empty_project_without_a_git_index(
@@ -367,7 +496,7 @@ async def test_core_checkpoints_an_empty_project_without_a_git_index(
         conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
         owner_id=(await a_user()).id,
     ) as invocation:
-        (invocation.storage.path / ".git" / "index").unlink(missing_ok=True)
+        (invocation.workspace.path / ".git" / "index").unlink(missing_ok=True)
         assert await app.workspaces.prune(0) == []
         assert invocation.owner_id is not None
         assert not await app.workspaces.dismiss(thread, invocation.owner_id)

@@ -98,8 +98,7 @@ async def a_manager(
     return a_workspace_manager(
         projects=await a_registry(a_project(a_root(tmp_path))),
         mirror_config=MirrorsConfig(identity=identity) if identity else MirrorsConfig(),
-        mirrors_dir=tmp_path / "mirrors",
-        volumes_dir=tmp_path / "volumes",
+        root=tmp_path,
     )
 
 
@@ -436,19 +435,13 @@ async def test_two_materializations_of_one_tree_serialize(
 async def test_a_workspace_path_is_absolute_from_a_relative_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The default `.octomate/volumes` is relative to wherever Octomate was
-    # started, and a tree is handed to processes started elsewhere.
+    # The default `.octomate` is relative to wherever Octomate was started, and
+    # a tree is handed to processes started elsewhere.
     monkeypatch.chdir(tmp_path)
     manager = a_workspace_manager()
-    volume = GitVolume(
-        storage=HostDirectory(Path("storage") / str(uuid7())),
-        usage="tree",
-        owner_id=uuid7(),
-        thread_id=uuid7(),
-    )
+    recorded = Path("volumes") / str(uuid7()) / "tree" / str(uuid7())
 
-    assert manager.path(volume) == volume.storage.path
-    assert manager.path(volume).is_absolute()
+    assert manager.host_storage.get(recorded).path == tmp_path / ".octomate" / recorded
 
 
 async def test_the_sweep_works_from_the_default_relative_directory(
@@ -461,7 +454,6 @@ async def test_the_sweep_works_from_the_default_relative_directory(
     monkeypatch.chdir(tmp_path)
     manager = a_workspace_manager(
         projects=await a_registry(a_project(a_root(tmp_path))),
-        mirrors_dir=Path(".octomate/mirrors"),
     )
     thread = await a_bound_thread(manager)
     project = manager.projects.get("inky")

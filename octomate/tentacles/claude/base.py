@@ -108,7 +108,7 @@ from octomate.schemas.deferred import (
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import Thread, ThreadKey
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import (
@@ -744,25 +744,10 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         )
         return catalog
 
-    def command_invocation(
-        self,
-        context: CommandContext,
-        intent: CommandIntent,
-        descriptor: CommandDescriptor,
-        *,
-        thread: Thread | None,
-    ) -> contextlib.AbstractAsyncContextManager[Invocation | None]:
-        if (
-            not isinstance(descriptor, ClaudeCommandDescriptor)
-            or descriptor.id in CONTROL_COMMANDS
-        ):
-            return contextlib.nullcontext(None)
-        if thread is None or context.conversation is None:
-            raise ValueError("A runtime command requires a conversation")
-        return self.habitats.invoke(
-            thread=thread,
-            conversation=context.conversation,
-            owner_id=context.user_id,
+    def needs_invocation(self, descriptor: CommandDescriptor) -> bool:
+        return (
+            isinstance(descriptor, ClaudeCommandDescriptor)
+            and descriptor.id not in CONTROL_COMMANDS
         )
 
     async def record_compaction(
@@ -1170,9 +1155,8 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             prompt_id = event.prompt_id
             return {}
 
-        storage = invocation.storage
         project = invocation.project
-        run_cwd = str(storage.path)
+        run_cwd = str(invocation.workspace.path)
         octomate_session = self.octomate.gateway.get(conversation.id)
         # The turn's server, mounted in process with the session closed over —
         # identity by closure, nothing on the wire names it. Its tools take the
@@ -1195,6 +1179,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             if part
         )
         env = {
+            **invocation.environment,
             "CLAUDE_CODE_ENTRYPOINT": "cli",
             # The CLI ends with the turn, killing any background task it started;
             # the stopped task's notice then opens the next turn ahead of its prompt.
@@ -1315,7 +1300,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                     await self.record_compaction(
                         conversation,
                         message,
-                        cwd=storage.path,
+                        cwd=invocation.workspace.path,
                     )
                     for event in accumulator.consume(
                         message, command=command is not None

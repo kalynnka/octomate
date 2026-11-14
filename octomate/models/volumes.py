@@ -58,11 +58,11 @@ class Volume(Base, TransmuterProxiedMixin):
             sqlite_where=text("usage = 'mirror' AND project_id IS NULL"),
         ),
         Index(
-            "uq_volumes_owner_usage",
+            "uq_volumes_owner_slot",
             "owner_id",
             "usage",
             unique=True,
-            sqlite_where=text("usage IN ('memory', 'cache')"),
+            sqlite_where=text("usage IN ('memory', 'cache', 'config')"),
         ),
         Index(
             "uq_volumes_project_tree",
@@ -107,7 +107,7 @@ class Volume(Base, TransmuterProxiedMixin):
     usage: Mapped[VolumeUsage | None] = mapped_column(
         String,
         nullable=True,
-        comment="Optional application use: working tree, host mirror, user memory or package cache.",
+        comment="Optional application use: working tree, host mirror, user memory, package cache or agent configuration.",
     )
     ephemeral: Mapped[bool] = mapped_column(
         Boolean,

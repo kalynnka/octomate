@@ -38,7 +38,6 @@ from octomate.schemas.habitat import (
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
 from octomate.schemas.volumes import Volume
-from octomate.schemas.volumes.storage import Storage
 from octomate.schemas.workspaces import Workspace
 
 
@@ -68,12 +67,35 @@ class Invocation:
         return self.workspace.owner_id
 
     @property
-    def storage(self) -> Storage:
-        return self.volume.storage
+    def environment(self) -> dict[str, str]:
+        """Settings that point the harness at the owner's own volumes, as the
+        habitat shows them.
+
+        Package managers keep their stores beneath the cache. A sandbox is
+        another machine, so its agents keep their configuration in the owner's
+        volume; a native run uses the host's own.
+        """
+        settings: dict[str, str] = {}
+        cache = self.workspace.volumes.get("cache")
+        if cache is not None:
+            path = self.habitat.path(cache)
+            settings.update(
+                UV_CACHE_DIR=str(path / "uv"),
+                npm_config_cache=str(path / "npm"),
+                npm_config_store_dir=str(path / "pnpm"),
+            )
+        config = self.workspace.volumes.get("config")
+        if config is not None and isinstance(self.habitat, ManagedHabitat):
+            path = self.habitat.path(config)
+            settings.update(
+                CLAUDE_CONFIG_DIR=str(path / ".claude"),
+                CODEX_HOME=str(path / ".codex"),
+            )
+        return settings
 
     @property
     def cwd(self) -> Path | PurePosixPath:
-        """The harness's working directory; `storage.path` remains host-side."""
+        """The harness's working directory; `workspace.path` remains host-side."""
         return self.habitat.path(self.volume)
 
     @property
@@ -117,31 +139,62 @@ class HabitatManager:
         conversation: Conversation,
         owner_id: UUID7 | None,
     ) -> AsyncGenerator[Invocation]:
-        """Own one native call's resources for the full consumption of its events."""
-        if not isinstance(self.config, NativeHabitatConfig):
-            raise HabitatError("Managed habitat dispatch is not yet supported")
+        """Own one call's resources for the full consumption of its events.
+
+        A sandbox runs for a registered user; an unregistered sender is refused
+        before anything is prepared.
+        """
         invocation_id = uuid7()
         projects = self.workspaces.projects
+        if isinstance(self.config, NativeHabitatConfig):
+            project = await projects.of(thread) if projects.roots else None
+            habitat = NativeHabitat()
+            await habitat.prepare()
+            try:
+                async with self.workspaces.open(
+                    thread.id, project, owner_id
+                ) as workspace:
+                    yield Invocation(
+                        id=invocation_id,
+                        conversation=conversation,
+                        workspace=workspace,
+                        habitat=habitat,
+                    )
+            finally:
+                await habitat.stop()
+            return
+        if owner_id is None:
+            raise HabitatError("Running in a sandbox requires a registered user")
         project = await projects.of(thread) if projects.roots else None
-        habitat = NativeHabitat()
-        await habitat.prepare()
-        try:
-            async with self.workspaces.open(thread.id, project, owner_id) as workspace:
-                yield Invocation(
-                    id=invocation_id,
-                    conversation=conversation,
-                    workspace=workspace,
-                    habitat=habitat,
-                )
-        finally:
-            await habitat.stop()
+        scope = InvocationScope(
+            user_id=owner_id, conversation_id=conversation.id, thread_id=thread.id
+        )
+        # The workspace is opened first, so the root the sandbox mounts exists,
+        # and released last, after the sandbox lease and the harness in it.
+        async with (
+            self.workspaces.open(thread.id, project, owner_id) as workspace,
+            self.enter(scope, invocation_id) as residence,
+        ):
+            yield Invocation(
+                id=invocation_id,
+                conversation=conversation,
+                workspace=workspace,
+                habitat=residence.habitat,
+            )
 
     def residence(self, scope: InvocationScope) -> Residence:
         """Internal lookup; callers must supply a core-authorized owner."""
         if scope.user_id not in self.residences:
             match self.config:
                 case SbxHabitatConfig() as config:
-                    habitat = SbxHabitat(config=config, user_id=scope.user_id)
+                    habitat = SbxHabitat(
+                        config=config,
+                        user_id=scope.user_id,
+                        root=self.workspaces.root(scope.user_id),
+                        config_dir=self.workspaces.host_storage.slot(
+                            scope.user_id, "config"
+                        ),
+                    )
                 case NativeHabitatConfig():
                     raise HabitatError("Habitat mode is 'native'; no habitat runs")
             self.residences[scope.user_id] = Residence(

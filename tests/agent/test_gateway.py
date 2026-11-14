@@ -45,7 +45,6 @@ from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
     FakeConversationManager,
     FakeThreadManager,
-    a_habitat_manager,
     a_workspace_manager,
     fixed_session,
 )
@@ -94,7 +93,6 @@ def _capability(
     passed. `test_reflex_graph` covers how the real channels reach each shape."""
     threads = FakeThreadManager()
     chat_type, shared, thread_id = SHAPES[shape]
-    workspaces = a_workspace_manager()
     capability = OctomateSession(
         channel_routes={"im": [CLAUDE_ROUTE, INKLING_ROUTE]},
         current_agent_id="inkling",
@@ -109,8 +107,7 @@ def _capability(
         ),
         users=threads.users,
         threads=threads,
-        workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
+        workspaces=a_workspace_manager(),
     )
     return capability
 
@@ -231,15 +228,13 @@ async def test_inspect_computes_only_the_facet_it_was_asked_for() -> None:
 async def test_destination_discovery_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
     users = UserManager()
     threads = FakeThreadManager(users=users)
-    workspaces = a_workspace_manager()
     session = OctomateSession(
         channel_routes={},
         current_agent_id="inkling",
         users=users,
         user_profile=UserProfile(channel_user_id="alice"),
         threads=threads,
-        workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
+        workspaces=a_workspace_manager(),
     )
     discover = AsyncMock(return_value=[])
     monkeypatch.setattr(users, "linked_profiles", discover)
@@ -259,7 +254,6 @@ async def test_a_native_session_cannot_be_summoned() -> None:
     nothing here to hand over: it teleports into a thread first."""
     threads = FakeThreadManager()
     route = AgentRoute(agent_id="claude", model="test", claim=CLAUDE_CLAIM)
-    workspaces = a_workspace_manager()
     session = OctomateSession(
         channel_routes={"far": [route]},
         current_agent_id="codex",
@@ -268,8 +262,7 @@ async def test_a_native_session_cannot_be_summoned() -> None:
         user_profile=UserProfile(channel_tentacle_id="far", channel_user_id="alice"),
         users=threads.users,
         threads=threads,
-        workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
+        workspaces=a_workspace_manager(),
     )
 
     operations = await session.operations
@@ -368,7 +361,6 @@ async def test_a_threads_privacy_is_read_from_its_surface_not_its_type(
     move to — reading the type alone would offer `scheme` a surface beside the one
     it is already in, under whatever agent owns that."""
     threads = FakeThreadManager()
-    workspaces = a_workspace_manager()
     capability = OctomateSession(
         channel_routes={},
         current_agent_id="inkling",
@@ -383,8 +375,7 @@ async def test_a_threads_privacy_is_read_from_its_surface_not_its_type(
         ),
         users=threads.users,
         threads=threads,
-        workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
+        workspaces=a_workspace_manager(),
     )
 
     assert capability.private_blocked_by == blocked_by
@@ -891,14 +882,12 @@ async def test_scheme_records_a_decision_that_names_no_agent() -> None:
 
 def _registered_session() -> OctomateSession:
     threads = FakeThreadManager()
-    workspaces = a_workspace_manager()
     session = OctomateSession(
         channel_routes={},
         current_agent_id="inkling",
         users=threads.users,
         threads=threads,
-        workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
+        workspaces=a_workspace_manager(),
     )
     session.conversation_id = uuid7()
     return session
@@ -917,7 +906,6 @@ def test_the_manager_finds_a_session_by_its_conversation_while_registered() -> N
 
 def test_a_session_without_a_conversation_cannot_be_registered() -> None:
     threads = FakeThreadManager()
-    workspaces = a_workspace_manager()
     with pytest.raises(ValueError, match="conversation id"):
         GatewayManager().register(
             OctomateSession(
@@ -925,8 +913,7 @@ def test_a_session_without_a_conversation_cannot_be_registered() -> None:
                 current_agent_id="inkling",
                 users=threads.users,
                 threads=threads,
-                workspaces=workspaces,
-                habitats=a_habitat_manager(workspaces),
+                workspaces=a_workspace_manager(),
             )
         )
 
@@ -938,14 +925,12 @@ def test_a_second_turn_on_a_live_conversation_is_refused_not_queued() -> None:
     threads = FakeThreadManager()
     manager = GatewayManager()
     first = _registered_session()
-    workspaces = a_workspace_manager()
     second = OctomateSession(
         channel_routes={},
         current_agent_id="inkling",
         users=threads.users,
         threads=threads,
-        workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
+        workspaces=a_workspace_manager(),
     )
     second.conversation_id = first.conversation_id
     assert first.conversation_id is not None
@@ -980,15 +965,13 @@ async def test_driving_tolerates_a_gateway_that_was_never_built() -> None:
     manager = GatewayManager()
     async with manager.driving(None):
         assert manager.sessions == {}
-    workspaces = a_workspace_manager()
     async with manager.driving(
         OctomateSession(
             channel_routes={},
             current_agent_id="i",
             users=threads.users,
             threads=threads,
-            workspaces=workspaces,
-            habitats=a_habitat_manager(workspaces),
+            workspaces=a_workspace_manager(),
         )
     ):
         assert manager.sessions == {}
@@ -1277,7 +1260,6 @@ async def test_a_native_call_binds_only_a_session_its_caller_wrote(
             channel_user_id=owner.username, user_id=owner.id, name=owner.name
         ),
     )
-    workspaces = a_workspace_manager()
     session = OctomateSession(
         channel_routes={},
         current_agent_id="claude",
@@ -1285,8 +1267,7 @@ async def test_a_native_call_binds_only_a_session_its_caller_wrote(
         user_profile=profile,
         native=True,
         threads=threads,
-        workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
+        workspaces=a_workspace_manager(),
     )
 
     for elsewhere in ("sess-2", "sess-unknown"):

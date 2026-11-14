@@ -93,7 +93,6 @@ from tests.support.managers import (
     FakeThreadManager,
     FakeUserManager,
     RecordingWorkspaceManager,
-    a_habitat_manager,
     a_project,
     a_registry,
     a_workspace_manager,
@@ -210,9 +209,9 @@ def _deps(
     threads: FakeThreadManager | None = None,
 ) -> ReflexDeps:
     workspaces = workspaces if workspaces is not None else RecordingWorkspaceManager()
+    agent.adopt(workspaces)
     return ReflexDeps(
         workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
         channels=dict(channels),
         impulses=unwired(),
         agents={"inkling": agent, "other": agent, agent.id: agent},
@@ -265,9 +264,10 @@ def _summon_deps(
     far: FakeChannelTentacle | None = None,
 ) -> ReflexDeps:
     workspaces = RecordingWorkspaceManager()
+    entry.adopt(workspaces)
+    second.adopt(workspaces)
     return ReflexDeps(
         workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
         gateway=GatewayManager(),
         impulses=unwired(),
         channels={"im": im} if far is None else {"im": im, "far": far},
@@ -314,7 +314,6 @@ def test_available_routes_skip_disconnected_reception_agents() -> None:
     workspaces = RecordingWorkspaceManager()
     deps = ReflexDeps(
         workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
         gateway=GatewayManager(),
         impulses=unwired(),
         channels={"chan1": channel},
@@ -409,7 +408,6 @@ def test_available_routes_are_the_exposed_agents_own_routes() -> None:
     workspaces = RecordingWorkspaceManager()
     deps = ReflexDeps(
         workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
         gateway=GatewayManager(),
         impulses=unwired(),
         channels={"chan1": channel},
@@ -445,7 +443,6 @@ def test_resolve_agent_honors_a_served_model_off_the_channel_list() -> None:
     workspaces = RecordingWorkspaceManager()
     deps = ReflexDeps(
         workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
         gateway=GatewayManager(),
         impulses=unwired(),
         channels={"chan1": channel},
@@ -1126,7 +1123,6 @@ async def test_a_handoff_row_names_the_turn_it_came_from() -> None:
         ),
         deps=ReflexDeps(
             workspaces=workspaces,
-            habitats=a_habitat_manager(workspaces),
             gateway=GatewayManager(),
             impulses=unwired(),
             channels={"im": im},
@@ -1436,11 +1432,11 @@ async def test_a_native_scheme_signal_lands_in_their_dms_and_hands_off(
         ),
     )
     workspaces = RecordingWorkspaceManager()
+    second.adopt(workspaces)
     deps = ReflexDeps(
         channels={"far": far},
         agents={"second": second},
         workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
         conversation_manager=FakeConversationManager(),
         thread_manager=FakeThreadManager(users=users),
         action_manager=cast(DeferredActionManager, FakeActionManager()),
@@ -2417,8 +2413,7 @@ async def test_a_dismiss_releases_the_workspace_once_the_turn_is_saved(
     workspaces = a_workspace_manager(
         projects=await a_registry(a_project(root)),
         mirror_config=MirrorsConfig(),
-        mirrors_dir=tmp_path / "mirrors",
-        volumes_dir=tmp_path / "workspaces",
+        root=tmp_path,
     )
     project = workspaces.projects.get("inky")
     assert project is not None
@@ -2484,8 +2479,7 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
     workspaces = a_workspace_manager(
         projects=await a_registry(a_project(root)),
         mirror_config=MirrorsConfig(),
-        mirrors_dir=tmp_path / "mirrors",
-        volumes_dir=tmp_path / "workspaces",
+        root=tmp_path,
     )
     owner = await a_user("alice", profiles={"im": "alice"})
     threads = ThreadManager(nerve=Nerve(), users=UserManager())
@@ -2541,7 +2535,7 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
     attributed = await bound.project
     assert attributed is not None
     assert attributed.name == "inky"
-    workspace = workspaces.path(await volume_for(workspaces, thread.id, owner.id))
+    workspace = (await volume_for(workspaces, thread.id, owner.id)).path
     assert workspace is not None
     assert (workspace / "readme.md").read_text() == "hello"
     # And the agent's session was relocated to where the resumed run happens.
@@ -2564,8 +2558,7 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
     workspaces = a_workspace_manager(
         projects=await a_registry(a_project(root)),
         mirror_config=MirrorsConfig(),
-        mirrors_dir=tmp_path / "mirrors",
-        volumes_dir=tmp_path / "workspaces",
+        root=tmp_path,
     )
     project = workspaces.projects.get("inky")
     assert project is not None
@@ -2627,7 +2620,7 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
     attributed = await landed.project
     assert attributed is not None
     assert attributed.name == "inky"
-    carried = workspaces.path(await volume_for(workspaces, landed.id, owner.id))
+    carried = (await volume_for(workspaces, landed.id, owner.id)).path
     assert carried is not None
     assert (carried / "work.md").read_text() == "unfinished"
     assert "work.md" in await run_git("status", "--porcelain", cwd=carried)
@@ -2638,7 +2631,7 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
     branch = await run_git("rev-parse", "--abbrev-ref", "HEAD", cwd=carried)
     assert branch.strip() == f"octomate/thread-{landed.id}"
     # The source is left as it was, in a tree of its own.
-    assert workspaces.path(await volume_for(workspaces, thread.id, owner.id)) not in (
+    assert (await volume_for(workspaces, thread.id, owner.id)).path not in (
         None,
         carried,
     )
@@ -2745,9 +2738,9 @@ async def test_react_prepares_each_senders_project_workspace(
     first, second = [turn.invocation for turn in agent.turns]
     assert first.owner_id == alice.id
     assert second.owner_id == bob.id
-    assert first.storage.path != second.storage.path
-    assert first.storage.path.is_dir()
-    assert second.storage.path.is_dir()
+    assert first.workspace.path != second.workspace.path
+    assert first.workspace.path.is_dir()
+    assert second.workspace.path.is_dir()
     assert bool(agent.turns[0].session) is gateway
     assert bool(agent.turns[1].session) is gateway
 

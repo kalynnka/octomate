@@ -56,7 +56,6 @@ from octomate.types.threads import NATIVE_CHANNEL_USER_ID
 
 if TYPE_CHECKING:
     from octomate.managers.conversation import ConversationManager
-    from octomate.managers.habitat import HabitatManager
     from octomate.managers.thread import ThreadManager
     from octomate.managers.user import UserManager
     from octomate.managers.workspaces import WorkspaceManager
@@ -109,8 +108,6 @@ class OctomateSession:
     users: UserManager
     threads: ThreadManager
     workspaces: WorkspaceManager
-    # Prepares the workspace and habitat of each run this session commissions.
-    habitats: HabitatManager
     # Every connected channel, so `surfaces` can be read for any of them and not
     # just this run's own — what a cross-channel move needs.
     channels: dict[str, ChannelTentacle] = field(default_factory=dict)
@@ -207,7 +204,7 @@ class OctomateSession:
         try:
             async with (
                 asyncio.timeout(commission_timeout),
-                self.habitats.invoke(
+                agent.inhabit(
                     thread=thread,
                     conversation=conversation,
                     owner_id=self.user_profile.user_id if self.user_profile else None,
@@ -833,7 +830,7 @@ class OctomateSession:
                 )
             mirror = await self.workspaces.mirrors.sync(registered)
             if ref is not None and not await run_git(
-                "ls-remote", str(mirror.storage.path), ref
+                "ls-remote", str(mirror.path), ref
             ):
                 raise GatewayRefusal(
                     f"{registered.name!r} has no {ref!r} to start from. Name a "
@@ -983,7 +980,7 @@ class OctomateSession:
             # project with no way to ask again for the branch that was meant.
             mirror = await self.workspaces.mirrors.sync(registered)
             if ref is not None and not await run_git(
-                "ls-remote", str(mirror.storage.path), ref
+                "ls-remote", str(mirror.path), ref
             ):
                 raise GatewayRefusal(
                     f"{registered.name!r} has no {ref!r} to start from. Name a "

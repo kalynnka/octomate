@@ -64,7 +64,7 @@ class Volume(BaseTransmuter):
     usage: VolumeUsage | None = Field(
         default=None,
         frozen=True,
-        description="Optional application use: working tree, host mirror, user memory or package cache.",
+        description="Optional application use: working tree, host mirror, user memory, package cache or agent configuration.",
     )
     ephemeral: bool = Field(
         default=False,
@@ -123,6 +123,11 @@ class Volume(BaseTransmuter):
         async with self.storage.acquire(ephemeral=self.ephemeral) as path:
             await anyio.Path(path).mkdir(parents=True, exist_ok=True)
             yield path
+
+    @property
+    def path(self) -> Path:
+        """Where the contents are on the host; a harness may see them elsewhere."""
+        return self.storage.path
 
     def touch(self) -> None:
         """Record application use; the caller commits it with the owning session."""
