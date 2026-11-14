@@ -34,6 +34,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
 from octomate.events import (
+    RunEndedEvent,
     WireEvent,
     wire_event_adapter,
 )
@@ -190,11 +191,27 @@ class TrunklineSiphon(Siphon):
         """Hold the console's socket on a topic until the console closes it,
         sending each event the nerve carries to that topic down it meanwhile.
         The subscription is open before the handshake completes, so a request
-        the console sends once the socket is open misses nothing. A console
+        the console sends once the socket is open misses nothing. A thread's
+        socket starts with what a kick still awake has said there since its last
+        run ended, which the ledger does not hold yet. A console
         `CONSOLE_BACKLOG` events behind is closed with 1013 to read its state
         again; one that is gone ends the same way, once its close is read."""
         nerve = self.channel.octomate.nerve
-        async with nerve.subscribe(topic, backlog=CONSOLE_BACKLOG) as impulses:
+        kept = nerve.retained.get(topic, [])
+        # A run is in the ledger by the time it ends, and the console reads it
+        # there, so the socket starts past the last one that ended. It is sought
+        # from the end, over no more than the socket then replays.
+        ended = next(
+            (
+                len(kept) - back
+                for back, impulse in enumerate(reversed(kept))
+                if isinstance(impulse.event, RunEndedEvent)
+            ),
+            0,
+        )
+        async with nerve.subscribe(
+            topic, backlog=CONSOLE_BACKLOG, replay=ended
+        ) as impulses:
             await websocket.accept()
 
             async def send() -> None:

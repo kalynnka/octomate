@@ -363,7 +363,7 @@ class Octomate(FastAPI):
                 raise StillAwake()
 
             async def reflex() -> ReflexGraphResult:
-                async with self.nerve.publish(origin) as impulses:
+                async with self.nerve.publish(origin, retain=True) as impulses:
                     deps = ReflexDeps(
                         workspaces=self.workspaces,
                         agents=self.agents,

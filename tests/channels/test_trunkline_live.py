@@ -13,7 +13,7 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config.channels import TrunklineChannelConfig
-from octomate.events import wire_event_adapter
+from octomate.events import RunEndedEvent, wire_event_adapter
 from octomate.nerve import EventTopic, Impulse, ThreadTopic, UserTopic
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.trunkline import base as trunkline_base
@@ -110,6 +110,37 @@ async def test_a_console_that_is_gone_ends_quietly() -> None:
 
     assert socket.events == []
     assert octomate.nerve.subscribers == {}
+
+
+async def test_a_console_that_opens_during_a_kick_starts_after_its_last_ended_run() -> (
+    None
+):
+    octomate = Octomate()
+    channel = TrunklineTentacle(
+        "web", octomate, config=TrunklineChannelConfig(agents=["first"])
+    )
+    socket = ConsoleSocket()
+    saved = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="saved"))
+    following = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="again"))
+    async with (
+        octomate.nerve.subscribe(ThreadTopic(KEY)) as routed,
+        octomate.nerve.publish(KEY.address("lu"), retain=True) as impulses,
+    ):
+        for event in (saved, RunEndedEvent(), EVENT):
+            await impulses.send(Impulse(event, KEY.address("lu")))
+            await routed.receive()
+        task = asyncio.create_task(
+            channel.siphon.watch(socket.websocket, ThreadTopic(KEY))
+        )
+        await asyncio.sleep(0)
+        await impulses.send(Impulse(following, KEY.address("lu")))
+        await routed.receive()
+        # One turn of the loop pumps it down the socket.
+        await asyncio.sleep(0)
+        socket.leave()
+        await task
+
+    assert socket.events == [EVENT, following]
 
 
 @pytest.mark.parametrize("topic", [ThreadTopic(KEY), UserTopic(uuid7())])
