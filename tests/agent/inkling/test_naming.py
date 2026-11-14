@@ -23,6 +23,7 @@ from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling import base as inkling_base
 from octomate.tentacles.inkling.capabilities.ask import AskCapability
+from tests.support.invocations import invocation_for
 
 pytestmark = pytest.mark.usefixtures("in_memory_engine")
 
@@ -101,14 +102,15 @@ async def test_group_naming_only_runs_inside_a_work_subthread(
     address = ChannelAddress("test", chat_type, "room", "test")
     group = await octomate.threads.ensure(address)
     thread = await octomate.threads.open_sub_thread(group) if subthread else group
-    await tentacle.run(
-        "Investigate the gateway",
-        conversation_address=address,
-        conversation=await tentacle.resolve_conversation(
-            thread.id, conversation_address=address
-        ),
-        output_type=str,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=address, thread_id=thread.id
+    ) as invocation:
+        await tentacle.run(
+            "Investigate the gateway",
+            conversation_address=address,
+            invocation=invocation,
+            output_type=str,
+        )
     assert len(naming_requests) == int(subthread)
     saved = await octomate.threads.get(group.id)
     assert saved is not None
@@ -132,14 +134,15 @@ async def test_new_prompts_name_and_revise_the_session_and_thread(
     )
     thread_id = (await tentacle.threads.ensure(ADDRESS)).id
 
-    first = await tentacle.run(
-        "Investigate the gateway",
-        conversation_address=ADDRESS,
-        conversation=await tentacle.resolve_conversation(
-            thread_id, conversation_address=ADDRESS
-        ),
-        output_type=str,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=ADDRESS, thread_id=thread_id
+    ) as invocation:
+        first = await tentacle.run(
+            "Investigate the gateway",
+            conversation_address=ADDRESS,
+            invocation=invocation,
+            output_type=str,
+        )
     conversation = await octomate.conversations.ensure(
         thread_id, agent_tentacle_id="inkling"
     )
@@ -154,14 +157,15 @@ async def test_new_prompts_name_and_revise_the_session_and_thread(
         await ConversationManager().history(conversation.id)
     ) == conversation_text(first.all_messages())
 
-    await tentacle.run(
-        "Old context " * 300 + "Now fix session naming",
-        conversation_address=ADDRESS,
-        conversation=await tentacle.resolve_conversation(
-            thread_id, conversation_address=ADDRESS
-        ),
-        output_type=str,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=ADDRESS, thread_id=thread_id
+    ) as invocation:
+        await tentacle.run(
+            "Old context " * 300 + "Now fix session naming",
+            conversation_address=ADDRESS,
+            invocation=invocation,
+            output_type=str,
+        )
     revised = await octomate.conversations.get(conversation.id)
     thread = await octomate.threads.get(thread_id)
     assert revised.name == "Fix session naming updates"
@@ -187,15 +191,18 @@ async def test_naming_model_override_and_active_model_default(
         models={"default": TestModel()},
         naming_model=naming_model if configured else None,
     )
-    await tentacle.run(
-        "Investigate this",
+    async with invocation_for(
+        tentacle,
         conversation_address=ADDRESS,
-        conversation=await tentacle.resolve_conversation(
-            (await tentacle.threads.ensure(ADDRESS)).id, conversation_address=ADDRESS
-        ),
-        model=TestModel() if configured else naming_model,
-        output_type=str,
-    )
+        thread_id=(await tentacle.threads.ensure(ADDRESS)).id,
+    ) as invocation:
+        await tentacle.run(
+            "Investigate this",
+            conversation_address=ADDRESS,
+            invocation=invocation,
+            model=TestModel() if configured else naming_model,
+            output_type=str,
+        )
     assert len(naming_requests) == 1
     assert "user: Investigate this" in naming_requests[0]
 
@@ -233,27 +240,31 @@ async def test_naming_and_foreground_stream_run_concurrently(
         models={"default": naming_model},
     )
     thread_id = (await tentacle.threads.ensure(ADDRESS)).id
-    await tentacle.run(
-        "Prior question",
-        conversation_address=ADDRESS,
-        conversation=await tentacle.resolve_conversation(
-            thread_id, conversation_address=ADDRESS
-        ),
-        output_type=str,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=ADDRESS, thread_id=thread_id
+    ) as invocation:
+        await tentacle.run(
+            "Prior question",
+            conversation_address=ADDRESS,
+            invocation=invocation,
+            output_type=str,
+        )
     naming_requests.clear()
     tentacle.naming_model = FunctionModel(function=name)
 
     async def consume() -> None:
-        async with tentacle.run_stream_events(
-            "New question",
-            conversation_address=ADDRESS,
-            conversation=await tentacle.resolve_conversation(
-                thread_id, conversation_address=ADDRESS
-            ),
-            model=FunctionModel(stream_function=reply),
-            output_type=str,
-        ) as stream:
+        async with (
+            invocation_for(
+                tentacle, conversation_address=ADDRESS, thread_id=thread_id
+            ) as invocation,
+            tentacle.run_stream_events(
+                "New question",
+                conversation_address=ADDRESS,
+                invocation=invocation,
+                model=FunctionModel(stream_function=reply),
+                output_type=str,
+            ) as stream,
+        ):
             async for event in stream:
                 if isinstance(event, AgentRunResultEvent):
                     reply_delivered.set()
@@ -295,13 +306,17 @@ async def test_child_name_does_not_replace_the_parent_thread_title(
     thread = await octomate.threads.get(thread_id)
     assert thread is not None
     await octomate.threads.rename(thread, "Parent work")
-    await tentacle.subagent_run(
-        "Investigate the gateway",
+    async with invocation_for(
+        tentacle,
         conversation_address=ADDRESS,
-        conversation=await tentacle.resolve_conversation(
-            thread_id, conversation_address=ADDRESS, conversation_id=child.id
-        ),
-    )
+        thread_id=thread_id,
+        conversation_id=child.id,
+    ) as invocation:
+        await tentacle.subagent_run(
+            "Investigate the gateway",
+            conversation_address=ADDRESS,
+            invocation=invocation,
+        )
     named = await octomate.conversations.get(child.id)
     assert named.name == "Plan gateway MCP exposure"
     thread = await octomate.threads.get(thread_id)
@@ -327,14 +342,15 @@ async def test_naming_failure_preserves_the_reply_and_existing_name(
     )
     await octomate.conversations.set_name(conversation, "Existing name")
     monkeypatch.setattr(inkling_base, "generate_name", AsyncMock(side_effect=error))
-    result = await tentacle.run(
-        "Continue",
-        conversation_address=ADDRESS,
-        conversation=await tentacle.resolve_conversation(
-            thread_id, conversation_address=ADDRESS
-        ),
-        output_type=str,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=ADDRESS, thread_id=thread_id
+    ) as invocation:
+        result = await tentacle.run(
+            "Continue",
+            conversation_address=ADDRESS,
+            invocation=invocation,
+            output_type=str,
+        )
     assert result.output == "Expose MCP tools."
     saved = await octomate.conversations.get(conversation.id)
     assert saved.name == "Existing name"
@@ -364,17 +380,21 @@ async def test_cancelling_a_run_cleans_up_its_naming_task(
         models={"test": naming_model},
     )
     monkeypatch.setattr(inkling_base, "generate_name", name)
-    task = asyncio.create_task(
-        tentacle.run(
-            "Continue",
+
+    async def run_task() -> None:
+        async with invocation_for(
+            tentacle,
             conversation_address=ADDRESS,
-            conversation=await tentacle.resolve_conversation(
-                (await tentacle.threads.ensure(ADDRESS)).id,
+            thread_id=(await tentacle.threads.ensure(ADDRESS)).id,
+        ) as invocation:
+            await tentacle.run(
+                "Continue",
                 conversation_address=ADDRESS,
-            ),
-            output_type=str,
-        )
-    )
+                invocation=invocation,
+                output_type=str,
+            )
+
+    task = asyncio.create_task(run_task())
     async with asyncio.timeout(3):
         await started.wait()
         task.cancel()
@@ -397,24 +417,26 @@ async def test_a_prompt_names_a_deferred_turn_but_its_resume_does_not(
         capabilities=[AskCapability()],
     )
     thread_id = (await tentacle.threads.ensure(ADDRESS)).id
-    result = await tentacle.run(
-        "Ask before proceeding",
-        conversation_address=ADDRESS,
-        conversation=await tentacle.resolve_conversation(
-            thread_id, conversation_address=ADDRESS
-        ),
-    )
+    async with invocation_for(
+        tentacle, conversation_address=ADDRESS, thread_id=thread_id
+    ) as invocation:
+        result = await tentacle.run(
+            "Ask before proceeding",
+            conversation_address=ADDRESS,
+            invocation=invocation,
+        )
     assert isinstance(result.output, DeferredToolRequests)
     assert len(naming_requests) == 1
-    await tentacle.run(
-        conversation_address=ADDRESS,
-        conversation=await tentacle.resolve_conversation(
-            thread_id, conversation_address=ADDRESS
-        ),
-        deferred_tool_results=DeferredToolResults(
-            calls={call.tool_call_id: "Proceed" for call in result.output.calls}
-        ),
-        model=TestModel(call_tools=[], custom_output_text="Done"),
-        output_type=str,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=ADDRESS, thread_id=thread_id
+    ) as invocation:
+        await tentacle.run(
+            conversation_address=ADDRESS,
+            invocation=invocation,
+            deferred_tool_results=DeferredToolResults(
+                calls={call.tool_call_id: "Proceed" for call in result.output.calls}
+            ),
+            model=TestModel(call_tools=[], custom_output_text="Done"),
+            output_type=str,
+        )
     assert len(naming_requests) == 1

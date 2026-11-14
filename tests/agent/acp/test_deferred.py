@@ -24,6 +24,7 @@ from octomate.tentacles.acp.elicitation import AcpForm, FormProperty
 from octomate.types.json import JsonObject
 from tests.agent.acp.test_client import adapter_environment as adapter_environment
 from tests.agent.acp.test_tentacle import agent as agent
+from tests.support.invocations import invocation_for
 
 
 def test_form_presentation_state_is_not_advertised_to_question_tools() -> None:
@@ -163,14 +164,20 @@ async def test_form_roundtrip_preserves_typed_answers(
     answers = ["Dark mode", "3", "", "Submit"]
     batch: ActionBatchEvent | None = None
     answered = 0
-    async with tentacle.run_stream_events(
-        "hello",
-        conversation_address=thread.key.address(sender.channel_user_id),
-        conversation=await tentacle.resolve_conversation(
-            thread.id, conversation_address=thread.key.address(sender.channel_user_id)
-        ),
-        deferred_suspender=suspender,
-    ) as events:
+    async with (
+        invocation_for(
+            tentacle,
+            conversation_address=thread.key.address(sender.channel_user_id),
+            thread_id=thread.id,
+            owner_id=sender.user_id,
+        ) as invocation,
+        tentacle.run_stream_events(
+            "hello",
+            conversation_address=thread.key.address(sender.channel_user_id),
+            invocation=invocation,
+            deferred_suspender=suspender,
+        ) as events,
+    ):
         async for event in events:
             if isinstance(event, ActionBatchEvent):
                 batch = event
@@ -239,14 +246,20 @@ async def test_permission_returns_exact_selected_option(
         }
     )
     tentacle.config.provider.env["ACP_TEST_OPTIONS"] = SecretStr(json.dumps(options))
-    async with tentacle.run_stream_events(
-        "hello",
-        conversation_address=thread.key.address(sender.channel_user_id),
-        conversation=await tentacle.resolve_conversation(
-            thread.id, conversation_address=thread.key.address(sender.channel_user_id)
-        ),
-        deferred_suspender=suspender,
-    ) as events:
+    async with (
+        invocation_for(
+            tentacle,
+            conversation_address=thread.key.address(sender.channel_user_id),
+            thread_id=thread.id,
+            owner_id=sender.user_id,
+        ) as invocation,
+        tentacle.run_stream_events(
+            "hello",
+            conversation_address=thread.key.address(sender.channel_user_id),
+            invocation=invocation,
+            deferred_suspender=suspender,
+        ) as events,
+    ):
         async for event in events:
             if not isinstance(event, ActionBatchEvent):
                 continue
@@ -341,14 +354,18 @@ async def test_modes_reach_new_and_loaded_provider_sessions(
         assert tentacle.default_permission_mode == "plan"
         assert {mode.value for mode in tentacle.permission_modes} == {"default", "plan"}
         for method in ["session/new", "session/load"]:
-            await tentacle.run(
-                "hello",
+            async with invocation_for(
+                tentacle,
                 conversation_address=address,
-                conversation=await tentacle.resolve_conversation(
-                    thread.id, conversation_address=address
-                ),
-                interactive=False,
-            )
+                thread_id=thread.id,
+                owner_id=sender.user_id,
+            ) as invocation:
+                await tentacle.run(
+                    "hello",
+                    conversation_address=address,
+                    invocation=invocation,
+                    interactive=False,
+                )
             messages = [
                 json.loads(line)["message"]
                 for line in (
@@ -367,14 +384,18 @@ async def test_modes_reach_new_and_loaded_provider_sessions(
             thread.id, conversation_address=address
         )
         await tentacle.set_permission_mode(conversation, "default")
-        await tentacle.run(
-            "hello",
+        async with invocation_for(
+            tentacle,
             conversation_address=address,
-            conversation=await tentacle.resolve_conversation(
-                thread.id, conversation_address=address
-            ),
-            interactive=False,
-        )
+            thread_id=thread.id,
+            owner_id=sender.user_id,
+        ) as invocation:
+            await tentacle.run(
+                "hello",
+                conversation_address=address,
+                invocation=invocation,
+                interactive=False,
+            )
         messages = [
             json.loads(line)["message"]
             for line in (

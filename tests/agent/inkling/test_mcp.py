@@ -43,6 +43,7 @@ from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.base import InklingOutput
 from tests.agent.test_mcp_serving import over, served
 from tests.support.agents import FakeAgent
+from tests.support.invocations import invocation_for
 from tests.support.managers import FakeConversationManager
 from tests.support.mcp import served_inkling_mcp
 from tests.support.users import a_api_key, a_user, auth_config
@@ -68,6 +69,10 @@ async def a_turn(*, authenticated: bool = True) -> tuple[Octomate, OctomateSessi
         conversation_address=address,
         user_profile=await host.users.profile("im", "alice"),
         nerve=host.nerve,
+        threads=host.threads,
+        workspaces=host.workspaces,
+        habitats=host.habitats,
+        users=host.users,
     )
     return host, scope
 
@@ -118,15 +123,18 @@ async def test_inkling_calls_todos_through_authenticated_mcp_and_publishes_once(
         host.gateway.driving(scope),
         host.nerve.subscribe(topic) as events,
     ):
-        result = await inkling.run(
-            "Make a plan",
-            conversation=await inkling.resolve_conversation(
-                scope.thread_id,
-                conversation_address=scope.conversation_address,
-                conversation_id=scope.conversation_id,
-            ),
+        async with invocation_for(
+            inkling,
             conversation_address=scope.conversation_address,
-        )
+            thread_id=scope.thread_id,
+            conversation_id=scope.conversation_id,
+            owner_id=scope.user_profile.user_id if scope.user_profile else None,
+        ) as invocation:
+            result = await inkling.run(
+                "Make a plan",
+                invocation=invocation,
+                conversation_address=scope.conversation_address,
+            )
         assert result.output == "Done"
         assert "add_todo" not in offered[0]
         assert "add_todo" in offered[1]
@@ -224,26 +232,35 @@ async def test_anonymous_inkling_run_does_not_mount_core_mcp_tools() -> None:
     inkling = InklingTentacle(
         "inkling", host, auth=host.auth, habitats=host.habitats, agent=agent
     )
-    scope = OctomateSession(channel_routes={}, current_agent_id="inkling")
-    result = await inkling.run(
-        "Hello",
-        conversation=await inkling.resolve_conversation(
-            uuid7(),
-            conversation_address=ChannelAddress(
-                channel_tentacle_id="im",
-                chat_type="dm",
-                chat_id="anonymous",
-                user_id="anonymous",
-            ),
-            conversation_id=scope.conversation_id,
-        ),
+    scope = OctomateSession(
+        channel_routes={},
+        current_agent_id="inkling",
+        users=host.users,
+        threads=host.threads,
+        workspaces=host.workspaces,
+        habitats=host.habitats,
+    )
+    async with invocation_for(
+        inkling,
         conversation_address=ChannelAddress(
             channel_tentacle_id="im",
             chat_type="dm",
             chat_id="anonymous",
             user_id="anonymous",
         ),
-    )
+        thread_id=uuid7(),
+        conversation_id=scope.conversation_id,
+    ) as invocation:
+        result = await inkling.run(
+            "Hello",
+            invocation=invocation,
+            conversation_address=ChannelAddress(
+                channel_tentacle_id="im",
+                chat_type="dm",
+                chat_id="anonymous",
+                user_id="anonymous",
+            ),
+        )
     assert result.output == "Bare agent"
     assert seen == []
     assert inkling.api_keys == {}
@@ -265,15 +282,18 @@ async def test_registered_inkling_run_requires_configured_authentication(
 
     async with host.gateway.driving(scope):
         with pytest.raises(ValueError, match="require configured authentication"):
-            await inkling.run(
-                "Use my tools",
-                conversation=await inkling.resolve_conversation(
-                    scope.thread_id,
-                    conversation_address=scope.conversation_address,
-                    conversation_id=scope.conversation_id,
-                ),
+            async with invocation_for(
+                inkling,
                 conversation_address=scope.conversation_address,
-            )
+                thread_id=scope.thread_id,
+                conversation_id=scope.conversation_id,
+                owner_id=scope.user_profile.user_id if scope.user_profile else None,
+            ) as invocation:
+                await inkling.run(
+                    "Use my tools",
+                    invocation=invocation,
+                    conversation_address=scope.conversation_address,
+                )
     assert inkling.api_keys == {}
 
 
@@ -439,15 +459,18 @@ async def test_mcp_accomplices_link_to_the_run_that_returns_their_tool_result(
             if outcome == "error"
             else nullcontext()
         ):
-            await inkling.run(
-                "Delegate the audit",
-                conversation=await inkling.resolve_conversation(
-                    scope.thread_id,
-                    conversation_address=scope.conversation_address,
-                    conversation_id=scope.conversation_id,
-                ),
+            async with invocation_for(
+                inkling,
                 conversation_address=scope.conversation_address,
-            )
+                thread_id=scope.thread_id,
+                conversation_id=scope.conversation_id,
+                owner_id=scope.user_profile.user_id if scope.user_profile else None,
+            ) as invocation:
+                await inkling.run(
+                    "Delegate the audit",
+                    invocation=invocation,
+                    conversation_address=scope.conversation_address,
+                )
 
     parent = await host.conversations.get(scope.conversation_id)
     owners = {

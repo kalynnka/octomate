@@ -39,7 +39,7 @@ from octomate.database import async_session
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
-    CommandInvocation,
+    CommandIntent,
     CommandResult,
 )
 from octomate.schemas.compactions import Compaction
@@ -53,6 +53,7 @@ from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.types.json import JsonObject
 from tests.agent.claude.test_tentacle import KEY
 from tests.support.channels import FakeChannelTentacle
+from tests.support.invocations import invocation_for
 from tests.support.users import a_user
 
 
@@ -110,7 +111,8 @@ async def test_driven_compaction_reads_its_summary_from_sdk_history(
         "compact_metadata": metadata,
     }
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    project = tmp_path / "projects" / project_key_for_directory(str(context.cwd))
+    cwd = agent.workspaces.host_storage.temporary(conversation.thread_id).path
+    project = tmp_path / "projects" / project_key_for_directory(str(cwd))
     project.mkdir(parents=True)
     entries: list[JsonObject] = [
         {
@@ -147,20 +149,28 @@ async def test_driven_compaction_reads_its_summary_from_sdk_history(
     script[-1]["session_id"] = native_session_id
     client.receive_response.side_effect = lambda: native_messages(script)
     if command:
-        async for _ in agent.execute_command(
-            context, CommandInvocation(command_id="compact")
-        ):
-            pass
-    else:
-        await agent.run(
-            "continue",
+        async with invocation_for(
+            agent,
             conversation_address=context.address,
-            conversation=await agent.resolve_conversation(
-                conversation.thread_id,
+            thread_id=conversation.thread_id,
+            conversation_id=conversation.id,
+        ) as prepared:
+            async for _ in agent.execute_command(
+                context, CommandIntent(command_id="compact"), invocation=prepared
+            ):
+                pass
+    else:
+        async with invocation_for(
+            agent,
+            conversation_address=context.address,
+            thread_id=conversation.thread_id,
+            conversation_id=conversation.id,
+        ) as invocation:
+            await agent.run(
+                "continue",
                 conversation_address=context.address,
-                conversation_id=conversation.id,
-            ),
-        )
+                invocation=invocation,
+            )
     async with async_session() as session:
         [stored] = await session.list(
             Compaction, options=[selectinload(Compaction["messages"])]
@@ -244,7 +254,7 @@ async def execution(
     )
     await app.threads.record_handoff(thread, to_agent_tentacle_id=agent.id)
     conversation = await app.conversations.ensure(thread.id, agent_tentacle_id=agent.id)
-    async with app.workspaces.open(thread.id, None) as workspace:
+    async with app.workspaces.open(thread.id, None, user.id) as workspace:
         context = CommandContext(
             agent_id=agent.id,
             user_id=user.id,
@@ -292,15 +302,15 @@ async def test_direct_commands_persist_receipts_and_native_session_without_model
     )
     await agent.conversations.set_external_id(conversation, "previous-session")
     client.receive_response.side_effect = lambda: native_messages(streams[script])
-    invocation = CommandInvocation(command_id=command)
+    intent = CommandIntent(command_id=command)
     async with AsyncExitStack() as stack:
         validated = await stack.enter_async_context(
-            agent.commands.validate(agent, context, invocation, delivery_id="direct")
+            agent.commands.validate(agent, context, intent, delivery_id="direct")
         )
         assert isinstance(validated, tuple)
         outcome = await stack.enter_async_context(
             agent.commands.execute(
-                agent, context, invocation, validated, delivery_id="direct"
+                agent, context, intent, validated, delivery_id="direct"
             )
         )
         assert isinstance(outcome, CommandResult)
@@ -370,20 +380,28 @@ async def test_completed_compaction_survives_later_stream_failure(
 
     async def execute() -> None:
         if command:
-            async for _ in agent.execute_command(
-                context, CommandInvocation(command_id="compact")
-            ):
-                pass
-            return
-        await agent.run(
-            "continue",
-            conversation_address=context.address,
-            conversation=await agent.resolve_conversation(
-                conversation.thread_id,
+            async with invocation_for(
+                agent,
                 conversation_address=context.address,
+                thread_id=conversation.thread_id,
                 conversation_id=conversation.id,
-            ),
-        )
+            ) as prepared:
+                async for _ in agent.execute_command(
+                    context, CommandIntent(command_id="compact"), invocation=prepared
+                ):
+                    pass
+            return
+        async with invocation_for(
+            agent,
+            conversation_address=context.address,
+            thread_id=conversation.thread_id,
+            conversation_id=conversation.id,
+        ) as invocation:
+            await agent.run(
+                "continue",
+                conversation_address=context.address,
+                invocation=invocation,
+            )
 
     client.receive_response.side_effect = messages
     if interrupted:
@@ -416,20 +434,30 @@ async def test_runs_apply_saved_effort(
     await agent.conversations.set_effort(conversation, "max" if saved else None)
     client.receive_response.side_effect = lambda: native_messages(streams["skill"])
     if command:
-        invocation = CommandInvocation(command_id="fixture-review")
-        async for _ in agent.execute_command(context, invocation):
-            pass
-    else:
-        await agent.run(
-            "review",
+        intent = CommandIntent(command_id="fixture-review")
+        async with invocation_for(
+            agent,
             conversation_address=context.address,
-            conversation=await agent.resolve_conversation(
-                conversation.thread_id,
+            thread_id=conversation.thread_id,
+            conversation_id=conversation.id,
+            owner_id=context.user_id,
+        ) as prepared:
+            async for _ in agent.execute_command(context, intent, invocation=prepared):
+                pass
+    else:
+        async with invocation_for(
+            agent,
+            conversation_address=context.address,
+            thread_id=conversation.thread_id,
+            conversation_id=conversation.id,
+            owner_id=context.user_id,
+        ) as invocation:
+            await agent.run(
+                "review",
                 conversation_address=context.address,
-                conversation_id=conversation.id,
-            ),
-            model=model,
-        )
+                invocation=invocation,
+                model=model,
+            )
     assert options[-1].effort == ("max" if saved else None)
 
 
@@ -449,15 +477,15 @@ async def test_model_command_preserves_arguments_context_stream_and_history(
     if resumed:
         await agent.conversations.set_external_id(conversation, "prior-session")
     client.receive_response.side_effect = lambda: native_messages(streams["skill"])
-    invocation = CommandInvocation(command_id="fixture-review", arguments=arguments)
+    intent = CommandIntent(command_id="fixture-review", arguments=arguments)
     async with AsyncExitStack() as stack:
         validated = await stack.enter_async_context(
-            agent.commands.validate(agent, context, invocation, delivery_id="model")
+            agent.commands.validate(agent, context, intent, delivery_id="model")
         )
         assert isinstance(validated, tuple)
         stream = await stack.enter_async_context(
             agent.commands.execute(
-                agent, context, invocation, validated, delivery_id="model"
+                agent, context, intent, validated, delivery_id="model"
             )
         )
         assert isinstance(stream, AsyncGenerator)
@@ -526,15 +554,15 @@ async def test_unknown_or_changed_commands_never_reach_query(
                 {"name": "context", "description": "Changed meaning"}
             ]
         client.get_server_info.side_effect = [initial, changed]
-    invocation = CommandInvocation(command_id=command_id)
+    intent = CommandIntent(command_id=command_id)
     async with AsyncExitStack() as stack:
         validated = await stack.enter_async_context(
-            agent.commands.validate(agent, context, invocation, delivery_id="stale")
+            agent.commands.validate(agent, context, intent, delivery_id="stale")
         )
         if isinstance(validated, tuple):
             outcome = await stack.enter_async_context(
                 agent.commands.execute(
-                    agent, context, invocation, validated, delivery_id="stale"
+                    agent, context, intent, validated, delivery_id="stale"
                 )
             )
         else:
@@ -560,15 +588,15 @@ async def test_abandoned_stream_closes_the_already_started_sdk_client(
 ) -> None:
     agent, context, client, _ = execution
     client.receive_response.side_effect = lambda: native_messages(streams["skill"])
-    invocation = CommandInvocation(command_id="fixture-review")
+    intent = CommandIntent(command_id="fixture-review")
     async with AsyncExitStack() as stack:
         validated = await stack.enter_async_context(
-            agent.commands.validate(agent, context, invocation, delivery_id="abandoned")
+            agent.commands.validate(agent, context, intent, delivery_id="abandoned")
         )
         assert isinstance(validated, tuple)
         stream = await stack.enter_async_context(
             agent.commands.execute(
-                agent, context, invocation, validated, delivery_id="abandoned"
+                agent, context, intent, validated, delivery_id="abandoned"
             )
         )
         assert isinstance(stream, AsyncGenerator)
@@ -602,17 +630,15 @@ async def test_cancelling_before_first_model_event_closes_client(
     client.receive_response.side_effect = pending
 
     async def execute() -> None:
-        invocation = CommandInvocation(command_id="context")
+        intent = CommandIntent(command_id="context")
         async with AsyncExitStack() as stack:
             validated = await stack.enter_async_context(
-                agent.commands.validate(
-                    agent, context, invocation, delivery_id="cancelled"
-                )
+                agent.commands.validate(agent, context, intent, delivery_id="cancelled")
             )
             assert isinstance(validated, tuple)
             await stack.enter_async_context(
                 agent.commands.execute(
-                    agent, context, invocation, validated, delivery_id="cancelled"
+                    agent, context, intent, validated, delivery_id="cancelled"
                 )
             )
             pytest.fail("The command should remain pending")
@@ -644,17 +670,15 @@ async def test_native_error_results_fail_receipts_and_keep_actual_model_history(
         errors=["Turn limit reached"],
     )
     client.receive_response.side_effect = lambda: native_messages(messages)
-    invocation = CommandInvocation(
-        command_id="fixture-review" if model_run else "context"
-    )
+    intent = CommandIntent(command_id="fixture-review" if model_run else "context")
     async with AsyncExitStack() as stack:
         validated = await stack.enter_async_context(
-            agent.commands.validate(agent, context, invocation, delivery_id="failed")
+            agent.commands.validate(agent, context, intent, delivery_id="failed")
         )
         assert isinstance(validated, tuple)
         outcome = await stack.enter_async_context(
             agent.commands.execute(
-                agent, context, invocation, validated, delivery_id="failed"
+                agent, context, intent, validated, delivery_id="failed"
             )
         )
         if model_run:
@@ -684,17 +708,15 @@ async def test_missing_terminal_result_never_reports_success(
     client.receive_response.side_effect = lambda: native_messages(
         streams["context"][:-1]
     )
-    invocation = CommandInvocation(command_id="context")
+    intent = CommandIntent(command_id="context")
     async with AsyncExitStack() as stack:
         validated = await stack.enter_async_context(
-            agent.commands.validate(
-                agent, context, invocation, delivery_id="incomplete"
-            )
+            agent.commands.validate(agent, context, intent, delivery_id="incomplete")
         )
         assert isinstance(validated, tuple)
         outcome = await stack.enter_async_context(
             agent.commands.execute(
-                agent, context, invocation, validated, delivery_id="incomplete"
+                agent, context, intent, validated, delivery_id="incomplete"
             )
         )
         assert isinstance(outcome, CommandError)
@@ -718,15 +740,18 @@ async def test_permission_updates_reach_live_client_and_next_run(
     client.receive_response.side_effect = lambda: paused_native_messages(
         streams["skill"], release
     )
-    async with agent.run_stream_events(
-        "work",
-        conversation_address=context.address,
-        conversation=await agent.resolve_conversation(
-            conversation.thread_id,
+    async with (
+        invocation_for(
+            agent,
             conversation_address=context.address,
+            thread_id=conversation.thread_id,
             conversation_id=conversation.id,
-        ),
-    ) as events:
+            owner_id=context.user_id,
+        ) as invocation,
+        agent.run_stream_events(
+            "work", conversation_address=context.address, invocation=invocation
+        ) as events,
+    ):
         await anext(events)
         assert conversation.id in agent.ink.live_clients
         selected = await agent.conversations.get(conversation.id, with_runs=False)
@@ -740,15 +765,18 @@ async def test_permission_updates_reach_live_client_and_next_run(
     assert not agent.ink.live_clients
     stored = await agent.conversations.get(conversation.id, with_runs=False)
     assert stored.permission_mode == mode
-    await agent.run(
-        "continue",
+    async with invocation_for(
+        agent,
         conversation_address=context.address,
-        conversation=await agent.resolve_conversation(
-            conversation.thread_id,
+        thread_id=conversation.thread_id,
+        conversation_id=conversation.id,
+        owner_id=context.user_id,
+    ) as invocation:
+        await agent.run(
+            "continue",
             conversation_address=context.address,
-            conversation_id=conversation.id,
-        ),
-    )
+            invocation=invocation,
+        )
     assert options[-1].permission_mode == (mode or agent.default_permission_mode)
 
 
@@ -766,15 +794,18 @@ async def test_rejected_live_permission_update_does_not_save_the_selection(
         streams["skill"], release
     )
     client.set_permission_mode.side_effect = RuntimeError("runtime refused the switch")
-    async with agent.run_stream_events(
-        "work",
-        conversation_address=context.address,
-        conversation=await agent.resolve_conversation(
-            conversation.thread_id,
+    async with (
+        invocation_for(
+            agent,
             conversation_address=context.address,
+            thread_id=conversation.thread_id,
             conversation_id=conversation.id,
-        ),
-    ) as events:
+            owner_id=context.user_id,
+        ) as invocation,
+        agent.run_stream_events(
+            "work", conversation_address=context.address, invocation=invocation
+        ) as events,
+    ):
         await anext(events)
         with pytest.raises(RuntimeError, match="runtime refused"):
             await agent.set_permission_mode(conversation, "plan")

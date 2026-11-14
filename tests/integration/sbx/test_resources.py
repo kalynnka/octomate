@@ -19,6 +19,7 @@ from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
 from octomate.schemas.habitat import InvocationScope
+from tests.support.managers import a_workspace_manager
 
 
 class GuestMemory(BaseModel):
@@ -82,7 +83,7 @@ async def test_single_user_resource_cost(tmp_path: Path) -> None:
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
     config = SbxHabitatConfig(image=image)
-    manager = HabitatManager(config, Nerve())
+    manager = HabitatManager(config, Nerve(), a_workspace_manager())
     scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
     sandbox = manager.residence(scope).habitat
     assert isinstance(sandbox, SbxHabitat)

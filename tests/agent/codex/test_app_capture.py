@@ -40,6 +40,7 @@ from tests.agent.codex.test_tentacle import (
     native_thread_handles as native_thread_handles,
 )
 from tests.support.channels import FakeChannelTentacle
+from tests.support.invocations import invocation_for
 from tests.support.users import a_user, auth_config
 
 
@@ -84,6 +85,10 @@ async def test_driven_app_survives_its_session_and_reuses_the_owned_viewer(
             current_agent_id="codex",
             conversation_id=conversation.id,
             user_profile=profile,
+            users=host.users,
+            threads=host.threads,
+            workspaces=host.workspaces,
+            habitats=host.habitats,
         )
     )
     tentacle = CodexTentacle(
@@ -203,13 +208,14 @@ async def test_driven_app_survives_its_session_and_reuses_the_owned_viewer(
             )
 
         monkeypatch.setattr(tentacle.ink.client._client, "request", resource_request)
-        async with tentacle.run_stream_events(
-            "Show the weather",
-            conversation_address=address,
-            conversation=await tentacle.resolve_conversation(
-                thread.id, conversation_address=address
-            ),
-        ) as stream:
+        async with (
+            invocation_for(
+                tentacle, conversation_address=address, thread_id=thread.id
+            ) as invocation,
+            tentacle.run_stream_events(
+                "Show the weather", conversation_address=address, invocation=invocation
+            ) as stream,
+        ):
             events = [event async for event in stream]
 
     available = [event for event in events if isinstance(event, ArtifactAvailableEvent)]

@@ -28,8 +28,6 @@ from octomate.config.channels import (
     TrunklineChannelConfig,
 )
 from octomate.database import engine as db_engine
-from octomate.managers.project import ProjectManager
-from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
 from octomate.tentacles.acp.base import AcpAgentTentacle
 from octomate.tentacles.acp.channel import AcpChannelTentacle
@@ -100,11 +98,6 @@ def create_app() -> Octomate:
 
     octomate = Octomate(
         config=config,
-        workspaces=WorkspaceManager(
-            projects=ProjectManager(config.projects),
-            mirrors=MirrorManager(config=config.mirrors),
-            config=config.workspaces,
-        ),
         oauth_encryption_key=config.oauth.encryption_key,
     )
 

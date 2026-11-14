@@ -51,14 +51,13 @@ from octomate.events import (
     WireEvent,
 )
 from octomate.managers.auth import AuthManager
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import Impulse, ThreadTopic
 from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandDescriptor,
     CommandError,
-    CommandInvocation,
+    CommandIntent,
     CommandOutcomeEvent,
     CommandResult,
 )
@@ -68,6 +67,7 @@ from octomate.schemas.runs import AgentRun
 from octomate.schemas.segments import MessageSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadCommand, ThreadKey
 from octomate.schemas.user import User, UserProfile
+from octomate.schemas.volumes import GitVolume
 from octomate.tentacles.channel import ChannelOutput
 from octomate.tentacles.stream import ReactStreamEvent
 from octomate.tentacles.trunkline import TrunklineTentacle
@@ -75,8 +75,9 @@ from octomate.types.permissions import PermissionMode
 from tests.agent.test_command_execution import ExecutingAgent
 from tests.agent.test_command_manager import DiscoveringAgent
 from tests.support.channels import FakeChannelTentacle
-from tests.support.managers import a_project, a_registry
+from tests.support.managers import a_project, a_registry, a_workspace_manager
 from tests.support.nerve import drawing, held
+from tests.support.users import a_user
 
 
 def command_outcome(response: httpx.Response) -> CommandOutcomeEvent:
@@ -209,7 +210,7 @@ async def test_composer_discovery_and_completion_create_no_rows_or_workspace(
     assert len(full.descriptors) == 2
     assert len(agent.calls) == 1
     assert not agent.turns
-    assert not app.workspaces.workspaces_dir.exists()
+    assert not app.workspaces.volumes_dir.exists()
     async with async_session() as session:
         assert await session.list(Thread, limit=None) == []
         assert await session.list(Conversation, limit=None) == []
@@ -270,14 +271,14 @@ async def test_http_direct_command_before_conversation_creates_no_runtime_record
         assert isinstance(outcome.outcome, CommandError)
         assert "without a conversation" in outcome.outcome.message
     assert not any(isinstance(event, RunStartedEvent) for event in carried)
-    assert agent.invocations == [
-        CommandInvocation(command_id="status", arguments="  --raw=value  ")
+    assert agent.intents == [
+        CommandIntent(command_id="status", arguments="  --raw=value  ")
     ]
     assert not agent.receipts
     assert not agent.turns
     assert not app.gateway.sessions
     assert not app.commands.catalogs
-    assert not app.workspaces.workspaces_dir.exists()
+    assert not app.workspaces.volumes_dir.exists()
     if behavior != "raise":
         assert agent.stream_closed
     async with async_session() as session:
@@ -336,7 +337,7 @@ async def test_http_composer_execution_checks_scope_membership_and_identity(
     assert outcome.outcome.status == (
         "unknown" if refusal == "unknown" else "unavailable"
     )
-    assert not agent.invocations
+    assert not agent.intents
     assert not app.gateway.sessions
     async with async_session() as session:
         assert await session.count(Thread) == 0
@@ -389,11 +390,13 @@ async def test_http_catalog_preserves_extensions_and_omits_runtime_history(
 
 async def test_http_uses_injected_managers(
     app: Octomate,
+    user: User,
     address: ChannelAddress,
     conversation: Conversation,
     tmp_path: Path,
 ) -> None:
-    workspaces = WorkspaceManager(workspaces_dir=tmp_path / "injected")
+    workspaces = a_workspace_manager(volumes_dir=tmp_path / "injected")
+    workspace = await workspaces.resolve(conversation.thread_id, None, user.id)
     app.dependency_overrides[workspace_manager] = lambda: workspaces
     body = {
         "agent_id": "inkling",
@@ -407,9 +410,7 @@ async def test_http_uses_injected_managers(
             "/api/commands/catalog", headers={"X-Octomate-Request": "1"}, json=body
         )
         assert response.status_code == 200
-        assert response.json()["context"]["cwd"] == str(
-            workspaces.open(conversation.thread_id, None).path
-        )
+        assert response.json()["context"]["cwd"] == str(workspace.path)
 
 
 @pytest.mark.parametrize(
@@ -580,6 +581,7 @@ async def test_workspace_and_session_are_resolved_again_before_cache_lookup(
     conversation: Conversation,
     tmp_path: Path,
 ) -> None:
+    chat = await app.workspaces.resolve(conversation.thread_id, None, user.id)
     first = await discover(
         app=app,
         user=user,
@@ -587,10 +589,11 @@ async def test_workspace_and_session_are_resolved_again_before_cache_lookup(
         address=address,
         conversation_id=conversation.id,
     )
-    assert first.context.cwd == app.workspaces.open(conversation.thread_id, None).path
+    assert first.context.cwd == chat.path
     project = a_project(tmp_path / "project")
     app.workspaces.projects = await a_registry(project)
     await app.threads.bind(conversation.thread_id, project)
+    workspace = await app.workspaces.resolve(conversation.thread_id, project, user.id)
     async with async_session() as session:
         loaded = await session.get(Conversation, conversation.id)
         assert loaded is not None
@@ -603,11 +606,46 @@ async def test_workspace_and_session_are_resolved_again_before_cache_lookup(
         address=address,
         conversation_id=conversation.id,
     )
-    assert second.context.cwd == app.workspaces.path(conversation.thread_id)
+    assert second.context.cwd == workspace.path
     assert second.context.conversation is not None
     assert second.context.conversation.external_id == "new-runtime-session"
     assert len(agent.calls) == 2
-    assert not app.workspaces.workspaces_dir.exists()
+    assert not app.workspaces.volumes_dir.exists()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+async def test_inspection_reads_only_the_requesting_owners_volume(
+    app: Octomate,
+    user: User,
+    agent: DiscoveringAgent,
+    address: ChannelAddress,
+    conversation: Conversation,
+    existing: bool,
+) -> None:
+    other = await a_user("bob")
+    await app.workspaces.resolve(conversation.thread_id, None, other.id)
+    workspace = (
+        await app.workspaces.resolve(conversation.thread_id, None, user.id)
+        if existing
+        else None
+    )
+    async with async_session() as session:
+        before = {
+            volume.id: volume.last_used_at for volume in await session.list(GitVolume)
+        }
+    result = await discover(
+        app=app,
+        user=user,
+        agent_id=agent.id,
+        address=address,
+        conversation_id=conversation.id,
+    )
+    assert result.context.cwd == (workspace.path if workspace is not None else None)
+    async with async_session() as session:
+        assert {
+            volume.id: volume.last_used_at for volume in await session.list(GitVolume)
+        } == before
+    assert not app.workspaces.volumes_dir.exists()
 
 
 async def test_trunkline_composer_needs_no_existing_profile(
@@ -718,6 +756,7 @@ async def test_subthread_uses_surface_model_but_its_own_workspace(
     child_conversation = await app.conversations.ensure(
         child.id, agent_tentacle_id=agent.id
     )
+    workspace = await app.workspaces.resolve(child.id, None, user.id)
     result = await discover(
         app=app,
         user=user,
@@ -726,7 +765,7 @@ async def test_subthread_uses_surface_model_but_its_own_workspace(
         conversation_id=child_conversation.id,
     )
     assert result.status == "ready"
-    assert result.context.cwd == app.workspaces.open(child.id, None).path
+    assert result.context.cwd == workspace.path
     assert result.context.conversation is not None
     assert result.context.conversation.id == child_conversation.id
 
@@ -864,8 +903,8 @@ async def test_http_execution_preserves_arguments_and_replays_saved_outcome(
         ] == ["Done", "Done"]
     assert command_outcome(response) == outcome
     assert command_outcome(replay) == outcome
-    assert agent.invocations == [
-        CommandInvocation(command_id="skill", arguments='  "raw argument"\n--flag=✓  ')
+    assert agent.intents == [
+        CommandIntent(command_id="skill", arguments='  "raw argument"\n--flag=✓  ')
     ]
     assert not app.gateway.sessions
     assert not agent.turns
@@ -897,7 +936,7 @@ async def test_http_execution_rejects_invalid_intent_before_dispatch(
         )
     assert response.status_code == 422
     assert response.headers["content-type"] == "application/json"
-    assert not agent.invocations
+    assert not agent.intents
 
 
 @pytest.mark.parametrize("refusal", ["unknown", "busy", "composer", "other_user"])
@@ -945,7 +984,7 @@ async def test_http_execution_uses_manager_refusals(
         ReflexPhaseChangedEvent(phase="finalizing"),
         ReflexAsleepEvent(outcome="failed"),
     ]
-    assert not agent.invocations
+    assert not agent.intents
     async with async_session() as session:
         assert await session.count(ThreadCommand) == 0
 
@@ -1038,7 +1077,7 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
         ]
         assert "Running" in shown
         assert "Done" in shown
-    assert len(agent.invocations) == 1
+    assert len(agent.intents) == 1
     assert not app.gateway.sessions
     user_capabilities.assert_awaited_once()
     assert isinstance(agent.suspender, ReflexSuspender)
@@ -1118,7 +1157,7 @@ async def test_command_presents_a_persisted_reflex_approval(
     assert batch.decision is not None
     assert batch.decision.agent_id == agent.id
     assert batch.decision.model == "test"
-    assert len(agent.invocations) == 1
+    assert len(agent.intents) == 1
     assert not agent.turns
     assert not app.gateway.sessions
 
@@ -1241,8 +1280,9 @@ async def test_foreign_agent_conversation_is_rejected_before_discovery_or_execut
     kick.assert_not_awaited()
     assert not other.calls
     assert not agent.calls
-    assert not other.invocations
-    assert not agent.invocations
-    assert not app.workspaces.open(conversation.thread_id, None).path.exists()
+    assert not other.intents
+    assert not agent.intents
+    assert not app.workspaces.volumes_dir.exists()
     async with async_session() as session:
+        assert await session.count(GitVolume) == 0
         assert await session.count(ThreadCommand) == 0

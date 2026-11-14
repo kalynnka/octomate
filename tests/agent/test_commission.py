@@ -9,9 +9,11 @@ import asyncio
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TypedDict, cast
 
 import pytest
+from arcanus import Relation
 from pydantic import UUID7
 from pydantic_ai import AgentStreamEvent
 from pydantic_ai.messages import (
@@ -21,8 +23,10 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 from pydantic_ai.tools import DeferredToolRequests
+from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
+from octomate import Octomate
 from octomate.events import (
     SubagentSettledEvent,
     SubagentStartedEvent,
@@ -33,6 +37,7 @@ from octomate.managers.gateway import (
     OctomateSession,
 )
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import (
     AgentRoute,
     Claim,
@@ -40,7 +45,15 @@ from octomate.schemas.triage import (
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.inkling.mcp import Accomplices
 from tests.support.agents import FakeAgent
-from tests.support.managers import FakeConversationManager
+from tests.support.managers import (
+    FakeConversationManager,
+    FakeThreadManager,
+    a_habitat_manager,
+    a_project,
+    a_registry,
+    a_workspace_manager,
+)
+from tests.support.users import a_user
 
 THREAD = uuid7()
 ADDRESS = ChannelAddress(
@@ -81,14 +94,29 @@ async def _gate(
         "claude": cast(AgentTentacle, FakeAgent(id="claude")),
     }
     conversations = conversations or FakeConversationManager()
+    threads = FakeThreadManager()
+    thread = await threads.ensure(ADDRESS)
+    threads.threads_by_key[thread.key] = Thread(
+        id=THREAD,
+        kind="dm",
+        chat_type="dm",
+        chat_id=ADDRESS.chat_id,
+        channel_tentacle_id=ADDRESS.channel_tentacle_id,
+        project=Relation(None),
+    )
     for agent in agents.values():
         agent.conversations = conversations
+    workspaces = a_workspace_manager()
     gate = OctomateSession(
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id="inkling",
         agents=agents,
         thread_id=THREAD,
         conversation_address=ADDRESS,
+        threads=threads,
+        workspaces=workspaces,
+        habitats=a_habitat_manager(workspaces),
+        users=threads.users,
     )
     parent = await conversations.ensure(THREAD, agent_tentacle_id="inkling")
     return (
@@ -404,3 +432,37 @@ async def test_an_accomplice_left_running_settles_as_cancelled_with_the_run() ->
     assert received[-1] == SubagentSettledEvent(
         invocation_id="call-a", status="cancelled"
     )
+
+
+async def test_commission_inherits_the_parent_owner_in_a_project(
+    in_memory_engine: AsyncEngine,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    project = a_project(root)
+    app = Octomate()
+    app.workspaces.projects = await a_registry(project)
+    owner = await a_user("alice", profiles={"im": "alice"})
+    thread = await app.threads.ensure(
+        ThreadKey("im", "thread", "shared", "turn"), project=project
+    )
+    gate, agents, conversations, ctx = await _gate()
+    gate.thread_id = thread.id
+    gate.threads = app.threads
+    gate.workspaces = app.workspaces
+    gate.habitats = app.habitats
+    gate.user_profile = await app.users.profile("im", "alice")
+    parent = await conversations.ensure(thread.id, agent_tentacle_id="inkling")
+    ctx["parent_id"] = parent.id
+    result = await gate.commission(
+        **ctx, name="audit", agent_id="claude", model="opus", brief="Audit."
+    )
+    assert result == "handled"
+    child = agents["claude"]
+    assert isinstance(child, FakeAgent)
+    [turn] = child.turns
+    assert turn.session is None
+    assert turn.invocation.owner_id == owner.id
+    assert turn.invocation.thread_id == thread.id
+    assert turn.invocation.storage.path.is_dir()

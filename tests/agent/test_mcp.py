@@ -76,7 +76,14 @@ from octomate.tentacles.mcp import (
     OAuthMcpTentacle,
 )
 from tests.channels.slack.test_mcp import into
-from tests.support.managers import FakeConversationManager, fixed_session
+from tests.support.invocations import invocation_for
+from tests.support.managers import (
+    FakeConversationManager,
+    FakeThreadManager,
+    a_habitat_manager,
+    a_workspace_manager,
+    fixed_session,
+)
 from tests.support.mcp import discover, install_tentacle, served_inkling_mcp
 from tests.support.users import a_user, auth_config
 
@@ -175,8 +182,16 @@ def an_upstream(tool: str) -> tuple[FastMCP, list[str]]:
 def a_turn(profile: UserProfile | None = None) -> OctomateSession:
     """A turn by `profile`, or by nobody registered — the session a proxied call
     resolves to."""
+    threads = FakeThreadManager()
+    workspaces = a_workspace_manager()
     return OctomateSession(
-        channel_routes={}, current_agent_id="inkling", user_profile=profile
+        channel_routes={},
+        current_agent_id="inkling",
+        user_profile=profile,
+        users=threads.users,
+        threads=threads,
+        workspaces=workspaces,
+        habitats=a_habitat_manager(workspaces),
     )
 
 
@@ -464,16 +479,16 @@ async def test_a_run_mounts_the_tentacles_for_its_octomate_session(
     ).id
     session.conversation_address = address
     async with (
+        invocation_for(
+            inkling,
+            conversation_address=address,
+            thread_id=thread_id,
+            conversation_id=session.conversation_id,
+        ) as invocation,
         served_inkling_mcp(host, monkeypatch),
         host.gateway.driving(session),
         inkling.run_stream_events(
-            "hello",
-            conversation_address=address,
-            conversation=await inkling.resolve_conversation(
-                thread_id,
-                conversation_address=address,
-                conversation_id=session.conversation_id,
-            ),
+            "hello", conversation_address=address, invocation=invocation
         ) as stream,
     ):
         async for _event in stream:

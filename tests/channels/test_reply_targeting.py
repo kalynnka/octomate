@@ -32,6 +32,11 @@ from octomate.tentacles.lark.chromo import LarkChromo
 from octomate.tentacles.napcat.chromo import NapcatChromo
 from octomate.tentacles.slack.chromo import SlackChromo
 from tests.support.channels import FakeChannelTentacle, FakeChromo, RecordingInk
+from tests.support.managers import (
+    FakeThreadManager,
+    a_habitat_manager,
+    a_workspace_manager,
+)
 from tests.support.mcp import core_tool_server
 from tests.support.nerve import held
 
@@ -61,12 +66,18 @@ def test_split_reply_takes_first_reply_anywhere_and_strips_all() -> None:
 
 
 async def test_send_tool_accepts_reply_and_mention() -> None:
+    threads = FakeThreadManager()
+    workspaces = a_workspace_manager()
     session = OctomateSession(
         channel_routes={},
         current_agent_id="inkling",
         channels={"im": FakeChannelTentacle()},
         conversation_address=_key(),
         nerve=Nerve(),
+        users=threads.users,
+        threads=threads,
+        workspaces=workspaces,
+        habitats=a_habitat_manager(workspaces),
     )
     segments = [
         ReplySegment(data={"id": "msg-3"}),

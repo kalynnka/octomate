@@ -41,6 +41,7 @@ from octomate.tentacles.acp.channel import AcpChannelTentacle
 from octomate.tentacles.acp.client import AcpProvider
 from tests.agent.acp.test_client import adapter_environment as adapter_environment
 from tests.agent.acp.test_routes import initialize, new_session, rpc
+from tests.support.invocations import invocation_for
 from tests.support.managers import a_project, a_registry
 from tests.support.nerve import held
 from tests.support.users import a_user, auth_config
@@ -142,16 +143,19 @@ async def test_custom_harness_discovers_selects_and_reopens(
             assert not await session.list(Conversation)
             assert not await session.list(AgentRun)
         for model in ["default", None] if catalog == "none" else ["careful", "fast"]:
-            result = await agent.run(
-                "hello",
+            async with invocation_for(
+                agent,
                 conversation_address=thread.key.address(sender.channel_user_id),
-                conversation=await agent.resolve_conversation(
-                    thread.id,
+                thread_id=thread.id,
+                owner_id=sender.user_id,
+            ) as invocation:
+                result = await agent.run(
+                    "hello",
                     conversation_address=thread.key.address(sender.channel_user_id),
-                ),
-                model=model,
-                interactive=False,
-            )
+                    invocation=invocation,
+                    model=model,
+                    interactive=False,
+                )
             assert result.output == "custom harness answer"
         with pytest.raises(ValueError, match="does not serve model"):
             agent.resolve_model("unknown")
@@ -233,17 +237,20 @@ async def test_harness_efforts_follow_model_and_reach_new_and_loaded_sessions(
             ("fast", None, None, None),
         ]:
             await app.conversations.set_effort(conversation, stored)
-            result = await agent.run(
-                "hello",
+            async with invocation_for(
+                agent,
                 conversation_address=thread.key.address(sender.channel_user_id),
-                conversation=await agent.resolve_conversation(
-                    thread.id,
+                thread_id=thread.id,
+                owner_id=sender.user_id,
+            ) as invocation:
+                result = await agent.run(
+                    "hello",
                     conversation_address=thread.key.address(sender.channel_user_id),
-                ),
-                model=model,
-                effort=explicit,
-                interactive=False,
-            )
+                    invocation=invocation,
+                    model=model,
+                    effort=explicit,
+                    interactive=False,
+                )
             assert result.output == "custom harness answer"
             requests = [
                 json.loads(line)["message"]
@@ -268,17 +275,20 @@ async def test_harness_efforts_follow_model_and_reach_new_and_loaded_sessions(
                 "session/new" if model == "careful" else "session/load"
             )
         with pytest.raises(ValueError, match="does not take effort"):
-            await agent.run(
-                "hello",
+            async with invocation_for(
+                agent,
                 conversation_address=thread.key.address(sender.channel_user_id),
-                conversation=await agent.resolve_conversation(
-                    thread.id,
+                thread_id=thread.id,
+                owner_id=sender.user_id,
+            ) as invocation:
+                await agent.run(
+                    "hello",
                     conversation_address=thread.key.address(sender.channel_user_id),
-                ),
-                model="fast",
-                effort="max",
-                interactive=False,
-            )
+                    invocation=invocation,
+                    model="fast",
+                    effort="max",
+                    interactive=False,
+                )
 
 
 async def test_public_endpoint_drives_custom_harness(
@@ -384,24 +394,30 @@ async def test_harness_without_http_mcp(
     async with agent:
         if gateway:
             with pytest.raises(ValueError, match="must support HTTP MCP"):
-                await agent.run(
-                    "hello",
-                    conversation=await agent.resolve_conversation(
-                        thread.id,
-                        conversation_address=thread.key.address(sender.channel_user_id),
-                    ),
+                async with invocation_for(
+                    agent,
                     conversation_address=thread.key.address(sender.channel_user_id),
-                )
+                    thread_id=thread.id,
+                    owner_id=sender.user_id,
+                ) as invocation:
+                    await agent.run(
+                        "hello",
+                        invocation=invocation,
+                        conversation_address=thread.key.address(sender.channel_user_id),
+                    )
             return
-        result = await agent.run(
-            "hello",
-            conversation=await agent.resolve_conversation(
-                thread.id,
-                conversation_address=thread.key.address(sender.channel_user_id),
-            ),
+        async with invocation_for(
+            agent,
             conversation_address=thread.key.address(sender.channel_user_id),
-            interactive=False,
-        )
+            thread_id=thread.id,
+            owner_id=sender.user_id,
+        ) as invocation:
+            result = await agent.run(
+                "hello",
+                invocation=invocation,
+                conversation_address=thread.key.address(sender.channel_user_id),
+                interactive=False,
+            )
         assert result.output == "custom harness answer"
     async with async_session() as session:
         assert not await session.list(UserApiKey)
@@ -525,7 +541,10 @@ async def test_reflex_owns_dispatch_and_history(
     new = next(
         item["params"] for item in messages if item.get("method") == "session/new"
     )
-    assert new["cwd"] == str(app.workspaces.path(thread.id))
+    assert sender.user_id is not None
+    volume = await app.volumes.find(sender.user_id, thread.id, thread.project_id)
+    assert volume is not None
+    assert new["cwd"] == str(app.workspaces.path(volume))
     [mcp] = new["mcpServers"]
     headers = {item["name"]: item["value"] for item in mcp["headers"]}
     assert headers[CONVERSATION_HEADER] == str(conversation.id)
@@ -553,15 +572,18 @@ async def test_direct_runs_reopen_the_conversation_without_dispatch(
     kick = AsyncMock()
     monkeypatch.setattr(app, "kick", kick)
     for prompt in ("first", "second"):
-        result = await tentacle.run(
-            prompt,
-            conversation=await tentacle.resolve_conversation(
-                thread.id,
-                conversation_address=thread.key.address(sender.channel_user_id),
-            ),
+        async with invocation_for(
+            tentacle,
             conversation_address=thread.key.address(sender.channel_user_id),
-            interactive=False,
-        )
+            thread_id=thread.id,
+            owner_id=sender.user_id,
+        ) as invocation:
+            result = await tentacle.run(
+                prompt,
+                invocation=invocation,
+                conversation_address=thread.key.address(sender.channel_user_id),
+                interactive=False,
+            )
         assert result.output == "x" * 100_000
     kick.assert_not_called()
     async with async_session() as session:
@@ -643,15 +665,18 @@ async def test_conversation_cannot_cross_threads(
         other.id, agent_tentacle_id=tentacle.id
     )
     with pytest.raises(ValueError, match="does not belong"):
-        await tentacle.run(
-            "wrong thread",
-            conversation=await tentacle.resolve_conversation(
-                thread.id,
-                conversation_address=thread.key.address(sender.channel_user_id),
-                conversation_id=conversation.id,
-            ),
+        async with invocation_for(
+            tentacle,
             conversation_address=thread.key.address(sender.channel_user_id),
-        )
+            thread_id=thread.id,
+            conversation_id=conversation.id,
+            owner_id=sender.user_id,
+        ) as invocation:
+            await tentacle.run(
+                "wrong thread",
+                invocation=invocation,
+                conversation_address=thread.key.address(sender.channel_user_id),
+            )
     assert not await AsyncPath(adapter_environment["ACP_TEST_LOG"]).exists()
 
 
@@ -669,15 +694,18 @@ async def test_provider_failure_preserves_partial_run_and_revokes_key(
         )
     )
     with pytest.raises(acp.RequestError, match="provider failed"):
-        await tentacle.run(
-            "fail after a partial answer",
-            conversation=await tentacle.resolve_conversation(
-                thread.id,
-                conversation_address=thread.key.address(sender.channel_user_id),
-            ),
+        async with invocation_for(
+            tentacle,
             conversation_address=thread.key.address(sender.channel_user_id),
-            interactive=False,
-        )
+            thread_id=thread.id,
+            owner_id=sender.user_id,
+        ) as invocation:
+            await tentacle.run(
+                "fail after a partial answer",
+                invocation=invocation,
+                conversation_address=thread.key.address(sender.channel_user_id),
+                interactive=False,
+            )
     assert not tentacle.driven_sessions
     assert not tentacle.pendings
     async with async_session() as session:

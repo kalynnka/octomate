@@ -53,6 +53,7 @@ from rich.style import Style
 
 from octomate.config.agents import AgentRouteModelName, InklingConfig
 from octomate.managers.conversation import ConversationManager, ConversationStore
+from octomate.managers.habitat import Invocation
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH
 from octomate.schemas.commands import (
@@ -60,7 +61,7 @@ from octomate.schemas.commands import (
     CommandContext,
     CommandDescriptor,
     CommandError,
-    CommandInvocation,
+    CommandIntent,
     CommandOutcome,
     CommandResult,
 )
@@ -242,15 +243,16 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     async def execute_command(
         self,
         context: CommandContext,
-        invocation: CommandInvocation,
+        intent: CommandIntent,
         *,
+        invocation: Invocation | None,
         deferred_suspender: DeferredSuspender | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AsyncGenerator[CommandOutcome | ReactStreamEvent[InklingOutput], None]:
-        if invocation.command_id != "builtin:compact":
+        if intent.command_id != "builtin:compact":
             yield CommandError(status="unknown", message="Unknown Inkling command.")
             return
-        if invocation.attachments:
+        if intent.attachments:
             yield CommandError(
                 status="unsupported", message="/compact does not accept attachments."
             )
@@ -294,7 +296,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             strategy,
             conversation.messages,
             model=self.models[selected],
-            focus=invocation.arguments or None,
+            focus=intent.arguments or None,
             usage=conversation.usage,
             conversation_id=conversation.conversation_id,
             tracer=get_tracer("octomate.inkling"),
@@ -583,7 +585,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -613,7 +615,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -642,7 +644,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -669,7 +671,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         async for event in self.iter_graph_events(
             user_prompt=user_prompt,
             conversation_address=conversation_address,
-            conversation=conversation,
+            invocation=invocation,
             source_thread_address=source_thread_address,
             source_thread_message_ids=source_thread_message_ids,
             run_name=run_name,
@@ -704,7 +706,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str,
         *,
         conversation_address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         run_name: str | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
@@ -722,7 +724,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         async for event in self.iter_graph_events(
             user_prompt=user_prompt,
             conversation_address=conversation_address,
-            conversation=conversation,
+            invocation=invocation,
             interactive=False,
             run_name=run_name,
             model=model,
@@ -742,7 +744,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -771,7 +773,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -799,7 +801,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -825,7 +827,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             self.iter_graph_events(
                 user_prompt=user_prompt,
                 conversation_address=conversation_address,
-                conversation=conversation,
+                invocation=invocation,
                 source_thread_address=source_thread_address,
                 source_thread_message_ids=source_thread_message_ids,
                 run_name=run_name,
@@ -855,7 +857,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         *,
         user_prompt: str | Sequence[UserContent] | None,
         conversation_address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -884,7 +886,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         *,
         user_prompt: str | Sequence[UserContent] | None,
         conversation_address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -912,7 +914,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         *,
         user_prompt: str | Sequence[UserContent] | None,
         conversation_address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -937,7 +939,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         ReactStreamEvent[InklingOutput | RunOutputDataT],
         None,
     ]:
-        self.check_conversation(conversation)
+        conversation = invocation.conversation
+        self.check_conversation(conversation, thread_id=invocation.thread_id)
         resolved_run_name = run_name or "react"
         # Effort IS pydantic-ai's `thinking` scale; pass it through, layered over
         # any run settings the caller passed. Nothing downgrades a grade the
@@ -992,22 +995,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 max_retries=2,
             )
             capabilities.extend(OctomateTools.capabilities(client))
-        # Which deferrals this run answers itself is `InklingDeferrals`' decision, made
-        # again at each one; all the run contributes is whether a human exists at all.
-        # Which capability set to mount is likewise the entrypoints' decision, so
-        # `capabilities` arrives here holding it. The run's workspace is the one thing
-        # added below: its project comes off the thread rather than the caller, so
-        # every entrypoint would otherwise have to resolve it identically.
-        project = await self.run_project(conversation.thread_id)
-        # Forked rather than entered: inkling runs in this process, so the tree is
-        # somewhere its file tools are rooted rather than somewhere a subprocess is
-        # started, and a project's workspace has no ending for a run to scope.
-        workspace = (
-            await self.workspaces.open(conversation.thread_id, project).prepare()
-            if project is not None
-            else None
-        )
-        if workspace is not None:
+        workspace = invocation.storage.path
+        if invocation.project is not None:
             capabilities.extend(self.workspace_capabilities(workspace))
         graph_deps = ReactDeps(
             agent=self.agent,
@@ -1022,8 +1011,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             suspender=deferred_suspender,
             output_type=react_output_type,
             run_name=resolved_run_name,
-            # Where this run happened, for the run to record: the thread's workspace,
-            # or nothing, since inkling has no configured directory to fall back to.
             cwd=workspace,
             model=model,
             permission_mode=self.permission_mode,

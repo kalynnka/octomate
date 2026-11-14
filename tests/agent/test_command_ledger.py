@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate.database import async_session
 from octomate.managers import ConversationManager, ThreadManager, UserManager
 from octomate.nerve import Nerve
-from octomate.schemas.commands import CommandError, CommandInvocation, CommandResult
+from octomate.schemas.commands import CommandError, CommandIntent, CommandResult
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import FileData, FileSegment, TextSegment
@@ -42,7 +42,7 @@ async def receipt(in_memory_engine: AsyncEngine) -> ThreadCommand:
         agent_tentacle_id="codex",
         platform_message_id="command-1",
         conversation_id=conversation.id,
-        invocation=CommandInvocation(
+        intent=CommandIntent(
             command_id="review",
             arguments='  "raw argument"\n--flag=✓  ',
             attachments=[FileSegment(data=FileData(file="/resolved/input.txt"))],
@@ -69,7 +69,7 @@ async def test_command_receipt_and_outcome_roundtrip(
             ThreadMessage, expressions=[ThreadMessage["id"] == receipt.id]
         )
         assert isinstance(stored, ThreadCommand)
-        assert stored.invocation == receipt.invocation
+        assert stored.intent == receipt.intent
         assert stored.conversation_id == receipt.conversation_id
         assert stored.outcome is None
         stored.outcome = outcome
@@ -91,10 +91,7 @@ async def test_commands_stay_in_history_without_consuming_pending_chat(
     thread = await threads.get(receipt.thread_id)
     assert thread is not None
     assert [message.kind for message in thread.messages] == ["message", "command"]
-    assert (
-        thread.model_dump()["messages"][1]["invocation"]
-        == receipt.invocation.model_dump()
-    )
+    assert thread.model_dump()["messages"][1]["intent"] == receipt.intent.model_dump()
     assert [
         message.platform_message_id
         for message in await threads.chat_messages_before(thread.id, receipt.id)
@@ -120,7 +117,7 @@ async def test_deleted_conversation_keeps_the_command_receipt(
         stored = await session.get(ThreadCommand, receipt.id)
         assert stored is not None
         assert stored.conversation_id is None
-        assert stored.invocation == receipt.invocation
+        assert stored.intent == receipt.intent
 
 
 async def test_delivery_constraint_rejects_a_second_receipt(

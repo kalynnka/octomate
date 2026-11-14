@@ -22,7 +22,7 @@ from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
     CommandError,
-    CommandInvocation,
+    CommandIntent,
     CommandOutcomeEvent,
     CommandResult,
 )
@@ -100,7 +100,11 @@ async def command_context(
         surface = await threads.surface(thread)
         model = surface.active_model
         permission_mode = conversation.permission_mode or agent.default_permission_mode
-        cwd = workspaces.open(thread.id, await thread.project).path
+        project = await thread.project
+        volume = await workspaces.volumes.find(
+            user.id, thread.id, project.id if project is not None else None
+        )
+        cwd = workspaces.path(volume) if volume is not None else None
 
     try:
         model = agent.resolve_model(model)
@@ -189,9 +193,9 @@ async def execute_command(
     reflex falling asleep. A failed execution answers no outcome.
     Authentication and request-validation errors remain non-2xx JSON responses.
     """
-    invocation = CommandInvocation(command_id=command_id, arguments=arguments)
+    intent = CommandIntent(command_id=command_id, arguments=arguments)
     try:
-        reflex = await app.kick(CommandSignal(context, invocation, delivery_id))
+        reflex = await app.kick(CommandSignal(context, intent, delivery_id))
     except StillAwake as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     result = None if reflex is None else await reflex

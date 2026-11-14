@@ -1,4 +1,4 @@
-"""Runtime command catalogs and explicit invocations, separate from chat text."""
+"""Runtime command catalogs and explicit command intent, separate from chat text."""
 
 import uuid
 from copy import copy
@@ -37,7 +37,8 @@ class CommandContext:
         Path | None,
         Field(
             description="The effective runtime workspace, never a client-supplied path; "
-            "null before a thread exists. Discovery must not prepare this directory.",
+            "null until this user's tree volume exists. Discovery must not create "
+            "the volume or prepare its directory.",
         ),
     ]
     conversation: Annotated[
@@ -176,7 +177,7 @@ class CommandCatalog(BaseModel):
         )
 
 
-class CommandInvocation(BaseModel):
+class CommandIntent(BaseModel):
     """Explicit command intent; ordinary chat text does not use this contract.
 
     The caller must revalidate catalog membership and attachment support before dispatch.

@@ -42,9 +42,9 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.managers.gateway import OctomateSession
-from octomate.managers.workspaces.base import ChatWorkspace, Workspace
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision, TeleportDecision
+from octomate.schemas.volumes.storage import HostDirectory
 from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import base as claude_base
@@ -52,6 +52,7 @@ from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.transcript import transcripts_dir
 from octomate.types.json import JsonObject
+from tests.support.invocations import invocation_for
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
@@ -179,14 +180,14 @@ async def test_run_stream_events_proxies_events_and_persists(
         monkeypatch.delattr(tentacle.octomate, name)
 
     events = []
-    async with tentacle.run_stream_events(
-        "fix it",
-        conversation_address=KEY,
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=KEY
-        ),
-        run_name="react",
-    ) as stream:
+    async with (
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation,
+        tentacle.run_stream_events(
+            "fix it", conversation_address=KEY, invocation=invocation, run_name="react"
+        ) as stream,
+    ):
         async for event in stream:
             events.append(event)
 
@@ -220,7 +221,7 @@ async def test_closing_a_stream_closes_its_sdk_client_before_the_workspace(
     closed = asyncio.Event()
     waiting = asyncio.Event()
     receive_response = FakeClaudeClient.receive_response
-    workspace_exit = ChatWorkspace.__aexit__
+    workspace_exit = HostDirectory.discard
 
     async def receive(client: FakeClaudeClient) -> AsyncIterator[Message]:
         async for message in receive_response(client):
@@ -236,26 +237,26 @@ async def test_closing_a_stream_closes_its_sdk_client_before_the_workspace(
         closed.set()
 
     async def close_workspace(
-        workspace: ChatWorkspace,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
+        workspace: HostDirectory,
+        *,
+        ephemeral: bool,
     ) -> None:
         assert closed.is_set()
-        await workspace_exit(workspace, exc_type, exc, traceback)
+        await workspace_exit(workspace, ephemeral=ephemeral)
 
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     monkeypatch.setattr(FakeClaudeClient, "__aexit__", close_client)
     monkeypatch.setattr(FakeClaudeClient, "receive_response", receive)
-    monkeypatch.setattr(ChatWorkspace, "__aexit__", close_workspace)
+    monkeypatch.setattr(HostDirectory, "discard", close_workspace)
     tentacle = _tentacle(FakeConversationManager())
-    async with tentacle.run_stream_events(
-        "work",
-        conversation_address=KEY,
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=KEY
-        ),
-    ) as stream:
+    async with (
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation,
+        tentacle.run_stream_events(
+            "work", conversation_address=KEY, invocation=invocation
+        ) as stream,
+    ):
         await anext(stream)
         assert not closed.is_set()
     assert closed.is_set()
@@ -283,14 +284,12 @@ async def test_prompt_hook_identity_is_retained_on_the_driven_run(
 
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", IdentifiedClient)
     conversations = FakeConversationManager()
-    tentacle = _tentacle(conversations)
-    await tentacle.run(
-        "go",
-        conversation_address=KEY,
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=KEY
-        ),
-    )
+    async with invocation_for(
+        _tentacle(conversations), conversation_address=KEY, thread_id=_THREAD
+    ) as invocation:
+        await _tentacle(conversations).run(
+            "go", conversation_address=KEY, invocation=invocation
+        )
     fake, _label, _messages = conversations.runs[0]
     [run] = fake.runs
     assert fake.agent_tentacle_id == "claude"
@@ -314,14 +313,15 @@ async def test_a_run_addressed_by_conversation_id_lands_there(
     )
     tentacle = _tentacle(conversations)
 
-    result = await tentacle.run(
-        "audit the repo",
-        conversation_address=KEY,
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=KEY, conversation_id=child.id
-        ),
-        run_name="commission",
-    )
+    async with invocation_for(
+        tentacle, conversation_address=KEY, thread_id=_THREAD, conversation_id=child.id
+    ) as invocation:
+        result = await tentacle.run(
+            "audit the repo",
+            conversation_address=KEY,
+            invocation=invocation,
+            run_name="commission",
+        )
 
     assert result.output == "done"
     assert child.external_id == "sess-xyz"  # the hand's own resumable session
@@ -340,25 +340,23 @@ async def test_sdk_ingest_claim_brackets_client_lifetime(
     conversation.external_id = external_id
     tentacle = _tentacle(conversations)
     lifecycle: list[str] = []
-    workspace_enter = Workspace.__aenter__
-    workspace_exit = ChatWorkspace.__aexit__
+    workspace_enter = HostDirectory.claim
+    workspace_exit = HostDirectory.discard
 
-    async def open_workspace(workspace: Workspace) -> Workspace:
+    async def open_workspace(workspace: HostDirectory, *, ephemeral: bool) -> None:
         assert tentacle.driven_sessions == {}
         lifecycle.append("workspace-enter")
-        result = await workspace_enter(workspace)
+        await workspace_enter(workspace, ephemeral=ephemeral)
         assert tentacle.driven_sessions == {}
-        return result
 
     async def close_workspace(
-        workspace: ChatWorkspace,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
+        workspace: HostDirectory,
+        *,
+        ephemeral: bool,
     ) -> None:
         assert tentacle.driven_sessions == {}
         lifecycle.append("workspace-exit")
-        await workspace_exit(workspace, exc_type, exc, traceback)
+        await workspace_exit(workspace, ephemeral=ephemeral)
 
     async def enter(client: FakeClaudeClient) -> FakeClaudeClient:
         options = FakeClaudeClient.last_options
@@ -410,30 +408,30 @@ async def test_sdk_ingest_claim_brackets_client_lifetime(
     monkeypatch.setattr(FakeClaudeClient, "__aenter__", enter)
     monkeypatch.setattr(FakeClaudeClient, "__aexit__", leave)
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
-    monkeypatch.setattr(Workspace, "__aenter__", open_workspace)
-    monkeypatch.setattr(ChatWorkspace, "__aexit__", close_workspace)
+    monkeypatch.setattr(HostDirectory, "claim", open_workspace)
+    monkeypatch.setattr(HostDirectory, "discard", close_workspace)
 
     if connect_fails:
         with pytest.raises(RuntimeError, match="SDK connect failed"):
-            await tentacle.run(
-                "hello",
-                conversation_address=KEY,
-                conversation=await tentacle.resolve_conversation(
-                    _THREAD, conversation_address=KEY
-                ),
-            )
+            async with invocation_for(
+                tentacle, conversation_address=KEY, thread_id=_THREAD
+            ) as invocation:
+                await tentacle.run(
+                    "hello", conversation_address=KEY, invocation=invocation
+                )
     else:
-        async with tentacle.run_stream_events(
-            "hello",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
-        ) as stream:
+        async with (
+            invocation_for(
+                tentacle, conversation_address=KEY, thread_id=_THREAD
+            ) as invocation,
+            tentacle.run_stream_events(
+                "hello", conversation_address=KEY, invocation=invocation
+            ) as stream,
+        ):
             async for event in stream:
                 if isinstance(event, AgentRunResultEvent):
                     assert tentacle.driven_sessions == {}
-                    assert lifecycle[-1] == "workspace-exit"
+                    assert lifecycle[-1] == "exit"
                 else:
                     assert tentacle.driven_sessions
 
@@ -458,14 +456,15 @@ async def test_instructions_land_in_the_system_prompt(
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
 
-    await tentacle.run(
-        "audit the repo",
-        conversation_address=KEY,
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=KEY
-        ),
-        instructions="You are an accomplice.",
-    )
+    async with invocation_for(
+        tentacle, conversation_address=KEY, thread_id=_THREAD
+    ) as invocation:
+        await tentacle.run(
+            "audit the repo",
+            conversation_address=KEY,
+            invocation=invocation,
+            instructions="You are an accomplice.",
+        )
 
     options = cast(ClaudeAgentOptions, FakeClaudeClient.last_options)
     assert options.system_prompt == {
@@ -486,14 +485,12 @@ async def test_a_non_interactive_run_declines_approvals_and_questions(
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
 
-    await tentacle.run(
-        "work",
-        conversation_address=KEY,
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=KEY
-        ),
-        interactive=False,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=KEY, thread_id=_THREAD
+    ) as invocation:
+        await tentacle.run(
+            "work", conversation_address=KEY, invocation=invocation, interactive=False
+        )
 
     options = cast(ClaudeAgentOptions, FakeClaudeClient.last_options)
     assert options.can_use_tool is not None
@@ -525,13 +522,12 @@ async def test_run_resumes_prior_session(monkeypatch: pytest.MonkeyPatch) -> Non
     )
     tentacle = _tentacle(conversations)
 
-    result = await tentacle.run(
-        "again",
-        conversation_address=KEY,
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=KEY
-        ),
-    )
+    async with invocation_for(
+        tentacle, conversation_address=KEY, thread_id=_THREAD
+    ) as invocation:
+        result = await tentacle.run(
+            "again", conversation_address=KEY, invocation=invocation
+        )
 
     assert result.output == "done"
     options = FakeClaudeClient.last_options
@@ -576,14 +572,15 @@ async def test_run_with_output_type_returns_structured(
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", StructuredClaudeClient)
     tentacle = _tentacle(FakeConversationManager())
 
-    result = await tentacle.run(
-        "triage this",
-        conversation_address=KEY,
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=KEY
-        ),
-        output_type=SummonDecision,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=KEY, thread_id=_THREAD
+    ) as invocation:
+        result = await tentacle.run(
+            "triage this",
+            conversation_address=KEY,
+            invocation=invocation,
+            output_type=SummonDecision,
+        )
 
     assert isinstance(result.output, SummonDecision)
     assert result.output.action == "summon"
@@ -600,14 +597,15 @@ async def test_run_uses_literal_output_schema(
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", LiteralClaudeClient)
     tentacle = _tentacle(FakeConversationManager())
 
-    result = await tentacle.run(
-        "triage this",
-        conversation_address=KEY,
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=KEY
-        ),
-        output_type=Literal["accepted"],
-    )
+    async with invocation_for(
+        tentacle, conversation_address=KEY, thread_id=_THREAD
+    ) as invocation:
+        result = await tentacle.run(
+            "triage this",
+            conversation_address=KEY,
+            invocation=invocation,
+            output_type=Literal["accepted"],
+        )
 
     assert result.output == "accepted"
     assert getattr(LiteralClaudeClient.last_options, "output_format", None) == {
@@ -622,14 +620,15 @@ async def test_run_extracts_structured_candidate_from_union(
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", StructuredClaudeClient)
     tentacle = _tentacle(FakeConversationManager())
 
-    result = await tentacle.run(
-        "triage this",
-        conversation_address=KEY,
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=KEY
-        ),
-        output_type=SummonDecision | Literal["ignored"],
-    )
+    async with invocation_for(
+        tentacle, conversation_address=KEY, thread_id=_THREAD
+    ) as invocation:
+        result = await tentacle.run(
+            "triage this",
+            conversation_address=KEY,
+            invocation=invocation,
+            output_type=SummonDecision | Literal["ignored"],
+        )
 
     assert isinstance(result.output, SummonDecision)
     assert getattr(StructuredClaudeClient.last_options, "output_format", None) == {
@@ -645,14 +644,15 @@ async def test_run_rejects_deferred_output_type(
     tentacle = _tentacle(FakeConversationManager())
 
     with pytest.raises(ValueError, match="DeferredToolRequests"):
-        await tentacle.run(
-            "triage this",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
-            output_type=[SummonDecision, DeferredToolRequests],
-        )
+        async with invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation:
+            await tentacle.run(
+                "triage this",
+                conversation_address=KEY,
+                invocation=invocation,
+                output_type=[SummonDecision, DeferredToolRequests],
+            )
 
 
 @pytest.mark.parametrize("permission_mode", [None, "plan", "bypassPermissions"])
@@ -670,14 +670,12 @@ async def test_run_honors_per_run_model(
         config=ClaudeCodeConfig(),
     )
 
-    await tentacle.run(
-        "hi",
-        conversation_address=KEY,
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=KEY
-        ),
-        model=model,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=KEY, thread_id=_THREAD
+    ) as invocation:
+        await tentacle.run(
+            "hi", conversation_address=KEY, invocation=invocation, model=model
+        )
 
     assert getattr(FakeClaudeClient.last_options, "model", None) == model
     [run] = conversations.store[(_THREAD, "claude", "")].runs
@@ -695,13 +693,10 @@ async def test_local_transport_passes_no_custom_transport(
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     tentacle = _tentacle(FakeConversationManager())
 
-    await tentacle.run(
-        "hi",
-        conversation_address=KEY,
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=KEY
-        ),
-    )
+    async with invocation_for(
+        tentacle, conversation_address=KEY, thread_id=_THREAD
+    ) as invocation:
+        await tentacle.run("hi", conversation_address=KEY, invocation=invocation)
 
     # Every run is local and lets the SDK build its own subprocess transport. This
     # is the guard on that: nothing here may hand the SDK a transport again while
@@ -716,13 +711,10 @@ async def test_run_tags_sdk_session_as_cli_entrypoint(
     monkeypatch.setenv("OCTOMATE_AUDIT_CANARY", "server-only")
     tentacle = _tentacle(FakeConversationManager())
 
-    await tentacle.run(
-        "hi",
-        conversation_address=KEY,
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=KEY
-        ),
-    )
+    async with invocation_for(
+        tentacle, conversation_address=KEY, thread_id=_THREAD
+    ) as invocation:
+        await tentacle.run("hi", conversation_address=KEY, invocation=invocation)
 
     options = FakeClaudeClient.last_options
     assert isinstance(options, ClaudeAgentOptions)
@@ -863,13 +855,14 @@ class GatedClaudeClient(FakeClaudeClient):
 
 
 async def _drive(tentacle: ClaudeTentacle, prompt: str) -> None:
-    async with tentacle.run_stream_events(
-        prompt,
-        conversation_address=KEY,
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=KEY
-        ),
-    ) as stream:
+    async with (
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation,
+        tentacle.run_stream_events(
+            prompt, conversation_address=KEY, invocation=invocation
+        ) as stream,
+    ):
         async for _event in stream:
             pass
 
@@ -944,13 +937,10 @@ async def test_completed_run_releases_its_client(
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     tentacle = _tentacle(FakeConversationManager())
 
-    await tentacle.run(
-        "hi",
-        conversation_address=KEY,
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=KEY
-        ),
-    )
+    async with invocation_for(
+        tentacle, conversation_address=KEY, thread_id=_THREAD
+    ) as invocation:
+        await tentacle.run("hi", conversation_address=KEY, invocation=invocation)
 
     # Weak-value map: a finished run's client is unreferenced, so its entry drops
     # on its own — no manual deregistration.
@@ -979,17 +969,24 @@ async def test_a_registered_gateway_mounts_the_in_process_server(
         _THREAD, conversation_address=KEY
     )
     session = OctomateSession(
-        channel_routes={}, current_agent_id="claude", conversation_id=conversation.id
+        channel_routes={},
+        current_agent_id="claude",
+        conversation_id=conversation.id,
+        users=tentacle.users,
+        threads=tentacle.threads,
+        workspaces=tentacle.workspaces,
+        habitats=tentacle.habitats,
     )
 
     async with (
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation,
         tentacle.octomate.gateway.driving(session),
         tentacle.run_stream_events(
             "fix it",
             conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
+            invocation=invocation,
             run_name="react",
             instructions="House rules.",
         ) as stream,
@@ -1019,14 +1016,14 @@ async def test_without_the_gateway_no_server_and_no_instruction(
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
 
-    async with tentacle.run_stream_events(
-        "fix it",
-        conversation_address=KEY,
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=KEY
-        ),
-        run_name="react",
-    ) as stream:
+    async with (
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation,
+        tentacle.run_stream_events(
+            "fix it", conversation_address=KEY, invocation=invocation, run_name="react"
+        ) as stream,
+    ):
         async for _ in stream:
             pass
 
@@ -1104,20 +1101,27 @@ async def test_a_teleport_mid_run_interrupts_the_turn_and_ends_it_as_a_deferral(
         _THREAD, conversation_address=KEY
     )
     session = OctomateSession(
-        channel_routes={}, current_agent_id="claude", conversation_id=conversation.id
+        channel_routes={},
+        current_agent_id="claude",
+        conversation_id=conversation.id,
+        users=tentacle.users,
+        threads=tentacle.threads,
+        workspaces=tentacle.workspaces,
+        habitats=tentacle.habitats,
     )
     BindingClaudeClient.session = session
     suspender = RecordingSuspender(agent_tentacle_id="claude")
 
     events = []
     async with (
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation,
         tentacle.octomate.gateway.driving(session),
         tentacle.run_stream_events(
             "work on inky",
             conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
+            invocation=invocation,
             run_name="react",
             deferred_suspender=suspender,
         ) as stream,
@@ -1156,14 +1160,15 @@ async def test_a_resumed_run_opens_from_what_the_graph_resolved(
         calls={"call_bind": "This thread is about 'inky' now. Carry on."}
     )
 
-    result = await tentacle.run(
-        None,
-        conversation_address=KEY,
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=KEY
-        ),
-        deferred_tool_results=results,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=KEY, thread_id=_THREAD
+    ) as invocation:
+        result = await tentacle.run(
+            None,
+            conversation_address=KEY,
+            invocation=invocation,
+            deferred_tool_results=results,
+        )
 
     assert result.output == "done"
     # The CLI takes no tool result back: the resolution is its next prompt, on

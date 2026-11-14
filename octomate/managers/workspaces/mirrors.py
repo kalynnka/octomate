@@ -3,17 +3,17 @@ plumbing that syncs them."""
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
 import shutil
 import time
 from pathlib import Path
 
 from octomate.config.mirrors import MirrorsConfig
 from octomate.managers.base import Locks, Manager
-from octomate.managers.workspaces.dependencies import install
+from octomate.managers.volumes import VolumeManager
 from octomate.schemas.project import Project, RemoteUpstream
+from octomate.schemas.volumes import GitVolume
+from octomate.schemas.volumes.git import GitCommandError, run_git
 
 logger = logging.getLogger(__name__)
 
@@ -28,31 +28,6 @@ BATCH_GIT_ENV = {
 # it out of the way of the project mirrors it sits among, which are named after
 # projects and so after directories people actually have.
 BLANK_MIRROR = ".blank"
-
-
-class GitCommandError(RuntimeError):
-    """A git command exited nonzero; the message carries its stderr."""
-
-
-async def run_git(
-    *args: str, cwd: Path | None = None, env: dict[str, str] | None = None
-) -> str:
-    """Run one git command and answer its stdout, raising `GitCommandError` with
-    the command and its stderr when it exits nonzero."""
-    process = await asyncio.create_subprocess_exec(
-        "git",
-        *args,
-        cwd=cwd,
-        env={**os.environ, **env} if env else None,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await process.communicate()
-    if process.returncode != 0:
-        raise GitCommandError(
-            f"git {' '.join(args)} failed: {stderr.decode(errors='replace').strip()}"
-        )
-    return stdout.decode(errors="replace")
 
 
 class MirrorManager(Manager, Locks[str]):
@@ -73,19 +48,29 @@ class MirrorManager(Manager, Locks[str]):
         self,
         config: MirrorsConfig | None = None,
         mirrors_dir: Path = Path(".octomate/mirrors"),
+        *,
+        volumes: VolumeManager,
     ) -> None:
         self.config = config if config is not None else MirrorsConfig()
         self.mirrors_dir = mirrors_dir
         self.synced: dict[str, float] = {}
+        self.volumes: VolumeManager = volumes
 
     def path(self, project: Project | None = None) -> Path:
-        """Where `project`'s mirror lives — or, with no project, where the blank one
-        does: the mirror of nothing, which every thread in no project forks.
+        """The initial storage location for a project's mirror or the blank mirror.
+
+        Existing mirror records retain their stored location through `resolve`.
 
         Absolute, because directory sync points `GIT_DIR` here while running in the
         upstream folder, where a relative path would resolve against the wrong tree.
         """
         return (self.mirrors_dir / self.name(project)).resolve()
+
+    async def resolve(self, project: Project | None = None) -> GitVolume:
+        """The service-owned mirror volume, without synchronizing its files."""
+        return await self.volumes.mirror(
+            project.id if project is not None else None, self.path(project)
+        )
 
     def name(self, project: Project | None) -> str:
         """What this mirror is filed under, which is also what its lock and its
@@ -94,7 +79,7 @@ class MirrorManager(Manager, Locks[str]):
         projects, and so after directories people actually have."""
         return project.name if project is not None else BLANK_MIRROR
 
-    async def sync(self, project: Project) -> Path:
+    async def sync(self, project: Project) -> GitVolume:
         """The mirror, current enough to fork from: created from the upstream when
         missing, freshened from it when the freshness window has lapsed.
 
@@ -107,36 +92,30 @@ class MirrorManager(Manager, Locks[str]):
         failing the caller — work continues on what the machine already has, and
         the stale stamp is not renewed, so the next sync tries again. A mirror
         that cannot be created is a hard failure: there is nothing to fall back to.
-
-        A mirror whose tree just changed is installed as well, which is what makes
-        forking it cheap: the machine's package store is warm and the installed
-        trees themselves are copied. Not on the window's short path, and not on the
-        stale one — nothing moved there, so there is nothing to install.
         """
         # Asked before `create`, which is where the waiting happens: a mirror this
         # call had to make is one nothing can be behind, so it is not fetched again
         # for the sync that made it.
-        missing = not self.path(project).is_dir()
-        path = await self.create(project)
+        missing = not (await self.resolve(project)).storage.path.is_dir()
+        volume = await self.create(project)
+        path = volume.storage.path
         async with self.lock(project.name):
             if missing:
                 self.synced[project.name] = time.monotonic()
-                await install(path)
-                return path
+                return volume
             last = self.synced.get(project.name)
             window = self.config.freshness_window
             if last is not None and time.monotonic() - last < window:
-                return path
+                return volume
             try:
                 await self.freshen(project, path)
             except (GitCommandError, OSError) as error:
                 logger.warning("mirror for %s is stale: %s", project.name, error)
-                return path
+                return volume
             self.synced[project.name] = time.monotonic()
-            await install(path)
-        return path
+        return volume
 
-    async def create(self, project: Project | None = None) -> Path:
+    async def create(self, project: Project | None = None) -> GitVolume:
         """The mirror, made where there is none, and where it is.
 
         Three shapes, and a project's upstream picks between the first two: a remote
@@ -145,8 +124,7 @@ class MirrorManager(Manager, Locks[str]):
         which is a `git init` and one empty commit — that commit being what makes it
         forkable rather than special, since a repository with no commit clones onto
         an unborn branch, where git refuses the ordinary things a run does with one.
-        Nothing binds to it and it takes no registry row: a thread that forks it is
-        exactly a thread that is in no project.
+        Its service-owned volume has no project association.
 
         Serialized per mirror and idempotent, which is what the blank one needs —
         two threads in no project starting at once both ask for it, and a mirror
@@ -157,16 +135,17 @@ class MirrorManager(Manager, Locks[str]):
         every later sync into a stale-mirror warning — so a creation that fails or
         is cancelled removes what it left before the error travels on.
         """
-        path = self.path(project)
+        volume = await self.resolve(project)
+        path = volume.storage.path
         async with self.lock(self.name(project)):
             if path.is_dir():
-                return path
-            self.mirrors_dir.mkdir(parents=True, exist_ok=True)
+                return volume
+            path.parent.mkdir(parents=True, exist_ok=True)
             upstream = project.upstream if project is not None else None
             try:
                 if isinstance(upstream, RemoteUpstream):
                     await run_git("clone", upstream.url, str(path), env=BATCH_GIT_ENV)
-                    return path
+                    return volume
                 await run_git("init", "-b", "main", str(path))
                 if upstream is None:
                     await run_git(
@@ -182,7 +161,7 @@ class MirrorManager(Manager, Locks[str]):
             except BaseException:
                 shutil.rmtree(path, ignore_errors=True)
                 raise
-        return path
+        return volume
 
     async def freshen(self, project: Project, path: Path) -> None:
         """Bring an existing mirror up to its upstream: fetch and move the default
@@ -210,7 +189,7 @@ class MirrorManager(Manager, Locks[str]):
         checkout's `.octomate/` out of its mirror — and no `.git` is ever created
         in the folder itself. The final reset materializes the commit into the
         mirror's tree; it never `git clean`s, so untracked state the mirror keeps
-        (a warm `node_modules`, say) survives every sync.
+        survives every sync.
         """
         against = {
             "GIT_DIR": str(path / ".git"),
@@ -222,13 +201,15 @@ class MirrorManager(Manager, Locks[str]):
             "GIT_INDEX_FILE": str(path / ".git" / "sync-index"),
         }
         await run_git("add", "-A", cwd=folder, env=against)
-        # `status` rather than `diff HEAD`, because a just-init'd mirror has no
-        # HEAD to diff against, and an unchanged folder has to read as clean.
-        if not await run_git("status", "--porcelain", cwd=folder, env=against):
+        # An empty folder still needs an initial commit so its mirror can be forked.
+        if not await run_git(
+            "status", "--porcelain", cwd=folder, env=against
+        ) and await run_git("rev-list", "--all", "--max-count=1", cwd=path):
             return
         await run_git(
             *self.config.identity.commit_flags,
             "commit",
+            "--allow-empty",
             "-m",
             f"sync {folder}",
             cwd=folder,

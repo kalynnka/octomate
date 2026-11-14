@@ -975,6 +975,22 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 .limit(1)
             )
 
+    async def latest_cwd(self, conversation_id: UUID7) -> Path | None:
+        """The last run's directory, for harnesses whose session cannot relocate."""
+        async with async_session() as session:
+            return await session.scalar(
+                select(AgentRun["cwd"])
+                .where(
+                    AgentRun["id"].in_(
+                        select(ConversationRun["run_id"]).where(
+                            ConversationRun["conversation_id"] == conversation_id
+                        )
+                    )
+                )
+                .order_by(AgentRun["started_at"].desc(), AgentRun["id"].desc())
+                .limit(1)
+            )
+
     async def ensure(
         self,
         thread_id: UUID7,

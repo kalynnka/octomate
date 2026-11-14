@@ -31,21 +31,23 @@ from octomate.database import async_session
 from octomate.managers import ThreadManager, UserManager
 from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.managers.mcp import McpManager
-from octomate.managers.workspaces import MirrorManager, WorkspaceManager
-from octomate.managers.workspaces.mirrors import run_git
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.mcp.server import octomate_mcp
 from octomate.nerve import Nerve
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import ProjectSummary, TeleportDecision
 from octomate.schemas.user import UserProfile
+from octomate.schemas.volumes.git import run_git
 from octomate.tentacles.inkling.mcp import OctomateTools
 from octomate.types.json import JsonObject
 from tests.support.managers import (
     FakeConversationManager,
     FakeThreadManager,
+    a_habitat_manager,
     a_project,
     a_registry,
+    a_workspace_manager,
     fixed_session,
 )
 from tests.support.mcp import core_tool_server
@@ -90,10 +92,11 @@ async def a_harness(
     (root / "readme.md").write_text("hello")
     off = tmp_path / "off"
     off.mkdir()
-    workspaces = WorkspaceManager(
+    workspaces = a_workspace_manager(
         projects=await a_registry(a_project(root), a_project(off, enabled=False)),
-        mirrors=MirrorManager(config=MirrorsConfig(), mirrors_dir=tmp_path / "mirrors"),
-        workspaces_dir=tmp_path / "workspaces",
+        mirror_config=MirrorsConfig(),
+        mirrors_dir=tmp_path / "mirrors",
+        volumes_dir=tmp_path / "volumes",
     )
     users, profile = await a_registered_profile()
     threads = ThreadManager(nerve=Nerve(), users=users)
@@ -117,6 +120,7 @@ async def a_harness(
         thread_id=thread.id,
         threads=threads,
         workspaces=workspaces,
+        habitats=a_habitat_manager(workspaces),
     )
     return Harness(
         session=session, workspaces=workspaces, threads=threads, thread=thread
@@ -173,7 +177,7 @@ async def test_a_teleport_into_a_project_validates_it_and_records_the_move(
     unbound = await harness.threads.get(harness.thread.id)
     assert unbound is not None
     assert unbound.project_id is None
-    assert harness.workspaces.existing(harness.thread.id) is None
+    assert not harness.workspaces.volumes_dir.exists()
     assert inky(harness).is_dir()
 
 
@@ -248,13 +252,22 @@ async def test_a_thread_about_a_project_names_none(
         await harness.session.teleport(hint="h", new_thread=new_thread, project="inky")
 
 
-async def test_a_bound_threads_agent_may_dismiss_its_workspace(tmp_path: Path) -> None:
+@pytest.mark.parametrize("registered", [False, True])
+async def test_a_bound_threads_agent_may_dismiss_its_workspace(
+    tmp_path: Path, registered: bool
+) -> None:
     # Recorded, not done: the release is the graph's once the turn is out of the
-    # tree. No registered user is needed — a release costs a fork, never work.
-    harness = await a_harness(tmp_path, registered=False)
+    # tree. The requesting user identifies which tree may be released.
+    harness = await a_harness(tmp_path, registered=registered)
     project = harness.workspaces.projects.get("inky")
     assert project is not None
     await harness.threads.bind(harness.thread.id, project)
+
+    if not registered:
+        with pytest.raises(GatewayRefusal, match="no registered user"):
+            await harness.session.dismiss()
+        assert not harness.session.dismissing
+        return
 
     sentence = await harness.session.dismiss()
 
@@ -286,18 +299,24 @@ async def test_a_native_session_may_list_but_neither_move_nor_dismiss(
         await harness.session.dismiss()
 
 
-async def test_a_gateway_built_without_the_managers_is_a_wiring_bug() -> None:
+async def test_a_gateway_without_a_thread_can_list_projects_but_not_move_or_dismiss() -> (
+    None
+):
     users, profile = await a_registered_profile()
+    threads = FakeThreadManager(users=users)
+    workspaces = a_workspace_manager()
     session = OctomateSession(
         channel_routes={},
         current_agent_id="inkling",
         users=users,
         user_profile=profile,
         conversation_address=ChannelAddress("im", "thread", "room", "U1", "thread"),
+        threads=threads,
+        workspaces=workspaces,
+        habitats=a_habitat_manager(workspaces),
     )
 
-    with pytest.raises(RuntimeError):
-        await session.inspect("projects")
+    assert await session.inspect("projects") == []
     with pytest.raises(RuntimeError):
         await session.teleport(hint="h", new_thread=False, project="inky")
     with pytest.raises(RuntimeError):

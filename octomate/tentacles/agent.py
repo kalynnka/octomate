@@ -8,7 +8,12 @@ import logging
 from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import AsyncGenerator, Mapping, Sequence
-from contextlib import aclosing, asynccontextmanager
+from contextlib import (
+    AbstractAsyncContextManager,
+    aclosing,
+    asynccontextmanager,
+    nullcontext,
+)
 from datetime import UTC, datetime
 from functools import cached_property
 from pathlib import Path
@@ -39,14 +44,16 @@ from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
 from octomate.config.agents import AgentConfig, AgentRouteModelName
+from octomate.managers.habitat import Invocation
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.auth import IssuedApiKey
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
+    CommandDescriptor,
     CommandError,
-    CommandInvocation,
+    CommandIntent,
     CommandOutcome,
 )
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -515,11 +522,29 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             message=f"{self.id} does not expose command discovery.",
         )
 
+    def command_invocation(
+        self,
+        context: CommandContext,
+        intent: CommandIntent,
+        descriptor: CommandDescriptor,
+        *,
+        thread: Thread | None,
+    ) -> AbstractAsyncContextManager[Invocation | None]:
+        """Select the resource context core enters for this command.
+
+        Creating the context does not acquire resources. Core enters it with the
+        validated thread and turn owner, then closes it after command consumption.
+        A direct control can still require resources; streamed output is not the
+        test. The default unsupported adapter yields None without preparation.
+        """
+        return nullcontext(None)
+
     async def execute_command(
         self,
         context: CommandContext,
-        invocation: CommandInvocation,
+        intent: CommandIntent,
         *,
+        invocation: Invocation | None,
         deferred_suspender: DeferredSuspender | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
     ) -> AsyncGenerator[CommandOutcome | ReactStreamEvent[AgentOutputT], None]:
@@ -528,19 +553,20 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         Direct controls yield one CommandOutcome without invoking `run`. Entries
         that run the agent yield the same events as `run_stream_events`, ending
         with an AgentRunResultEvent. Consuming this generator drives one native
-        invocation; closing it must release that invocation's resources. The
-        caller must close it even when abandoning the stream and hold the
-        conversation's active-turn guard through cleanup. Forward the suspender
+        command. The caller owns the prepared invocation, closes this generator
+        before releasing its resources, and holds the conversation's active-turn
+        guard through cleanup. Invocation is None for commands that require no
+        workspace or habitat. Forward the suspender
         and capabilities for agent runs; direct controls do not consume them.
 
-        Resolve the opaque invocation id using this tentacle's current catalog.
-        Execution behavior belongs to the invocation, not a fixed descriptor tag:
+        Resolve the opaque command id using this tentacle's current catalog.
+        Execution behavior belongs to the command, not a fixed descriptor tag:
         a command may return a control result or run the agent depending on input.
         If its descriptor permits execution without a conversation, it must yield
         only a direct outcome in that context, without creating a session or run.
 
-        Preserve invocation arguments verbatim. Never turn an unsupported or
-        unknown invocation into a normal model prompt. Authorization, current
+        Preserve command arguments verbatim. Never turn an unsupported or
+        unknown command into a normal model prompt. Authorization, current
         catalog validation and delivery deduplication belong to the host caller;
         these adapter hooks do not establish any of them.
         """
@@ -630,10 +656,10 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         if thread.id == source_thread.id:
             raise ValueError("A fork requires an independent destination thread")
         target = await self.conversations.ensure(thread.id, agent_tentacle_id=self.id)
-        workspace = self.workspaces.open(thread.id, project)
+        workspace = await self.workspaces.resolve(thread.id, project, owner_id)
         if driven:
-            await self.workspaces.carry(source_thread, thread)
-            async with workspace:
+            await self.workspaces.carry(source_thread, thread, owner_id)
+            async with self.workspaces.enter(workspace):
                 external_id = await self.fork_session(source, cwd=workspace.path)
             if source.external_id is not None and (
                 external_id is None or external_id == source.external_id
@@ -741,7 +767,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -771,7 +797,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -801,7 +827,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -831,7 +857,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str,
         *,
         conversation_address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         run_name: str | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: str | None = None,
@@ -841,7 +867,8 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         """Run as a subagent: the subagent contract in one place, apart from
         `run()`'s general surface.
 
-        A subagent run receives the conversation its spawner resolved, and it is fully
+        A subagent run receives the conversation its spawner resolved and the
+        parent owner, both carried by its prepared invocation. It is fully
         non-interactive — every human interaction declines at once. What
         `capabilities` mounts is the runtime's to decide: inkling adds the
         spawner's set to its own, Claude resolves its registered gateway session,
@@ -851,7 +878,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         return await self.run(
             user_prompt,
             conversation_address=conversation_address,
-            conversation=conversation,
+            invocation=invocation,
             interactive=False,
             run_name=run_name,
             model=model,
@@ -866,7 +893,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -895,7 +922,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -924,7 +951,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,

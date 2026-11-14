@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 from pathlib import Path
-from types import SimpleNamespace, TracebackType
+from types import SimpleNamespace
 from typing import ClassVar, Literal, cast
 from unittest.mock import AsyncMock, Mock
 
@@ -68,7 +68,6 @@ from octomate.events import ActionBatchEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import OctomateSession
-from octomate.managers.workspaces.base import ChatWorkspace, Workspace
 from octomate.reflex.nodes.teleport import Teleport
 from octomate.reflex.state import ReflexDeps, ReflexState, ResponseTarget
 from octomate.reflex.suspender import ReflexSuspender, TeleportRequest
@@ -81,6 +80,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
+from octomate.schemas.volumes.storage import HostDirectory
 from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import base as codex_base
@@ -98,6 +98,7 @@ from octomate.tentacles.slack.schema import SlackOutboundMessage
 from octomate.tentacles.stream import ReactStreamEvent
 from octomate.types.json import JsonObject
 from tests.support.channels import FakeChannelTentacle, RecordingTimeline, carried
+from tests.support.invocations import invocation_for
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
@@ -629,13 +630,12 @@ async def test_driven_names_are_persisted_and_revised_without_reading_turns(
     async with tentacle:
         for name in names:
             FakeCodex.thread_name = name
-            result = await tentacle.run(
-                "work",
-                conversation_address=KEY,
-                conversation=await tentacle.resolve_conversation(
-                    thread_id, conversation_address=KEY
-                ),
-            )
+            async with invocation_for(
+                tentacle, conversation_address=KEY, thread_id=thread_id
+            ) as invocation:
+                result = await tentacle.run(
+                    "work", conversation_address=KEY, invocation=invocation
+                )
             assert result.output == "done"
             if name and name.strip():
                 expected = name.strip()
@@ -688,13 +688,19 @@ async def test_driven_child_name_does_not_rename_parent_thread(
         auth=octomate.auth,
         gateway_manager=octomate.gateway,
     )
-    async with tentacle:
+    async with (
+        tentacle,
+        invocation_for(
+            tentacle,
+            conversation_address=KEY,
+            thread_id=thread_id,
+            conversation_id=child.id,
+        ) as invocation,
+    ):
         await tentacle.run(
             "work",
             conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                thread_id, conversation_address=KEY, conversation_id=child.id
-            ),
+            invocation=invocation,
         )
     assert (
         await octomate.conversations.get(child.id, with_runs=False)
@@ -719,13 +725,14 @@ async def test_driven_name_lookup_failure_keeps_the_run_result(
     monkeypatch.setattr(FakeThread, "read", read)
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
-    async with tentacle:
+    async with (
+        tentacle,
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation,
+    ):
         result = await tentacle.run(
-            "work",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
+            "work", conversation_address=KEY, invocation=invocation
         )
     assert result.output == "done"
     assert len(conversations.runs) == 1
@@ -804,18 +811,21 @@ async def test_run_stream_events_starts_thread_proxies_events_and_persists(
         monkeypatch.delattr(tentacle.octomate, name)
 
     events = []
-    async with tentacle:
-        async with tentacle.run_stream_events(
+    async with (
+        tentacle,
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation,
+        tentacle.run_stream_events(
             "fix it",
             conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
+            invocation=invocation,
             run_name="react",
             model="gpt-5.3-codex",
-        ) as stream:
-            async for event in stream:
-                events.append(event)
+        ) as stream,
+    ):
+        async for event in stream:
+            events.append(event)
 
     assert any(isinstance(event, PartStartEvent) for event in events)
     assert isinstance(events[-1], AgentRunResultEvent)
@@ -875,13 +885,16 @@ async def test_instructions_join_the_developer_instructions(
         ),
     )
 
-    async with tentacle:
+    async with (
+        tentacle,
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation,
+    ):
         await tentacle.run(
             "work the brief",
             conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
+            invocation=invocation,
             model="gpt-5.3-codex",
             instructions="You are an accomplice.",
         )
@@ -918,13 +931,16 @@ async def test_run_resumes_prior_thread_and_applies_config(
         ),
     )
 
-    async with tentacle:
+    async with (
+        tentacle,
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation,
+    ):
         result = await tentacle.run(
             "again",
             conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
+            invocation=invocation,
             model="gpt-5.5",
         )
 
@@ -938,7 +954,9 @@ async def test_run_resumes_prior_thread_and_applies_config(
     assert thread_call.kind == "resume"
     assert thread_call.thread_id == "prev-thread"
     # The configured `cwd` is not where a projectless thread lands any more.
-    assert thread_call.cwd == str(tentacle.octomate.workspaces.open(_THREAD, None).path)
+    assert thread_call.cwd == str(
+        (await tentacle.octomate.workspaces.resolve(_THREAD, None, None)).path
+    )
     assert thread_call.approval_mode == ApprovalMode.auto_review
     assert thread_call.base_instructions == "base"
     assert thread_call.developer_instructions == "dev"
@@ -949,7 +967,9 @@ async def test_run_resumes_prior_thread_and_applies_config(
     assert thread_call.sandbox == Sandbox.workspace_write
 
     [turn_call] = FakeCodex.turn_calls
-    assert turn_call.cwd == str(tentacle.octomate.workspaces.open(_THREAD, None).path)
+    assert turn_call.cwd == str(
+        (await tentacle.octomate.workspaces.resolve(_THREAD, None, None)).path
+    )
     assert turn_call.effort == ReasoningEffort.xhigh
     assert turn_call.summary == ReasoningSummary(ReasoningSummaryValue.detailed)
 
@@ -994,15 +1014,15 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
         gateway=octomate.gateway,
         impulses=unwired(),
         workspaces=octomate.workspaces,
+        habitats=octomate.habitats,
     )
     async with tentacle:
-        await tentacle.run(
-            "before",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                thread.id, conversation_address=KEY
-            ),
-        )
+        async with invocation_for(
+            tentacle, conversation_address=KEY, thread_id=thread.id
+        ) as invocation:
+            await tentacle.run(
+                "before", conversation_address=KEY, invocation=invocation
+            )
         source = await octomate.conversations.ensure(
             thread.id, agent_tentacle_id="codex"
         )
@@ -1039,30 +1059,32 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
             "thread-new",
             ThreadForkParams(
                 thread_id="thread-new",
-                cwd=str(octomate.workspaces.open(state.thread.id, None).path),
+                cwd=str(
+                    (
+                        await octomate.workspaces.resolve(state.thread.id, None, None)
+                    ).path
+                ),
                 config={"mcp_servers": {}},
                 ephemeral=False,
             ),
         )
         FakeCodex.script = text_script("after", thread_id="thread-fork")
-        await tentacle.run(
-            "after",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                state.thread.id, conversation_address=KEY
-            ),
-        )
+        async with invocation_for(
+            tentacle, conversation_address=KEY, thread_id=state.thread.id
+        ) as invocation:
+            await tentacle.run("after", conversation_address=KEY, invocation=invocation)
         assert FakeCodex.thread_calls[-1].kind == "resume"
         assert FakeCodex.thread_calls[-1].thread_id == "thread-fork"
         if not here:
             FakeCodex.script = text_script("local continuation", thread_id="thread-new")
-            await tentacle.run(
-                "local continuation",
-                conversation_address=KEY,
-                conversation=await tentacle.resolve_conversation(
-                    thread.id, conversation_address=KEY
-                ),
-            )
+            async with invocation_for(
+                tentacle, conversation_address=KEY, thread_id=thread.id
+            ) as invocation:
+                await tentacle.run(
+                    "local continuation",
+                    conversation_address=KEY,
+                    invocation=invocation,
+                )
             original = await octomate.conversations.get(source.id)
             forked = await octomate.conversations.get(destination.id)
             assert original.external_id == "thread-new"
@@ -1076,14 +1098,13 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
 
     # A fresh app-server must also select the persisted fork, without forking again.
     FakeCodex.script = text_script("restarted", thread_id="thread-fork")
-    async with tentacle:
-        await tentacle.run(
-            "again",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                state.thread.id, conversation_address=KEY
-            ),
-        )
+    async with (
+        tentacle,
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=state.thread.id
+        ) as invocation,
+    ):
+        await tentacle.run("again", conversation_address=KEY, invocation=invocation)
     assert FakeCodex.thread_calls[-1].thread_id == "thread-fork"
     assert fork.await_count == 1
 
@@ -1163,13 +1184,16 @@ async def test_run_with_output_type_passes_schema_and_validates_json(
     reset_fake_codex(text_script('{"answer":"ok"}'))
     tentacle = _tentacle(FakeConversationManager())
 
-    async with tentacle:
+    async with (
+        tentacle,
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation,
+    ):
         result = await tentacle.run(
             "structure this",
             conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
+            invocation=invocation,
             output_type=StructuredCodexResult,
         )
 
@@ -1187,13 +1211,16 @@ async def test_failed_run_persists_before_raising(
     tentacle = _tentacle(conversations)
 
     with pytest.raises(RuntimeError, match="boom"):
-        async with tentacle:
+        async with (
+            tentacle,
+            invocation_for(
+                tentacle, conversation_address=KEY, thread_id=_THREAD
+            ) as invocation,
+        ):
             await tentacle.run(
                 "break",
                 conversation_address=KEY,
-                conversation=await tentacle.resolve_conversation(
-                    _THREAD, conversation_address=KEY
-                ),
+                invocation=invocation,
             )
 
     [recorded] = conversations.runs
@@ -1270,14 +1297,17 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
     octomate.connect(tentacle)
 
     async def drain() -> list[ReactStreamEvent[str]]:
-        async with tentacle.run_stream_events(
-            "run tests",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
-            deferred_suspender=suspender,
-        ) as stream:
+        async with (
+            invocation_for(
+                tentacle, conversation_address=KEY, thread_id=_THREAD
+            ) as invocation,
+            tentacle.run_stream_events(
+                "run tests",
+                conversation_address=KEY,
+                invocation=invocation,
+                deferred_suspender=suspender,
+            ) as stream,
+        ):
             return [event async for event in stream]
 
     async with tentacle:
@@ -1581,7 +1611,7 @@ async def test_detached_run_drains_before_releasing_resources(
     stopped = asyncio.Event()
     scopes: list[anyio.CancelScope] = []
     workspace_exits: list[bool] = []
-    workspace_exit = ChatWorkspace.__aexit__
+    workspace_exit = HostDirectory.discard
     tentacle.octomate.connect(tentacle)
 
     async def gated_stream(turn: FakeTurn) -> AsyncIterator[Notification]:
@@ -1601,34 +1631,33 @@ async def test_detached_run_drains_before_releasing_resources(
         stopped.set()
 
     async def close_workspace(
-        workspace: ChatWorkspace,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
+        workspace: HostDirectory,
+        *,
+        ephemeral: bool,
     ) -> None:
         assert stopped.is_set()
         workspace_exits.append(True)
-        await workspace_exit(workspace, exc_type, exc, traceback)
+        await workspace_exit(workspace, ephemeral=ephemeral)
 
     async def consume() -> None:
         with anyio.CancelScope() as scope:
             scopes.append(scope)
             if detach == "cancel_run":
-                await tentacle.run(
-                    "work",
-                    conversation_address=KEY,
-                    conversation=await tentacle.resolve_conversation(
-                        _THREAD, conversation_address=KEY
-                    ),
-                )
+                async with invocation_for(
+                    tentacle, conversation_address=KEY, thread_id=_THREAD
+                ) as invocation:
+                    await tentacle.run(
+                        "work", conversation_address=KEY, invocation=invocation
+                    )
                 return
-            async with tentacle.run_stream_events(
-                "work",
-                conversation_address=KEY,
-                conversation=await tentacle.resolve_conversation(
-                    _THREAD, conversation_address=KEY
-                ),
-            ) as stream:
+            async with (
+                invocation_for(
+                    tentacle, conversation_address=KEY, thread_id=_THREAD
+                ) as invocation,
+                tentacle.run_stream_events(
+                    "work", conversation_address=KEY, invocation=invocation
+                ) as stream,
+            ):
                 async for _ in stream:
                     observed.set()
                     if detach in {"close_stream", "consumer_error"}:
@@ -1638,7 +1667,7 @@ async def test_detached_run_drains_before_releasing_resources(
                         break
 
     monkeypatch.setattr(FakeTurn, "stream", gated_stream)
-    monkeypatch.setattr(ChatWorkspace, "__aexit__", close_workspace)
+    monkeypatch.setattr(HostDirectory, "discard", close_workspace)
     async with tentacle:
         task = asyncio.create_task(consume())
         try:
@@ -1729,15 +1758,14 @@ async def test_shutdown_drains_live_turns_without_interrupting(
 
     monkeypatch.setattr(FakeTurn, "stream", gated_stream)
     await tentacle.__aenter__()
-    run = asyncio.create_task(
-        tentacle.run(
-            "work",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
-        )
-    )
+
+    async def run_run() -> None:
+        async with invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation:
+            await tentacle.run("work", conversation_address=KEY, invocation=invocation)
+
+    run = asyncio.create_task(run_run())
     async with asyncio.timeout(2):
         await started.wait()
     shutdown = asyncio.create_task(tentacle.__aexit__())
@@ -1769,7 +1797,7 @@ async def test_shutdown_drains_live_turns_without_interrupting(
     assert not tentacle.driven_sessions
 
 
-async def test_same_conversation_waits_before_opening_another_workspace(
+async def test_same_conversation_waits_with_both_workspaces_claimed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
@@ -1779,8 +1807,8 @@ async def test_same_conversation_waits_before_opening_another_workspace(
     started = asyncio.Event()
     finish = asyncio.Event()
     second_waiting = asyncio.Event()
-    opened: list[Workspace] = []
-    workspace_enter = Workspace.__aenter__
+    opened: list[HostDirectory] = []
+    workspace_enter = HostDirectory.claim
 
     async def gated_stream(turn: FakeTurn) -> AsyncIterator[Notification]:
         if len(FakeCodex.turns) == 1:
@@ -1789,9 +1817,9 @@ async def test_same_conversation_waits_before_opening_another_workspace(
         for event in FakeCodex.script:
             yield event
 
-    async def open_workspace(workspace: Workspace) -> Workspace:
+    async def open_workspace(workspace: HostDirectory, *, ephemeral: bool) -> None:
         opened.append(workspace)
-        return await workspace_enter(workspace)
+        await workspace_enter(workspace, ephemeral=ephemeral)
 
     # Signal the actual lock wait, rather than relying on task scheduling speed.
     lock = asyncio.Lock()
@@ -1803,36 +1831,38 @@ async def test_same_conversation_waits_before_opening_another_workspace(
         return await acquire()
 
     monkeypatch.setattr(FakeTurn, "stream", gated_stream)
-    monkeypatch.setattr(Workspace, "__aenter__", open_workspace)
+    monkeypatch.setattr(HostDirectory, "claim", open_workspace)
     monkeypatch.setattr(lock, "acquire", acquire_lock)
     conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
     tentacle.conversation_locks.by_session[str(conversation.id)] = lock
     async with tentacle:
-        first = asyncio.create_task(
-            tentacle.run(
-                "first",
-                conversation_address=KEY,
-                conversation=await tentacle.resolve_conversation(
-                    _THREAD, conversation_address=KEY
-                ),
-            )
-        )
+
+        async def run_first() -> None:
+            async with invocation_for(
+                tentacle, conversation_address=KEY, thread_id=_THREAD
+            ) as invocation:
+                await tentacle.run(
+                    "first", conversation_address=KEY, invocation=invocation
+                )
+
+        first = asyncio.create_task(run_first())
         async with asyncio.timeout(2):
             await started.wait()
-        second = asyncio.create_task(
-            tentacle.run(
-                "second",
-                conversation_address=KEY,
-                conversation=await tentacle.resolve_conversation(
-                    _THREAD, conversation_address=KEY
-                ),
-            )
-        )
+
+        async def run_second() -> None:
+            async with invocation_for(
+                tentacle, conversation_address=KEY, thread_id=_THREAD
+            ) as invocation:
+                await tentacle.run(
+                    "second", conversation_address=KEY, invocation=invocation
+                )
+
+        second = asyncio.create_task(run_second())
         try:
             async with asyncio.timeout(2):
                 await second_waiting.wait()
             assert len(FakeCodex.turns) == 1
-            assert len(opened) == 1
+            assert len(opened) == 2
             assert not FakeCodex.turns[0].interrupted
             assert tentacle.driven_sessions == {"thread-new": 1}
         finally:
@@ -1856,32 +1886,25 @@ async def test_one_client_serves_multiple_conversations_and_closes_on_exit(
     tentacle = _tentacle(FakeConversationManager())
 
     async with tentacle:
-        await tentacle.run(
-            "one",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
-        )
-        await tentacle.run(
-            "two",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
-        )
+        async with invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation:
+            await tentacle.run("one", conversation_address=KEY, invocation=invocation)
+        async with invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation:
+            await tentacle.run("two", conversation_address=KEY, invocation=invocation)
         # The same conversation keeps its native thread handle.
         assert FakeCodex.builds == 1
         assert len(FakeCodex.thread_calls) == 1
         assert len(FakeCodex.turn_calls) == 2
 
-        await tentacle.run(
-            "elsewhere",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                other_thread, conversation_address=KEY
-            ),
-        )
+        async with invocation_for(
+            tentacle, conversation_address=KEY, thread_id=other_thread
+        ) as invocation:
+            await tentacle.run(
+                "elsewhere", conversation_address=KEY, invocation=invocation
+            )
         assert FakeCodex.builds == 1
 
     assert FakeCodex.closed == 1
@@ -1907,27 +1930,25 @@ async def test_session_is_driven_before_turn_dispatch_and_released_afterward(
     tentacle = _tentacle(conversations)
     dispatched: list[str] = []
     lifecycle: list[str] = []
-    workspace_enter = Workspace.__aenter__
-    workspace_exit = ChatWorkspace.__aexit__
+    workspace_enter = HostDirectory.claim
+    workspace_exit = HostDirectory.discard
 
-    async def open_workspace(workspace: Workspace) -> Workspace:
+    async def open_workspace(workspace: HostDirectory, *, ephemeral: bool) -> None:
         assert tentacle.driven_sessions == {}
         lifecycle.append("workspace-enter")
-        result = await workspace_enter(workspace)
+        await workspace_enter(workspace, ephemeral=ephemeral)
         assert tentacle.driven_sessions == {}
-        return result
 
     async def close_workspace(
-        workspace: ChatWorkspace,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
+        workspace: HostDirectory,
+        *,
+        ephemeral: bool,
     ) -> None:
         assert tentacle.driven_sessions == {}
         assert tentacle.live_turns == {}
         assert tentacle.bridge_contexts == {}
         lifecycle.append("workspace-exit")
-        await workspace_exit(workspace, exc_type, exc, traceback)
+        await workspace_exit(workspace, ephemeral=ephemeral)
 
     def check_driving(thread_id: str) -> None:
         assert thread_id == session_id
@@ -1937,28 +1958,26 @@ async def test_session_is_driven_before_turn_dispatch_and_released_afterward(
         lifecycle.append("turn")
 
     monkeypatch.setattr(FakeCodex, "on_turn", check_driving)
-    monkeypatch.setattr(Workspace, "__aenter__", open_workspace)
-    monkeypatch.setattr(ChatWorkspace, "__aexit__", close_workspace)
+    monkeypatch.setattr(HostDirectory, "claim", open_workspace)
+    monkeypatch.setattr(HostDirectory, "discard", close_workspace)
     assert tentacle.driven_sessions == {}
     async with tentacle:
         for _ in range(2):
             if fails:
                 with pytest.raises(RuntimeError, match="boom"):
-                    await tentacle.run(
-                        "work",
-                        conversation_address=KEY,
-                        conversation=await tentacle.resolve_conversation(
-                            _THREAD, conversation_address=KEY
-                        ),
-                    )
+                    async with invocation_for(
+                        tentacle, conversation_address=KEY, thread_id=_THREAD
+                    ) as invocation:
+                        await tentacle.run(
+                            "work", conversation_address=KEY, invocation=invocation
+                        )
             else:
-                await tentacle.run(
-                    "work",
-                    conversation_address=KEY,
-                    conversation=await tentacle.resolve_conversation(
-                        _THREAD, conversation_address=KEY
-                    ),
-                )
+                async with invocation_for(
+                    tentacle, conversation_address=KEY, thread_id=_THREAD
+                ) as invocation:
+                    await tentacle.run(
+                        "work", conversation_address=KEY, invocation=invocation
+                    )
             assert tentacle.driven_sessions == {}
         assert FakeCodex.builds == 1
         [thread_call] = FakeCodex.thread_calls
@@ -1980,38 +1999,39 @@ async def test_a_new_thread_does_not_block_an_existing_conversations_first_token
     tentacle = _tentacle(FakeConversationManager())
 
     async with tentacle:
-        await tentacle.run(
-            "warm up",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
-        )
-        cold = asyncio.create_task(
-            tentacle.run(
-                "cold",
-                conversation_address=KEY,
-                conversation=await tentacle.resolve_conversation(
-                    uuid7(), conversation_address=KEY
-                ),
+        async with invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation:
+            await tentacle.run(
+                "warm up", conversation_address=KEY, invocation=invocation
             )
-        )
+
+        async def run_cold() -> None:
+            async with invocation_for(
+                tentacle, conversation_address=KEY, thread_id=uuid7()
+            ) as invocation:
+                await tentacle.run(
+                    "cold", conversation_address=KEY, invocation=invocation
+                )
+
+        cold = asyncio.create_task(run_cold())
         try:
             async with asyncio.timeout(1):
                 await starting.wait()
             first_token = False
-            async with asyncio.timeout(1):
-                async with tentacle.run_stream_events(
-                    "warm",
-                    conversation_address=KEY,
-                    conversation=await tentacle.resolve_conversation(
-                        _THREAD, conversation_address=KEY
-                    ),
-                ) as stream:
-                    async for event in stream:
-                        if isinstance(event, PartStartEvent):
-                            first_token = True
-                            assert not finish_starting.is_set()
+            async with (
+                asyncio.timeout(1),
+                invocation_for(
+                    tentacle, conversation_address=KEY, thread_id=_THREAD
+                ) as invocation,
+                tentacle.run_stream_events(
+                    "warm", conversation_address=KEY, invocation=invocation
+                ) as stream,
+            ):
+                async for event in stream:
+                    if isinstance(event, PartStartEvent):
+                        first_token = True
+                        assert not finish_starting.is_set()
             assert first_token
         finally:
             finish_starting.set()
@@ -2071,14 +2091,13 @@ async def test_the_conversations_preset_overrides_the_configured_one(
         conversations, config=CodexConfig(permission_mode="user_review")
     )
 
-    async with tentacle:
-        await tentacle.run(
-            "fix it",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
-        )
+    async with (
+        tentacle,
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation,
+    ):
+        await tentacle.run("fix it", conversation_address=KEY, invocation=invocation)
 
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.approval_mode is approval
@@ -2106,14 +2125,12 @@ async def test_a_warm_thread_retains_the_reported_model(
     async with tentacle:
         for model in (None, "requested-model", None):
             FakeCodex.script = text_script("done", thread_id="thread-new")
-            await tentacle.run(
-                "go",
-                conversation_address=KEY,
-                conversation=await tentacle.resolve_conversation(
-                    _THREAD, conversation_address=KEY
-                ),
-                model=model,
-            )
+            async with invocation_for(
+                tentacle, conversation_address=KEY, thread_id=_THREAD
+            ) as invocation:
+                await tentacle.run(
+                    "go", conversation_address=KEY, invocation=invocation, model=model
+                )
 
     assert len(FakeCodex.thread_calls) == 1
     runs = conversations.store[(_THREAD, "codex", "")].runs
@@ -2139,13 +2156,12 @@ async def test_a_warm_thread_reapplies_the_selected_preset(
     async with tentacle:
         for mode in ("auto_review", "full_access", "auto_review"):
             conversation.permission_mode = mode
-            await tentacle.run(
-                "fix it",
-                conversation_address=KEY,
-                conversation=await tentacle.resolve_conversation(
-                    _THREAD, conversation_address=KEY
-                ),
-            )
+            async with invocation_for(
+                tentacle, conversation_address=KEY, thread_id=_THREAD
+            ) as invocation:
+                await tentacle.run(
+                    "fix it", conversation_address=KEY, invocation=invocation
+                )
 
     assert FakeCodex.builds == 1
     assert len(FakeCodex.thread_calls) == 1
@@ -2197,24 +2213,20 @@ async def test_native_identity_is_persisted_before_a_failed_first_turn(
     async with tentacle:
         FakeCodex.on_turn = fail
         with pytest.raises(error):
-            await tentacle.run(
-                "first",
-                conversation_address=KEY,
-                conversation=await tentacle.resolve_conversation(
-                    thread_id, conversation_address=KEY
-                ),
-            )
+            async with invocation_for(
+                tentacle, conversation_address=KEY, thread_id=thread_id
+            ) as invocation:
+                await tentacle.run(
+                    "first", conversation_address=KEY, invocation=invocation
+                )
         stored = await octomate.conversations.get(conversation.id)
         assert stored.external_id == "thread-new"
         assert not await stored.runs
         FakeCodex.on_turn = None
-        await tentacle.run(
-            "again",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                thread_id, conversation_address=KEY
-            ),
-        )
+        async with invocation_for(
+            tentacle, conversation_address=KEY, thread_id=thread_id
+        ) as invocation:
+            await tentacle.run("again", conversation_address=KEY, invocation=invocation)
         assert len(FakeCodex.thread_calls) == 1
 
 
@@ -2242,18 +2254,16 @@ async def test_concurrent_first_turns_share_the_persisted_native_identity(
         gateway_manager=octomate.gateway,
     )
     async with tentacle:
-        await asyncio.gather(
-            *[
-                tentacle.run(
-                    prompt,
-                    conversation_address=KEY,
-                    conversation=await tentacle.resolve_conversation(
-                        thread_id, conversation_address=KEY
-                    ),
+
+        async def run_turn(prompt: str) -> None:
+            async with invocation_for(
+                tentacle, conversation_address=KEY, thread_id=thread_id
+            ) as invocation:
+                await tentacle.run(
+                    prompt, conversation_address=KEY, invocation=invocation
                 )
-                for prompt in ("first", "second")
-            ]
-        )
+
+        await asyncio.gather(*(run_turn(prompt) for prompt in ("first", "second")))
     assert len(FakeCodex.thread_calls) == 1
     assert len(FakeCodex.turn_calls) == 2
 
@@ -2267,26 +2277,22 @@ async def test_native_state_takes_precedence_over_cached_binding(
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
     async with tentacle:
-        await tentacle.run(
-            "first",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
-        )
+        async with invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation:
+            await tentacle.run("first", conversation_address=KEY, invocation=invocation)
         conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
         if replaced:
             await conversations.set_external_id(conversation, "replacement-thread")
             FakeCodex.loaded_threads.add("replacement-thread")
         else:
             FakeCodex.loaded_threads.remove("thread-new")
-        await tentacle.run(
-            "second",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
-        )
+        async with invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation:
+            await tentacle.run(
+                "second", conversation_address=KEY, invocation=invocation
+            )
         assert FakeCodex.thread_calls[-1].kind == "resume"
         assert FakeCodex.thread_calls[-1].thread_id == (
             "replacement-thread" if replaced else "thread-new"
@@ -2301,13 +2307,10 @@ async def test_active_native_thread_refuses_a_changed_mcp_binding(
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
     async with tentacle:
-        await tentacle.run(
-            "first",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
-        )
+        async with invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation:
+            await tentacle.run("first", conversation_address=KEY, invocation=invocation)
         metadata = await FakeThread("thread-new").read()
         metadata.thread.status = ThreadStatus(
             root=ActiveThreadStatus(type="active", active_flags=[])
@@ -2317,13 +2320,12 @@ async def test_active_native_thread_refuses_a_changed_mcp_binding(
             agent_tentacle_id="codex", thread_id=_THREAD, external_id="thread-new"
         )
         with pytest.raises(RuntimeError, match="must be idle"):
-            await tentacle.run(
-                "second",
-                conversation_address=KEY,
-                conversation=await tentacle.resolve_conversation(
-                    _THREAD, conversation_address=KEY
-                ),
-            )
+            async with invocation_for(
+                tentacle, conversation_address=KEY, thread_id=_THREAD
+            ) as invocation:
+                await tentacle.run(
+                    "second", conversation_address=KEY, invocation=invocation
+                )
         assert len(FakeCodex.thread_calls) == 1
         assert len(FakeCodex.turn_calls) == 1
 
@@ -2345,13 +2347,12 @@ async def test_unavailable_saved_modes_require_an_explicit_choice(
 
     async with tentacle:
         with pytest.raises(ValueError, match="not one of codex's modes"):
-            await tentacle.run(
-                "fix it",
-                conversation_address=KEY,
-                conversation=await tentacle.resolve_conversation(
-                    _THREAD, conversation_address=KEY
-                ),
-            )
+            async with invocation_for(
+                tentacle, conversation_address=KEY, thread_id=_THREAD
+            ) as invocation:
+                await tentacle.run(
+                    "fix it", conversation_address=KEY, invocation=invocation
+                )
 
     assert not FakeCodex.thread_calls
     assert not FakeCodex.turn_calls
@@ -2373,13 +2374,19 @@ async def test_a_subagent_run_declines_only_where_a_human_was_needed(
     conversations.store[(_THREAD, "codex", "")] = conversation
     tentacle = _tentacle(conversations)
 
-    async with tentacle:
+    async with (
+        tentacle,
+        invocation_for(
+            tentacle,
+            conversation_address=KEY,
+            thread_id=_THREAD,
+            conversation_id=conversation.id,
+        ) as invocation,
+    ):
         await tentacle.subagent_run(
             "audit it",
             conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY, conversation_id=conversation.id
-            ),
+            invocation=invocation,
             run_name="audit",
         )
 
@@ -2455,6 +2462,10 @@ async def test_shared_client_reuses_keys_per_user(
                     channel_user_id=user.username,
                     user_id=user.id,
                 ),
+                users=octomate.users,
+                threads=octomate.threads,
+                workspaces=octomate.workspaces,
+                habitats=octomate.habitats,
             )
         )
     first_started = list(principals)[start_first]
@@ -2473,18 +2484,27 @@ async def test_shared_client_reuses_keys_per_user(
     assert octomate.auth is not None
     tokens: dict[str, SecretStr] = {}
     async with tentacle:
-        await asyncio.gather(
-            *[
-                tentacle.run(
-                    "work",
-                    conversation_address=KEY,
-                    conversation=await tentacle.resolve_conversation(
-                        thread_id, conversation_address=KEY
-                    ),
+
+        async def run_turn(thread_id: UUID7) -> None:
+            async with invocation_for(
+                tentacle,
+                conversation_address=KEY,
+                thread_id=thread_id,
+                owner_id=principals[
+                    str(
+                        (
+                            await conversations.ensure(
+                                thread_id, agent_tentacle_id="codex"
+                            )
+                        ).id
+                    )
+                ],
+            ) as invocation:
+                await tentacle.run(
+                    "work", conversation_address=KEY, invocation=invocation
                 )
-                for thread_id in thread_ids
-            ]
-        )
+
+        await asyncio.gather(*(run_turn(thread_id) for thread_id in thread_ids))
         assert FakeCodex.builds == 1
         assert (
             driven_headers(FakeCodex.thread_calls[0])["X-Octomate-Conversation"]
@@ -2521,13 +2541,13 @@ async def test_shared_client_reuses_keys_per_user(
             await octomate.auth.authenticate_api_key(first_token, scope="mcp")
             is not None
         )
-        await tentacle.run(
-            "again",
+        async with invocation_for(
+            tentacle,
             conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                thread_ids[0], conversation_address=KEY
-            ),
-        )
+            thread_id=thread_ids[0],
+            owner_id=principals[str(first.id)],
+        ) as invocation:
+            await tentacle.run("again", conversation_address=KEY, invocation=invocation)
         assert driven_headers(FakeCodex.thread_calls[-1])["Authorization"] == (
             f"Bearer {first_token.get_secret_value()}"
         )
@@ -2590,18 +2610,24 @@ async def test_expired_user_key_is_replaced_once_and_applied_to_each_thread(
                 current_agent_id="codex",
                 conversation_id=conversation.id,
                 user_profile=profile,
+                users=octomate.users,
+                threads=octomate.threads,
+                workspaces=octomate.workspaces,
+                habitats=octomate.habitats,
             )
         )
     assert octomate.auth is not None
     async with tentacle:
         for thread_id in thread_ids:
-            await tentacle.run(
-                "work",
+            async with invocation_for(
+                tentacle,
                 conversation_address=KEY,
-                conversation=await tentacle.resolve_conversation(
-                    thread_id, conversation_address=KEY
-                ),
-            )
+                thread_id=thread_id,
+                owner_id=profile.user_id,
+            ) as invocation:
+                await tentacle.run(
+                    "work", conversation_address=KEY, invocation=invocation
+                )
         expired = tentacle.api_keys[profile.user_id]
         expired.key.expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
@@ -2626,30 +2652,32 @@ async def test_expired_user_key_is_replaced_once_and_applied_to_each_thread(
             request.side_effect = cancel_unsubscribe
             monkeypatch.setattr(client._client, "request", request)
             with pytest.raises(asyncio.CancelledError):
-                await tentacle.run(
-                    "cancel",
+                async with invocation_for(
+                    tentacle,
                     conversation_address=KEY,
-                    conversation=await tentacle.resolve_conversation(
-                        thread_ids[0], conversation_address=KEY
-                    ),
-                )
+                    thread_id=thread_ids[0],
+                    owner_id=profile.user_id,
+                ) as invocation:
+                    await tentacle.run(
+                        "cancel", conversation_address=KEY, invocation=invocation
+                    )
             interrupted = await conversations.ensure(
                 thread_ids[0], agent_tentacle_id="codex"
             )
             assert interrupted.external_id not in tentacle.ink.thread_bindings
 
-        await asyncio.gather(
-            *[
-                tentacle.run(
-                    "again",
-                    conversation_address=KEY,
-                    conversation=await tentacle.resolve_conversation(
-                        thread_id, conversation_address=KEY
-                    ),
+        async def run_turn(thread_id: UUID7) -> None:
+            async with invocation_for(
+                tentacle,
+                conversation_address=KEY,
+                thread_id=thread_id,
+                owner_id=profile.user_id,
+            ) as invocation:
+                await tentacle.run(
+                    "again", conversation_address=KEY, invocation=invocation
                 )
-                for thread_id in thread_ids
-            ]
-        )
+
+        await asyncio.gather(*(run_turn(thread_id) for thread_id in thread_ids))
         current = tentacle.api_keys[profile.user_id]
         assert current.key.id != expired.key.id
         assert len(await octomate.auth.list_api_keys(profile.user_id)) == 2
@@ -2698,6 +2726,10 @@ async def test_cached_binding_reconfigures_a_changed_caller(
         current_agent_id="codex",
         conversation_id=source.id,
         user_profile=alice,
+        users=octomate.users,
+        threads=octomate.threads,
+        workspaces=octomate.workspaces,
+        habitats=octomate.habitats,
     )
     octomate.gateway.register(session)
     tentacle = CodexTentacle(
@@ -2717,13 +2749,13 @@ async def test_cached_binding_reconfigures_a_changed_caller(
         gateway_manager=octomate.gateway,
     )
     async with tentacle:
-        await tentacle.run(
-            "first",
+        async with invocation_for(
+            tentacle,
             conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                thread_id, conversation_address=KEY
-            ),
-        )
+            thread_id=thread_id,
+            owner_id=alice.user_id,
+        ) as invocation:
+            await tentacle.run("first", conversation_address=KEY, invocation=invocation)
         if moved:
             thread_id = await a_thread("target")
             target = await conversations.ensure(thread_id, agent_tentacle_id="codex")
@@ -2734,6 +2766,10 @@ async def test_cached_binding_reconfigures_a_changed_caller(
                 current_agent_id="codex",
                 conversation_id=target.id,
                 user_profile=alice,
+                users=octomate.users,
+                threads=octomate.threads,
+                workspaces=octomate.workspaces,
+                habitats=octomate.habitats,
             )
             octomate.gateway.register(session)
         else:
@@ -2741,13 +2777,15 @@ async def test_cached_binding_reconfigures_a_changed_caller(
             session.user_profile = UserProfile(
                 channel_tentacle_id="im", channel_user_id="bob", user_id=bob.id
             )
-        await tentacle.run(
-            "second",
+        async with invocation_for(
+            tentacle,
             conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                thread_id, conversation_address=KEY
-            ),
-        )
+            thread_id=thread_id,
+            owner_id=session.user_profile.user_id if session.user_profile else None,
+        ) as invocation:
+            await tentacle.run(
+                "second", conversation_address=KEY, invocation=invocation
+            )
         assert [call.kind for call in FakeCodex.thread_calls] == ["start", "resume"]
         headers = driven_headers(FakeCodex.thread_calls[-1])
         assert headers["X-Octomate-Conversation"] == str(session.conversation_id)
@@ -2799,12 +2837,17 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
     )
     conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
     conversation.external_id = external_id
+    profile = await a_kicker()
     octomate.gateway.register(
         OctomateSession(
             channel_routes={},
             current_agent_id="codex",
             conversation_id=conversation.id,
-            user_profile=await a_kicker(),
+            user_profile=profile,
+            users=octomate.users,
+            threads=octomate.threads,
+            workspaces=octomate.workspaces,
+            habitats=octomate.habitats,
         )
     )
     tentacle = CodexTentacle(
@@ -2825,13 +2868,15 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
     )
 
     async with tentacle:
-        await tentacle.run(
-            "fix it",
+        async with invocation_for(
+            tentacle,
             conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
-        )
+            thread_id=_THREAD,
+            owner_id=profile.user_id,
+        ) as invocation:
+            await tentacle.run(
+                "fix it", conversation_address=KEY, invocation=invocation
+            )
         assert octomate.auth is not None
         assert FakeCodex.last_config is not None
         token = SecretStr(
@@ -2891,14 +2936,13 @@ async def test_a_turn_without_a_octomate_session_launches_clean(
     }
     tentacle = _tentacle(FakeConversationManager())
 
-    async with tentacle:
-        await tentacle.run(
-            "fix it",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
-        )
+    async with (
+        tentacle,
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation,
+    ):
+        await tentacle.run("fix it", conversation_address=KEY, invocation=invocation)
 
     config = FakeCodex.last_config
     assert config is not None
@@ -2956,14 +3000,13 @@ async def test_driven_isolation_overrides_local_feature_settings(
             ),
         ),
     )
-    async with tentacle:
-        await tentacle.run(
-            "fix it",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
-        )
+    async with (
+        tentacle,
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation,
+    ):
+        await tentacle.run("fix it", conversation_address=KEY, invocation=invocation)
     assert FakeCodex.last_config is not None
     assert FakeCodex.last_config.config_overrides[-8:-1] == (
         "features.hooks=false",
@@ -3007,6 +3050,10 @@ async def test_a_turn_kicked_by_an_unregistered_user_launches_clean(
             user_profile=UserProfile(
                 channel_tentacle_id="im", channel_user_id="visitor"
             ),
+            users=octomate.users,
+            threads=octomate.threads,
+            workspaces=octomate.workspaces,
+            habitats=octomate.habitats,
         )
     )
     tentacle = CodexTentacle(
@@ -3026,14 +3073,13 @@ async def test_a_turn_kicked_by_an_unregistered_user_launches_clean(
         gateway_manager=octomate.gateway,
     )
 
-    async with tentacle:
-        await tentacle.run(
-            "fix it",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
-        )
+    async with (
+        tentacle,
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation,
+    ):
+        await tentacle.run("fix it", conversation_address=KEY, invocation=invocation)
 
     config = FakeCodex.last_config
     assert config is not None
@@ -3072,42 +3118,41 @@ async def test_an_mcp_wiring_flip_reloads_only_the_conversations_thread(
     )
 
     async with tentacle:
-        await tentacle.run(
-            "one",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
-        )
+        async with invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation:
+            await tentacle.run("one", conversation_address=KEY, invocation=invocation)
         assert (FakeCodex.builds, FakeCodex.closed) == (1, 0)
 
         conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
+        profile = await a_kicker()
         session = OctomateSession(
             channel_routes={},
             current_agent_id="codex",
             conversation_id=conversation.id,
-            user_profile=await a_kicker(),
+            user_profile=profile,
+            users=octomate.users,
+            threads=octomate.threads,
+            workspaces=octomate.workspaces,
+            habitats=octomate.habitats,
         )
         octomate.gateway.register(session)
-        await tentacle.run(
-            "two",
+        async with invocation_for(
+            tentacle,
             conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
-        )
+            thread_id=_THREAD,
+            owner_id=profile.user_id,
+        ) as invocation:
+            await tentacle.run("two", conversation_address=KEY, invocation=invocation)
         assert (FakeCodex.builds, FakeCodex.closed) == (1, 0)
         assert [call.kind for call in FakeCodex.thread_calls] == ["start", "resume"]
 
         # And back again once the turn no longer has the gateway.
         octomate.gateway.unregister(session)
-        await tentacle.run(
-            "three",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
-        )
+        async with invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation:
+            await tentacle.run("three", conversation_address=KEY, invocation=invocation)
         assert (FakeCodex.builds, FakeCodex.closed) == (1, 0)
         assert [call.kind for call in FakeCodex.thread_calls] == [
             "start",
@@ -3127,12 +3172,17 @@ async def test_a_registered_gateway_uses_the_default_served_endpoint(
         config=OctomateConfig(auth=auth_config()), conversations=conversations
     )
     conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
+    profile = await a_kicker()
     octomate.gateway.register(
         OctomateSession(
             channel_routes={},
             current_agent_id="codex",
             conversation_id=conversation.id,
-            user_profile=await a_kicker(),
+            user_profile=profile,
+            users=octomate.users,
+            threads=octomate.threads,
+            workspaces=octomate.workspaces,
+            habitats=octomate.habitats,
         )
     )
     tentacle = CodexTentacle(
@@ -3152,14 +3202,16 @@ async def test_a_registered_gateway_uses_the_default_served_endpoint(
         gateway_manager=octomate.gateway,
     )
 
-    async with tentacle:
-        await tentacle.run(
-            "fix it",
+    async with (
+        tentacle,
+        invocation_for(
+            tentacle,
             conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
-        )
+            thread_id=_THREAD,
+            owner_id=profile.user_id,
+        ) as invocation,
+    ):
+        await tentacle.run("fix it", conversation_address=KEY, invocation=invocation)
 
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.config == {
@@ -3211,11 +3263,16 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
         config=OctomateConfig(auth=auth_config(), port=8123),
     )
     conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
+    profile = await a_kicker()
     session = OctomateSession(
         channel_routes={},
         current_agent_id="codex",
         conversation_id=conversation.id,
-        user_profile=await a_kicker(),
+        user_profile=profile,
+        users=octomate.users,
+        threads=octomate.threads,
+        workspaces=octomate.workspaces,
+        habitats=octomate.habitats,
     )
     octomate.gateway.register(session)
     BindingFakeTurn.session = session
@@ -3271,18 +3328,24 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
     suspender = RecordingSuspender(agent_tentacle_id="codex")
 
     events = []
-    async with tentacle:
-        async with tentacle.run_stream_events(
+    async with (
+        tentacle,
+        invocation_for(
+            tentacle,
+            conversation_address=KEY,
+            thread_id=_THREAD,
+            owner_id=profile.user_id,
+        ) as invocation,
+        tentacle.run_stream_events(
             "work on inky",
             conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
+            invocation=invocation,
             run_name="react",
             deferred_suspender=suspender,
-        ) as stream:
-            async for event in stream:
-                events.append(event)
+        ) as stream,
+    ):
+        async for event in stream:
+            events.append(event)
 
     [turn] = FakeCodex.turns
     assert turn.interrupted
@@ -3311,13 +3374,16 @@ async def test_a_resumed_turn_opens_from_what_the_graph_resolved(
         calls={"call_bind": "This thread is about 'inky' now. Carry on."}
     )
 
-    async with tentacle:
+    async with (
+        tentacle,
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation,
+    ):
         result = await tentacle.run(
             None,
             conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=KEY
-            ),
+            invocation=invocation,
             deferred_tool_results=results,
         )
 
@@ -3411,14 +3477,17 @@ async def test_async_questions_continue_and_answers_resume_the_same_thread(
         thread_id=thread_id,
     )
     async with tentacle:
-        async with tentacle.run_stream_events(
-            "Ask me two questions and keep working.",
-            conversation_address=KEY,
-            conversation=await tentacle.resolve_conversation(
-                thread_id, conversation_address=KEY
-            ),
-            deferred_suspender=suspender,
-        ) as stream:
+        async with (
+            invocation_for(
+                tentacle, conversation_address=KEY, thread_id=thread_id
+            ) as invocation,
+            tentacle.run_stream_events(
+                "Ask me two questions and keep working.",
+                conversation_address=KEY,
+                invocation=invocation,
+                deferred_suspender=suspender,
+            ) as stream,
+        ):
             with anyio.fail_after(5):
                 events = [event async for event in stream]
         [card] = [event for event in events if isinstance(event, ActionBatchEvent)]

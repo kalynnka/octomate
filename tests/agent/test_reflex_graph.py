@@ -34,9 +34,7 @@ from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager, OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
-from octomate.managers.workspaces import MirrorManager, WorkspaceManager
-from octomate.managers.workspaces.base import thread_ref
-from octomate.managers.workspaces.mirrors import run_git
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import Nerve
 from octomate.reflex import (
     DeferredResult,
@@ -59,7 +57,7 @@ from octomate.schemas.awakes import (
     NativeGatewaySignal,
     UserMessageSignal,
 )
-from octomate.schemas.commands import CommandInvocation
+from octomate.schemas.commands import CommandIntent
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.events import MessageEvent
@@ -78,11 +76,14 @@ from octomate.schemas.triage import (
     SchemeDecision,
 )
 from octomate.schemas.user import UserProfile
+from octomate.schemas.volumes import GitVolume, UnregisteredProjectError
+from octomate.schemas.volumes.git import run_git
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.channel import ChannelOutput, ChannelSurfaces
 from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from tests.support.agents import FakeAgent, RecordedRun
 from tests.support.channels import FakeChannelTentacle, FakeOctomate, RecordingInk
+from tests.support.invocations import volume_for
 from tests.support.managers import (
     FakeActionManager,
     FakeConversation,
@@ -92,8 +93,10 @@ from tests.support.managers import (
     FakeThreadManager,
     FakeUserManager,
     RecordingWorkspaceManager,
+    a_habitat_manager,
     a_project,
     a_registry,
+    a_workspace_manager,
 )
 from tests.support.nerve import drawing, unwired
 from tests.support.scenarios import text_part_events
@@ -107,10 +110,18 @@ async def _run(
     *,
     state: ReflexState,
     deps: ReflexDeps,
+    ensure_thread: bool = True,
 ) -> ReflexGraphResult:
     """Run the reflex nodes from `entry` on a kick's stream, each channel drawing
     what it publishes. Production always enters at `Awake`; a test wires the same
     nodes with a different door to exercise a stretch of them on its own."""
+    if (
+        ensure_thread
+        and state.thread is None
+        and state.source_target is not None
+        and state.source_target.address is not None
+    ):
+        state.thread = await deps.thread_manager.ensure(state.source_target.address)
     # One host, as in production: a channel marks the rows and presents the
     # batches the graph recorded through the managers it recorded them on.
     host = FakeOctomate()
@@ -198,10 +209,10 @@ def _deps(
     gateway: GatewayManager | None = None,
     threads: FakeThreadManager | None = None,
 ) -> ReflexDeps:
+    workspaces = workspaces if workspaces is not None else RecordingWorkspaceManager()
     return ReflexDeps(
-        workspaces=workspaces
-        if workspaces is not None
-        else RecordingWorkspaceManager(),
+        workspaces=workspaces,
+        habitats=a_habitat_manager(workspaces),
         channels=dict(channels),
         impulses=unwired(),
         agents={"inkling": agent, "other": agent, agent.id: agent},
@@ -253,8 +264,10 @@ def _summon_deps(
     second: FakeAgent,
     far: FakeChannelTentacle | None = None,
 ) -> ReflexDeps:
+    workspaces = RecordingWorkspaceManager()
     return ReflexDeps(
-        workspaces=RecordingWorkspaceManager(),
+        workspaces=workspaces,
+        habitats=a_habitat_manager(workspaces),
         gateway=GatewayManager(),
         impulses=unwired(),
         channels={"im": im} if far is None else {"im": im, "far": far},
@@ -298,8 +311,10 @@ def test_available_routes_skip_disconnected_reception_agents() -> None:
         models={"test": "fake-model"},
         claims={"test": Claim(ability="fake agent")},
     )
+    workspaces = RecordingWorkspaceManager()
     deps = ReflexDeps(
-        workspaces=RecordingWorkspaceManager(),
+        workspaces=workspaces,
+        habitats=a_habitat_manager(workspaces),
         gateway=GatewayManager(),
         impulses=unwired(),
         channels={"chan1": channel},
@@ -391,8 +406,10 @@ def test_available_routes_are_the_exposed_agents_own_routes() -> None:
         },
     )
     third = FakeAgent(id="third", models={"test": "fake-model"}, claims={})
+    workspaces = RecordingWorkspaceManager()
     deps = ReflexDeps(
-        workspaces=RecordingWorkspaceManager(),
+        workspaces=workspaces,
+        habitats=a_habitat_manager(workspaces),
         gateway=GatewayManager(),
         impulses=unwired(),
         channels={"chan1": channel},
@@ -425,8 +442,10 @@ def test_resolve_agent_honors_a_served_model_off_the_channel_list() -> None:
         ),
     )
     other = FakeAgent(id="other")
+    workspaces = RecordingWorkspaceManager()
     deps = ReflexDeps(
-        workspaces=RecordingWorkspaceManager(),
+        workspaces=workspaces,
+        habitats=a_habitat_manager(workspaces),
         gateway=GatewayManager(),
         impulses=unwired(),
         channels={"chan1": channel},
@@ -698,9 +717,9 @@ async def test_react_mounts_a_commissioning_gate_in_a_thread() -> None:
     assert gate.conversation_id is not None
 
 
-async def test_a_finished_turn_saves_the_threads_workspace() -> None:
-    # A turn is over when its answer is delivered, and that is when its
-    # work has to be somewhere the workspace going away cannot take it.
+async def test_a_finished_turn_leaves_saving_to_its_volume() -> None:
+    # A run that ends checkpoints its own volume as it is released, so the graph
+    # does not snapshot the same tree a second time.
     address = _key("t1")
     agent = FakeAgent(id="other", reception_output="done")
     host = RecordingWorkspaceManager()
@@ -717,7 +736,11 @@ async def test_a_finished_turn_saves_the_threads_workspace() -> None:
     await _run(
         React(),
         state=ReflexState(
-            source_target=target, target=target, decision=_summon(), thread=thread
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=thread,
+            user_profile=UserProfile(channel_user_id="alice", user_id=uuid7()),
         ),
         deps=_deps(
             conversations=FakeConversationManager(),
@@ -727,16 +750,16 @@ async def test_a_finished_turn_saves_the_threads_workspace() -> None:
         ),
     )
 
-    assert host.saved == [thread.id]
+    assert host.saved == []
 
 
 async def test_a_turn_that_failed_still_saves_its_workspace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A turn that raised still did whatever it did on disk, and until the save runs
-    # the workspace is the only copy of it. It is also the only workspace the sweep
-    # can never reclaim, since it keeps anything the mirror has not seen — so a
-    # failed turn on a thread nobody resumes would hold its disk for good.
+    # A turn that raised still did whatever it did on disk, and a failure outside
+    # the run closes it before its volume saves. Unsaved, it is the one workspace
+    # the sweep can never reclaim, since it keeps anything the mirror has not seen —
+    # so a failed turn on a thread nobody resumes would hold its disk for good.
     address = _key("t1")
     agent = FakeAgent(id="other", reception_output="done")
     host = RecordingWorkspaceManager()
@@ -762,7 +785,11 @@ async def test_a_turn_that_failed_still_saves_its_workspace(
         await _run(
             React(),
             state=ReflexState(
-                source_target=target, target=target, decision=_summon(), thread=thread
+                source_target=target,
+                target=target,
+                decision=_summon(),
+                thread=thread,
+                user_profile=UserProfile(channel_user_id="alice", user_id=uuid7()),
             ),
             deps=_deps(
                 conversations=FakeConversationManager(),
@@ -799,6 +826,7 @@ async def test_a_turn_with_no_thread_saves_nothing() -> None:
                 agent=agent,
                 workspaces=host,
             ),
+            ensure_thread=False,
         )
 
     assert host.saved == []
@@ -1090,13 +1118,15 @@ async def test_a_handoff_row_names_the_turn_it_came_from() -> None:
     threads.threads_by_key[ThreadKey.from_address(address)] = thread
     target = _source_target(address)
 
+    workspaces = RecordingWorkspaceManager()
     await _run(
         React(),
         state=ReflexState(
             source_target=target, target=target, decision=_summon(), thread=thread
         ),
         deps=ReflexDeps(
-            workspaces=RecordingWorkspaceManager(),
+            workspaces=workspaces,
+            habitats=a_habitat_manager(workspaces),
             gateway=GatewayManager(),
             impulses=unwired(),
             channels={"im": im},
@@ -1405,10 +1435,12 @@ async def test_a_native_scheme_signal_lands_in_their_dms_and_hands_off(
             agents=["second"],
         ),
     )
+    workspaces = RecordingWorkspaceManager()
     deps = ReflexDeps(
         channels={"far": far},
         agents={"second": second},
-        workspaces=RecordingWorkspaceManager(),
+        workspaces=workspaces,
+        habitats=a_habitat_manager(workspaces),
         conversation_manager=FakeConversationManager(),
         thread_manager=FakeThreadManager(users=users),
         action_manager=cast(DeferredActionManager, FakeActionManager()),
@@ -1682,12 +1714,10 @@ async def test_a_recorded_teleport_ends_the_turn_as_the_same_deferral(
         (address, GatewayEvent(action="teleport", destination=result.target.address))
     ]
     if not resume:
-        # Landed, and waiting there for the next message, its tree saved as a
-        # turn's end would.
+        # An anonymous turn has no persistent tree to checkpoint.
         assert len(entry.turns) == 1
-        landed = await deps.thread_manager.ensure(result.target.address)
         workspaces = cast(RecordingWorkspaceManager, deps.workspaces)
-        assert workspaces.saved[-1] == landed.id
+        assert workspaces.saved == []
         return
     assert len(entry.turns) == 2
     resumed = entry.turns[-1]
@@ -1944,7 +1974,7 @@ async def test_command_receipts_do_not_enter_room_recaps() -> None:
         actor_kind="human",
         sender_id=uuid7(),
         conversation_id=None,
-        invocation=CommandInvocation(command_id="review", arguments="private args"),
+        intent=CommandIntent(command_id="review", arguments="private args"),
         segments=[TextSegment(data={"text": "/review private args"})],
     )
     assert await deps.render_chat([command], ceiling=500) == ""
@@ -2384,14 +2414,18 @@ async def test_a_dismiss_releases_the_workspace_once_the_turn_is_saved(
     root = tmp_path / "inky"
     root.mkdir()
     (root / "readme.md").write_text("hello")
-    workspaces = WorkspaceManager(
+    workspaces = a_workspace_manager(
         projects=await a_registry(a_project(root)),
-        mirrors=MirrorManager(config=MirrorsConfig(), mirrors_dir=tmp_path / "mirrors"),
-        workspaces_dir=tmp_path / "workspaces",
+        mirror_config=MirrorsConfig(),
+        mirrors_dir=tmp_path / "mirrors",
+        volumes_dir=tmp_path / "workspaces",
     )
     project = workspaces.projects.get("inky")
     assert project is not None
+    owner = await a_user("alice", profiles={"im": "alice"})
     threads = ThreadManager(nerve=Nerve(), users=UserManager())
+    profile = await threads.users.profile("im", "alice")
+    assert profile is not None
     address = ChannelAddress(
         channel_tentacle_id="im",
         chat_type="thread",
@@ -2400,7 +2434,7 @@ async def test_a_dismiss_releases_the_workspace_once_the_turn_is_saved(
         user_id="alice",
     )
     thread = await threads.ensure(address, project=project)
-    async with workspaces.open(thread.id, project) as workspace:
+    async with workspaces.open(thread.id, project, owner.id) as workspace:
         (workspace.path / "work.md").write_text("done")
     agent = FakeAgent(
         id="other",
@@ -2419,17 +2453,22 @@ async def test_a_dismiss_releases_the_workspace_once_the_turn_is_saved(
     result = await _run(
         React(),
         state=ReflexState(
-            source_target=target, target=target, decision=_summon(), thread=thread
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=thread,
+            user_profile=profile,
         ),
         deps=deps,
     )
 
     assert isinstance(result, ReflexResult)
-    assert workspaces.existing(thread.id) is None
+    assert not workspace.path.exists()
     mirror = workspaces.mirrors.path(project)
-    assert await run_git("show", f"{thread_ref(thread.id)}:work.md", cwd=mirror) == (
-        "done"
-    )
+    assert isinstance(workspace.volume, GitVolume)
+    assert await run_git(
+        "show", f"{workspace.volume.snapshot_ref}:work.md", cwd=mirror
+    ) == ("done")
 
 
 @pytest.mark.parametrize("resume", [True, False])
@@ -2442,12 +2481,16 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
     root = tmp_path / "inky"
     root.mkdir()
     (root / "readme.md").write_text("hello")
-    workspaces = WorkspaceManager(
+    workspaces = a_workspace_manager(
         projects=await a_registry(a_project(root)),
-        mirrors=MirrorManager(config=MirrorsConfig(), mirrors_dir=tmp_path / "mirrors"),
-        workspaces_dir=tmp_path / "workspaces",
+        mirror_config=MirrorsConfig(),
+        mirrors_dir=tmp_path / "mirrors",
+        volumes_dir=tmp_path / "workspaces",
     )
+    owner = await a_user("alice", profiles={"im": "alice"})
     threads = ThreadManager(nerve=Nerve(), users=UserManager())
+    profile = await threads.users.profile("im", "alice")
+    assert profile is not None
     address = ChannelAddress(
         channel_tentacle_id="im",
         chat_type="thread",
@@ -2476,7 +2519,11 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
     result = await _run(
         React(),
         state=ReflexState(
-            source_target=target, target=target, decision=_summon(), thread=thread
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=thread,
+            user_profile=profile,
         ),
         deps=deps,
     )
@@ -2494,7 +2541,7 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
     attributed = await bound.project
     assert attributed is not None
     assert attributed.name == "inky"
-    workspace = workspaces.existing(thread.id)
+    workspace = workspaces.path(await volume_for(workspaces, thread.id, owner.id))
     assert workspace is not None
     assert (workspace / "readme.md").read_text() == "hello"
     # And the agent's session was relocated to where the resumed run happens.
@@ -2514,14 +2561,18 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
     root.mkdir()
     (root / "readme.md").write_text("hello")
     (root / ".gitignore").write_text(".env\nbuild/\n")
-    workspaces = WorkspaceManager(
+    workspaces = a_workspace_manager(
         projects=await a_registry(a_project(root)),
-        mirrors=MirrorManager(config=MirrorsConfig(), mirrors_dir=tmp_path / "mirrors"),
-        workspaces_dir=tmp_path / "workspaces",
+        mirror_config=MirrorsConfig(),
+        mirrors_dir=tmp_path / "mirrors",
+        volumes_dir=tmp_path / "workspaces",
     )
     project = workspaces.projects.get("inky")
     assert project is not None
+    owner = await a_user("alice", profiles={"im": "alice", "far": "ou_alice"})
     threads = ThreadManager(nerve=Nerve(), users=UserManager())
+    profile = await threads.users.profile("im", "alice")
+    assert profile is not None
     address = ChannelAddress(
         channel_tentacle_id="im",
         chat_type="thread",
@@ -2530,7 +2581,7 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
         user_id="alice",
     )
     thread = await threads.ensure(address, project=project)
-    async with workspaces.open(thread.id, project) as workspace:
+    async with workspaces.open(thread.id, project, owner.id) as workspace:
         (workspace.path / "work.md").write_text("unfinished")
         (workspace.path / ".env").write_text("TOKEN=local")
         (workspace.path / "build").mkdir()
@@ -2555,7 +2606,11 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
     result = await _run(
         React(),
         state=ReflexState(
-            source_target=target, target=target, decision=_summon(), thread=thread
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=thread,
+            user_profile=profile,
         ),
         deps=deps,
     )
@@ -2572,7 +2627,7 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
     attributed = await landed.project
     assert attributed is not None
     assert attributed.name == "inky"
-    carried = workspaces.existing(landed.id)
+    carried = workspaces.path(await volume_for(workspaces, landed.id, owner.id))
     assert carried is not None
     assert (carried / "work.md").read_text() == "unfinished"
     assert "work.md" in await run_git("status", "--porcelain", cwd=carried)
@@ -2583,7 +2638,10 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
     branch = await run_git("rev-parse", "--abbrev-ref", "HEAD", cwd=carried)
     assert branch.strip() == f"octomate/thread-{landed.id}"
     # The source is left as it was, in a tree of its own.
-    assert workspaces.existing(thread.id) not in (None, carried)
+    assert workspaces.path(await volume_for(workspaces, thread.id, owner.id)) not in (
+        None,
+        carried,
+    )
     assert [cwd for _, cwd in agent.relocated] == [carried]
 
 
@@ -2643,3 +2701,83 @@ async def test_a_failed_turn_is_reported_where_it_came_from() -> None:
         for where, event in im.presented
         if isinstance(event, RunErrorEvent)
     ] == [(address, "here")]
+
+
+@pytest.mark.parametrize("gateway", [True, False])
+async def test_react_prepares_each_senders_project_workspace(
+    in_memory_engine: AsyncEngine,
+    tmp_path: Path,
+    gateway: bool,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "README.md").write_text("shared project")
+    project = a_project(root)
+    workspaces = a_workspace_manager(projects=await a_registry(project))
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
+    alice = await a_user("alice", profiles={"im": "alice"})
+    bob = await a_user("bob", profiles={"im": "bob"})
+    address = _key(thread_id="shared")
+    thread = await threads.ensure(address, project=project)
+    target = _source_target(address)
+    agent = FakeAgent(id="other", gateway=gateway)
+    deps = _deps(
+        conversations=FakeConversationManager(),
+        channels={"im": _channel()},
+        agent=agent,
+        workspaces=workspaces,
+    )
+    deps.thread_manager = threads
+    for user in (alice, bob):
+        profile = await threads.users.profile("im", user.username)
+        assert profile is not None
+        await _run(
+            React(),
+            state=ReflexState(
+                source_target=target,
+                target=target,
+                decision=_summon(),
+                thread=thread,
+                user_profile=profile,
+            ),
+            deps=deps,
+        )
+    first, second = [turn.invocation for turn in agent.turns]
+    assert first.owner_id == alice.id
+    assert second.owner_id == bob.id
+    assert first.storage.path != second.storage.path
+    assert first.storage.path.is_dir()
+    assert second.storage.path.is_dir()
+    assert bool(agent.turns[0].session) is gateway
+    assert bool(agent.turns[1].session) is gateway
+
+
+async def test_react_refuses_an_anonymous_project_before_dispatch(
+    in_memory_engine: AsyncEngine,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    project = a_project(root)
+    workspaces = a_workspace_manager(projects=await a_registry(project))
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
+    address = _key(thread_id="shared")
+    thread = await threads.ensure(address, project=project)
+    target = _source_target(address)
+    agent = FakeAgent(id="other", gateway=False)
+    deps = _deps(
+        conversations=FakeConversationManager(),
+        channels={"im": _channel()},
+        agent=agent,
+        workspaces=workspaces,
+    )
+    deps.thread_manager = threads
+    with pytest.raises(UnregisteredProjectError):
+        await _run(
+            React(),
+            state=ReflexState(
+                source_target=target, target=target, decision=_summon(), thread=thread
+            ),
+            deps=deps,
+        )
+    assert agent.turns == []

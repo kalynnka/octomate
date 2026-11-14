@@ -10,7 +10,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Sequence
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload
@@ -27,6 +27,7 @@ from octomate.config.agents import AgentRouteModelName
 from octomate.config.channels import AgentModelConfig
 from octomate.events import (
     MessageSentEvent,
+    ReflexPhaseChangedEvent,
     RunActivityChangedEvent,
     RunEndedEvent,
     RunErrorEvent,
@@ -36,6 +37,7 @@ from octomate.events import (
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager, OctomateSession
+from octomate.managers.habitat import HabitatManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import Impulse
@@ -224,6 +226,8 @@ class ReflexDeps:
     # For the bookkeeping a finished turn owes and the agent has no part in:
     # leaving the thread's workspace somewhere losing the directory cannot cost it.
     workspaces: WorkspaceManager
+    # Prepares each run's workspace and habitat before the agent is called.
+    habitats: HabitatManager
     conversation_manager: ConversationManager
     action_manager: DeferredActionManager
     gateway: GatewayManager
@@ -293,6 +297,7 @@ class ReflexDeps:
             conversation_address=conversation_address,
             threads=self.thread_manager,
             workspaces=self.workspaces,
+            habitats=self.habitats,
             impulses=self.impulses,
         )
         if conversation_id is not None:
@@ -497,6 +502,38 @@ class ReflexDeps:
 
 class ReflexRuntime:
     """Stateless orchestration in graph deps; invocation resources stay with callers."""
+
+    @asynccontextmanager
+    async def finalizing(
+        self, ctx: GraphRunContext[ReflexState, ReflexDeps]
+    ) -> AsyncGenerator[None]:
+        """Publish finalization, and save the registered work a failed turn left.
+
+        A run that ends checkpoints its own volume. A failure outside the run closes
+        it unsaved, and an unsaved tree is one the sweep never reclaims.
+        """
+        failed = False
+        try:
+            yield
+        except Exception:
+            failed = True
+            raise
+        finally:
+            state = ctx.state
+            await ctx.deps.impulses.send(
+                Impulse(
+                    ReflexPhaseChangedEvent(phase="finalizing"),
+                    state.target.address if state.target is not None else None,
+                )
+            )
+            profile = state.user_profile
+            if (
+                failed
+                and state.thread is not None
+                and profile is not None
+                and profile.user_id is not None
+            ):
+                await ctx.deps.workspaces.save(state.thread, profile.user_id)
 
     async def resources(
         self,
@@ -731,10 +768,19 @@ class ReflexRuntime:
         thread_id = state.thread.id if state.thread else None
         output = run_result.output
         with reflex_logfire.span("reflex.finish", run_id=run_result.run_id) as span:
-            if session is not None and session.dismissing and state.thread is not None:
+            profile = state.user_profile
+            if (
+                session is not None
+                and session.dismissing
+                and state.thread is not None
+                and profile is not None
+                and profile.user_id is not None
+            ):
                 # The agent said this thread's work is done: its tree goes now
                 # that the run is out of it, saved first and kept if that failed.
-                result = await ctx.deps.workspaces.dismiss(state.thread)
+                result = await ctx.deps.workspaces.dismiss(
+                    state.thread, profile.user_id
+                )
                 span.set_attribute(
                     "react.dismissed",
                     result,

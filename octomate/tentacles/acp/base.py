@@ -48,6 +48,7 @@ from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
 )
+from octomate.managers.habitat import Invocation
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -184,7 +185,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -214,7 +215,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         async with self.run_stream_events(
             user_prompt,
             conversation_address=conversation_address,
-            conversation=conversation,
+            invocation=invocation,
             source_thread_address=source_thread_address,
             source_thread_message_ids=source_thread_message_ids,
             run_name=run_name,
@@ -248,7 +249,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         source_thread_address: ChannelAddress | None = None,
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
@@ -298,7 +299,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             self.stream(
                 user_prompt,
                 conversation_address,
-                conversation,
+                invocation,
                 source_thread_address,
                 source_thread_message_ids,
                 run_name,
@@ -312,7 +313,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         self,
         user_prompt: str | Sequence[UserContent] | None,
         address: ChannelAddress,
-        conversation: Conversation,
+        invocation: Invocation,
         source_address: ChannelAddress | None,
         source_message_ids: Sequence[UUID7] | None,
         run_name: str | None,
@@ -321,7 +322,8 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         effort: str | None,
     ) -> AsyncGenerator[ReactStreamEvent[str]]:
         provider = self.config.provider
-        self.check_conversation(conversation)
+        conversation = invocation.conversation
+        self.check_conversation(conversation, thread_id=invocation.thread_id)
         if isinstance(user_prompt, str):
             text = user_prompt
         else:
@@ -337,12 +339,9 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         sender = await self.octomate.users.profile(
             address.channel_tentacle_id, address.user_id
         )
-        if sender is None or sender.user_id is None:
+        if sender is None or invocation.owner_id is None:
             raise ValueError("Outbound ACP requires a registered user")
-        thread = await self.threads.get(conversation.thread_id, with_messages=False)
-        assert thread is not None
-        project = await self.projects.of(thread)
-        workspace = self.workspaces.open(conversation.thread_id, project)
+        storage = invocation.storage
         updates: asyncio.Queue[
             StreamEvent | ActionBatchEvent | ActionBatchAnsweredEvent | None
         ] = asyncio.Queue()
@@ -381,7 +380,6 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             )
 
         async with (
-            workspace,
             AsyncExitStack() as credentials,
             NativeAcpClient.connect(
                 provider,
@@ -399,12 +397,12 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             ) as client,
         ):
             mcp_servers = await credentials.enter_async_context(
-                self.mcp_servers(client, sender, conversation.id)
+                self.mcp_servers(client, invocation.owner_id, conversation.id)
             )
             if conversation.external_id is None:
                 native = await client.new_session(
                     schema.NewSessionRequest(
-                        cwd=str(workspace.path), mcp_servers=[*mcp_servers]
+                        cwd=str(storage.path), mcp_servers=[*mcp_servers]
                     )
                 )
                 session_id = native.session_id
@@ -419,13 +417,13 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                     acp.AGENT_METHODS["session_load"],
                     schema.LoadSessionRequest(
                         session_id=session_id,
-                        cwd=str(workspace.path),
+                        cwd=str(storage.path),
                         mcp_servers=[*mcp_servers],
                     ),
                     schema.LoadSessionResponse,
                 )
                 native = NativeAcpSession(
-                    provider, str(workspace.path), session_id, response
+                    provider, str(storage.path), session_id, response
                 )
             selected_model = await native.select_model(client.connection, model)
             await native.select_effort(client.connection, effort)
@@ -443,7 +441,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                         client,
                         conversation,
                         request,
-                        workspace.path,
+                        storage.path,
                         address,
                         sender,
                         source_address,
@@ -662,7 +660,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
 
     @asynccontextmanager
     async def mcp_servers(
-        self, client: NativeAcpClient, sender: UserProfile, conversation_id: UUID7
+        self, client: NativeAcpClient, user_id: UUID7, conversation_id: UUID7
     ) -> AsyncGenerator[list[schema.HttpMcpServer]]:
         """Supply the caller's remote Octomate MCP, revoking its key after the turn."""
         if not self.gateway:
@@ -676,7 +674,6 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         ):
             raise ValueError("The ACP provider must support HTTP MCP servers")
         auth = self.octomate.auth
-        user_id = sender.user_id
         if auth is None or user_id is None:
             raise ValueError(
                 "ACP MCP access requires a registered user and authentication"

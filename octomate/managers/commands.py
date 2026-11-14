@@ -23,7 +23,7 @@ from octomate.schemas.commands import (
     CommandContext,
     CommandDescriptor,
     CommandError,
-    CommandInvocation,
+    CommandIntent,
     CommandOutcome,
     CommandResult,
 )
@@ -195,7 +195,7 @@ class CommandManager(Manager):
         self,
         agent: AgentTentacle,
         context: CommandContext,
-        invocation: CommandInvocation,
+        intent: CommandIntent,
         *,
         delivery_id: str,
         session: OctomateSession | None = None,
@@ -291,10 +291,16 @@ class CommandManager(Manager):
                     and not conversation.subagent_id
                     and surface.active_agent_tentacle_id == agent.id
                 )
+                project = await thread.project
+                volume = await self.workspaces.volumes.find(
+                    context.user_id,
+                    thread.id,
+                    project.id if project is not None else None,
+                )
                 current = replace(
                     context,
                     conversation=conversation,
-                    cwd=self.workspaces.open(thread.id, await thread.project).path,
+                    cwd=self.workspaces.path(volume) if volume is not None else None,
                     model=surface.active_model,
                     permission_mode=conversation.permission_mode
                     or agent.default_permission_mode,
@@ -323,7 +329,7 @@ class CommandManager(Manager):
                     or recorded.sender_id != profile.id
                     or recorded.conversation_id != conversation_id
                     or recorded.agent_tentacle_id != agent.id
-                    or recorded.invocation != invocation
+                    or recorded.intent != intent
                 ):
                     yield CommandError(
                         status="failed",
@@ -339,7 +345,7 @@ class CommandManager(Manager):
             descriptors = {
                 descriptor.id: descriptor for descriptor in catalog.descriptors
             }
-            descriptor = descriptors.get(invocation.command_id)
+            descriptor = descriptors.get(intent.command_id)
             if catalog.status != "ready":
                 yield CommandError(
                     status="stale" if catalog.status == "loading" else catalog.status,
@@ -359,7 +365,7 @@ class CommandManager(Manager):
                     status="unavailable",
                     message="This command requires an existing conversation.",
                 )
-            elif invocation.attachments and descriptor.accepts_attachments is not True:
+            elif intent.attachments and descriptor.accepts_attachments is not True:
                 yield CommandError(
                     status="unsupported",
                     message="This command does not declare attachment support.",
@@ -372,7 +378,7 @@ class CommandManager(Manager):
         self,
         agent: AgentTentacle[OutputT, DepsT],
         context: CommandContext,
-        invocation: CommandInvocation,
+        intent: CommandIntent,
         validated: ValidatedCommand,
         *,
         delivery_id: str,
@@ -384,9 +390,10 @@ class CommandManager(Manager):
         """Record and execute a delivery inside its successful `validate` scope.
 
         Validation and user preparation belong to the caller. Persist the receipt
-        before native dispatch, preserve arguments, and invalidate the catalog on
-        exit. Consume streamed events inside this context so runtime cleanup and
-        outcome recording finish before the validation scope releases its guard.
+        before native dispatch, prepare the declared invocation resources, and
+        invalidate the catalog on exit. Consume streamed events inside this
+        context. Adapter cleanup and resource release finish before the outcome
+        is recorded and before validation releases its guard.
         Without a conversation, dispatch produces only a direct outcome: no
         receipt, run or thread is created, and retries are not deduplicated.
         Direct adapter failures become failed outcomes; stream errors and
@@ -395,94 +402,78 @@ class CommandManager(Manager):
         conversation = context.conversation
         surface = validated.surface
         profile = validated.profile
-        async with AsyncExitStack() as stack:
-            receipt = None
-            if conversation is not None:
-                assert surface is not None
-                assert profile is not None
-                text = f"/{validated.descriptor.name}"
-                if invocation.arguments:
-                    text += f" {invocation.arguments}"
-                intent = invocation.model_copy(deep=True)
-                receipt = ThreadCommand(
-                    thread_id=surface.id,
-                    platform_message_id=delivery_id,
-                    direction="inbound",
-                    actor_kind="human",
-                    user_id=context.address.user_id,
-                    sender_id=profile.id,
-                    agent_tentacle_id=agent.id,
-                    conversation_id=conversation.id,
-                    invocation=intent,
-                    segments=[TextSegment(data={"text": text}), *intent.attachments],
-                    message_text=text,
+
+        receipt = None
+        if conversation is not None:
+            if surface is None or profile is None:
+                raise ValueError(
+                    "A conversation command requires a validated thread and sender profile"
                 )
-                await self.threads.store_message(receipt, surface)
-                stack.callback(self.invalidate, conversation_id=conversation.id)
-            else:
-                stack.callback(self.invalidate, agent_id=agent.id)
-            interrupted = CommandError(
-                status="failed",
-                message="Command execution did not finish; its effects may already have occurred.",
+            text = f"/{validated.descriptor.name}"
+            if intent.arguments:
+                text += f" {intent.arguments}"
+            receipt_intent = intent.model_copy(deep=True)
+            receipt = ThreadCommand(
+                thread_id=surface.id,
+                platform_message_id=delivery_id,
+                direction="inbound",
+                actor_kind="human",
+                user_id=context.address.user_id,
+                sender_id=profile.id,
+                agent_tentacle_id=agent.id,
+                conversation_id=conversation.id,
+                intent=receipt_intent,
+                segments=[
+                    TextSegment(data={"text": text}),
+                    *receipt_intent.attachments,
+                ],
+                message_text=text,
             )
-            try:
-                stream = await stack.enter_async_context(
-                    aclosing(
-                        agent.execute_command(
-                            context,
-                            invocation,
-                            deferred_suspender=deferred_suspender,
-                            capabilities=capabilities,
-                        )
-                    )
-                )
-                result = await anext(stream)
-                if isinstance(result, CommandResult | CommandError):
-                    await stream.aclose()
-                elif receipt is None:
-                    await stream.aclose()
-                    result = CommandError(
-                        status="failed",
-                        message="The command adapter emitted a run without a conversation.",
-                    )
-            except asyncio.CancelledError:
-                if receipt is not None:
-                    await self.threads.record_command_outcome(receipt.id, interrupted)
-                raise
-            except Exception:
-                logger.exception("Command execution failed for agent %s", agent.id)
-                result = CommandError(
-                    status="failed",
-                    message="Command execution failed; its effects may already have occurred.",
-                )
-            if isinstance(result, CommandResult | CommandError):
-                if receipt is not None:
-                    await self.threads.record_command_outcome(receipt.id, result)
+            await self.threads.store_message(receipt, surface)
+        try:
+            async with self.dispatch(
+                agent,
+                context,
+                intent,
+                validated,
+                receipt_id=receipt.id if receipt is not None else None,
+                deferred_suspender=deferred_suspender,
+                capabilities=capabilities,
+            ) as result:
                 yield result
+        finally:
+            if conversation is not None:
+                self.invalidate(conversation_id=conversation.id)
             else:
-                assert receipt is not None
-                yield await stack.enter_async_context(
-                    self.record_stream(stream, result, receipt.id, interrupted)
-                )
+                self.invalidate(agent_id=agent.id)
 
     @asynccontextmanager
-    async def record_stream[OutputT](
+    async def dispatch[OutputT, DepsT](
         self,
-        stream: AsyncGenerator[CommandOutcome | ReactStreamEvent[OutputT], None],
-        first_event: ReactStreamEvent[OutputT],
-        receipt_id: uuid.UUID,
-        interrupted: CommandError,
-    ) -> AsyncGenerator[AsyncGenerator[ReactStreamEvent[OutputT], None]]:
-        """Record completion only after consumption and runtime cleanup both finish.
-
-        Events remain owned by the normal stream consumer; a duplicate delivery
-        receives completion status rather than replayed events. An abandoned or
-        failed stream keeps the failure outcome prepared before dispatch.
-        """
-        completed = asyncio.Event()
+        agent: AgentTentacle[OutputT, DepsT],
+        context: CommandContext,
+        intent: CommandIntent,
+        validated: ValidatedCommand,
+        *,
+        receipt_id: uuid.UUID | None,
+        deferred_suspender: DeferredSuspender | None = None,
+        capabilities: list[AgentCapability[DepsT]] | None = None,
+    ) -> AsyncGenerator[
+        CommandOutcome | AsyncGenerator[ReactStreamEvent[OutputT], None]
+    ]:
+        """Own native dispatch through cleanup, then record its terminal outcome."""
+        interrupted = CommandError(
+            status="failed",
+            message="Command execution did not finish; its effects may already have occurred.",
+        )
         outcome: CommandOutcome = interrupted
+        streaming = False
+        completed = asyncio.Event()
 
-        async def forward() -> AsyncGenerator[ReactStreamEvent[OutputT], None]:
+        async def forward(
+            stream: AsyncGenerator[CommandOutcome | ReactStreamEvent[OutputT], None],
+            first_event: ReactStreamEvent[OutputT],
+        ) -> AsyncGenerator[ReactStreamEvent[OutputT], None]:
             yield first_event
             async for event in stream:
                 if isinstance(event, CommandResult | CommandError):
@@ -493,12 +484,56 @@ class CommandManager(Manager):
             completed.set()
 
         try:
-            async with aclosing(stream), aclosing(forward()) as forwarded:
-                yield forwarded
+            async with AsyncExitStack() as resources:
+                invocation = await resources.enter_async_context(
+                    agent.command_invocation(
+                        context,
+                        intent,
+                        validated.descriptor,
+                        thread=validated.surface,
+                    )
+                )
+                stream = agent.execute_command(
+                    context,
+                    intent,
+                    invocation=invocation,
+                    deferred_suspender=deferred_suspender,
+                    capabilities=capabilities,
+                )
+                resources.push_async_callback(stream.aclose)
+                result = await anext(stream)
+                if isinstance(result, CommandResult | CommandError):
+                    outcome = result
+                elif receipt_id is None:
+                    outcome = CommandError(
+                        status="failed",
+                        message="The command adapter emitted a run without a conversation.",
+                    )
+                else:
+                    streaming = True
+                    forwarded = await resources.enter_async_context(
+                        aclosing(forward(stream, result))
+                    )
+                    yield forwarded
             if completed.is_set():
                 outcome = CommandResult()
+        except asyncio.CancelledError:
+            outcome = interrupted
+            raise
+        except Exception:
+            outcome = interrupted
+            if streaming:
+                raise
+            logger.exception("Command execution failed for agent %s", agent.id)
+            outcome = CommandError(
+                status="failed",
+                message="Command execution failed; its effects may already have occurred.",
+            )
         finally:
-            await self.threads.record_command_outcome(receipt_id, outcome)
+            if receipt_id is not None:
+                await self.threads.record_command_outcome(receipt_id, outcome)
+        if not streaming:
+            yield outcome
 
     def invalidate(
         self,

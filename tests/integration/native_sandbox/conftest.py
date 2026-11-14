@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.thread import ThreadKey
 from tests.integration.native_sandbox.matrix import (
     SERVER_CANARY,
@@ -25,6 +24,7 @@ from tests.integration.native_sandbox.runners import (
     inkling_runner,
 )
 from tests.support.managers import a_project, a_registry
+from tests.support.users import a_user
 
 
 @pytest.fixture
@@ -86,26 +86,32 @@ async def native_call(
         request.node.user_properties.append((distribution, version(distribution)))
     monkeypatch.setenv(SERVER_CANARY, "synthetic-server-only")
     project = a_project(sandbox_tree.workspace, name="sandbox-audit")
-    octomate = Octomate(
-        workspaces=WorkspaceManager(
-            projects=await a_registry(project),
-            workspaces_dir=sandbox_tree.workspace.parent / "runs",
-        )
-    )
+    octomate = Octomate()
+    octomate.workspaces.projects = await a_registry(project)
+    octomate.volumes.host_storage.root = (
+        sandbox_tree.workspace.parent / "runs"
+    ).resolve()
     thread = await octomate.threads.ensure(
         ThreadKey("sandbox-audit", "thread", "synthetic", "audit"), project=project
     )
-    workspace = octomate.workspaces.open(thread.id, project)
-    sandbox_tree.workspace = await workspace.prepare()
+    owner = await a_user("sandbox-owner")
+    workspace = await octomate.workspaces.resolve(thread.id, project, owner.id)
+    sandbox_tree.workspace = await octomate.workspaces.prepare(workspace)
     if request.param == "inkling":
-        async with inkling_runner(octomate, thread.id) as call:
+        async with inkling_runner(octomate, thread.id, owner_id=owner.id) as call:
             yield call
     elif request.param == "codex":
-        async with codex_runner(octomate, thread.id, tmp_path) as call:
+        async with codex_runner(
+            octomate, thread.id, tmp_path, owner_id=owner.id
+        ) as call:
             yield call
     elif request.param == "claude":
-        async with claude_runner(octomate, thread.id, tmp_path, monkeypatch) as call:
+        async with claude_runner(
+            octomate, thread.id, tmp_path, monkeypatch, owner_id=owner.id
+        ) as call:
             yield call
     else:
-        async with deepseek_runner(octomate, thread.id, tmp_path, monkeypatch) as call:
+        async with deepseek_runner(
+            octomate, thread.id, tmp_path, monkeypatch, owner_id=owner.id
+        ) as call:
             yield call

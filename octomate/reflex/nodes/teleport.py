@@ -24,6 +24,7 @@ from octomate.reflex.suspender import TeleportRequest
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import Thread, ThreadKey
+from octomate.schemas.volumes import UnregisteredProjectError
 from octomate.telemetry import reflex_logfire
 
 
@@ -45,6 +46,9 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         ctx: GraphRunContext[ReflexState, ReflexDeps],
     ) -> React | End[ReflexGraphResult]:
         state = ctx.state
+        owner_id = (
+            state.user_profile.user_id if state.user_profile is not None else None
+        )
         state.run_name = "teleport"
         origin = self.origin
         if origin.address is None or state.thread is None:
@@ -163,8 +167,12 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         elif carried is not None:
             # The conversation was about a project, and its history is of work in
             # that tree: the thread it lands in is about the same one, as it stands.
+            if owner_id is None:
+                raise UnregisteredProjectError(
+                    f"project {carried.name!r} needs a registered user"
+                )
             state.thread = await ctx.deps.thread_manager.bind(landed.id, carried)
-            await ctx.deps.workspaces.carry(source, state.thread)
+            await ctx.deps.workspaces.carry(source, state.thread, owner_id)
             sentence = (
                 "Continuing the conversation here, in a workspace of "
                 f"{carried.name!r} that holds your work as you left it."
@@ -172,34 +180,37 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         # The agent resumes in another directory either way — a new thread's own
         # workspace, or the project's — and a runtime session may be filed under
         # the one it ran in. The tentacle knows how to move its own; this is when.
-        cwd = ctx.deps.workspaces.open(
-            state.thread.id, await ctx.deps.workspaces.projects.of(state.thread)
-        ).path
-        agent = ctx.deps.agent(self.agent_id)
-        if source_conversation is not None:
-            external_id = await agent.fork_session(source_conversation, cwd=cwd)
-            carry = (
-                external_id is not None
-                and external_id == source_conversation.external_id
-            )
-            await ctx.deps.conversation_manager.fork(
-                source_conversation,
-                conversation,
-                carry_external_id=carry,
-                external_id=None if carry else external_id,
-            )
-            await agent.relocate(conversation, cwd=cwd)
-            state.thread = await ctx.deps.thread_manager.rename(
-                state.thread,
-                ctx.deps.thread_manager.fork_title(source_conversation, source),
-            )
-        elif not self.request.new_thread:
-            external_id = await agent.fork_session(conversation, cwd=cwd)
-            if external_id is not None and external_id != conversation.external_id:
-                await ctx.deps.conversation_manager.set_external_id(
-                    conversation, external_id
+        async with ctx.deps.workspaces.open(
+            state.thread.id,
+            await ctx.deps.workspaces.projects.of(state.thread),
+            owner_id,
+        ) as workspace:
+            cwd = workspace.path
+            agent = ctx.deps.agent(self.agent_id)
+            if source_conversation is not None:
+                external_id = await agent.fork_session(source_conversation, cwd=cwd)
+                carry = (
+                    external_id is not None
+                    and external_id == source_conversation.external_id
                 )
-            await agent.relocate(conversation, cwd=cwd)
+                await ctx.deps.conversation_manager.fork(
+                    source_conversation,
+                    conversation,
+                    carry_external_id=carry,
+                    external_id=None if carry else external_id,
+                )
+                await agent.relocate(conversation, cwd=cwd)
+                state.thread = await ctx.deps.thread_manager.rename(
+                    state.thread,
+                    ctx.deps.thread_manager.fork_title(source_conversation, source),
+                )
+            elif not self.request.new_thread:
+                external_id = await agent.fork_session(conversation, cwd=cwd)
+                if external_id is not None and external_id != conversation.external_id:
+                    await ctx.deps.conversation_manager.set_external_id(
+                        conversation, external_id
+                    )
+                await agent.relocate(conversation, cwd=cwd)
         if opened is not None:
             await announce_crossing(
                 ctx,
@@ -263,28 +274,25 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         self, ctx: GraphRunContext[ReflexState, ReflexDeps]
     ) -> End[ReflexGraphResult]:
         """End the move where it landed, for the next message there to carry on:
-        the handoff is recorded and the workspace saved, as a turn's end would."""
+        the handoff is recorded, as a turn's end would."""
         state = ctx.state
         if state.decision is None or state.target is None or state.thread is None:
             raise ValueError("Teleport lands with a decision, a target and a thread")
-        resolved = ctx.deps.resolve_agent(
-            state.target.channel_id, state.decision.agent_id, state.decision.model
-        )
-        state.decision = state.decision.model_copy(
-            update={"agent_id": resolved.agent, "model": resolved.model}
-        )
-        if state.handoff is not None:
-            await state.handoff.land(ctx.deps, state.thread, state.decision)
-            state.handoff = None
-        await ctx.deps.impulses.send(
-            Impulse(ReflexPhaseChangedEvent(phase="finalizing"), state.target.address)
-        )
-        await ctx.deps.workspaces.save(state.thread)
-        return End(
-            ReflexResult(
-                decision=state.decision, target=state.target, outcome="handed_off"
+        async with ctx.deps.runtime.finalizing(ctx):
+            resolved = ctx.deps.resolve_agent(
+                state.target.channel_id, state.decision.agent_id, state.decision.model
             )
-        )
+            state.decision = state.decision.model_copy(
+                update={"agent_id": resolved.agent, "model": resolved.model}
+            )
+            if state.handoff is not None:
+                await state.handoff.land(ctx.deps, state.thread, state.decision)
+                state.handoff = None
+            return End(
+                ReflexResult(
+                    decision=state.decision, target=state.target, outcome="handed_off"
+                )
+            )
 
     async def bind(
         self,
@@ -302,9 +310,12 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             raise RuntimeError(
                 f"project {name!r} vanished between the gate and the move"
             )
-        mirror = await ctx.deps.workspaces.mirrors.sync(project)
-        bound = await ctx.deps.thread_manager.bind(thread.id, project)
-        await ctx.deps.workspaces.materialize(
-            ctx.deps.workspaces.open(thread.id, project), mirror, self.request.ref
+        profile = ctx.state.user_profile
+        workspace = await ctx.deps.workspaces.resolve(
+            thread.id,
+            project,
+            profile.user_id if profile is not None else None,
+            self.request.ref,
         )
-        return bound
+        await ctx.deps.workspaces.prepare(workspace)
+        return await ctx.deps.thread_manager.bind(thread.id, project)

@@ -67,7 +67,14 @@ from tests.support.agents import (
     emit_scripted_turn,
 )
 from tests.support.channels import FakeChannelTentacle
-from tests.support.managers import FakeConversation, FakeConversationManager
+from tests.support.invocations import invocation_for
+from tests.support.managers import (
+    FakeConversation,
+    FakeConversationManager,
+    FakeThreadManager,
+    a_habitat_manager,
+    a_workspace_manager,
+)
 from tests.support.mcp import core_tool_capabilities, served_inkling_mcp
 from tests.support.users import a_user, auth_config
 
@@ -75,6 +82,8 @@ type InklingTestEvent = ReactStreamEvent[ScriptedOutput]
 
 
 def _inkling_agent() -> Agent[None, InklingOutput]:
+    threads = FakeThreadManager()
+    workspaces = a_workspace_manager()
     return Agent(
         TestModel(),
         deps_type=type(None),
@@ -83,7 +92,14 @@ def _inkling_agent() -> Agent[None, InklingOutput]:
         capabilities=[
             AskCapability(),
             *core_tool_capabilities(
-                OctomateSession(channel_routes={}, current_agent_id="inkling")
+                OctomateSession(
+                    channel_routes={},
+                    current_agent_id="inkling",
+                    users=threads.users,
+                    threads=threads,
+                    workspaces=workspaces,
+                    habitats=a_habitat_manager(workspaces),
+                )
             ),
         ],
         system_prompt=SYSTEM_PROMPT,
@@ -183,14 +199,15 @@ async def test_run_records_its_model_and_effective_permission(
     tentacle = _tentacle(agent, conversations)
     tentacle.permission_mode = configured
 
-    await tentacle.run(
-        "go",
-        conversation_address=_test_conversation_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=_test_conversation_address()
-        ),
-        output_type=STR_OUTPUT,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=_test_conversation_address(), thread_id=_THREAD
+    ) as invocation:
+        await tentacle.run(
+            "go",
+            conversation_address=_test_conversation_address(),
+            invocation=invocation,
+            output_type=STR_OUTPUT,
+        )
 
     [run] = conversation.runs
     assert run.model_name == "scripted"
@@ -204,15 +221,16 @@ async def test_run_records_the_resolved_models_context_capacity(
     agent, _ = build_scripted_agent(["done"])
     conversations = FakeConversationManager()
     tentacle = _tentacle(agent, conversations)
-    await tentacle.run(
-        "go",
-        conversation_address=_test_conversation_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=_test_conversation_address()
-        ),
-        output_type=STR_OUTPUT,
-        model=TestModel(call_tools=[], profile={"context_window": window}),
-    )
+    async with invocation_for(
+        tentacle, conversation_address=_test_conversation_address(), thread_id=_THREAD
+    ) as invocation:
+        await tentacle.run(
+            "go",
+            conversation_address=_test_conversation_address(),
+            invocation=invocation,
+            output_type=STR_OUTPUT,
+            model=TestModel(call_tools=[], profile={"context_window": window}),
+        )
     [conversation] = conversations.store.values()
     run = conversation.runs[-1]
     assert run.context_window == window
@@ -229,15 +247,16 @@ async def test_inkling_keeps_pydantic_ai_effort_names(effort: str) -> None:
     agent, _ = build_scripted_agent(["done"])
     tentacle = _tentacle(agent, FakeConversationManager())
 
-    result = await tentacle.run(
-        "go",
-        conversation_address=_test_conversation_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=_test_conversation_address()
-        ),
-        output_type=STR_OUTPUT,
-        effort=effort,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=_test_conversation_address(), thread_id=_THREAD
+    ) as invocation:
+        result = await tentacle.run(
+            "go",
+            conversation_address=_test_conversation_address(),
+            invocation=invocation,
+            output_type=STR_OUTPUT,
+            effort=effort,
+        )
 
     assert result.output == "done"
 
@@ -248,15 +267,18 @@ async def test_inkling_rejects_other_harness_efforts(effort: str) -> None:
     tentacle = _tentacle(agent, FakeConversationManager())
 
     with pytest.raises(ValueError, match="Input should be"):
-        await tentacle.run(
-            "go",
+        async with invocation_for(
+            tentacle,
             conversation_address=_test_conversation_address(),
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=_test_conversation_address()
-            ),
-            output_type=STR_OUTPUT,
-            effort=effort,
-        )
+            thread_id=_THREAD,
+        ) as invocation:
+            await tentacle.run(
+                "go",
+                conversation_address=_test_conversation_address(),
+                invocation=invocation,
+                output_type=STR_OUTPUT,
+                effort=effort,
+            )
 
     assert script.cursor == 0
 
@@ -283,14 +305,19 @@ async def test_inkling_loop_emits_deferred_question_batch() -> None:
     captured_events: list[InklingTestEvent] = []
     conversations = FakeConversationManager()
     tentacle = _tentacle(agent, conversations)
-    async with tentacle.run_stream_events(
-        "hi octomate",
-        conversation_address=_test_conversation_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=_test_conversation_address()
-        ),
-        output_type=STR_OUTPUT,
-    ) as stream:
+    async with (
+        invocation_for(
+            tentacle,
+            conversation_address=_test_conversation_address(),
+            thread_id=_THREAD,
+        ) as invocation,
+        tentacle.run_stream_events(
+            "hi octomate",
+            conversation_address=_test_conversation_address(),
+            invocation=invocation,
+            output_type=STR_OUTPUT,
+        ) as stream,
+    ):
         async for event in stream:
             captured_events.append(event)
 
@@ -394,14 +421,15 @@ async def test_a_bypassing_conversation_resolves_in_process_with_a_human_present
     )
     tentacle = _tentacle(agent, conversations)
 
-    result = await tentacle.run(
-        "hi octomate",
-        conversation_address=_test_conversation_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=_test_conversation_address()
-        ),
-        output_type=STR_OUTPUT,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=_test_conversation_address(), thread_id=_THREAD
+    ) as invocation:
+        result = await tentacle.run(
+            "hi octomate",
+            conversation_address=_test_conversation_address(),
+            invocation=invocation,
+            output_type=STR_OUTPUT,
+        )
 
     assert result.output == "proceeding without answers"
     assert script.cursor == 2
@@ -429,14 +457,15 @@ async def test_a_dont_ask_conversation_answers_its_own_questions() -> None:
     )
     tentacle = _tentacle(agent, conversations)
 
-    result = await tentacle.run(
-        "hi octomate",
-        conversation_address=_test_conversation_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=_test_conversation_address()
-        ),
-        output_type=STR_OUTPUT,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=_test_conversation_address(), thread_id=_THREAD
+    ) as invocation:
+        result = await tentacle.run(
+            "hi octomate",
+            conversation_address=_test_conversation_address(),
+            invocation=invocation,
+            output_type=STR_OUTPUT,
+        )
 
     assert result.output == "proceeding without answers"
     assert script.cursor == 2
@@ -500,21 +529,27 @@ async def test_a_teleport_follows_the_approval_posture(
         conversation_address=ChannelAddress(
             channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
         ),
+        users=host.users,
+        threads=host.threads,
+        workspaces=host.workspaces,
+        habitats=host.habitats,
     )
 
     async with served_inkling_mcp(host, monkeypatch), host.gateway.driving(session):
-        result = await tentacle.run(
-            "take this elsewhere",
+        async with invocation_for(
+            tentacle,
             conversation_address=_test_conversation_address(),
-            conversation=await tentacle.resolve_conversation(
-                _THREAD,
+            thread_id=_THREAD,
+            conversation_id=session.conversation_id,
+        ) as invocation:
+            result = await tentacle.run(
+                "take this elsewhere",
                 conversation_address=_test_conversation_address(),
-                conversation_id=session.conversation_id,
-            ),
-            output_type=STR_OUTPUT,
-            deferred_suspender=suspender,
-            interactive=interactive,
-        )
+                invocation=invocation,
+                output_type=STR_OUTPUT,
+                deferred_suspender=suspender,
+                interactive=interactive,
+            )
 
         if not interactive or mode == "dontAsk":
             assert result.output == "Staying here."
@@ -538,20 +573,22 @@ async def test_a_teleport_follows_the_approval_posture(
         assert action.args.tool_name == "teleport"
         assert action.args.args["hint"] == "carrying on over here"
 
-        result = await tentacle.run(
-            None,
+        async with invocation_for(
+            tentacle,
             conversation_address=_test_conversation_address(),
-            conversation=await tentacle.resolve_conversation(
-                _THREAD,
+            thread_id=_THREAD,
+            conversation_id=session.conversation_id,
+        ) as invocation:
+            result = await tentacle.run(
+                None,
                 conversation_address=_test_conversation_address(),
-                conversation_id=session.conversation_id,
-            ),
-            output_type=STR_OUTPUT,
-            deferred_suspender=suspender,
-            deferred_tool_results=DeferredToolResults(
-                approvals={"call_tp_1": approved}, metadata=suspended.metadata
-            ),
-        )
+                invocation=invocation,
+                output_type=STR_OUTPUT,
+                deferred_suspender=suspender,
+                deferred_tool_results=DeferredToolResults(
+                    approvals={"call_tp_1": approved}, metadata=suspended.metadata
+                ),
+            )
         if approved:
             assert session.decision is not None
             assert isinstance(result.output, DeferredToolRequests)
@@ -563,6 +600,8 @@ async def test_a_teleport_follows_the_approval_posture(
 
 async def test_a_question_batched_with_a_teleport_suspends_whole() -> None:
     """The normal approval flow presents the question and teleport approval together."""
+
+    threads = FakeThreadManager()
 
     async def both(
         messages: list[ModelMessage], info: AgentInfo
@@ -580,6 +619,7 @@ async def test_a_question_batched_with_a_teleport_suspends_whole() -> None:
             ),
         }
 
+    workspaces = a_workspace_manager()
     agent: Agent[None, ScriptedOutput] = Agent(
         FunctionModel(stream_function=both, model_name="scripted"),
         deps_type=type(None),
@@ -597,6 +637,10 @@ async def test_a_question_batched_with_a_teleport_suspends_whole() -> None:
                         chat_id="alice",
                         user_id="alice",
                     ),
+                    users=threads.users,
+                    threads=threads,
+                    workspaces=workspaces,
+                    habitats=a_habitat_manager(workspaces),
                 )
             ),
         ],
@@ -611,16 +655,18 @@ async def test_a_question_batched_with_a_teleport_suspends_whole() -> None:
     conversations.store[(_THREAD, "inkling", "")] = conversation
     suspender = StubSuspender()
 
-    tentacle = _tentacle(agent, conversations)
-    await tentacle.run(
-        "ask me and then move us",
+    async with invocation_for(
+        _tentacle(agent, conversations),
         conversation_address=_test_conversation_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=_test_conversation_address()
-        ),
-        output_type=STR_OUTPUT,
-        deferred_suspender=suspender,
-    )
+        thread_id=_THREAD,
+    ) as invocation:
+        await _tentacle(agent, conversations).run(
+            "ask me and then move us",
+            conversation_address=_test_conversation_address(),
+            invocation=invocation,
+            output_type=STR_OUTPUT,
+            deferred_suspender=suspender,
+        )
 
     assert "approvals go through without one" not in str(conversation.messages)
     [suspended] = suspender.suspended
@@ -763,15 +809,17 @@ async def test_a_posture_switched_mid_run_lands_on_the_next_round() -> None:
         system_prompt=SYSTEM_PROMPT,
     )
 
-    tentacle = _tentacle(agent, conversations)
-    result = await tentacle.run(
-        "hi octomate",
+    async with invocation_for(
+        _tentacle(agent, conversations),
         conversation_address=_test_conversation_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=_test_conversation_address()
-        ),
-        output_type=STR_OUTPUT,
-    )
+        thread_id=_THREAD,
+    ) as invocation:
+        result = await _tentacle(agent, conversations).run(
+            "hi octomate",
+            conversation_address=_test_conversation_address(),
+            invocation=invocation,
+            output_type=STR_OUTPUT,
+        )
 
     assert result.output == "proceeding without answers"
     recorded = str(conversation.messages)
@@ -796,15 +844,16 @@ async def test_non_interactive_run_declines_deferrals_and_continues() -> None:
     conversations = FakeConversationManager()
     tentacle = _tentacle(agent, conversations)
 
-    result = await tentacle.run(
-        "hi octomate",
-        conversation_address=_test_conversation_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=_test_conversation_address()
-        ),
-        output_type=STR_OUTPUT,
-        interactive=False,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=_test_conversation_address(), thread_id=_THREAD
+    ) as invocation:
+        result = await tentacle.run(
+            "hi octomate",
+            conversation_address=_test_conversation_address(),
+            invocation=invocation,
+            output_type=STR_OUTPUT,
+            interactive=False,
+        )
 
     assert result.output == "proceeding without answers"
     assert script.cursor == 2
@@ -831,15 +880,20 @@ async def test_inkling_tentacle_invokes_suspender_on_deferred_request() -> None:
     suspender = StubSuspender()
 
     outputs: list[object] = []
-    async with tentacle.run_stream_events(
-        "hi octomate",
-        conversation_address=_test_conversation_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=_test_conversation_address()
-        ),
-        output_type=STR_OUTPUT,
-        deferred_suspender=suspender,
-    ) as stream:
+    async with (
+        invocation_for(
+            tentacle,
+            conversation_address=_test_conversation_address(),
+            thread_id=_THREAD,
+        ) as invocation,
+        tentacle.run_stream_events(
+            "hi octomate",
+            conversation_address=_test_conversation_address(),
+            invocation=invocation,
+            output_type=STR_OUTPUT,
+            deferred_suspender=suspender,
+        ) as stream,
+    ):
         async for event in stream:
             if isinstance(event, AgentRunResultEvent):
                 outputs.append(event.result.output)
@@ -859,14 +913,19 @@ async def test_inkling_tentacle_stream_events_forwards_graph_events() -> None:
     tentacle = _tentacle(agent, conversations)
 
     captured_events: list[InklingTestEvent] = []
-    async with tentacle.run_stream_events(
-        "hi octomate",
-        conversation_address=_test_conversation_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=_test_conversation_address()
-        ),
-        output_type=STR_OUTPUT,
-    ) as stream:
+    async with (
+        invocation_for(
+            tentacle,
+            conversation_address=_test_conversation_address(),
+            thread_id=_THREAD,
+        ) as invocation,
+        tentacle.run_stream_events(
+            "hi octomate",
+            conversation_address=_test_conversation_address(),
+            invocation=invocation,
+            output_type=STR_OUTPUT,
+        ) as stream,
+    ):
         async for event in stream:
             captured_events.append(event)
 
@@ -895,26 +954,28 @@ async def test_run_resumes_via_resume_turn_when_deferred_results_passed() -> Non
     conversations = FakeConversationManager()
     tentacle = _tentacle(agent, conversations)
 
-    first = await tentacle.run(
-        "hi octomate",
-        conversation_address=_test_conversation_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=_test_conversation_address()
-        ),
-        output_type=STR_OUTPUT,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=_test_conversation_address(), thread_id=_THREAD
+    ) as invocation:
+        first = await tentacle.run(
+            "hi octomate",
+            conversation_address=_test_conversation_address(),
+            invocation=invocation,
+            output_type=STR_OUTPUT,
+        )
     assert isinstance(first.output, DeferredToolRequests)
 
     results = DeferredToolResults()
     results.calls["call_ask_1"] = ["Ada"]
-    resumed = await tentacle.run(
-        conversation_address=_test_conversation_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=_test_conversation_address()
-        ),
-        output_type=STR_OUTPUT,
-        deferred_tool_results=results,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=_test_conversation_address(), thread_id=_THREAD
+    ) as invocation:
+        resumed = await tentacle.run(
+            conversation_address=_test_conversation_address(),
+            invocation=invocation,
+            output_type=STR_OUTPUT,
+            deferred_tool_results=results,
+        )
 
     assert resumed.output == "all done!"
     assert script.cursor == 2
@@ -952,14 +1013,15 @@ async def test_subagent_run_mounts_the_tentacle_capabilities_too() -> None:
         capabilities=[AskCapability()],
     )
 
-    await tentacle.run(
-        "hi",
-        conversation_address=_test_conversation_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=_test_conversation_address()
-        ),
-        output_type=STR_OUTPUT,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=_test_conversation_address(), thread_id=_THREAD
+    ) as invocation:
+        await tentacle.run(
+            "hi",
+            conversation_address=_test_conversation_address(),
+            invocation=invocation,
+            output_type=STR_OUTPUT,
+        )
     parent = await conversations.ensure(_THREAD, agent_tentacle_id="inkling")
     child = await conversations.ensure(
         _THREAD,
@@ -967,29 +1029,33 @@ async def test_subagent_run_mounts_the_tentacle_capabilities_too() -> None:
         subagent_id="probe",
         parent_conversation_id=parent.id,
     )
-    await tentacle.subagent_run(
-        "work the brief",
+    async with invocation_for(
+        tentacle,
         conversation_address=_test_conversation_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD,
+        thread_id=_THREAD,
+        conversation_id=child.id,
+    ) as invocation:
+        await tentacle.subagent_run(
+            "work the brief",
             conversation_address=_test_conversation_address(),
-            conversation_id=child.id,
-        ),
-    )
+            invocation=invocation,
+        )
 
     def selected_tool() -> str:
         return "probe"
 
-    await tentacle.subagent_run(
-        "work with the selected tool",
+    async with invocation_for(
+        tentacle,
         conversation_address=_test_conversation_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD,
+        thread_id=_THREAD,
+        conversation_id=child.id,
+    ) as invocation:
+        await tentacle.subagent_run(
+            "work with the selected tool",
             conversation_address=_test_conversation_address(),
-            conversation_id=child.id,
-        ),
-        capabilities=[Toolset(FunctionToolset([selected_tool], id="probe"))],
-    )
+            invocation=invocation,
+            capabilities=[Toolset(FunctionToolset([selected_tool], id="probe"))],
+        )
 
     interactive_tools, accomplice_tools, chosen_tools = seen_tools
     assert "ask_questions" in interactive_tools
@@ -1045,19 +1111,20 @@ async def test_inkling_default_output_is_segments() -> None:
         conversation_manager=conversations,
     )
 
-    result = await tentacle.run(
-        "hi octomate",
-        conversation_address=_test_conversation_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=_test_conversation_address()
-        ),
-        model=TestModel(
-            call_tools=[],
-            custom_output_args=[
-                {"type": "markdown", "data": {"text": "hello from the reef"}}
-            ],
-        ),
-    )
+    async with invocation_for(
+        tentacle, conversation_address=_test_conversation_address(), thread_id=_THREAD
+    ) as invocation:
+        result = await tentacle.run(
+            "hi octomate",
+            conversation_address=_test_conversation_address(),
+            invocation=invocation,
+            model=TestModel(
+                call_tools=[],
+                custom_output_args=[
+                    {"type": "markdown", "data": {"text": "hello from the reef"}}
+                ],
+            ),
+        )
 
     assert isinstance(result.output, list)
     assert all(isinstance(segment, Segment) for segment in result.output)
@@ -1080,15 +1147,16 @@ async def test_inkling_applies_its_configured_request_limit() -> None:
         request_limit=17,
     )
 
-    await tentacle.run(
-        "hi octomate",
-        conversation_address=_test_conversation_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=_test_conversation_address()
-        ),
-        output_type=STR_OUTPUT,
-        model=TestModel(call_tools=[]),
-    )
+    async with invocation_for(
+        tentacle, conversation_address=_test_conversation_address(), thread_id=_THREAD
+    ) as invocation:
+        await tentacle.run(
+            "hi octomate",
+            conversation_address=_test_conversation_address(),
+            invocation=invocation,
+            output_type=STR_OUTPUT,
+            model=TestModel(call_tools=[]),
+        )
 
     assert probe.request_limit == 17
 
@@ -1104,13 +1172,18 @@ async def test_inkling_loop_propagates_graph_error_streaming() -> None:
     # The block cannot shrink to one statement: what is asserted is that the error
     # escapes the streaming loop rather than the call that opened it.
     with pytest.raises(RuntimeError, match="model boom"):  # noqa: PT012
-        async with tentacle.run_stream_events(
-            "hi octomate",
-            conversation_address=_test_conversation_address(),
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=_test_conversation_address()
-            ),
-        ) as stream:
+        async with (
+            invocation_for(
+                tentacle,
+                conversation_address=_test_conversation_address(),
+                thread_id=_THREAD,
+            ) as invocation,
+            tentacle.run_stream_events(
+                "hi octomate",
+                conversation_address=_test_conversation_address(),
+                invocation=invocation,
+            ) as stream,
+        ):
             async for _ in stream:
                 pass
 
@@ -1126,14 +1199,17 @@ async def test_inkling_loop_propagates_graph_error_collected_run() -> None:
     tentacle = _tentacle(_boom_agent(), conversations)
 
     with pytest.raises(RuntimeError, match="model boom"):
-        await tentacle.run(
-            "hi octomate",
+        async with invocation_for(
+            tentacle,
             conversation_address=_test_conversation_address(),
-            conversation=await tentacle.resolve_conversation(
-                _THREAD, conversation_address=_test_conversation_address()
-            ),
-            output_type=STR_OUTPUT,
-        )
+            thread_id=_THREAD,
+        ) as invocation:
+            await tentacle.run(
+                "hi octomate",
+                conversation_address=_test_conversation_address(),
+                invocation=invocation,
+                output_type=STR_OUTPUT,
+            )
 
     assert len(conversations.runs) == 1
     assert "hi octomate" in str(conversations.runs[0][2])

@@ -96,6 +96,7 @@ async def summon_session(
         conversation_address=address,
         threads=host.threads,
         workspaces=host.workspaces,
+        habitats=host.habitats,
     )
     return session, channel, caller, receiver
 
@@ -303,8 +304,10 @@ async def test_summon_validates_project_access_and_ref_before_binding(
         thread = await host.threads.get(ThreadKey.from_address(opened))
         assert thread is not None
         assert thread.project_id is not None
-        workspace = host.workspaces.existing(thread.id)
-        assert workspace is not None
+        assert profile.user_id is not None
+        volume = await host.volumes.find(profile.user_id, thread.id, thread.project_id)
+        assert volume is not None
+        workspace = host.workspaces.path(volume)
         assert (workspace / "task.txt").read_text() == "project work"
     assert len(receiver.turns) == 1
 

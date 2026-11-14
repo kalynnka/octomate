@@ -11,8 +11,6 @@ from pydantic_ai.messages import UserContent
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_graph import BaseNode, End, GraphRunContext
 
-from octomate.events import ReflexPhaseChangedEvent
-from octomate.nerve import Impulse
 from octomate.reflex.state import (
     ReflexDeps,
     ReflexGraphResult,
@@ -39,30 +37,9 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
     ) -> React | Summon | Scheme | Teleport | End[ReflexGraphResult]:
-        """React, and leave the turn's workspace in the mirror however it ends.
-
-        In a `finally` because a turn that raised still did whatever it did on
-        disk. The files an agent wrote before its provider dropped the connection
-        are work, and until this runs the workspace is the only copy of them —
-        which also means the sweep can never reclaim that workspace, since it
-        refuses anything the mirror has not seen. A failed turn on a thread nobody
-        resumes would otherwise hold its disk for good.
-
-        A cancelled turn is the one case this does not cover: the save's first
-        await raises straight back out, so its work stays in the workspace and the
-        sweep keeps it, which is the safe direction.
-        """
-        try:
+        """Run with the core's shared finalization."""
+        async with ctx.deps.runtime.finalizing(ctx):
             return await self.react(ctx)
-        finally:
-            await ctx.deps.impulses.send(
-                Impulse(
-                    ReflexPhaseChangedEvent(phase="finalizing"),
-                    ctx.state.target.address if ctx.state.target else None,
-                )
-            )
-            if ctx.state.thread is not None:
-                await ctx.deps.workspaces.save(ctx.state.thread)
 
     async def react(
         self,
@@ -99,16 +76,15 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         state.conversation_id = None
         agent = ctx.deps.agent(resolved.agent)
         run_model = agent.models[model] if model is not None else None
-        thread_id = state.thread.id if state.thread else None
         claim = state.handoff
         if state.thread is not None and claim is not None:
             await claim.land(ctx.deps, state.thread, decision)
             state.handoff = None
         runtime = ctx.deps.runtime
-        if thread_id is None:
+        if state.thread is None:
             raise ValueError("agent run requires a thread to own its conversation")
         conversation = await agent.resolve_conversation(
-            thread_id, conversation_address=target_address
+            state.thread.id, conversation_address=target_address
         )
         state.conversation_id = conversation.id
         session, suspender, capabilities = await runtime.resources(ctx)
@@ -136,19 +112,28 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         )
 
         async def events() -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
-            async with agent.run_stream_events(
-                user_prompt,
-                conversation_address=target_address,
-                conversation=conversation,
-                source_thread_address=state.source_thread_address,
-                source_thread_message_ids=state.source_thread_message_ids,
-                run_name=state.run_name,
-                model=run_model,
-                effort=effort,
-                deferred_tool_results=deferred_results,
-                deferred_suspender=suspender,
-                capabilities=capabilities,
-            ) as stream:
+            if state.thread is None:
+                raise ValueError("React requires a resolved thread")
+            async with (
+                ctx.deps.habitats.invoke(
+                    thread=state.thread,
+                    conversation=conversation,
+                    owner_id=state.user_profile.user_id if state.user_profile else None,
+                ) as invocation,
+                agent.run_stream_events(
+                    user_prompt,
+                    conversation_address=target_address,
+                    invocation=invocation,
+                    source_thread_address=state.source_thread_address,
+                    source_thread_message_ids=state.source_thread_message_ids,
+                    run_name=state.run_name,
+                    model=run_model,
+                    effort=effort,
+                    deferred_tool_results=deferred_results,
+                    deferred_suspender=suspender,
+                    capabilities=capabilities,
+                ) as stream,
+            ):
                 async for event in stream:
                     yield event
 

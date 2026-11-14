@@ -289,6 +289,7 @@ class AcpBroker:
             project=project,
             new=True,
         )
+        await app.workspaces.resolve(thread.id, project, self.sender.user_id)
         session = AcpSession(thread)
         await self.select(session, selection)
         self.sessions[str(thread.id)] = session
@@ -415,6 +416,9 @@ class AcpBroker:
         self, request: schema.ListSessionsRequest
     ) -> schema.ListSessionsResponse:
         app = self.tentacle.octomate
+        owner_id = self.sender.user_id
+        if owner_id is None:
+            raise ValueError("Listing sessions requires a registered owner")
         offset = int(request.cursor or "0")
         if offset < 0:
             raise ValueError("Invalid session cursor")
@@ -425,8 +429,7 @@ class AcpBroker:
         )
         project_name = (
             app.projects.resolve(Path(cwd))
-            if cwd
-            and not Path(cwd).is_relative_to(app.workspaces.workspaces_dir.resolve())
+            if cwd and not Path(cwd).is_relative_to(app.workspaces.volumes_dir)
             else None
         )
         rows = await app.threads.list_threads(
@@ -435,7 +438,12 @@ class AcpBroker:
         sessions: list[schema.SessionInfo] = []
         for thread in rows:
             project = await app.projects.of(thread)
-            workspace = str(app.workspaces.open(thread.id, project).path)
+            volume = await app.volumes.find(
+                owner_id, thread.id, project.id if project is not None else None
+            )
+            if volume is None:
+                continue
+            workspace = str(app.workspaces.path(volume))
             if (
                 cwd
                 and cwd != workspace
