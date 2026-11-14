@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
-from octomate.managers.storages import HostDirectoryManager
+from octomate.managers.storages import HostStorageManager
 from octomate.managers.volumes import VolumeManager
 from octomate.managers.workspaces.mirrors import MirrorManager
 from octomate.schemas.volumes import GitVolume, Volume
@@ -23,7 +23,7 @@ async def test_missing_lookup_creates_neither_rows_nor_directories(
 ) -> None:
     owner = await a_user()
     thread_id = await a_thread()
-    volumes = VolumeManager(host_directories=HostDirectoryManager())
+    volumes = VolumeManager(host_storage=HostStorageManager())
     paths_before = {path async for path in anyio.Path(tmp_path).iterdir()}
 
     assert await volumes.find(owner.id, thread_id, None) is None
@@ -50,7 +50,7 @@ async def test_lookup_does_not_touch_activity_but_acquisition_does(
     async with async_session() as session:
         session.add(original)
         await session.commit()
-    volumes = VolumeManager(host_directories=HostDirectoryManager())
+    volumes = VolumeManager(host_storage=HostStorageManager())
     paths_before = {path async for path in anyio.Path(tmp_path).iterdir()}
     assert original.thread_id is not None
 
@@ -73,7 +73,7 @@ async def test_shared_registry_serializes_allocation_across_workspace_managers(
 ) -> None:
     owner = await a_user()
     thread_id = await a_thread()
-    volumes = VolumeManager(host_directories=HostDirectoryManager())
+    volumes = VolumeManager(host_storage=HostStorageManager())
     first = a_workspace_manager(volumes=volumes, volumes_dir=tmp_path / "volumes")
     second = a_workspace_manager(volumes=volumes, volumes_dir=tmp_path / "volumes")
 
@@ -97,7 +97,7 @@ async def test_reloaded_volumes_share_active_storage_lifetime(
 ) -> None:
     owner = await a_user()
     thread_id = await a_thread()
-    volumes = VolumeManager(host_directories=HostDirectoryManager())
+    volumes = VolumeManager(host_storage=HostStorageManager())
     mirror = await MirrorManager(volumes=volumes).create()
     first = await volumes.tree(owner.id, thread_id, None, mirror=mirror)
 
@@ -119,10 +119,10 @@ async def test_recorded_storage_survives_allocation_root_changes(
     in_memory_engine: AsyncEngine, tmp_path: Path
 ) -> None:
     owner = await a_user()
-    volumes = VolumeManager(host_directories=HostDirectoryManager())
+    volumes = VolumeManager(host_storage=HostStorageManager())
     original = await volumes.tree(owner.id, await a_thread(), None)
     original_path = original.storage.path
-    volumes.host_directories.root = tmp_path / "new-root"
+    volumes.host_storage.root = tmp_path / "new-root"
     assert original.thread_id is not None
 
     reused = await volumes.tree(owner.id, original.thread_id, None)
@@ -130,7 +130,7 @@ async def test_recorded_storage_survives_allocation_root_changes(
 
     assert reused.storage.path == original_path
     assert reused.storage is original.storage
-    assert fresh.storage.path.is_relative_to(volumes.host_directories.root)
+    assert fresh.storage.path.is_relative_to(volumes.host_storage.root)
     assert not original_path.exists()
     assert not fresh.storage.path.exists()
 
@@ -142,7 +142,7 @@ async def test_scopes_and_retention_queries_preserve_volume_identity(
     thread_id = await a_thread()
     project = a_project(tmp_path / "project")
     await a_registry(project)
-    volumes = VolumeManager(host_directories=HostDirectoryManager())
+    volumes = VolumeManager(host_storage=HostStorageManager())
     paths_before = {path async for path in anyio.Path(tmp_path).iterdir()}
 
     project_tree = await volumes.tree(alice.id, thread_id, project.id)
@@ -173,12 +173,12 @@ async def test_mirror_identity_and_location_survive_registry_recreation(
     in_memory_engine: AsyncEngine,
     tmp_path: Path,
 ) -> None:
-    first = VolumeManager(host_directories=HostDirectoryManager())
+    first = VolumeManager(host_storage=HostStorageManager())
     mirror, concurrent = await asyncio.gather(
         first.mirror(None, tmp_path / "original"),
         first.mirror(None, tmp_path / "original"),
     )
-    reloaded = await VolumeManager(host_directories=HostDirectoryManager()).mirror(
+    reloaded = await VolumeManager(host_storage=HostStorageManager()).mirror(
         None, tmp_path / "changed"
     )
     assert mirror.id == concurrent.id == reloaded.id
@@ -196,11 +196,11 @@ async def test_tree_reloads_its_service_mirror_without_an_attachment(
     tmp_path: Path,
 ) -> None:
     owner = await a_user()
-    volumes = VolumeManager(host_directories=HostDirectoryManager())
+    volumes = VolumeManager(host_storage=HostStorageManager())
     mirror = await volumes.mirror(None, tmp_path / "mirror")
     tree = await volumes.tree(owner.id, await a_thread(), None, mirror=mirror)
     assert tree.thread_id is not None
-    loaded = await VolumeManager(host_directories=HostDirectoryManager()).find(
+    loaded = await VolumeManager(host_storage=HostStorageManager()).find(
         owner.id, tree.thread_id, None
     )
     assert loaded is not None

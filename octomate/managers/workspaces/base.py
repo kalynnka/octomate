@@ -16,7 +16,7 @@ from octomate.config.mirrors import GitIdentity
 from octomate.config.workspaces import WorkspacesConfig
 from octomate.managers.base import Manager
 from octomate.managers.project import ProjectManager
-from octomate.managers.storages import HostDirectoryManager
+from octomate.managers.storages import HostStorageManager
 from octomate.managers.volumes import VolumeManager
 from octomate.managers.workspaces.mirrors import (
     GitCommandError,
@@ -78,15 +78,15 @@ class WorkspaceManager(Manager):
         self.mirrors: MirrorManager = mirrors
         self.config = config if config is not None else WorkspacesConfig()
         if volumes_dir is not None:
-            self.volumes.host_directories.root = volumes_dir.resolve()
+            self.volumes.host_storage.root = volumes_dir.resolve()
 
     @property
-    def host_directories(self) -> HostDirectoryManager:
-        return self.volumes.host_directories
+    def host_storage(self) -> HostStorageManager:
+        return self.volumes.host_storage
 
     @property
     def volumes_dir(self) -> Path:
-        return self.host_directories.root
+        return self.host_storage.root
 
     @property
     def identity(self) -> GitIdentity:
@@ -132,9 +132,7 @@ class WorkspaceManager(Manager):
                 mirror=await self.mirrors.resolve(project),
             )
             if owner_id is not None
-            else Volume(
-                storage=self.host_directories.temporary(thread_id), ephemeral=True
-            )
+            else Volume(storage=self.host_storage.temporary(thread_id), ephemeral=True)
         )
         return Workspace(
             thread_id=thread_id,
@@ -158,7 +156,7 @@ class WorkspaceManager(Manager):
 
     def storage(self, path: Path) -> HostDirectory:
         """Share a directory's lock and active uses across resolved workspace views."""
-        return self.host_directories.get(path)
+        return self.host_storage.get(path)
 
     @asynccontextmanager
     async def enter(self, workspace: Workspace) -> AsyncGenerator[Workspace]:

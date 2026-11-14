@@ -35,7 +35,7 @@ from octomate.managers.habitat import HabitatManager
 from octomate.managers.mcp import McpManager
 from octomate.managers.oauth import OAuthManager
 from octomate.managers.project import ProjectManager
-from octomate.managers.storages import HostDirectoryManager
+from octomate.managers.storages import HostStorageManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.volumes import VolumeManager
@@ -182,7 +182,7 @@ class Octomate(FastAPI):
             redoc_url=None,
             lifespan=self.lifespan,
         )
-        volumes = VolumeManager(host_directories=HostDirectoryManager())
+        volumes = VolumeManager(host_storage=HostStorageManager())
         self.workspaces = WorkspaceManager(
             projects=ProjectManager(self.config.projects),
             volumes=volumes,
@@ -252,10 +252,7 @@ class Octomate(FastAPI):
 
     @property
     def projects(self) -> ProjectManager:
-        """The project registry. Kept by the workspace manager, which is the one
-        thing that cannot work without it, and reached here because most of what
-        asks — session attribution, the console, dispatch — wants the registry
-        rather than anything to do with workspaces."""
+        """The project registry owned by the workspace manager."""
         return self.workspaces.projects
 
     @property
@@ -265,7 +262,7 @@ class Octomate(FastAPI):
 
     @property
     def mirrors(self) -> MirrorManager:
-        """Every project's mirror, kept beside the registry for the same reason."""
+        """The mirror manager shared with workspace preparation."""
         return self.workspaces.mirrors
 
     @property

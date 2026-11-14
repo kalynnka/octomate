@@ -171,6 +171,81 @@ async def test_core_prepares_and_releases_native_chat(
     assert not invocation.storage.path.exists()
 
 
+@pytest.mark.parametrize(
+    ("registered", "project_thread"), [(False, False), (True, False), (True, True)]
+)
+async def test_core_uses_the_workspace_volume_lifecycle(
+    in_memory_engine: AsyncEngine,
+    tmp_path: Path,
+    registered: bool,
+    project_thread: bool,
+) -> None:
+    app = Octomate()
+    owner_id = (await a_user()).id if registered else None
+    project = None
+    if project_thread:
+        root = tmp_path / "project"
+        root.mkdir()
+        (root / "source.txt").write_text("project contents")
+        project = a_project(root)
+        app.workspaces.projects = await a_registry(project)
+    thread = await app.threads.ensure(
+        ThreadKey("im", "thread", "room", "turn"), project=project
+    )
+    async with app.habitats.invoke(
+        workspaces=app.workspaces,
+        thread=thread,
+        conversation_id=uuid7(),
+        owner_id=owner_id,
+    ) as invocation:
+        assert invocation.owner_id == owner_id
+        assert invocation.storage.path.is_dir()
+        assert invocation.storage is app.volumes.host_storage.get(
+            invocation.storage.path
+        )
+        if project_thread:
+            assert (
+                invocation.storage.path / "source.txt"
+            ).read_text() == "project contents"
+        (invocation.storage.path / "work.txt").write_text("turn contents")
+
+    assert invocation.storage.uses == 0
+    if project_thread:
+        assert isinstance(invocation.volume, GitVolume)
+        assert (invocation.storage.path / "work.txt").read_text() == "turn contents"
+        assert await app.workspaces.saved(invocation.volume)
+    else:
+        assert not invocation.storage.path.exists()
+
+
+async def test_core_stops_native_habitat_when_volume_preparation_fails(
+    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = Octomate()
+    owner = await a_user()
+    thread = await app.threads.ensure(ThreadKey("im", "dm", "alice"))
+    stop = AsyncMock()
+    monkeypatch.setattr(NativeHabitat, "stop", stop)
+    monkeypatch.setattr(
+        app.mirrors, "create", AsyncMock(side_effect=RuntimeError("mirror failed"))
+    )
+
+    with pytest.raises(RuntimeError, match="mirror failed"):
+        async with app.habitats.invoke(
+            workspaces=app.workspaces,
+            thread=thread,
+            conversation_id=uuid7(),
+            owner_id=owner.id,
+        ):
+            pytest.fail("An invocation with failed preparation must not start")
+
+    stop.assert_awaited_once()
+    volume = await app.volumes.find(owner.id, thread.id, None)
+    assert volume is not None
+    assert volume.storage.uses == 0
+    assert not volume.storage.path.exists()
+
+
 async def test_core_and_workspace_contexts_share_the_same_storage(
     in_memory_engine: AsyncEngine,
 ) -> None:

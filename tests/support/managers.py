@@ -31,7 +31,7 @@ from octomate.database import async_session
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.project import ProjectManager
-from octomate.managers.storages import HostDirectoryManager
+from octomate.managers.storages import HostStorageManager
 from octomate.managers.thread import ThreadManager, message_text_from_segments
 from octomate.managers.user import UserManager
 from octomate.managers.volumes import VolumeManager
@@ -78,7 +78,7 @@ def a_workspace_manager(
     volumes = (
         volumes
         if volumes is not None
-        else VolumeManager(host_directories=HostDirectoryManager())
+        else VolumeManager(host_storage=HostStorageManager())
     )
     return WorkspaceManager(
         projects=projects if projects is not None else ProjectManager(),
@@ -670,7 +670,7 @@ class FakeVolumeManager(VolumeManager):
     """Volume records for graph tests without database persistence."""
 
     def __init__(self) -> None:
-        super().__init__(host_directories=HostDirectoryManager())
+        super().__init__(host_storage=HostStorageManager())
         self.store: dict[tuple[UUID7, UUID7, UUID7 | None], GitVolume] = {}
         self.mirrors: dict[UUID7 | None, GitVolume] = {}
 
@@ -679,7 +679,7 @@ class FakeVolumeManager(VolumeManager):
             self.mirrors[project_id] = GitVolume(
                 usage="mirror",
                 project_id=project_id,
-                storage=self.host_directories.get(path),
+                storage=self.host_storage.get(path),
             )
         return self.mirrors[project_id]
 
@@ -702,8 +702,8 @@ class FakeVolumeManager(VolumeManager):
             volume_id = uuid7()
             self.store[key] = GitVolume(
                 id=volume_id,
-                storage=self.host_directories.get(
-                    self.host_directories.root / str(owner_id) / "tree" / str(volume_id)
+                storage=self.host_storage.get(
+                    self.host_storage.root / str(owner_id) / "tree" / str(volume_id)
                 ),
                 usage="tree",
                 owner_id=owner_id,

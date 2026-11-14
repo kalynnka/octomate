@@ -1711,7 +1711,7 @@ async def test_context_cancellation_preserves_projects_and_releases_chat_claims(
     else:
         assert not workspace.path.exists()
     assert all(
-        not storage.uses for storage in manager.host_directories.directories.values()
+        not storage.uses for storage in manager.host_storage.directories.values()
     )
 
 
@@ -1740,7 +1740,7 @@ async def test_failed_chat_entry_releases_only_its_own_claim(
             assert first.path.is_dir()
             assert manager.storage(first.path).uses == 1
     assert all(
-        not storage.uses for storage in manager.host_directories.directories.values()
+        not storage.uses for storage in manager.host_storage.directories.values()
     )
     assert not failed.path.exists()
 

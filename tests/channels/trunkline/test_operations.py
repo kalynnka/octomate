@@ -48,7 +48,7 @@ class Case:
 @pytest.fixture
 async def case(in_memory_engine: AsyncEngine, tmp_path: Path) -> Case:
     app = Octomate()
-    app.volumes.host_directories.root = (tmp_path / "workspaces").resolve()
+    app.volumes.host_storage.root = (tmp_path / "workspaces").resolve()
     owner = await a_user(profiles={"far": "alice"})
     app.dependency_overrides[current_user] = lambda: owner
     agent = app.connect(FakeAgent(id="first"))

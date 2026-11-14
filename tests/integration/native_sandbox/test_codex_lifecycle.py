@@ -21,7 +21,7 @@ async def test_codex_profile_survives_mode_changes_and_resume(
     project = a_project(sandbox_tree.workspace, name="sandbox-audit")
     octomate = Octomate()
     octomate.workspaces.projects = await a_registry(project)
-    octomate.volumes.host_directories.root = (
+    octomate.volumes.host_storage.root = (
         sandbox_tree.workspace.parent / "runs"
     ).resolve()
     thread = await octomate.threads.ensure(

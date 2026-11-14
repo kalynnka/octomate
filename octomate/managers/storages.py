@@ -11,7 +11,7 @@ from octomate.schemas.volumes.storage import HostDirectory
 
 
 @dataclass
-class HostDirectoryManager(Manager):
+class HostStorageManager(Manager):
     """Host storage layout and shared handles, resolved without creating contents."""
 
     root: Path = Path(

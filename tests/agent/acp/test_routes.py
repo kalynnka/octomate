@@ -638,7 +638,7 @@ async def test_workspace_filter_distinguishes_one_checkout_from_project(
     root = tmp_path / "project"
     root.mkdir()
     app.workspaces.projects = await a_registry(a_project(root, name="demo"))
-    app.workspaces.host_directories.root = root / ".octomate" / "volumes"
+    app.workspaces.host_storage.root = root / ".octomate" / "volumes"
     alias = tmp_path / "project-alias"
     alias.symlink_to(root, target_is_directory=True)
     with client.websocket_connect("/api/acp") as socket:

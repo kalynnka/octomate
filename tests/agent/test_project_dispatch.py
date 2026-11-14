@@ -172,7 +172,7 @@ def test_a_host_shares_its_registry_and_mirrors_with_its_workspaces() -> None:
     assert octomate.workspaces.projects is octomate.projects
     assert octomate.workspaces.mirrors is octomate.mirrors
     assert octomate.mirrors.volumes is octomate.volumes
-    assert octomate.workspaces.host_directories is octomate.volumes.host_directories
+    assert octomate.workspaces.host_storage is octomate.volumes.host_storage
 
 
 def test_the_host_initializes_workspaces_from_its_config() -> None:

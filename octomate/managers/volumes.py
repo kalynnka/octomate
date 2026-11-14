@@ -12,23 +12,23 @@ from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
-from octomate.managers.storages import HostDirectoryManager
+from octomate.managers.storages import HostStorageManager
 from octomate.schemas.volumes import GitVolume, Volume
 
 
 class VolumeManager(Manager, Locks[UUID7 | None]):
     """Resolve volume records and shared storage handles without creating contents."""
 
-    def __init__(self, *, host_directories: HostDirectoryManager) -> None:
-        self.host_directories: HostDirectoryManager = host_directories
+    def __init__(self, *, host_storage: HostStorageManager) -> None:
+        self.host_storage: HostStorageManager = host_storage
 
     async def resolve[VolumeT: Volume](self, volume: VolumeT) -> VolumeT:
         """Reuse this location's runtime coordination across separately loaded rows."""
-        volume.storage = self.host_directories.get(volume.storage.path)
+        volume.storage = self.host_storage.get(volume.storage.path)
         if isinstance(volume, GitVolume):
             mirror = await volume.mirror
             if mirror is not None:
-                mirror.storage = self.host_directories.get(mirror.storage.path)
+                mirror.storage = self.host_storage.get(mirror.storage.path)
         return volume
 
     async def mirror(self, project_id: UUID7 | None, path: Path) -> GitVolume:
@@ -47,7 +47,7 @@ class VolumeManager(Manager, Locks[UUID7 | None]):
                 volume = GitVolume(
                     usage="mirror",
                     project_id=project_id,
-                    storage=self.host_directories.get(path),
+                    storage=self.host_storage.get(path),
                 )
                 session.add(volume)
                 await session.commit()
@@ -95,8 +95,8 @@ class VolumeManager(Manager, Locks[UUID7 | None]):
                     volume_id = uuid7()
                     volume = GitVolume(
                         id=volume_id,
-                        storage=self.host_directories.get(
-                            self.host_directories.root
+                        storage=self.host_storage.get(
+                            self.host_storage.root
                             / str(owner_id)
                             / "tree"
                             / str(volume_id)
