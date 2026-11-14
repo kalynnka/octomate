@@ -77,6 +77,7 @@ from octomate.schemas.todos import Todo
 from octomate.schemas.triage import GatewayAction
 from octomate.schemas.user import UserProfile
 from octomate.types.deferred import DeferredResponseMode
+from octomate.types.threads import KickOutcome
 
 SubagentActivityKind = Literal["commission", "whisper"]
 SubagentActivityStatus = Literal["completed", "failed", "timed_out", "cancelled"]
@@ -114,9 +115,7 @@ class ReflexAsleepEvent(BaseModel):
     a console waits for before it reads the thread again."""
 
     event_kind: Literal["reflex_asleep"] = "reflex_asleep"
-    outcome: (
-        Literal["completed", "failed", "cancelled", "deferred", "handed_off"] | None
-    ) = Field(
+    outcome: KickOutcome | None = Field(
         default=None,
         description="How the whole kick ended, after its runs and gateway operations. "
         "Deferred means awaiting a later continuation; None means unreported.",

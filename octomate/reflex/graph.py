@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 
+from pydantic_ai._utils import now_utc
 from pydantic_graph import Graph, GraphBuilder, TypeExpression
 
 from octomate.events import (
@@ -41,6 +42,7 @@ from octomate.schemas.awakes import AwakeSignal
 from octomate.schemas.commands import CommandError
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
+from octomate.types.threads import KickOutcome
 
 __all__ = [
     "Awake",
@@ -111,8 +113,9 @@ async def run_reflex(
     """Wake the reflex with `signal`, and say so on the nerve before anything
     else. A failure is reported where the kick came from, and the reflex falls
     asleep last whatever happened."""
+    woke_at = now_utc()
     await deps.impulses.send(Impulse(ReflexAwakeEvent(), origin))
-    asleep = ReflexAsleepEvent(outcome="failed")
+    outcome: KickOutcome = "failed"
     try:
         await deps.impulses.send(
             Impulse(ReflexPhaseChangedEvent(phase="preparing"), origin)
@@ -121,24 +124,32 @@ async def run_reflex(
             inputs=Awake(signal=signal), state=state, deps=deps
         )
         if isinstance(result, DeferredResult):
-            asleep.outcome = "deferred"
+            outcome = "deferred"
         elif isinstance(result, ReflexResult):
-            asleep.outcome = result.outcome
+            outcome = result.outcome
         elif not isinstance(result, CommandError):
-            asleep.outcome = "completed"
+            outcome = "completed"
         return result
     except asyncio.CancelledError:
-        asleep.outcome = "cancelled"
+        outcome = "cancelled"
         raise
     except Exception as error:
         await deps.report(state, error)
         raise
     finally:
-        await deps.impulses.send(
-            Impulse(
-                asleep,
-                state.target.address
-                if state.target and state.target.address
-                else origin,
+        try:
+            # Filed before the reflex is heard asleep, so whoever reads the thread
+            # again on that word finds how long the kick took.
+            if state.thread is not None:
+                await deps.thread_manager.record_kick(
+                    state.thread, woke_at=woke_at, outcome=outcome
+                )
+        finally:
+            await deps.impulses.send(
+                Impulse(
+                    ReflexAsleepEvent(outcome=outcome),
+                    state.target.address
+                    if state.target and state.target.address
+                    else origin,
+                )
             )
-        )
