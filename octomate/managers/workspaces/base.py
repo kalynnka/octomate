@@ -336,7 +336,7 @@ class WorkspaceManager(Manager):
 
         Ignored files are copied across, an `.env` among them, since a snapshot
         never holds them. Ignored directories are not: they are dependencies and
-        build output, which the fork's install and the next build make again.
+        build output, which whatever runs in the landed tree makes again.
         """
         project = await self.projects.of(source)
         if project is None:

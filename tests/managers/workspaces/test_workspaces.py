@@ -39,7 +39,6 @@ from octomate.managers.workspaces import snapshots
 from octomate.managers.workspaces.base import (
     WorkspaceManager,
 )
-from octomate.managers.workspaces.dependencies import install
 from octomate.managers.workspaces.mirrors import (
     GitCommandError,
     run_git,
@@ -50,7 +49,6 @@ from octomate.schemas.user import User
 from octomate.schemas.volumes import GitVolume, UnregisteredProjectError, Volume
 from octomate.schemas.volumes.storage import HostDirectory
 from octomate.schemas.workspaces import Workspace
-from tests.support.dependencies import Probe, probing, runs
 from tests.support.managers import a_project, a_registry, a_thread, a_workspace_manager
 from tests.support.users import a_user
 
@@ -1386,17 +1384,17 @@ async def test_a_fork_of_a_folder_project_has_no_remote(
     assert await run_git("remote", cwd=workspace) == ""
 
 
-async def test_a_fork_arrives_installed_however_it_was_made(
-    manager: WorkspaceManager, owner: User, monkeypatch: pytest.MonkeyPatch
+async def test_a_fork_of_a_locked_project_installs_nothing(
+    manager: WorkspaceManager, owner: User
 ) -> None:
-    # Exports carry no host installs, so every fresh fork installs for itself.
-    probing(monkeypatch)
-    mirror = await a_project_mirror(manager, {Probe.lockfile: "one"})
-    await install(mirror)
+    # Whatever runs in the tree installs what it needs; forking never starts a
+    # package manager.
+    mirror = await a_project_mirror(manager, {"uv.lock": "version = 1\n"})
 
     workspace = await a_tree(manager, owner, mirror)
 
-    assert runs(workspace) == 1
+    assert (workspace / "uv.lock").exists()
+    assert not (workspace / ".venv").exists()
 
 
 async def test_a_thread_in_no_project_forks_an_empty_workspace(

@@ -185,7 +185,6 @@ class GitVolume(Volume):
     async def materialize(self, mirror: GitVolume) -> Path:
         """Export only authorized history and this volume's snapshot atomically."""
         # The legacy workspace package imports this schema during initialization.
-        from octomate.managers.workspaces.dependencies import install
         from octomate.managers.workspaces.mirrors import MirrorManager
 
         if mirror.usage != "mirror":
@@ -220,7 +219,6 @@ class GitVolume(Volume):
                     await MirrorManager.export(source, staging, self.snapshot_ref)
                     await self.inherit_remotes(source, staging)
                     await self.checkout(staging)
-                    await install(staging)
                     staging.rename(path)
                 except BaseException:
                     shutil.rmtree(staging, ignore_errors=True)
