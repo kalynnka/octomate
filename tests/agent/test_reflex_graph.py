@@ -708,9 +708,9 @@ async def test_react_mounts_a_commissioning_gate_in_a_thread() -> None:
     assert gate.conversation_id is not None
 
 
-async def test_a_finished_turn_saves_the_threads_workspace() -> None:
-    # A turn is over when its answer is delivered, and that is when its
-    # work has to be somewhere the workspace going away cannot take it.
+async def test_a_finished_turn_leaves_saving_to_its_volume() -> None:
+    # A run that ends checkpoints its own volume as it is released, so the graph
+    # does not snapshot the same tree a second time.
     address = _key("t1")
     agent = FakeAgent(id="other", reception_output="done")
     host = RecordingWorkspaceManager()
@@ -741,16 +741,16 @@ async def test_a_finished_turn_saves_the_threads_workspace() -> None:
         ),
     )
 
-    assert host.saved == [thread.id]
+    assert host.saved == []
 
 
 async def test_a_turn_that_failed_still_saves_its_workspace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A turn that raised still did whatever it did on disk, and until the save runs
-    # the workspace is the only copy of it. It is also the only workspace the sweep
-    # can never reclaim, since it keeps anything the mirror has not seen — so a
-    # failed turn on a thread nobody resumes would hold its disk for good.
+    # A turn that raised still did whatever it did on disk, and a failure outside
+    # the run closes it before its volume saves. Unsaved, it is the one workspace
+    # the sweep can never reclaim, since it keeps anything the mirror has not seen —
+    # so a failed turn on a thread nobody resumes would hold its disk for good.
     address = _key("t1")
     agent = FakeAgent(id="other", reception_output="done")
     host = RecordingWorkspaceManager()

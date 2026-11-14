@@ -167,10 +167,7 @@ async def test_direct_command_delivers_feedback_without_model_history_and_replay
     assert isinstance(agent.suspender, ReflexSuspender)
     assert agent.suspender.decision is None
     assert (agent.session is not None) is gateway
-    save.assert_awaited_once()
-    assert save.await_args is not None
-    assert save.await_args.args[0].id == conversation.thread_id
-    assert save.await_args.args[1] == signal.context.user_id
+    save.assert_not_awaited()
 
 
 @pytest.mark.parametrize("stream", [False, True])

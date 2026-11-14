@@ -274,7 +274,7 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         self, ctx: GraphRunContext[ReflexState, ReflexDeps]
     ) -> End[ReflexGraphResult]:
         """End the move where it landed, for the next message there to carry on:
-        the handoff is recorded and the workspace saved, as a turn's end would."""
+        the handoff is recorded, as a turn's end would."""
         state = ctx.state
         if state.decision is None or state.target is None or state.thread is None:
             raise ValueError("Teleport lands with a decision, a target and a thread")

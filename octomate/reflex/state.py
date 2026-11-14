@@ -503,12 +503,16 @@ class ReflexRuntime:
     async def finalizing(
         self, ctx: GraphRunContext[ReflexState, ReflexDeps]
     ) -> AsyncGenerator[None]:
-        """Publish finalization and checkpoint registered work, except on cancellation."""
-        checkpoint = True
+        """Publish finalization, and save the registered work a failed turn left.
+
+        A run that ends checkpoints its own volume. A failure outside the run closes
+        it unsaved, and an unsaved tree is one the sweep never reclaims.
+        """
+        failed = False
         try:
             yield
-        except BaseException as error:
-            checkpoint = isinstance(error, Exception)
+        except Exception:
+            failed = True
             raise
         finally:
             state = ctx.state
@@ -520,7 +524,7 @@ class ReflexRuntime:
             )
             profile = state.user_profile
             if (
-                checkpoint
+                failed
                 and state.thread is not None
                 and profile is not None
                 and profile.user_id is not None

@@ -5,7 +5,8 @@ over the real ConversationManager/ThreadManager on in-memory SQLite."""
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from typing import cast
 from unittest.mock import AsyncMock
 
@@ -936,7 +937,13 @@ async def test_status_outcomes_survive_failed_or_cancelled_lifecycle(
     elif phase == "execution":
         monkeypatch.setattr(ReflexDeps, "carry", failure)
     else:
-        monkeypatch.setattr(app.workspaces, "save", failure)
+
+        @asynccontextmanager
+        async def finalizing(*_args: object) -> AsyncGenerator[None]:
+            yield
+            await failure()
+
+        monkeypatch.setattr(ReflexRuntime, "finalizing", finalizing)
 
     async with app.nerve.subscribe(ThreadTopic(ThreadKey.from_address(_key()))) as live:
         with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):

@@ -137,7 +137,7 @@ async def test_project_preparation_uses_the_sender_and_starting_ref(
 
 @pytest.mark.parametrize("registered", [False, True])
 @pytest.mark.parametrize("outcome", ["completed", "failed", "cancelled"])
-async def test_react_saves_only_the_registered_senders_tree(
+async def test_react_saves_only_a_registered_senders_failed_turn(
     context: GraphRunContext[ReflexState, ReflexDeps],
     registered: bool,
     outcome: str,
@@ -169,7 +169,7 @@ async def test_react_saves_only_the_registered_senders_tree(
             await react.run(context)
     else:
         await react.run(context)
-    if registered and outcome != "cancelled":
+    if registered and outcome == "failed":
         assert context.state.user_profile is not None
         save.assert_awaited_once_with(
             context.state.thread, context.state.user_profile.user_id

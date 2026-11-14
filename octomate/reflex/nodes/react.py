@@ -37,7 +37,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
     ) -> React | Summon | Scheme | Teleport | End[ReflexGraphResult]:
-        """Run with the core's shared finalization and checkpoint policy."""
+        """Run with the core's shared finalization."""
         async with ctx.deps.runtime.finalizing(ctx):
             return await self.react(ctx)
 
