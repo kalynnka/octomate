@@ -17,7 +17,7 @@ from octomate.types.json import JsonObject
 @pytest.mark.parametrize(
     ("event", "expected", "line"),
     [
-        ({"event_kind": "reflex_awake"}, "working", "Waking up"),
+        ({"event_kind": "reflex_awake"}, "working", "Waking"),
         (
             {"event_kind": "reflex_phase_changed", "phase": "routing"},
             "working",
@@ -26,7 +26,7 @@ from octomate.types.json import JsonObject
         (
             {"event_kind": "reflex_phase_changed", "phase": "moving"},
             "working",
-            "Moving the conversation",
+            "Moving",
         ),
         (
             {
@@ -35,7 +35,7 @@ from octomate.types.json import JsonObject
                 "spell": "summon",
             },
             "working",
-            "Summoning another agent",
+            "Summoning",
         ),
         (
             {"event_kind": "reflex_phase_changed", "phase": "finalizing"},
@@ -59,7 +59,7 @@ from octomate.types.json import JsonObject
         (
             {"event_kind": "run_activity_changed", "activity": "compacting"},
             "compacting",
-            "Compacting context",
+            "Compacting",
         ),
         (
             {
@@ -89,7 +89,7 @@ from octomate.types.json import JsonObject
                 "part": {"part_kind": "text", "content": "private reply"},
             },
             "writing",
-            "Writing the reply",
+            "Writing",
         ),
         (
             {
@@ -98,7 +98,7 @@ from octomate.types.json import JsonObject
                 "delta": {"part_delta_kind": "text", "content_delta": "private reply"},
             },
             "writing",
-            "Writing the reply",
+            "Writing",
         ),
         (
             {
@@ -135,7 +135,7 @@ from octomate.types.json import JsonObject
                 "name": "Scout",
             },
             "working",
-            "Handing a job to Scout",
+            "Commissioning Scout",
         ),
         (
             {
@@ -148,7 +148,7 @@ from octomate.types.json import JsonObject
                 },
             },
             "writing",
-            "Writing the reply",
+            "Writing",
         ),
         ({"event_kind": "run_ended", "outcome": "deferred"}, "run_ended", None),
         ({"event_kind": "reflex_asleep", "outcome": "handed_off"}, "run_ended", None),

@@ -85,8 +85,8 @@ async def test_status_pipeline_renders_activity_wait_and_terminal_cleanup(
 
     monkeypatch.setattr(status, "present", observe)
     events = [
-        (ReflexAwakeEvent(), "Waking up…"),
-        (RunStartedEvent(address=address), "On it…"),
+        (ReflexAwakeEvent(), "Waking…"),
+        (RunStartedEvent(address=address), "Starting…"),
         (
             RunActivityChangedEvent(activity="thinking", display_text="Pondering"),
             "Pondering…",
@@ -96,7 +96,7 @@ async def test_status_pipeline_renders_activity_wait_and_terminal_cleanup(
             ActionBatchEvent(batch_id="batch", blocks_run=True),
             "Waiting for your input…",
         ),
-        (RunActivityChangedEvent(activity="writing"), "Writing the reply…"),
+        (RunActivityChangedEvent(activity="writing"), "Writing…"),
     ]
     async with drawing(channel):
         topic = ChannelTopic(channel.id)
@@ -142,7 +142,7 @@ async def test_status_pipeline_renders_activity_wait_and_terminal_cleanup(
             for _, _, messages, *_ in channel.sent
             for message in messages
         ]
-        assert bodies[0] == "Activity update: Waking up…"
+        assert bodies[0] == "Activity update: Waking…"
         assert bodies[-1] == "answer"
         assert len(bodies) == 7
 
@@ -215,12 +215,12 @@ async def test_plain_status_coalesces_changes_without_repeating_or_claiming_comp
         await asyncio.sleep(0)
         assert sends.await_count == 1
         advance_time(11)
-        assert await asyncio.wait_for(presented.get(), 1) == "Writing the reply…"
+        assert await asyncio.wait_for(presented.get(), 1) == "Writing…"
         assert sends.call_args is not None
         args, kwargs = sends.call_args
         assert args[:2] == ("123", "group")
         assert args[2][0].segments == [
-            {"type": "text", "data": {"text": "Activity update: Writing the reply…"}}
+            {"type": "text", "data": {"text": "Activity update: Writing…"}}
         ]
         assert kwargs["channel_thread_id"] == "123"
         feeler.feed(address, RunActivityChangedEvent(activity="writing"))

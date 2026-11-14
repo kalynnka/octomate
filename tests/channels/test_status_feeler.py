@@ -78,9 +78,9 @@ async def advance_time(monkeypatch: pytest.MonkeyPatch) -> Callable[[float], Non
 async def test_activity_labels_tools_and_explicit_waits() -> None:
     feeler = RecordingStatusFeeler()
     events: list[tuple[WireEvent, str]] = [
-        (ReflexAwakeEvent(), "Waking up…"),
+        (ReflexAwakeEvent(), "Waking…"),
         (ReflexPhaseChangedEvent(phase="routing"), "Finding the right agent…"),
-        (RunStartedEvent(address=ADDRESS), "On it…"),
+        (RunStartedEvent(address=ADDRESS), "Starting…"),
         (PartStartEvent(index=0, part=ThinkingPart(content="private")), "Thinking…"),
         (FunctionToolCallEvent(ToolCallPart("lookup", {}, "tool-1")), "Lookup…"),
         (
@@ -92,10 +92,10 @@ async def test_activity_labels_tools_and_explicit_waits() -> None:
             ActionBatchEvent(batch_id="blocking", blocks_run=True),
             "Waiting for your input…",
         ),
-        (RunActivityChangedEvent(activity="compacting"), "Compacting context…"),
+        (RunActivityChangedEvent(activity="compacting"), "Compacting…"),
         (
             PartStartEvent(index=1, part=TextPart(content="answer")),
-            "Writing the reply…",
+            "Writing…",
         ),
         (RunEndedEvent(), ""),
         (ReflexPhaseChangedEvent(phase="finalizing"), "Wrapping up…"),
@@ -118,7 +118,7 @@ async def test_one_tool_result_and_child_activity_do_not_replace_parent_status()
 ):
     feeler = RecordingStatusFeeler()
     feeler.feed(ADDRESS, FunctionToolCallEvent(ToolCallPart("read", {}, "tool-1")))
-    assert await feeler.next() == "Reading files…"
+    assert await feeler.next() == "Reading…"
     feeler.feed(ADDRESS, FunctionToolCallEvent(ToolCallPart("search", {}, "tool-2")))
     assert await feeler.next() == "Juggling 2 tools…"
     feeler.feed(
@@ -164,10 +164,10 @@ def test_the_opening_beat_does_not_talk_over_who_picked_the_run_up() -> None:
 @pytest.mark.parametrize(
     ("spell", "expected"),
     [
-        ("summon", "Summoning another agent"),
-        ("teleport", "Teleporting the conversation"),
-        ("scheme", "Taking this to your direct messages"),
-        (None, "Moving the conversation"),
+        ("summon", "Summoning"),
+        ("teleport", "Teleporting"),
+        ("scheme", "Scheming"),
+        (None, "Moving"),
     ],
 )
 def test_a_move_is_named_by_its_spell(
@@ -236,7 +236,7 @@ async def test_missing_end_expires_and_same_activity_refreshes_deadline(
     assert await feeler.next() == ""
     assert not feeler.queues
     feeler.feed(ADDRESS, RunActivityChangedEvent(activity="writing"))
-    assert await feeler.next() == "Writing the reply…"
+    assert await feeler.next() == "Writing…"
     await feeler.close()
     assert await feeler.next() == ""
 
@@ -254,7 +254,7 @@ async def test_terminal_events_clear_without_waiting_for_expiry(
 ) -> None:
     feeler = RecordingStatusFeeler()
     feeler.feed(ADDRESS, RunStartedEvent(address=ADDRESS))
-    assert await feeler.next() == "On it…"
+    assert await feeler.next() == "Starting…"
     feeler.feed(ADDRESS, terminal)
     assert await feeler.next() == ""
     await feeler.close()
@@ -266,7 +266,7 @@ async def test_a_stale_deadline_cannot_clear_a_new_run(
 ) -> None:
     feeler = RecordingStatusFeeler()
     feeler.feed(ADDRESS, RunStartedEvent(address=ADDRESS))
-    assert await feeler.next() == "On it…"
+    assert await feeler.next() == "Starting…"
     advance_time(100)
     feeler.feed(ADDRESS, RunEndedEvent())
     assert await feeler.next() == ""
@@ -315,10 +315,10 @@ async def test_siphon_delivers_status_outside_runs_and_with_streaming_disabled(
         channel.octomate.nerve.deliver(
             ChannelTopic(channel.id), Impulse(ReflexAwakeEvent(), address)
         )
-        assert await feeler.next() == "Waking up…"
+        assert await feeler.next() == "Waking…"
         start, *rest = a_run(address)
         channel.octomate.nerve.deliver(ChannelTopic(channel.id), start)
-        assert await feeler.next() == "On it…"
+        assert await feeler.next() == "Starting…"
         for impulse in rest:
             channel.octomate.nerve.deliver(ChannelTopic(channel.id), impulse)
         assert await feeler.next() == ""
