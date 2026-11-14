@@ -233,6 +233,12 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     def __post_init__(self) -> None:
         self.habitats = a_habitat_manager(self.workspaces)
 
+    def adopt(self, workspaces: WorkspaceManager) -> None:
+        """Take the host's workspace manager, as an agent the app builds is given
+        its own, so a run this agent prepares lands where the graph looks."""
+        self.workspaces = workspaces
+        self.habitats = a_habitat_manager(workspaces)
+
     def resolve_model(
         self, model: AgentRouteModelName | None = None
     ) -> AgentRouteModelName | None:

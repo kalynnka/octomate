@@ -209,6 +209,7 @@ def _deps(
     threads: FakeThreadManager | None = None,
 ) -> ReflexDeps:
     workspaces = workspaces if workspaces is not None else RecordingWorkspaceManager()
+    agent.adopt(workspaces)
     return ReflexDeps(
         workspaces=workspaces,
         channels=dict(channels),
@@ -263,6 +264,8 @@ def _summon_deps(
     far: FakeChannelTentacle | None = None,
 ) -> ReflexDeps:
     workspaces = RecordingWorkspaceManager()
+    entry.adopt(workspaces)
+    second.adopt(workspaces)
     return ReflexDeps(
         workspaces=workspaces,
         gateway=GatewayManager(),
@@ -1429,6 +1432,7 @@ async def test_a_native_scheme_signal_lands_in_their_dms_and_hands_off(
         ),
     )
     workspaces = RecordingWorkspaceManager()
+    second.adopt(workspaces)
     deps = ReflexDeps(
         channels={"far": far},
         agents={"second": second},
