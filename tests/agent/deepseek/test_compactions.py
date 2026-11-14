@@ -48,6 +48,7 @@ from tests.agent.deepseek.test_tentacle import (
     patch_gateway,
     session_event,
 )
+from tests.support.invocations import invocation_for
 from tests.support.managers import a_thread
 
 
@@ -278,21 +279,23 @@ async def test_automatic_driven_compaction_survives_the_enclosing_run(
     async with agent:
         if failed_run:
             with pytest.raises(AgentRunError):
+                async with invocation_for(
+                    agent, conversation_address=KEY, thread_id=thread.id
+                ) as invocation:
+                    await agent.run(
+                        "work",
+                        conversation_address=KEY,
+                        invocation=invocation,
+                    )
+        else:
+            async with invocation_for(
+                agent, conversation_address=KEY, thread_id=thread.id
+            ) as invocation:
                 await agent.run(
                     "work",
                     conversation_address=KEY,
-                    conversation=await agent.resolve_conversation(
-                        thread.id, conversation_address=KEY
-                    ),
+                    invocation=invocation,
                 )
-        else:
-            await agent.run(
-                "work",
-                conversation_address=KEY,
-                conversation=await agent.resolve_conversation(
-                    thread.id, conversation_address=KEY
-                ),
-            )
     async with async_session() as session:
         [row] = await session.list(
             Compaction, options=[selectinload(Compaction["messages"])]
@@ -580,7 +583,13 @@ async def test_consecutive_prompts_keep_distinct_surface_identities(
         conversation = await agent.resolve_conversation(
             thread.id, conversation_address=KEY
         )
-        await agent.run("first", conversation_address=KEY, conversation=conversation)
+        async with invocation_for(
+            agent,
+            conversation_address=KEY,
+            thread_id=conversation.thread_id,
+            conversation=conversation,
+        ) as invocation:
+            await agent.run("first", conversation_address=KEY, invocation=invocation)
     assert [
         message.message_text
         for message in await app.conversations.history(conversation.id)

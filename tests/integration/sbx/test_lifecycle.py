@@ -11,6 +11,7 @@ from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
 from octomate.schemas.habitat import InvocationScope
+from tests.support.managers import a_workspace_manager
 
 
 @pytest.mark.timeout(600)
@@ -18,7 +19,9 @@ async def test_command_attachment_reuse_and_stop_start_persistence() -> None:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
-    manager = HabitatManager(SbxHabitatConfig(image=image), Nerve())
+    manager = HabitatManager(
+        SbxHabitatConfig(image=image), Nerve(), a_workspace_manager()
+    )
     owner = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
     other = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
     sandbox = manager.residence(owner).habitat

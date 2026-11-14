@@ -14,7 +14,7 @@ from octomate.schemas.commands import (
     CommandContext,
     CommandDescriptor,
     CommandError,
-    CommandInvocation,
+    CommandIntent,
     CommandOutcome,
     CommandResult,
 )
@@ -313,12 +313,12 @@ def test_attachment_support_distinguishes_unknown_from_unsupported(
 
 def test_invocation_preserves_arguments_and_resolved_attachments() -> None:
     arguments = '  "a b"\n--flag=✓  '
-    invocation = CommandInvocation(
+    intent = CommandIntent(
         command_id="inspect",
         arguments=arguments,
         attachments=[FileSegment(data=FileData(file="/resolved/input.txt"))],
     )
-    restored = CommandInvocation.model_validate_json(invocation.model_dump_json())
+    restored = CommandIntent.model_validate_json(intent.model_dump_json())
 
     assert restored.arguments == arguments
     assert isinstance(restored.attachments[0], FileSegment)
@@ -340,7 +340,7 @@ def test_invocation_rejects_invalid_intent_and_attachment_shapes(
     payload: JsonObject,
 ) -> None:
     with pytest.raises(ValidationError):
-        CommandInvocation.model_validate(payload)
+        CommandIntent.model_validate(payload)
 
 
 @pytest.mark.parametrize(
@@ -398,7 +398,8 @@ async def test_default_hooks_are_unsupported_without_starting_a_turn(
     async with aclosing(
         agent.execute_command(
             context,
-            CommandInvocation(command_id="unknown", arguments=" /raw "),
+            CommandIntent(command_id="unknown", arguments=" /raw "),
+            invocation=None,
         )
     ) as events:
         outcome = await anext(events)

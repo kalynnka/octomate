@@ -41,6 +41,7 @@ from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
     FakeConversationManager,
     FakeThreadManager,
+    a_workspace_manager,
     fixed_session,
 )
 from tests.support.mcp import install_tentacle
@@ -64,6 +65,7 @@ SUMMON_ARGUMENTS = {
 def a_turn(*, in_thread: bool = False) -> OctomateSession:
     """A turn on a group main, or in a thread of it — the shared surface a summon can
     take over."""
+    threads = FakeThreadManager()
     return OctomateSession(
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id="inkling",
@@ -76,6 +78,9 @@ def a_turn(*, in_thread: bool = False) -> OctomateSession:
             channel_thread_id="t-1" if in_thread else None,
             shared=True,
         ),
+        users=threads.users,
+        threads=threads,
+        workspaces=a_workspace_manager(),
     )
 
 

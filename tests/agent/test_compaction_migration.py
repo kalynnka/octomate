@@ -29,6 +29,7 @@ from octomate.schemas.user import UserProfile
 from tests.support.managers import a_thread
 
 PREVIOUS = "90e954ec0b2d"
+REVISION = "a1a2d6fe9638"
 
 
 async def test_compaction_migration_preserves_history_on_a_copy(
@@ -93,8 +94,7 @@ async def test_compaction_migration_preserves_history_on_a_copy(
     config = Config(str(module_path.parents[2] / "alembic.ini"))
     monkeypatch.setattr("logging.config.fileConfig", Mock())
 
-    # The copy is built from today's models, so it stands at the newest revision.
-    await asyncio.to_thread(command.stamp, config, "head")
+    await asyncio.to_thread(command.stamp, config, REVISION)
     await asyncio.to_thread(command.downgrade, config, PREVIOUS)
     with (
         sqlite3.connect(source.as_uri() + "?mode=ro", uri=True) as original,
@@ -119,8 +119,11 @@ async def test_compaction_migration_preserves_history_on_a_copy(
             ).fetchall()
             for table in tables
         } == before
-    await asyncio.to_thread(command.upgrade, config, "head")
+    await asyncio.to_thread(command.upgrade, config, REVISION)
+    # The copy carries today's schema, so it is compared as the newest revision.
+    await asyncio.to_thread(command.stamp, config, "head")
     await asyncio.to_thread(command.check, config)
+    await asyncio.to_thread(command.stamp, config, REVISION)
     with sqlite3.connect(target) as copied:
         assert copied.execute("PRAGMA foreign_key_check").fetchall() == []
         assert copied.execute(
@@ -172,7 +175,7 @@ async def test_compaction_migration_preserves_history_on_a_copy(
                 await session.commit()
         with pytest.raises(RuntimeError, match="compaction-owned messages exist"):
             await asyncio.to_thread(command.downgrade, config, PREVIOUS)
-        await asyncio.to_thread(command.upgrade, config, "head")
+        await asyncio.to_thread(command.upgrade, config, REVISION)
         async with maker() as session:
             preserved = await session.list(
                 Compaction,
@@ -194,9 +197,9 @@ async def test_compaction_migration_preserves_history_on_a_copy(
             await session.commit()
         with pytest.raises(RuntimeError, match="saved conversation usage"):
             await asyncio.to_thread(command.downgrade, config, PREVIOUS)
-        # The refused downgrade had already undone the revisions after this one.
-        await asyncio.to_thread(command.upgrade, config, "head")
+        await asyncio.to_thread(command.stamp, config, "head")
         await asyncio.to_thread(command.check, config)
+        await asyncio.to_thread(command.stamp, config, REVISION)
         async with maker() as session:
             stored = await session.get(
                 Conversation,

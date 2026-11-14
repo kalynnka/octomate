@@ -1,41 +1,120 @@
-"""One persistent habitat per registered user."""
+"""Invocation resources and each registered user's persistent habitat."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
+import anyio
 from pydantic import UUID7
+from uuid_utils.compat import uuid7
 
 from octomate.config.habitat import (
     HabitatConfig,
     NativeHabitatConfig,
     SbxHabitatConfig,
 )
-from octomate.habitat import Habitat
+from octomate.habitat import Habitat, ManagedHabitat, NativeHabitat
 from octomate.habitat import HabitatError as HabitatError
 from octomate.habitat.sbx import SbxHabitat
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import (
     HabitatTopic,
     Impulse,
     Nerve,
     UserTopic,
 )
+from octomate.schemas.conversation import Conversation
 from octomate.schemas.habitat import (
     HabitatFailed,
     HabitatProgress,
     HabitatStatus,
     InvocationScope,
 )
+from octomate.schemas.project import Project
+from octomate.schemas.thread import Thread
+from octomate.schemas.volumes import Volume
+from octomate.schemas.workspaces import Workspace
+
+
+@dataclass(frozen=True, kw_only=True)
+class Invocation:
+    """Core-authorized resources, valid only inside the core's owning contexts.
+
+    Core prepares the storage and acquires any habitat before yielding this
+    value. Adapters borrow them for the call; core owns their lifetime and the
+    cleanup required on completion, failure, or cancellation.
+    """
+
+    id: UUID7  # Allocated by core before acquisition, shared with lifecycle events.
+    conversation: Conversation  # Resolved by core; the run's history and settings.
+    workspace: Workspace  # Prepared volume composition, owned by core for this call.
+    habitat: Habitat  # Prepared environment, owned by core for this call.
+
+    def __post_init__(self) -> None:
+        if isinstance(self.habitat, ManagedHabitat):
+            if self.owner_id is None:
+                raise ValueError("Habitat execution requires a registered user")
+            if self.habitat.user_id != self.owner_id:
+                raise ValueError("Habitat and volume owners do not match")
+
+    @property
+    def owner_id(self) -> UUID7 | None:
+        return self.workspace.owner_id
+
+    @property
+    def environment(self) -> dict[str, str]:
+        """Settings that point the harness at the owner's own volumes, as the
+        habitat shows them.
+
+        Package managers keep their stores beneath the cache. A sandbox is
+        another machine, so its agents keep their configuration in the owner's
+        volume; a native run uses the host's own.
+        """
+        settings: dict[str, str] = {}
+        cache = self.workspace.volumes.get("cache")
+        if cache is not None:
+            path = self.habitat.path(cache)
+            settings.update(
+                UV_CACHE_DIR=str(path / "uv"),
+                npm_config_cache=str(path / "npm"),
+                npm_config_store_dir=str(path / "pnpm"),
+            )
+        config = self.workspace.volumes.get("config")
+        if config is not None and isinstance(self.habitat, ManagedHabitat):
+            path = self.habitat.path(config)
+            settings.update(
+                CLAUDE_CONFIG_DIR=str(path / ".claude"),
+                CODEX_HOME=str(path / ".codex"),
+            )
+        return settings
+
+    @property
+    def cwd(self) -> Path | PurePosixPath:
+        """The harness's working directory; `workspace.path` remains host-side."""
+        return self.habitat.path(self.volume)
+
+    @property
+    def thread_id(self) -> UUID7:
+        return self.workspace.thread_id
+
+    @property
+    def project(self) -> Project | None:
+        return self.workspace.project
+
+    @property
+    def volume(self) -> Volume:
+        return self.workspace.volume
 
 
 @dataclass
 class Residence:
     user_id: UUID7
-    habitat: Habitat
+    habitat: ManagedHabitat
     status: HabitatStatus
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     invocations: set[UUID7] = field(default_factory=set)
@@ -48,15 +127,74 @@ class Residence:
 class HabitatManager:
     config: HabitatConfig
     nerve: Nerve
+    workspaces: WorkspaceManager
     residences: dict[UUID7, Residence] = field(default_factory=dict, init=False)
     closed: bool = field(default=False, init=False)
+
+    @asynccontextmanager
+    async def invoke(
+        self,
+        *,
+        thread: Thread,
+        conversation: Conversation,
+        owner_id: UUID7 | None,
+    ) -> AsyncGenerator[Invocation]:
+        """Own one call's resources for the full consumption of its events.
+
+        A sandbox runs for a registered user; an unregistered sender is refused
+        before anything is prepared.
+        """
+        invocation_id = uuid7()
+        projects = self.workspaces.projects
+        if isinstance(self.config, NativeHabitatConfig):
+            project = await projects.of(thread) if projects.roots else None
+            habitat = NativeHabitat()
+            await habitat.prepare()
+            try:
+                async with self.workspaces.open(
+                    thread.id, project, owner_id
+                ) as workspace:
+                    yield Invocation(
+                        id=invocation_id,
+                        conversation=conversation,
+                        workspace=workspace,
+                        habitat=habitat,
+                    )
+            finally:
+                await habitat.stop()
+            return
+        if owner_id is None:
+            raise HabitatError("Running in a sandbox requires a registered user")
+        project = await projects.of(thread) if projects.roots else None
+        scope = InvocationScope(
+            user_id=owner_id, conversation_id=conversation.id, thread_id=thread.id
+        )
+        # The workspace is opened first, so the root the sandbox mounts exists,
+        # and released last, after the sandbox lease and the harness in it.
+        async with (
+            self.workspaces.open(thread.id, project, owner_id) as workspace,
+            self.enter(scope, invocation_id) as residence,
+        ):
+            yield Invocation(
+                id=invocation_id,
+                conversation=conversation,
+                workspace=workspace,
+                habitat=residence.habitat,
+            )
 
     def residence(self, scope: InvocationScope) -> Residence:
         """Internal lookup; callers must supply a core-authorized owner."""
         if scope.user_id not in self.residences:
             match self.config:
                 case SbxHabitatConfig() as config:
-                    habitat = SbxHabitat(config=config, user_id=scope.user_id)
+                    habitat = SbxHabitat(
+                        config=config,
+                        user_id=scope.user_id,
+                        root=self.workspaces.root(scope.user_id),
+                        config_dir=self.workspaces.host_storage.slot(
+                            scope.user_id, "config"
+                        ),
+                    )
                 case NativeHabitatConfig():
                     raise HabitatError("Habitat mode is 'native'; no habitat runs")
             self.residences[scope.user_id] = Residence(
@@ -129,7 +267,9 @@ class HabitatManager:
         try:
             yield residence
         finally:
-            async with residence.lock:
+            async with AsyncExitStack() as cleanup:
+                cleanup.enter_context(anyio.CancelScope(shield=True))
+                await cleanup.enter_async_context(residence.lock)
                 residence.invocations.discard(invocation_id)
                 if not residence.invocations and not self.closed:
                     residence.idle = asyncio.get_running_loop().call_later(
@@ -159,7 +299,8 @@ class HabitatManager:
                 )
             )
             try:
-                await self.halt(residence)
+                with anyio.CancelScope(shield=True):
+                    await self.halt(residence)
             finally:
                 self.report(
                     residence,

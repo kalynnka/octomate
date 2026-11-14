@@ -24,7 +24,6 @@ from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 from sqlalchemy.ext.asyncio import AsyncEngine
-from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.capabilities.history import HistoryCapability
@@ -62,6 +61,7 @@ from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
     FakeConversationManager,
     FakeThreadManager,
+    a_workspace_manager,
     fixed_session,
 )
 from tests.support.mcp import core_tool_server
@@ -104,6 +104,9 @@ def a_turn(
             channel_thread_id="t-1" if in_thread else None,
             shared=True,
         ),
+        users=threads.users,
+        threads=threads,
+        workspaces=a_workspace_manager(),
     )
     server = octomate_mcp(
         fixed_session(session),
@@ -140,6 +143,8 @@ async def a_native_call(
         users=users,
         user_profile=await users.native_profile("coding", "luhui"),
         native=True,
+        threads=threads,
+        workspaces=a_workspace_manager(),
     )
 
     async def kick(signal: NativeGatewaySignal) -> None:
@@ -187,9 +192,10 @@ async def test_the_server_offers_the_shared_spells() -> None:
 async def test_accomplices_run_and_resume_without_harness_specific_metadata(
     projection: str, model: str
 ) -> None:
-    _, session, _, _ = a_turn()
+    _, session, _, threads = a_turn()
     conversations = FakeConversationManager()
-    thread_id = uuid7()
+    assert session.conversation_address is not None
+    thread_id = (await threads.ensure(session.conversation_address)).id
     parent = await conversations.ensure(
         thread_id, agent_tentacle_id=session.current_agent_id
     )
@@ -210,6 +216,8 @@ async def test_accomplices_run_and_resume_without_harness_specific_metadata(
             ]
         },
         thread_id=thread_id,
+        threads=threads,
+        workspaces=a_workspace_manager(),
         conversation_id=parent.id,
     )
     server = core_tool_server(session, conversations=conversations)
@@ -471,6 +479,9 @@ async def test_send_here_reaches_the_console_watching_a_trunkline_thread() -> No
         channels={"trunkline": console},
         nerve=octomate.nerve,
         conversation_address=address,
+        users=octomate.users,
+        threads=octomate.threads,
+        workspaces=octomate.workspaces,
     )
     server = octomate_mcp(
         fixed_session(session),
@@ -735,6 +746,9 @@ async def a_turn_of_alices(in_memory_engine: AsyncEngine) -> FastMCP:
         conversation_address=ChannelAddress(
             channel_tentacle_id="im", chat_type="dm", chat_id="landing", user_id="alice"
         ),
+        users=threads.users,
+        threads=threads,
+        workspaces=a_workspace_manager(),
     )
     return octomate_mcp(
         fixed_session(session),
@@ -799,6 +813,8 @@ async def test_a_native_session_reads_its_users_history(
         users=users,
         user_profile=await users.native_profile("coding", "luhui"),
         native=True,
+        threads=threads,
+        workspaces=a_workspace_manager(),
     )
     server = octomate_mcp(
         fixed_session(session),

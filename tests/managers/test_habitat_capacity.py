@@ -13,13 +13,16 @@ from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatError, HabitatManager
 from octomate.nerve import Nerve, UserTopic
 from octomate.schemas.habitat import HabitatProgress, InvocationScope
+from tests.support.managers import a_workspace_manager
 from tests.support.nerve import held
 from tests.test_habitat_contracts import IMAGE
 
 
 @pytest.fixture
 async def manager(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[HabitatManager]:
-    manager = HabitatManager(SbxHabitatConfig(image=IMAGE, idle_timeout=60), Nerve())
+    manager = HabitatManager(
+        SbxHabitatConfig(image=IMAGE, idle_timeout=60), Nerve(), a_workspace_manager()
+    )
 
     monkeypatch.setattr(SbxHabitat, "prepare", AsyncMock())
     monkeypatch.setattr(SbxHabitat, "stop", AsyncMock())

@@ -27,6 +27,7 @@ from octomate.config.agents import ToolOutputConfig
 from octomate.managers.spills import SpillStore
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.inkling import InklingTentacle
+from tests.support.invocations import invocation_for
 from tests.support.managers import FakeConversationManager
 
 # Well past the 10k-char band the capability defaults to.
@@ -107,14 +108,15 @@ async def test_oversized_tool_return_is_reduced_before_it_reaches_history(
 
     tentacle, _ = _tentacle()
 
-    result = await tentacle.run(
-        "dump it",
-        conversation_address=_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=_address()
-        ),
-        output_type=STR_OUTPUT,
-    )
+    async with invocation_for(
+        tentacle, conversation_address=_address(), thread_id=_THREAD
+    ) as invocation:
+        result = await tentacle.run(
+            "dump it",
+            conversation_address=_address(),
+            invocation=invocation,
+            output_type=STR_OUTPUT,
+        )
 
     returns = _tool_returns(result.all_messages())
     assert returns, "the scripted model should have called dump_the_lot"
@@ -144,13 +146,17 @@ async def test_accomplice_is_bounded_without_being_asked(
         parent_conversation_id=parent.id,
     )
 
-    result = await tentacle.subagent_run(
-        "dump it",
+    async with invocation_for(
+        tentacle,
         conversation_address=_address(),
-        conversation=await tentacle.resolve_conversation(
-            _THREAD, conversation_address=_address(), conversation_id=child.id
-        ),
-    )
+        thread_id=_THREAD,
+        conversation_id=child.id,
+    ) as invocation:
+        result = await tentacle.subagent_run(
+            "dump it",
+            conversation_address=_address(),
+            invocation=invocation,
+        )
 
     returns = _tool_returns(result.all_messages())
     assert returns, "the accomplice should have called dump_the_lot"
