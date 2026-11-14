@@ -151,12 +151,17 @@ def test_a_phrase_is_drawn_when_an_activity_begins_and_held_while_it_lasts(
     assert again != first
 
 
+def test_a_codex_mcp_call_is_not_shown_under_its_internal_name() -> None:
+    call = FunctionToolCallEvent(ToolCallPart("codex_mcp_tool_call", {}, "tool-1"))
+    assert StatusNarrator().narrate(call) == "Using tools"
+
+
 def test_the_opening_beat_does_not_talk_over_who_picked_the_run_up() -> None:
     narrator = StatusNarrator()
     started = RunStartedEvent(address=ADDRESS, agent_tentacle_id="claude")
     working = RunActivityChangedEvent(activity="working")
-    assert narrator.narrate(started) == "Claude is on it"
-    assert narrator.narrate(working) == "Claude is on it"
+    assert narrator.narrate(started) == "Handing to Claude"
+    assert narrator.narrate(working) == "Handing to Claude"
     narrator.narrate(RunActivityChangedEvent(activity="thinking"))
     assert narrator.narrate(working) == "Working on it"
 

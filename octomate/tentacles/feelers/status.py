@@ -81,13 +81,16 @@ PHRASES: dict[str, tuple[str, ...]] = {
         "Coming into port",
     ),
     "picked_up": (
-        "{agent} is on it",
-        "{agent} picked this up",
-        "{agent} latched on",
-        "{agent} is diving in",
-        "{agent} is on deck",
-        "{agent} took the helm",
-        "{agent} came aboard",
+        "Handing to {agent}",
+        "Passing to {agent}",
+        "Waking {agent}",
+        "Calling {agent}",
+        "Hailing {agent}",
+        "Tapping {agent}",
+        "Releasing {agent}",
+        "Inking in {agent}",
+        "Handing {agent} the helm",
+        "Welcoming {agent} aboard",
     ),
     "started": (
         "Starting",
@@ -240,6 +243,9 @@ TOOL_KINDS: dict[str, str] = {
     "write_todos": "plan",
     "task": "delegate",
     "agent": "delegate",
+    # Codex reports every MCP and dynamic call under one name that says nothing.
+    "codex_mcp_tool_call": "using_tools",
+    "codex_dynamic_tool_call": "using_tools",
 }
 
 

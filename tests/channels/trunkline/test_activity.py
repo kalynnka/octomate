@@ -54,7 +54,7 @@ from octomate.types.json import JsonObject
                 "agent_tentacle_id": "claude",
             },
             "working",
-            "Claude is on it",
+            "Handing to Claude",
         ),
         (
             {"event_kind": "run_activity_changed", "activity": "compacting"},
