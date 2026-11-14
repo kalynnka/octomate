@@ -132,7 +132,7 @@ from octomate.schemas.mcp import McpAppInvocation, McpAppResultMeta
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import Thread, ThreadKey
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
 from octomate.streaming.files import FileTransferError, FileTransferSlot
@@ -840,30 +840,15 @@ class CodexTentacle(AgentTentacle[str, None]):
         )
         return catalog
 
-    def command_invocation(
-        self,
-        context: CommandContext,
-        intent: CommandIntent,
-        descriptor: CommandDescriptor,
-        *,
-        thread: Thread | None,
-    ) -> contextlib.AbstractAsyncContextManager[Invocation | None]:
-        if not isinstance(descriptor, CodexCommandDescriptor) and descriptor.id not in {
+    def needs_invocation(self, descriptor: CommandDescriptor) -> bool:
+        return isinstance(descriptor, CodexCommandDescriptor) or descriptor.id in {
             "builtin:init",
             "builtin:approve",
             "builtin:review",
             "builtin:mcp",
             "builtin:plan",
             "builtin:compact",
-        }:
-            return contextlib.nullcontext(None)
-        if thread is None or context.conversation is None:
-            raise ValueError("A runtime command requires a conversation")
-        return self.habitats.invoke(
-            thread=thread,
-            conversation=context.conversation,
-            owner_id=context.user_id,
-        )
+        }
 
     async def execute_command(
         self,

@@ -89,7 +89,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import Thread, ThreadKey
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import agent_input_message_attributes, deepseek_logfire
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
@@ -524,23 +524,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             },
         )
 
-    def command_invocation(
-        self,
-        context: CommandContext,
-        intent: CommandIntent,
-        descriptor: CommandDescriptor,
-        *,
-        thread: Thread | None,
-    ) -> contextlib.AbstractAsyncContextManager[Invocation | None]:
-        if not isinstance(descriptor, DeepseekCommandDescriptor):
-            return contextlib.nullcontext(None)
-        if thread is None or context.conversation is None:
-            raise ValueError("A runtime command requires a conversation")
-        return self.habitats.invoke(
-            thread=thread,
-            conversation=context.conversation,
-            owner_id=context.user_id,
-        )
+    def needs_invocation(self, descriptor: CommandDescriptor) -> bool:
+        return isinstance(descriptor, DeepseekCommandDescriptor)
 
     async def execute_command(
         self,

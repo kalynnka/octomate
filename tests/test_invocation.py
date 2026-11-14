@@ -16,6 +16,7 @@ from octomate.schemas.thread import ThreadKey
 from octomate.schemas.volumes import GitVolume, UnregisteredProjectError
 from octomate.schemas.volumes.storage import HostDirectory
 from octomate.schemas.workspaces import Workspace
+from tests.support.agents import FakeAgent
 from tests.support.managers import a_project, a_registry, a_thread, a_workspace_manager
 from tests.support.users import a_user
 
@@ -390,7 +391,7 @@ async def test_core_releases_chat_on_failure_and_cancellation(
     assert not invocation.workspace.path.exists()
 
 
-async def test_core_refuses_anonymous_project_and_managed_dispatch(
+async def test_core_refuses_an_anonymous_project(
     in_memory_engine: AsyncEngine,
     tmp_path: Path,
 ) -> None:
@@ -410,14 +411,71 @@ async def test_core_refuses_anonymous_project_and_managed_dispatch(
             owner_id=None,
         ):
             pytest.fail("An anonymous project invocation must not start")
+
+
+class SandboxAgent(FakeAgent):
+    supports_managed_habitat = True
+
+
+@pytest.mark.parametrize("registered", [False, True])
+async def test_sandbox_dispatch_refuses_before_preparing_anything(
+    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch, registered: bool
+) -> None:
+    app = Octomate()
     app.habitats.config = SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64)
-    with pytest.raises(HabitatError, match="Managed habitat dispatch"):
-        async with app.habitats.invoke(
+    prepare = AsyncMock()
+    monkeypatch.setattr(SbxHabitat, "prepare", prepare)
+    thread = await app.threads.ensure(ThreadKey("im", "thread", "room", "turn"))
+    # The manager refuses an unregistered sender whatever the agent; an agent
+    # that cannot run in a sandbox refuses a registered one itself.
+    agent = FakeAgent() if registered else SandboxAgent()
+    agent.habitats = app.habitats
+    message = "cannot run in a sandbox" if registered else "registered user"
+    with pytest.raises(HabitatError, match=message):
+        async with agent.inhabit(
             thread=thread,
             conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
-            owner_id=(await a_user()).id,
+            owner_id=(await a_user()).id if registered else None,
         ):
-            pytest.fail("Managed execution must not fall back to native")
+            pytest.fail("Sandbox execution must not fall back to the host")
+    prepare.assert_not_awaited()
+    assert not app.habitats.residences
+    assert not app.workspaces.volumes_dir.exists()
+    assert not app.workspaces.host_storage.mirrors_dir.exists()
+
+
+async def test_a_capable_agent_leases_the_owners_sandbox(
+    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = Octomate()
+    app.habitats.config = SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64)
+    monkeypatch.setattr(SbxHabitat, "prepare", AsyncMock())
+    monkeypatch.setattr(SbxHabitat, "stop", AsyncMock())
+    owner = await a_user()
+    thread = await app.threads.ensure(ThreadKey("im", "thread", "room", "turn"))
+    agent = SandboxAgent()
+    agent.habitats = app.habitats
+    try:
+        async with agent.inhabit(
+            thread=thread,
+            conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
+            owner_id=owner.id,
+        ) as invocation:
+            habitat = invocation.habitat
+            assert isinstance(habitat, SbxHabitat)
+            assert habitat.user_id == owner.id
+            assert habitat.root == app.workspaces.root(owner.id)
+            assert invocation.workspace.path.is_dir()
+            assert invocation.cwd == PurePosixPath(invocation.workspace.path)
+            assert invocation.environment["CLAUDE_CONFIG_DIR"] == str(
+                habitat.config_dir / ".claude"
+            )
+            residence = app.habitats.residences[owner.id]
+            assert residence.invocations == {invocation.id}
+        assert not residence.invocations
+        assert not invocation.workspace.path.exists()
+    finally:
+        await app.habitats.close()
 
 
 async def test_core_checkpoints_an_empty_project_without_a_git_index(

@@ -96,7 +96,6 @@ async def summon_session(
         conversation_address=address,
         threads=host.threads,
         workspaces=host.workspaces,
-        habitats=host.habitats,
     )
     return session, channel, caller, receiver
 

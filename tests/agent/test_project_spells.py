@@ -44,7 +44,6 @@ from octomate.types.json import JsonObject
 from tests.support.managers import (
     FakeConversationManager,
     FakeThreadManager,
-    a_habitat_manager,
     a_project,
     a_registry,
     a_workspace_manager,
@@ -119,7 +118,6 @@ async def a_harness(
         thread_id=thread.id,
         threads=threads,
         workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
     )
     return Harness(
         session=session, workspaces=workspaces, threads=threads, thread=thread
@@ -303,7 +301,6 @@ async def test_a_gateway_without_a_thread_can_list_projects_but_not_move_or_dism
 ):
     users, profile = await a_registered_profile()
     threads = FakeThreadManager(users=users)
-    workspaces = a_workspace_manager()
     session = OctomateSession(
         channel_routes={},
         current_agent_id="inkling",
@@ -311,8 +308,7 @@ async def test_a_gateway_without_a_thread_can_list_projects_but_not_move_or_dism
         user_profile=profile,
         conversation_address=ChannelAddress("im", "thread", "room", "U1", "thread"),
         threads=threads,
-        workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
+        workspaces=a_workspace_manager(),
     )
 
     assert await session.inspect("projects") == []

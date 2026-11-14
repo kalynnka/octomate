@@ -139,24 +139,48 @@ class HabitatManager:
         conversation: Conversation,
         owner_id: UUID7 | None,
     ) -> AsyncGenerator[Invocation]:
-        """Own one native call's resources for the full consumption of its events."""
-        if not isinstance(self.config, NativeHabitatConfig):
-            raise HabitatError("Managed habitat dispatch is not yet supported")
+        """Own one call's resources for the full consumption of its events.
+
+        A sandbox runs for a registered user; an unregistered sender is refused
+        before anything is prepared.
+        """
         invocation_id = uuid7()
         projects = self.workspaces.projects
+        if isinstance(self.config, NativeHabitatConfig):
+            project = await projects.of(thread) if projects.roots else None
+            habitat = NativeHabitat()
+            await habitat.prepare()
+            try:
+                async with self.workspaces.open(
+                    thread.id, project, owner_id
+                ) as workspace:
+                    yield Invocation(
+                        id=invocation_id,
+                        conversation=conversation,
+                        workspace=workspace,
+                        habitat=habitat,
+                    )
+            finally:
+                await habitat.stop()
+            return
+        if owner_id is None:
+            raise HabitatError("Running in a sandbox requires a registered user")
         project = await projects.of(thread) if projects.roots else None
-        habitat = NativeHabitat()
-        await habitat.prepare()
-        try:
-            async with self.workspaces.open(thread.id, project, owner_id) as workspace:
-                yield Invocation(
-                    id=invocation_id,
-                    conversation=conversation,
-                    workspace=workspace,
-                    habitat=habitat,
-                )
-        finally:
-            await habitat.stop()
+        scope = InvocationScope(
+            user_id=owner_id, conversation_id=conversation.id, thread_id=thread.id
+        )
+        # The workspace is opened first, so the root the sandbox mounts exists,
+        # and released last, after the sandbox lease and the harness in it.
+        async with (
+            self.workspaces.open(thread.id, project, owner_id) as workspace,
+            self.enter(scope, invocation_id) as residence,
+        ):
+            yield Invocation(
+                id=invocation_id,
+                conversation=conversation,
+                workspace=workspace,
+                habitat=residence.habitat,
+            )
 
     def residence(self, scope: InvocationScope) -> Residence:
         """Internal lookup; callers must supply a core-authorized owner."""

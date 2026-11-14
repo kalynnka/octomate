@@ -44,6 +44,8 @@ from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
 from octomate.config.agents import AgentConfig, AgentRouteModelName
+from octomate.config.habitat import NativeHabitatConfig
+from octomate.habitat import HabitatError
 from octomate.managers.habitat import Invocation
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.auth import IssuedApiKey
@@ -101,6 +103,8 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     api_keys: dict[UUID7, IssuedApiKey]  # One MCP credential per user for this agent.
     api_key_lock: asyncio.Lock
     habitats: HabitatManager
+    # Whether a run can be hosted in a managed habitat instead of on the host.
+    supports_managed_habitat: ClassVar[bool] = False
     # Programmatically assembled agents may have no deployment config.
     config: AgentConfig | None = None
 
@@ -522,10 +526,36 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             message=f"{self.id} does not expose command discovery.",
         )
 
-    def command_invocation(
+    def inhabit(
+        self, *, thread: Thread, conversation: Conversation, owner_id: UUID7 | None
+    ) -> AbstractAsyncContextManager[Invocation]:
+        """Prepare this agent's run in the service's habitat.
+
+        Creating the context acquires nothing; the caller enters it and closes
+        it after the run is consumed. An agent that cannot run its harness in a
+        sandbox refuses here, so nothing is prepared and nothing falls back to
+        the host.
+        """
+        if (
+            not isinstance(self.habitats.config, NativeHabitatConfig)
+            and not self.supports_managed_habitat
+        ):
+            raise HabitatError(f"Agent {self.id!r} cannot run in a sandbox yet")
+        return self.habitats.invoke(
+            thread=thread, conversation=conversation, owner_id=owner_id
+        )
+
+    def needs_invocation(self, descriptor: CommandDescriptor) -> bool:
+        """Whether this command runs in a workspace and habitat.
+
+        A direct control can still need them; streamed output is not the test.
+        The default unsupported adapter needs none.
+        """
+        return False
+
+    def inhabit_command(
         self,
         context: CommandContext,
-        intent: CommandIntent,
         descriptor: CommandDescriptor,
         *,
         thread: Thread | None,
@@ -534,10 +564,17 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
 
         Creating the context does not acquire resources. Core enters it with the
         validated thread and turn owner, then closes it after command consumption.
-        A direct control can still require resources; streamed output is not the
-        test. The default unsupported adapter yields None without preparation.
+        A command that needs none yields None without preparation.
         """
-        return nullcontext(None)
+        if not self.needs_invocation(descriptor):
+            return nullcontext(None)
+        if thread is None or context.conversation is None:
+            raise ValueError("A runtime command requires a conversation")
+        return self.inhabit(
+            thread=thread,
+            conversation=context.conversation,
+            owner_id=context.user_id,
+        )
 
     async def execute_command(
         self,

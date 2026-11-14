@@ -377,7 +377,6 @@ class Octomate(FastAPI):
                 async with self.nerve.publish(origin) as impulses:
                     deps = ReflexDeps(
                         workspaces=self.workspaces,
-                        habitats=self.habitats,
                         agents=self.agents,
                         channels=self.channels,
                         conversation_manager=self.conversations,

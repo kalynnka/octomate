@@ -93,7 +93,6 @@ from tests.support.managers import (
     FakeThreadManager,
     FakeUserManager,
     RecordingWorkspaceManager,
-    a_habitat_manager,
     a_project,
     a_registry,
     a_workspace_manager,
@@ -212,7 +211,6 @@ def _deps(
     workspaces = workspaces if workspaces is not None else RecordingWorkspaceManager()
     return ReflexDeps(
         workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
         channels=dict(channels),
         impulses=unwired(),
         agents={"inkling": agent, "other": agent, agent.id: agent},
@@ -267,7 +265,6 @@ def _summon_deps(
     workspaces = RecordingWorkspaceManager()
     return ReflexDeps(
         workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
         gateway=GatewayManager(),
         impulses=unwired(),
         channels={"im": im} if far is None else {"im": im, "far": far},
@@ -314,7 +311,6 @@ def test_available_routes_skip_disconnected_reception_agents() -> None:
     workspaces = RecordingWorkspaceManager()
     deps = ReflexDeps(
         workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
         gateway=GatewayManager(),
         impulses=unwired(),
         channels={"chan1": channel},
@@ -409,7 +405,6 @@ def test_available_routes_are_the_exposed_agents_own_routes() -> None:
     workspaces = RecordingWorkspaceManager()
     deps = ReflexDeps(
         workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
         gateway=GatewayManager(),
         impulses=unwired(),
         channels={"chan1": channel},
@@ -445,7 +440,6 @@ def test_resolve_agent_honors_a_served_model_off_the_channel_list() -> None:
     workspaces = RecordingWorkspaceManager()
     deps = ReflexDeps(
         workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
         gateway=GatewayManager(),
         impulses=unwired(),
         channels={"chan1": channel},
@@ -1126,7 +1120,6 @@ async def test_a_handoff_row_names_the_turn_it_came_from() -> None:
         ),
         deps=ReflexDeps(
             workspaces=workspaces,
-            habitats=a_habitat_manager(workspaces),
             gateway=GatewayManager(),
             impulses=unwired(),
             channels={"im": im},
@@ -1440,7 +1433,6 @@ async def test_a_native_scheme_signal_lands_in_their_dms_and_hands_off(
         channels={"far": far},
         agents={"second": second},
         workspaces=workspaces,
-        habitats=a_habitat_manager(workspaces),
         conversation_manager=FakeConversationManager(),
         thread_manager=FakeThreadManager(users=users),
         action_manager=cast(DeferredActionManager, FakeActionManager()),

@@ -88,7 +88,6 @@ async def test_driven_app_survives_its_session_and_reuses_the_owned_viewer(
             users=host.users,
             threads=host.threads,
             workspaces=host.workspaces,
-            habitats=host.habitats,
         )
     )
     tentacle = CodexTentacle(

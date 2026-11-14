@@ -486,9 +486,8 @@ class CommandManager(Manager):
         try:
             async with AsyncExitStack() as resources:
                 invocation = await resources.enter_async_context(
-                    agent.command_invocation(
+                    agent.inhabit_command(
                         context,
-                        intent,
                         validated.descriptor,
                         thread=validated.surface,
                     )

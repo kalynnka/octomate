@@ -341,7 +341,6 @@ async def capture_case(
         users=host.users,
         threads=threads,
         workspaces=host.workspaces,
-        habitats=host.habitats,
         channels=channels,
         agents=agents,
         thread_id=thread.id,

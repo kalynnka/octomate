@@ -1004,7 +1004,6 @@ async def test_a_registered_gateway_mounts_the_in_process_server(
         users=tentacle.users,
         threads=tentacle.threads,
         workspaces=tentacle.workspaces,
-        habitats=tentacle.habitats,
     )
 
     async with (
@@ -1136,7 +1135,6 @@ async def test_a_teleport_mid_run_interrupts_the_turn_and_ends_it_as_a_deferral(
         users=tentacle.users,
         threads=tentacle.threads,
         workspaces=tentacle.workspaces,
-        habitats=tentacle.habitats,
     )
     BindingClaudeClient.session = session
     suspender = RecordingSuspender(agent_tentacle_id="claude")

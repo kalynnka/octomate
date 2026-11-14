@@ -3,7 +3,6 @@
 import asyncio
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import (
-    AbstractAsyncContextManager,
     AsyncExitStack,
     aclosing,
     nullcontext,
@@ -71,23 +70,8 @@ class ExecutingAgent(DiscoveringAgent):
     prepared_invocation: Invocation | None = None
     workspace_at_cleanup: bool | None = None
 
-    def command_invocation(
-        self,
-        context: CommandContext,
-        intent: CommandIntent,
-        descriptor: CommandDescriptor,
-        *,
-        thread: Thread | None,
-    ) -> AbstractAsyncContextManager[Invocation | None]:
-        if not self.requires_runtime:
-            return nullcontext(None)
-        if thread is None or context.conversation is None:
-            raise ValueError("A runtime command requires a conversation")
-        return self.habitats.invoke(
-            thread=thread,
-            conversation=context.conversation,
-            owner_id=context.user_id,
-        )
+    def needs_invocation(self, descriptor: CommandDescriptor) -> bool:
+        return self.requires_runtime
 
     async def execute_command(
         self,
@@ -470,7 +454,6 @@ async def test_active_chat_turn_prevents_command_execution(
         users=app.users,
         threads=app.threads,
         workspaces=app.workspaces,
-        habitats=app.habitats,
     )
     async with app.gateway.driving(session):
         async with app.commands.validate(
@@ -539,7 +522,6 @@ async def test_stream_owns_guard_until_cleanup_and_forwards_run_hooks(
         users=app.users,
         threads=app.threads,
         workspaces=app.workspaces,
-        habitats=app.habitats,
     )
     suspender = RecordingSuspender()
     capabilities: list[AgentCapability[None]] = []
@@ -574,7 +556,6 @@ async def test_stream_owns_guard_until_cleanup_and_forwards_run_hooks(
                 users=app.users,
                 threads=app.threads,
                 workspaces=app.workspaces,
-                habitats=app.habitats,
             )
             with pytest.raises(RuntimeError, match="already has a turn"):
                 app.gateway.register(other)
