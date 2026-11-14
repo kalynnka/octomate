@@ -262,6 +262,7 @@ async def capture(
             with output.open("w", encoding="utf-8") as file:
                 case_counts[case.name] = await capture_case(
                     file=file,
+                    host=host,
                     conversations=conversations,
                     threads=threads,
                     agent=agent,
@@ -280,6 +281,7 @@ async def capture(
 async def capture_case(
     *,
     file: TextIOBase,
+    host: Octomate,
     conversations: ConversationManager,
     threads: ThreadManager,
     agent: Agent[None, InklingOutput],
@@ -336,6 +338,10 @@ async def capture_case(
     session = OctomateSession(
         channel_routes={address.channel_tentacle_id: routes},
         current_agent_id="inkling",
+        users=host.users,
+        threads=threads,
+        workspaces=host.workspaces,
+        habitats=host.habitats,
         channels=channels,
         agents=agents,
         thread_id=thread.id,
