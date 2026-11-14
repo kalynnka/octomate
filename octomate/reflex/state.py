@@ -297,6 +297,7 @@ class ReflexDeps:
             conversation_address=conversation_address,
             threads=self.thread_manager,
             workspaces=self.workspaces,
+            habitats=self.habitats,
             impulses=self.impulses,
         )
         if conversation_id is not None:

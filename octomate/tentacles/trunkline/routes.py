@@ -261,6 +261,7 @@ async def thread_gateway(
         ),
         threads=threads,
         workspaces=workspaces,
+        habitats=app.habitats,
     )
 
 

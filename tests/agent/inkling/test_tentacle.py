@@ -72,6 +72,7 @@ from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
     FakeThreadManager,
+    a_habitat_manager,
     a_workspace_manager,
 )
 from tests.support.mcp import core_tool_capabilities, served_inkling_mcp
@@ -82,6 +83,7 @@ type InklingTestEvent = ReactStreamEvent[ScriptedOutput]
 
 def _inkling_agent() -> Agent[None, InklingOutput]:
     threads = FakeThreadManager()
+    workspaces = a_workspace_manager()
     return Agent(
         TestModel(),
         deps_type=type(None),
@@ -95,7 +97,8 @@ def _inkling_agent() -> Agent[None, InklingOutput]:
                     current_agent_id="inkling",
                     users=threads.users,
                     threads=threads,
-                    workspaces=a_workspace_manager(),
+                    workspaces=workspaces,
+                    habitats=a_habitat_manager(workspaces),
                 )
             ),
         ],
@@ -529,6 +532,7 @@ async def test_a_teleport_follows_the_approval_posture(
         users=host.users,
         threads=host.threads,
         workspaces=host.workspaces,
+        habitats=host.habitats,
     )
 
     async with served_inkling_mcp(host, monkeypatch), host.gateway.driving(session):
@@ -615,6 +619,7 @@ async def test_a_question_batched_with_a_teleport_suspends_whole() -> None:
             ),
         }
 
+    workspaces = a_workspace_manager()
     agent: Agent[None, ScriptedOutput] = Agent(
         FunctionModel(stream_function=both, model_name="scripted"),
         deps_type=type(None),
@@ -634,7 +639,8 @@ async def test_a_question_batched_with_a_teleport_suspends_whole() -> None:
                     ),
                     users=threads.users,
                     threads=threads,
-                    workspaces=a_workspace_manager(),
+                    workspaces=workspaces,
+                    habitats=a_habitat_manager(workspaces),
                 )
             ),
         ],

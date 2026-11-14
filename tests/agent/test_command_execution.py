@@ -470,6 +470,7 @@ async def test_active_chat_turn_prevents_command_execution(
         users=app.users,
         threads=app.threads,
         workspaces=app.workspaces,
+        habitats=app.habitats,
     )
     async with app.gateway.driving(session):
         async with app.commands.validate(
@@ -538,6 +539,7 @@ async def test_stream_owns_guard_until_cleanup_and_forwards_run_hooks(
         users=app.users,
         threads=app.threads,
         workspaces=app.workspaces,
+        habitats=app.habitats,
     )
     suspender = RecordingSuspender()
     capabilities: list[AgentCapability[None]] = []
@@ -572,6 +574,7 @@ async def test_stream_owns_guard_until_cleanup_and_forwards_run_hooks(
                 users=app.users,
                 threads=app.threads,
                 workspaces=app.workspaces,
+                habitats=app.habitats,
             )
             with pytest.raises(RuntimeError, match="already has a turn"):
                 app.gateway.register(other)

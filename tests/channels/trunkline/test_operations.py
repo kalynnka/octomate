@@ -513,6 +513,7 @@ async def test_busy_thread_is_refused(case: Case, client: httpx.AsyncClient) -> 
         users=case.app.users,
         threads=case.app.threads,
         workspaces=case.app.workspaces,
+        habitats=case.app.habitats,
     )
     async with case.app.gateway.driving(session):
         response = await client.post(
@@ -704,6 +705,7 @@ async def test_trunkline_offers_a_new_thread_without_a_dm(case: Case) -> None:
         ),
         threads=case.app.threads,
         workspaces=case.app.workspaces,
+        habitats=case.app.habitats,
     )
     destinations = await gateway.destinations()
     destination = ChannelAddress(
@@ -779,6 +781,7 @@ async def test_an_empty_offer_is_closed_only_by_what_rules_it_out(
         users=case.app.users,
         threads=case.app.threads,
         workspaces=case.app.workspaces,
+        habitats=case.app.habitats,
     )
     gateway.destination_cache = []
 
@@ -843,6 +846,7 @@ async def test_discord_dm_threads_are_not_offered(case: Case) -> None:
         ),
         threads=case.app.threads,
         workspaces=case.app.workspaces,
+        habitats=case.app.habitats,
     )
     options = await session.operations
     assert all(

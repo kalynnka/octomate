@@ -68,7 +68,12 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.mcp import OAuthMcpTentacle
 from octomate.types.oauth import HttpsUrl
 from tests.support.channels import FakeChannelTentacle, RecordingOAuthFeeler
-from tests.support.managers import FakeThreadManager, a_workspace_manager, fixed_session
+from tests.support.managers import (
+    FakeThreadManager,
+    a_habitat_manager,
+    a_workspace_manager,
+    fixed_session,
+)
 from tests.support.mcp import install_tentacle
 from tests.support.nerve import drawing
 from tests.support.users import a_user
@@ -930,6 +935,7 @@ def a_session(
         if channel is not None and profile is not None
         else None
     )
+    workspaces = a_workspace_manager()
     return OctomateSession(
         channel_routes={},
         current_agent_id="inkling",
@@ -939,7 +945,8 @@ def a_session(
         user_profile=profile,
         users=threads.users,
         threads=threads,
-        workspaces=a_workspace_manager(),
+        workspaces=workspaces,
+        habitats=a_habitat_manager(workspaces),
     )
 
 

@@ -94,6 +94,7 @@ async def app_turn(in_memory_engine: AsyncEngine) -> AppTurn:
         nerve=host.nerve,
         users=host.users,
         workspaces=host.workspaces,
+        habitats=host.habitats,
     )
     installation = await host.mcp.install(
         user.id,

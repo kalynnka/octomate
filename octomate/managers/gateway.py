@@ -56,6 +56,7 @@ from octomate.types.threads import NATIVE_CHANNEL_USER_ID
 
 if TYPE_CHECKING:
     from octomate.managers.conversation import ConversationManager
+    from octomate.managers.habitat import HabitatManager
     from octomate.managers.thread import ThreadManager
     from octomate.managers.user import UserManager
     from octomate.managers.workspaces import WorkspaceManager
@@ -108,6 +109,8 @@ class OctomateSession:
     users: UserManager
     threads: ThreadManager
     workspaces: WorkspaceManager
+    # Prepares the workspace and habitat of each run this session commissions.
+    habitats: HabitatManager
     # Every connected channel, so `surfaces` can be read for any of them and not
     # just this run's own — what a cross-channel move needs.
     channels: dict[str, ChannelTentacle] = field(default_factory=dict)
@@ -204,7 +207,7 @@ class OctomateSession:
         try:
             async with (
                 asyncio.timeout(commission_timeout),
-                agent.habitats.invoke(
+                self.habitats.invoke(
                     thread=thread,
                     conversation=conversation,
                     owner_id=self.user_profile.user_id if self.user_profile else None,

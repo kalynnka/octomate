@@ -371,6 +371,7 @@ async def native_session(
         native=True,
         threads=octomate.threads,
         workspaces=octomate.workspaces,
+        habitats=octomate.habitats,
         nerve=octomate.nerve,
     )
 

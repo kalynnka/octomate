@@ -28,7 +28,11 @@ from octomate.tentacles.inkling.agent import Agent
 from octomate.types.json import JsonObject
 from tests.support.agents import FakeAgent, ScriptedStream, ScriptedTurn
 from tests.support.channels import FakeChannelTentacle
-from tests.support.managers import FakeThreadManager, a_workspace_manager
+from tests.support.managers import (
+    FakeThreadManager,
+    a_habitat_manager,
+    a_workspace_manager,
+)
 from tests.support.mcp import core_tool_capabilities, core_tool_server, gateway_schemas
 from tests.support.nerve import held
 from tests.support.users import a_user
@@ -50,6 +54,7 @@ def _gate(
     `chat_type` overrides the type the surface reports without changing whether it
     is private — an assistant pane is a thread only one person can read."""
     threads = FakeThreadManager()
+    workspaces = a_workspace_manager()
     return OctomateSession(
         nerve=Nerve(),
         channel_routes={},
@@ -64,7 +69,8 @@ def _gate(
         ),
         users=threads.users,
         threads=threads,
-        workspaces=a_workspace_manager(),
+        workspaces=workspaces,
+        habitats=a_habitat_manager(workspaces),
     )
 
 

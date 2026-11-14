@@ -17,7 +17,12 @@ from octomate.mcp.todos import update_events
 from octomate.nerve import ChannelTopic, Nerve
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.todos import Todo
-from tests.support.managers import FakeThreadManager, a_thread, a_workspace_manager
+from tests.support.managers import (
+    FakeThreadManager,
+    a_habitat_manager,
+    a_thread,
+    a_workspace_manager,
+)
 from tests.support.mcp import core_tool_server
 from tests.support.nerve import held
 
@@ -27,6 +32,7 @@ async def a_session() -> OctomateSession:
     conversation = await ConversationManager().ensure(
         await a_thread(), agent_tentacle_id="agent"
     )
+    workspaces = a_workspace_manager()
     return OctomateSession(
         channel_routes={},
         current_agent_id="agent",
@@ -35,7 +41,8 @@ async def a_session() -> OctomateSession:
         nerve=Nerve(),
         users=threads.users,
         threads=threads,
-        workspaces=a_workspace_manager(),
+        workspaces=workspaces,
+        habitats=a_habitat_manager(workspaces),
     )
 
 

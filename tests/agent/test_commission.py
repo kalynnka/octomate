@@ -48,6 +48,7 @@ from tests.support.agents import FakeAgent
 from tests.support.managers import (
     FakeConversationManager,
     FakeThreadManager,
+    a_habitat_manager,
     a_project,
     a_registry,
     a_workspace_manager,
@@ -105,6 +106,7 @@ async def _gate(
     )
     for agent in agents.values():
         agent.conversations = conversations
+    workspaces = a_workspace_manager()
     gate = OctomateSession(
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id="inkling",
@@ -112,7 +114,8 @@ async def _gate(
         thread_id=THREAD,
         conversation_address=ADDRESS,
         threads=threads,
-        workspaces=a_workspace_manager(),
+        workspaces=workspaces,
+        habitats=a_habitat_manager(workspaces),
         users=threads.users,
     )
     parent = await conversations.ensure(THREAD, agent_tentacle_id="inkling")
@@ -444,17 +447,11 @@ async def test_commission_inherits_the_parent_owner_in_a_project(
     thread = await app.threads.ensure(
         ThreadKey("im", "thread", "shared", "turn"), project=project
     )
-    gate, agents, conversations, ctx = await _gate(
-        agents={
-            "inkling": cast(AgentTentacle, FakeAgent(id="inkling")),
-            "claude": cast(
-                AgentTentacle, FakeAgent(id="claude", workspaces=app.workspaces)
-            ),
-        }
-    )
+    gate, agents, conversations, ctx = await _gate()
     gate.thread_id = thread.id
     gate.threads = app.threads
     gate.workspaces = app.workspaces
+    gate.habitats = app.habitats
     gate.user_profile = await app.users.profile("im", "alice")
     parent = await conversations.ensure(thread.id, agent_tentacle_id="inkling")
     ctx["parent_id"] = parent.id

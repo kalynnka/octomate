@@ -155,6 +155,7 @@ async def test_driven_html_reaches_the_owned_viewer_and_channel_card(
             users=host.users,
             threads=host.threads,
             workspaces=host.workspaces,
+            habitats=host.habitats,
         )
     )
     tentacle = CodexTentacle(

@@ -71,6 +71,7 @@ async def a_turn(*, authenticated: bool = True) -> tuple[Octomate, OctomateSessi
         nerve=host.nerve,
         threads=host.threads,
         workspaces=host.workspaces,
+        habitats=host.habitats,
         users=host.users,
     )
     return host, scope
@@ -237,6 +238,7 @@ async def test_anonymous_inkling_run_does_not_mount_core_mcp_tools() -> None:
         users=host.users,
         threads=host.threads,
         workspaces=host.workspaces,
+        habitats=host.habitats,
     )
     async with invocation_for(
         inkling,
