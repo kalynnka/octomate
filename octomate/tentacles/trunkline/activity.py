@@ -7,37 +7,24 @@ from time import monotonic
 from typing import TYPE_CHECKING, Annotated
 
 from fastapi import WebSocket, WebSocketDisconnect
-from pydantic import UUID7, BaseModel, Field, ValidationError
+from pydantic import UUID7, AwareDatetime, BaseModel, Field, ValidationError
 from pydantic_ai.messages import (
-    FunctionToolCallEvent,
     FunctionToolResultEvent,
-    OutputToolCallEvent,
     OutputToolResultEvent,
-    PartDeltaEvent,
     PartEndEvent,
-    PartStartEvent,
-    TextPart,
-    TextPartDelta,
-    ThinkingPart,
-    ThinkingPartDelta,
-    ToolCallPart,
 )
 from starlette.websockets import WebSocketState
 
 from octomate.events import (
     ActionBatchEvent,
-    ReflexAsleepEvent,
-    ReflexAwakeEvent,
-    ReflexPhaseChangedEvent,
     RunActivityChangedEvent,
     RunEndedEvent,
-    RunErrorEvent,
-    RunStartedEvent,
     WireEvent,
 )
 from octomate.managers.thread import ThreadManager
 from octomate.nerve import ThreadTopic
 from octomate.schemas.thread import ThreadKey
+from octomate.tentacles.feelers.status import StatusNarrator
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -55,54 +42,41 @@ class ActivityUpdate(BaseModel):
 
     key: str = Field(description="The client's id:UUID or key:thread-key identity.")
     event: Annotated[
-        RunActivityChangedEvent | ReflexPhaseChangedEvent | RunEndedEvent,
-        Field(discriminator="event_kind"),
+        RunActivityChangedEvent | RunEndedEvent,
+        Field(
+            discriminator="event_kind",
+            description="The canonical activity with its narrated line as "
+            "`display_text`, or the end of what was running.",
+        ),
     ]
     attention: bool = False
+    started_at: AwareDatetime | None = Field(
+        default=None,
+        description="When the kick behind this status woke, for an elapsed "
+        "timer; None when nothing runs or the thread's own reflex is not awake.",
+    )
 
     @classmethod
-    def from_event(cls, key: str, event: WireEvent) -> ActivityUpdate | None:
-        match event:
-            case ReflexAwakeEvent():
-                status = ReflexPhaseChangedEvent(phase="preparing")
-            case ReflexPhaseChangedEvent():
-                status = event
-            case RunStartedEvent() | PartStartEvent(part=ToolCallPart()):
-                status = RunActivityChangedEvent(activity="working")
-            case RunActivityChangedEvent():
-                label = " ".join(
-                    "".join(
-                        char
-                        for char in event.display_text or ""
-                        if char.isprintable() or char.isspace()
-                    ).split()
-                )[:120]
-                status = RunActivityChangedEvent(
-                    activity=event.activity, display_text=label or None
-                )
-            case (
-                PartStartEvent(part=ThinkingPart())
-                | PartDeltaEvent(delta=ThinkingPartDelta())
-            ):
-                status = RunActivityChangedEvent(activity="thinking")
-            case (
-                PartStartEvent(part=TextPart()) | PartDeltaEvent(delta=TextPartDelta())
-            ):
-                status = RunActivityChangedEvent(activity="writing")
-            case FunctionToolCallEvent() | OutputToolCallEvent():
-                status = RunActivityChangedEvent(activity="using_tools")
-            case ActionBatchEvent():
-                status = RunActivityChangedEvent(
-                    activity="working",
-                    display_text="Waiting for input"
-                    if event.blocks_run is True
-                    else "Working · Input requested",
-                )
-            case RunEndedEvent() | ReflexAsleepEvent() | RunErrorEvent():
-                status = RunEndedEvent()
-            case _:
-                return None
-        return cls(key=key, event=status, attention=isinstance(event, ActionBatchEvent))
+    def from_event(
+        cls,
+        key: str,
+        event: WireEvent,
+        narrator: StatusNarrator,
+        started_at: AwareDatetime | None = None,
+    ) -> ActivityUpdate | None:
+        text = narrator.narrate(event)
+        if text is None:
+            return None
+        if not text:
+            return cls(key=key, event=RunEndedEvent())
+        return cls(
+            key=key,
+            event=RunActivityChangedEvent(
+                activity=narrator.activity, display_text=text
+            ),
+            attention=isinstance(event, ActionBatchEvent),
+            started_at=started_at,
+        )
 
 
 async def watch_activity(
@@ -131,18 +105,24 @@ async def watch_activity(
             running = (task is not None and not task.done()) or (
                 agent is not None and key in agent.native_running_threads
             )
+            narrator = StatusNarrator()
             previous = ActivityUpdate(
                 key=identity,
-                event=RunActivityChangedEvent(activity="working")
+                event=RunActivityChangedEvent(
+                    activity="working", display_text=narrator.say("working")
+                )
                 if running
                 else RunEndedEvent(),
+                started_at=octomate.awake_since.get(key),
             )
             async with sending:
                 await websocket.send_text(previous.model_dump_json(exclude_none=True))
             sent_at = monotonic()
             ready.set()
             async for impulse in impulses:
-                update = ActivityUpdate.from_event(identity, impulse.event)
+                update = ActivityUpdate.from_event(
+                    identity, impulse.event, narrator, octomate.awake_since.get(key)
+                )
                 heartbeat = isinstance(
                     impulse.event,
                     (PartEndEvent, FunctionToolResultEvent, OutputToolResultEvent),

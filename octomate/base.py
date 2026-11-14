@@ -18,7 +18,8 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastmcp.server.http import StarletteWithLifespan
-from pydantic import SecretStr
+from pydantic import AwareDatetime, SecretStr
+from pydantic_ai._utils import now_utc
 from rich.color import Color
 from rich.style import Style
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -166,6 +167,10 @@ class Octomate(FastAPI):
     # on: one at a time, so what a thread hears between waking and falling asleep
     # is one reflex's.
     awakes: dict[ThreadKey, asyncio.Task[ReflexGraphResult]] = field(
+        default_factory=dict, init=False
+    )
+    # When each of those reflexes woke, for a reader that opens mid-kick.
+    awake_since: dict[ThreadKey, AwareDatetime] = field(
         default_factory=dict, init=False
     )
     # The next console color for a tentacle with no brand of its own.
@@ -383,13 +388,16 @@ class Octomate(FastAPI):
                         # yields: the thread is let go before the reflex is heard
                         # falling asleep, so whoever hears it can kick there again.
                         del self.awakes[thread]
+                        del self.awake_since[thread]
 
             def release(task: asyncio.Task[ReflexGraphResult]) -> None:
                 # Cancellation before the coroutine starts never enters its finally.
                 if self.awakes.get(thread) is task:
                     del self.awakes[thread]
+                    del self.awake_since[thread]
 
             self.awakes[thread] = asyncio.create_task(reflex())
+            self.awake_since[thread] = now_utc()
             self.awakes[thread].add_done_callback(release)
             return self.awakes[thread]
 

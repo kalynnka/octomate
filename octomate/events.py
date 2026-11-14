@@ -130,6 +130,11 @@ class ReflexPhaseChangedEvent(BaseModel):
     phase: Literal["preparing", "routing", "moving", "finalizing"] = Field(
         description="The phase the reflex has actually entered."
     )
+    spell: GatewayAction | None = Field(
+        default=None,
+        description="The gateway spell a moving phase carries out; None in any "
+        "other phase.",
+    )
 
 
 class ThreadTitleChangedEvent(BaseModel):
@@ -205,17 +210,23 @@ class RunStartedEvent(BaseModel):
         description="The profile supplying a native session's prompts; None "
         "when the run does not have a single native sender.",
     )
+    agent_tentacle_id: str | None = Field(
+        default=None,
+        description="The agent taking this run, so a reader can say who picked "
+        "the turn up; None means unreported.",
+    )
+
+
+RunActivity = Literal["working", "thinking", "using_tools", "writing", "compacting"]
 
 
 class RunActivityChangedEvent(BaseModel):
     """A harness reported activity within the enclosing run's existing brackets."""
 
     event_kind: Literal["run_activity_changed"] = "run_activity_changed"
-    activity: Literal["working", "thinking", "using_tools", "writing", "compacting"] = (
-        Field(
-            description="Canonical run activity, supported by a real signal. Existing "
-            "part and tool events still describe their own activity."
-        )
+    activity: RunActivity = Field(
+        description="Canonical run activity, supported by a real signal. Existing "
+        "part and tool events still describe their own activity."
     )
     display_text: str | None = Field(
         default=None,
