@@ -754,6 +754,29 @@ test('a missed turn reads its history without clearing the next tailed turn alre
 })
 
 
+test('a watch opened on a kick\'s later run folds that run alone and reads the ledger once the reflex is asleep', async () => {
+  const opening = { ...detail, key: 'later-run', ledger: [{ kind: 'user', uid: 'first-prompt', text: 'First', who: 'Owner', t: '10:00' }] satisfies LedgerItem[] }
+  const getDetail = mock.method(api, 'getThreadDetail', async () => opening)
+  queryClient.setQueryData(['thread-detail', opening.key], opening)
+  await useConsole.getState().actions.selectThread('trunkline', opening.key)
+  const watching = await socketOn(`thread_id=${opening.key}`)
+  const calls = getDetail.mock.callCount()
+  // The relay's replay starts after the kick's last ended run, so no reflex_awake leads it.
+  watching.deliver({ event_kind: 'run_started', address: {
+    channel_tentacle_id: 'trunkline', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false,
+  } }, result)
+  assert.equal(useConsole.getState().running, true)
+  assert.deepEqual(useConsole.getState().live.flatMap(item => item.kind === 'stream' ? [item.text] : []), ['Hello back'])
+  watching.deliver({ event_kind: 'run_ended', thread_message_id: 'reply' })
+  assert.equal(getDetail.mock.callCount(), calls)
+  getDetail.mock.mockImplementation(async () => ({ ...opening, msgCount: 2 }))
+  watching.deliver({ event_kind: 'reflex_asleep' })
+  for (let at = 0; at < 200 && useConsole.getState().detail?.msgCount !== 2; at++) await tick()
+  assert.equal(useConsole.getState().detail?.msgCount, 2)
+  assert.deepEqual(useConsole.getState().live, [])
+  assert.equal(useConsole.getState().running, false)
+})
+
 test('consecutive watched turns stay mounted and replay replaces only the unfinished turn', async () => {
   const opening = { ...detail, key: 'stable-native' }
   const getDetail = mock.method(api, 'getThreadDetail', async () => opening)
