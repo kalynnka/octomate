@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.8](https://github.com/kalynnka/octomate/compare/octomate-cli-v0.0.7...octomate-cli-v0.0.8) (2026-11-14)
+
+
+### Bug Fixes
+
+* handle large DeepSeek history snapshots ([#172](https://github.com/kalynnka/octomate/issues/172)) ([5372e97](https://github.com/kalynnka/octomate/commit/5372e97d0ccacd6c1392384f8a3fb15f10149dc3))
+
 ## [0.0.7](https://github.com/kalynnka/octomate/compare/octomate-cli-v0.0.6...octomate-cli-v0.0.7) (2026-11-07)
 
 
