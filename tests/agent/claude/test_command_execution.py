@@ -111,7 +111,8 @@ async def test_driven_compaction_reads_its_summary_from_sdk_history(
         "compact_metadata": metadata,
     }
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    project = tmp_path / "projects" / project_key_for_directory(str(context.cwd))
+    cwd = agent.workspaces.host_storage.temporary(conversation.thread_id).path
+    project = tmp_path / "projects" / project_key_for_directory(str(cwd))
     project.mkdir(parents=True)
     entries: list[JsonObject] = [
         {

@@ -109,12 +109,14 @@ async def _run(
     *,
     state: ReflexState,
     deps: ReflexDeps,
+    ensure_thread: bool = True,
 ) -> ReflexGraphResult:
     """Run the reflex nodes from `entry` on a kick's stream, each channel drawing
     what it publishes. Production always enters at `Awake`; a test wires the same
     nodes with a different door to exercise a stretch of them on its own."""
     if (
-        state.thread is None
+        ensure_thread
+        and state.thread is None
         and state.source_target is not None
         and state.source_target.address is not None
     ):
@@ -815,6 +817,7 @@ async def test_a_turn_with_no_thread_saves_nothing() -> None:
                 agent=agent,
                 workspaces=host,
             ),
+            ensure_thread=False,
         )
 
     assert host.saved == []
