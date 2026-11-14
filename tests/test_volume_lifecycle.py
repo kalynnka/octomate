@@ -110,7 +110,8 @@ async def test_unscoped_git_volume_checkpoints_and_restores_without_a_workspace(
         == "saved"
     )
 
-    await storage.release()
+    async with storage.lock:
+        await storage.release()
     async with volume() as restored:
         assert (restored / "work").read_text() == "saved"
 

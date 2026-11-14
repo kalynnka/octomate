@@ -19,6 +19,7 @@ import asyncio
 import logging
 import shutil
 import tempfile
+from collections.abc import Sequence
 from contextlib import AsyncExitStack, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -27,6 +28,8 @@ from unittest.mock import AsyncMock
 import anyio
 import pytest
 from anyio.lowlevel import checkpoint
+from logfire.testing import CaptureLogfire
+from logfire.testing import capfire as capfire
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
@@ -130,6 +133,13 @@ def git_volume(workspace: Workspace) -> GitVolume:
     volume = workspace.volume
     assert isinstance(volume, GitVolume)
     return volume
+
+
+async def release(workspace: Workspace) -> None:
+    """Delete a tree's folder as a sweep would, without asking whether it is saved."""
+    storage = workspace.volume.storage
+    async with storage.lock:
+        await storage.release()
 
 
 async def materialize(
@@ -329,7 +339,7 @@ async def test_releasing_removes_the_workspace_and_leaves_the_mirror(
     workspace = await materialize(manager, opened, mirror)
     (workspace / "work.md").write_text("done")
 
-    await manager.storage(manager.path(git_volume(opened))).release()
+    await release(opened)
 
     assert not workspace.exists()
     assert (mirror / "readme.md").read_text() == "hello"
@@ -347,7 +357,7 @@ async def test_releasing_keeps_the_row_so_the_tree_comes_back_at_its_path(
     await materialize(manager, opened, mirror)
     await manager.save(thread, owner.id)
 
-    await manager.storage(manager.path(git_volume(opened))).release()
+    await release(opened)
     reopened = await a_workspace(manager, thread, owner)
 
     assert not opened.path.exists()
@@ -366,7 +376,7 @@ async def test_releasing_a_workspace_that_is_not_there_is_no_work(
     # Pruning a tree whose folder is gone, and releasing one twice, both arrive here.
     opened = await a_workspace(manager, await a_bound_thread(manager), owner)
 
-    await manager.storage(manager.path(git_volume(opened))).release()
+    await release(opened)
 
 
 async def test_a_fork_that_fails_leaves_nothing_behind(
@@ -545,7 +555,7 @@ async def test_a_workspace_comes_back_on_the_branch_the_agent_made(
     await manager.save(thread, owner.id)
     left = await head(workspace)
 
-    await manager.storage(manager.path(git_volume(opened))).release()
+    await release(opened)
     resumed = await materialize(manager, opened, mirror)
 
     assert await branch(resumed) == "feat/theirs"
@@ -569,7 +579,7 @@ async def test_a_detached_head_comes_back_detached(
     await manager.save(thread, owner.id)
     left = await head(workspace)
 
-    await manager.storage(manager.path(git_volume(opened))).release()
+    await release(opened)
     resumed = await materialize(manager, opened, mirror)
 
     assert await branch(resumed) == "HEAD"
@@ -608,7 +618,7 @@ async def test_a_released_workspace_comes_back_with_its_work(
     await manager.save(thread, owner.id)
     left = await head(workspace)
 
-    await manager.storage(manager.path(git_volume(opened))).release()
+    await release(opened)
     resumed = await materialize(manager, opened, mirror)
 
     assert (resumed / "work.md").read_text() == "done"
@@ -636,7 +646,7 @@ async def test_a_modified_file_comes_back_modified(
     (workspace / "gone.md").unlink()
     await manager.save(thread, owner.id)
 
-    await manager.storage(manager.path(git_volume(opened))).release()
+    await release(opened)
     resumed = await materialize(manager, opened, mirror)
 
     assert (resumed / "readme.md").read_text() == "changed"
@@ -653,7 +663,7 @@ async def test_a_resumed_thread_keeps_going_from_where_it_was(
     opened = await a_workspace(manager, thread, owner)
     await a_turn(await materialize(manager, opened, mirror), {"work.md": "first"})
     await manager.save(thread, owner.id)
-    await manager.storage(manager.path(git_volume(opened))).release()
+    await release(opened)
 
     resumed = await materialize(manager, opened, mirror)
     await a_turn(resumed, {"work.md": "second"})
@@ -742,7 +752,7 @@ async def test_peer_snapshot_objects_are_absent_even_by_hash(
     peer_snapshot = (
         await run_git("rev-parse", git_volume(peer).snapshot_ref, cwd=mirror)
     ).strip()
-    await manager.storage(manager.path(git_volume(mine))).release()
+    await release(mine)
 
     restored = await materialize(manager, mine, mirror)
 
@@ -1036,7 +1046,7 @@ async def test_restoring_a_snapshot_does_not_run_host_filters(
     (path / ".gitattributes").write_text("*.txt filter=attack\n")
     (path / "work.txt").write_text("unfinished")
     await checkpoint_volume(manager, opened)
-    await manager.storage(manager.path(git_volume(opened))).release()
+    await release(opened)
     marker = tmp_path / "executed"
     command = tmp_path / "attack"
     command.write_text(f'#!/bin/sh\nprintf invoked > "{marker}"\ncat\n')
@@ -1472,9 +1482,85 @@ async def test_active_project_storage_cannot_be_reclaimed(
         assert await manager.prune(idle=0) == []
         assert not await manager.dismiss(thread, owner.id)
         with pytest.raises(RuntimeError, match="while it is in use"):
+            await release(workspace)
+        with pytest.raises(RuntimeError, match="requires its lock"):
             await storage.release()
         assert (workspace.path / "work.md").read_text() == "in use"
     assert await manager.dismiss(thread, owner.id)
+    assert not storage.path.exists()
+
+
+async def test_the_sweep_counts_a_tree_a_turn_took_first_as_busy(
+    manager: WorkspaceManager,
+    owner: User,
+    monkeypatch: pytest.MonkeyPatch,
+    capfire: CaptureLogfire,
+) -> None:
+    # The counts are how "why is that tree still there" gets answered, so a turn
+    # that reaches the tree ahead of the sweep reads as busy, not as unsaved work.
+    thread = await a_bound_thread(manager)
+    workspace = await a_workspace(manager, thread, owner)
+    async with manager.enter(workspace):
+        (workspace.path / "work.md").write_text("done")
+    storage = workspace.volume.storage
+    project_trees = manager.volumes.project_trees
+    listed = asyncio.Event()
+
+    async def trees_then_signal() -> Sequence[GitVolume]:
+        trees = await project_trees()
+        listed.set()
+        return trees
+
+    monkeypatch.setattr(manager.volumes, "project_trees", trees_then_signal)
+
+    await storage.lock.acquire()
+    arrival = asyncio.create_task(storage.claim(ephemeral=False))
+    await asyncio.sleep(0)
+    sweep = asyncio.create_task(manager.prune(idle=0.0))
+    await listed.wait()
+    storage.lock.release()
+
+    assert await sweep == []
+    await arrival
+    [span] = [
+        span
+        for span in capfire.exporter.exported_spans
+        if span.name == "workspace.prune"
+        and span.attributes
+        and "kept_busy" in span.attributes
+    ]
+    assert span.attributes is not None
+    assert span.attributes["kept_busy"] == 1
+    assert span.attributes["kept_unsaved"] == 0
+    await storage.discard(ephemeral=False)
+
+
+async def test_a_turn_arriving_during_the_sweep_waits_for_it(
+    manager: WorkspaceManager, owner: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Verifying a tree takes a while. A turn that arrives meanwhile must neither
+    # start in a folder about to be deleted nor stop the sweep's whole pass.
+    thread = await a_bound_thread(manager)
+    workspace = await a_workspace(manager, thread, owner)
+    async with manager.enter(workspace):
+        (workspace.path / "work.md").write_text("done")
+    storage = workspace.volume.storage
+    saved = manager.saved
+    arrivals: list[asyncio.Task[None]] = []
+
+    async def saved_while_a_turn_arrives(volume: GitVolume) -> bool:
+        arrivals.append(asyncio.create_task(storage.claim(ephemeral=False)))
+        await asyncio.sleep(0)
+        assert storage.uses == 0
+        return await saved(volume)
+
+    monkeypatch.setattr(manager, "saved", saved_while_a_turn_arrives)
+
+    assert await manager.prune(idle=0.0) == [workspace.volume.id]
+
+    [arrival] = arrivals
+    await arrival
+    assert storage.uses == 1
     assert not storage.path.exists()
 
 
@@ -1677,7 +1763,7 @@ async def test_checkpoint_skips_unchanged_work_but_keeps_branch_changes(
     await run_git("checkout", "-b", "renamed", cwd=workspace.path)
     await manager.save(thread, owner.id)
     assert sum(call.args[0] == "fetch" for call in git.await_args_list) == 2
-    await manager.storage(manager.path(git_volume(workspace))).release()
+    await release(workspace)
     await manager.prepare(workspace)
     assert await branch(workspace.path) == "renamed"
     assert (workspace.path / "work.md").read_text() == "unfinished"
@@ -1755,7 +1841,7 @@ async def test_a_resumed_workspace_can_be_pruned_again(
     opened = await a_workspace(manager, thread, owner)
     await a_turn(await materialize(manager, opened, mirror), {"work.md": "done"})
     await manager.save(thread, owner.id)
-    await manager.storage(manager.path(git_volume(opened))).release()
+    await release(opened)
 
     await materialize(manager, opened, mirror)
 

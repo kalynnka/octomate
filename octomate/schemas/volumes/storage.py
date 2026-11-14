@@ -43,7 +43,7 @@ class Storage(Protocol):
         ...
 
     async def release(self) -> None:
-        """Remove inactive contents; refuse while the storage is still in use."""
+        """Remove inactive contents while the caller holds `lock`; refuse while in use."""
         ...
 
 
@@ -92,9 +92,14 @@ class HostDirectory:
                 await self.discard(ephemeral=ephemeral)
 
     async def release(self) -> None:
-        """Remove inactive contents without changing a logical volume's identity."""
-        async with self.lock:
-            if self.uses:
-                raise RuntimeError("Cannot release a host directory while it is in use")
-            if self.path.is_dir():
-                await asyncio.to_thread(shutil.rmtree, self.path)
+        """Remove inactive contents without changing a logical volume's identity.
+
+        The caller holds `lock`, so whatever it checked first still holds and no
+        use can begin until the contents are gone.
+        """
+        if not self.lock.locked():
+            raise RuntimeError("Releasing a host directory requires its lock")
+        if self.uses:
+            raise RuntimeError("Cannot release a host directory while it is in use")
+        if self.path.is_dir():
+            await asyncio.to_thread(shutil.rmtree, self.path)

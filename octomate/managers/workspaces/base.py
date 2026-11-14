@@ -243,6 +243,29 @@ class WorkspaceManager(Manager):
             )
             return False
 
+    async def reclaim(self, volume: GitVolume) -> bool:
+        """Delete a tree's folder only while nothing uses it and the mirror has
+        its work, and answer whether it went.
+
+        The storage lock is held from the first check to the deletion. A turn
+        that arrives meanwhile waits and forks afresh, instead of starting in a
+        folder that is about to go or leaving work there after it was verified.
+        """
+        storage = volume.storage
+        async with storage.lock:
+            if storage.uses:
+                return False
+            if not await self.saved(volume):
+                logger.warning(
+                    "the tree %s for thread %s holds work the mirror does not "
+                    "have; keeping it",
+                    volume.id,
+                    volume.thread_id,
+                )
+                return False
+            await storage.release()
+        return True
+
     async def prune(self, idle: float) -> list[UUID7]:
         """Release every project tree nothing has used for `idle` seconds, and
         answer with the volumes that lost their folder.
@@ -269,20 +292,16 @@ class WorkspaceManager(Manager):
                 path = self.path(volume)
                 if not path.is_dir():
                     continue
-                if self.storage(path).uses or volume.last_used_at > cutoff:
+                if volume.last_used_at > cutoff:
                     kept_busy += 1
-                    continue
-                if not await self.saved(volume):
+                elif await self.reclaim(volume):
+                    released.append(volume.id)
+                # Read before anything else can run: `reclaim` refused under the
+                # lock a moment ago, so the use count still says which refusal.
+                elif volume.storage.uses:
+                    kept_busy += 1
+                else:
                     kept_unsaved += 1
-                    logger.warning(
-                        "the tree %s for thread %s is idle but holds work the mirror "
-                        "does not have; keeping it",
-                        volume.id,
-                        volume.thread_id,
-                    )
-                    continue
-                await self.storage(self.path(volume)).release()
-                released.append(volume.id)
             span.set_attribute("released", len(released))
             span.set_attribute("kept_busy", kept_busy)
             span.set_attribute("kept_unsaved", kept_unsaved)
@@ -398,20 +417,8 @@ class WorkspaceManager(Manager):
             if project is None:
                 return False
             volume = await self.volumes.find(owner_id, thread.id, project.id)
-            if (
-                volume is None
-                or not self.path(volume).is_dir()
-                or self.storage(self.path(volume)).uses
-            ):
+            if volume is None or not self.path(volume).is_dir():
                 return False
-            if not await self.saved(volume):
-                logger.warning(
-                    "the tree %s for thread %s was dismissed but holds work the "
-                    "mirror does not have; keeping it",
-                    volume.id,
-                    thread.id,
-                )
-                return False
-            await self.storage(self.path(volume)).release()
-            span.set_attribute("released", True)
-            return True
+            released = await self.reclaim(volume)
+            span.set_attribute("released", released)
+            return released
