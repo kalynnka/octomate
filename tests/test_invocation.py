@@ -11,6 +11,7 @@ from octomate.config.habitat import SbxHabitatConfig
 from octomate.habitat import Habitat, HabitatError, NativeHabitat
 from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import Invocation
+from octomate.schemas.conversation import Conversation
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.volumes import GitVolume, UnregisteredProjectError
 from octomate.schemas.volumes.storage import HostDirectory
@@ -31,7 +32,9 @@ async def test_native_invocation_borrows_the_owners_chat_workspace(
     async with workspaces.open(thread_id, None, owner_id) as workspace:
         invocation = Invocation(
             id=uuid7(),
-            conversation_id=uuid7(),
+            conversation=Conversation(
+                thread_id=workspace.thread_id, agent_tentacle_id="inkling"
+            ),
             workspace=workspace,
             habitat=habitat,
         )
@@ -58,7 +61,9 @@ async def test_native_invocation_keeps_the_project_workspace_owner(
     async with workspaces.open(await a_thread(), project, owner.id) as workspace:
         invocation = Invocation(
             id=uuid7(),
-            conversation_id=uuid7(),
+            conversation=Conversation(
+                thread_id=workspace.thread_id, agent_tentacle_id="inkling"
+            ),
             workspace=workspace,
             habitat=NativeHabitat(),
         )
@@ -85,7 +90,9 @@ async def test_invocation_borrows_the_habitat_without_managing_its_lifetime(
         assert isinstance(workspace.volume, GitVolume)
         invocation = Invocation(
             id=uuid7(),
-            conversation_id=uuid7(),
+            conversation=Conversation(
+                thread_id=workspace.thread_id, agent_tentacle_id="inkling"
+            ),
             workspace=workspace,
             habitat=habitat,
         )
@@ -114,7 +121,9 @@ async def test_project_native_cwd_is_known_before_materialization(
     assert volume.thread_id is not None
     invocation = Invocation(
         id=uuid7(),
-        conversation_id=uuid7(),
+        conversation=Conversation(
+            thread_id=volume.thread_id, agent_tentacle_id="inkling"
+        ),
         workspace=Workspace(
             thread_id=volume.thread_id,
             project=project,
@@ -142,7 +151,9 @@ async def test_invocation_rejects_an_unregistered_or_different_habitat_owner(
     with pytest.raises(ValueError, match=message):
         Invocation(
             id=uuid7(),
-            conversation_id=uuid7(),
+            conversation=Conversation(
+                thread_id=workspace.thread_id, agent_tentacle_id="inkling"
+            ),
             workspace=workspace,
             habitat=habitat,
         )
@@ -155,16 +166,16 @@ async def test_core_prepares_and_releases_native_chat(
     app = Octomate()
     owner_id = (await a_user()).id if registered else None
     thread = await app.threads.ensure(ThreadKey("im", "thread", "room", "turn"))
-    conversation_id = uuid7()
+    conversation = Conversation(thread_id=thread.id, agent_tentacle_id="inkling")
     async with app.habitats.invoke(
         workspaces=app.workspaces,
         thread=thread,
-        conversation_id=conversation_id,
+        conversation=conversation,
         owner_id=owner_id,
     ) as invocation:
         assert invocation.owner_id == owner_id
         assert invocation.thread_id == thread.id
-        assert invocation.conversation_id == conversation_id
+        assert invocation.conversation is conversation
         assert isinstance(invocation.habitat, NativeHabitat)
         assert invocation.cwd == invocation.storage.path
         assert invocation.storage.path.is_dir()
@@ -195,7 +206,7 @@ async def test_core_uses_the_workspace_volume_lifecycle(
     async with app.habitats.invoke(
         workspaces=app.workspaces,
         thread=thread,
-        conversation_id=uuid7(),
+        conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
         owner_id=owner_id,
     ) as invocation:
         assert invocation.owner_id == owner_id
@@ -234,7 +245,7 @@ async def test_core_stops_native_habitat_when_volume_preparation_fails(
         async with app.habitats.invoke(
             workspaces=app.workspaces,
             thread=thread,
-            conversation_id=uuid7(),
+            conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
             owner_id=owner.id,
         ):
             pytest.fail("An invocation with failed preparation must not start")
@@ -255,7 +266,7 @@ async def test_core_and_workspace_contexts_share_the_same_storage(
     async with app.habitats.invoke(
         workspaces=app.workspaces,
         thread=thread,
-        conversation_id=uuid7(),
+        conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
         owner_id=owner.id,
     ) as invocation:
         (invocation.storage.path / "work").write_text("retained")
@@ -275,18 +286,18 @@ async def test_core_isolates_two_owners_in_a_shared_thread(
     app = Octomate()
     alice, bob = await a_user("alice"), await a_user("bob")
     thread = await app.threads.ensure(ThreadKey("im", "thread", "room", "turn"))
-    conversation_id = uuid7()
+    conversation = Conversation(thread_id=thread.id, agent_tentacle_id="inkling")
     async with (
         app.habitats.invoke(
             workspaces=app.workspaces,
             thread=thread,
-            conversation_id=conversation_id,
+            conversation=conversation,
             owner_id=alice.id,
         ) as first,
         app.habitats.invoke(
             workspaces=app.workspaces,
             thread=thread,
-            conversation_id=conversation_id,
+            conversation=conversation,
             owner_id=bob.id,
         ) as second,
     ):
@@ -308,7 +319,7 @@ async def test_core_releases_chat_on_failure_and_cancellation(
         async with app.habitats.invoke(
             workspaces=app.workspaces,
             thread=thread,
-            conversation_id=uuid7(),
+            conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
             owner_id=None,
         ) as invocation:
             raise error()
@@ -332,7 +343,7 @@ async def test_core_refuses_anonymous_project_and_managed_dispatch(
         async with app.habitats.invoke(
             workspaces=app.workspaces,
             thread=thread,
-            conversation_id=uuid7(),
+            conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
             owner_id=None,
         ):
             pytest.fail("An anonymous project invocation must not start")
@@ -341,7 +352,7 @@ async def test_core_refuses_anonymous_project_and_managed_dispatch(
         async with app.habitats.invoke(
             workspaces=app.workspaces,
             thread=thread,
-            conversation_id=uuid7(),
+            conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
             owner_id=(await a_user()).id,
         ):
             pytest.fail("Managed execution must not fall back to native")
@@ -363,7 +374,7 @@ async def test_core_checkpoints_an_empty_project_without_a_git_index(
     async with app.habitats.invoke(
         workspaces=app.workspaces,
         thread=thread,
-        conversation_id=uuid7(),
+        conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
         owner_id=(await a_user()).id,
     ) as invocation:
         (invocation.storage.path / ".git" / "index").unlink(missing_ok=True)

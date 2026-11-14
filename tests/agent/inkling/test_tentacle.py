@@ -33,18 +33,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.ask import ASK_DEFERR_KIND, AskCapability
-from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.deferred import DeclineResolver, PostureResolver
-from octomate.capabilities.harness.events import ActionBatchEvent
-from octomate.capabilities.harness.react import (
-    ReactDeps,
-    ReactState,
-    ReactStreamEvent,
-    ResolveDeferred,
-    RunAgent,
-)
 from octomate.config.base import OctomateConfig
+from octomate.events import ActionBatchEvent
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
@@ -56,8 +46,19 @@ from octomate.schemas.triage import TELEPORT_DEFER_KIND
 from octomate.tentacles.inkling import (
     InklingTentacle,
 )
+from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.base import InklingDeferrals, InklingOutput
+from octomate.tentacles.inkling.capabilities.ask import AskCapability
+from octomate.tentacles.inkling.deferred import DeclineResolver, PostureResolver
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.inkling.react import (
+    ReactDeps,
+    ReactState,
+    ResolveDeferred,
+    RunAgent,
+)
+from octomate.tentacles.stream import ReactStreamEvent
+from octomate.types.deferred import ASK_DEFERR_KIND
 from octomate.types.permissions import AgentPermissionMode, InklingPermissionMode
 from tests.support.agents import (
     ScriptedOutput,
@@ -238,7 +239,7 @@ async def test_run_records_the_resolved_models_context_capacity(
     assert run.context_used > 0
 
 
-@pytest.mark.parametrize("effort", ["minimal", "low", "medium", "high", "xhigh"])
+@pytest.mark.parametrize("effort", ["minimal", "low", "medium", "high", "xhigh", "max"])
 async def test_inkling_keeps_pydantic_ai_effort_names(effort: str) -> None:
     agent, _ = build_scripted_agent(["done"])
     tentacle = _tentacle(agent, FakeConversationManager())
@@ -257,7 +258,7 @@ async def test_inkling_keeps_pydantic_ai_effort_names(effort: str) -> None:
     assert result.output == "done"
 
 
-@pytest.mark.parametrize("effort", ["none", "max", "ultra"])
+@pytest.mark.parametrize("effort", ["none", "ultra"])
 async def test_inkling_rejects_other_harness_efforts(effort: str) -> None:
     agent, script = build_scripted_agent(["done"])
     tentacle = _tentacle(agent, FakeConversationManager())
@@ -727,8 +728,9 @@ async def test_the_posture_speaks_first_and_the_catch_all_takes_what_is_left() -
     ctx: GraphRunContext[ReactState, ReactDeps[ScriptedOutput, None]] = GraphRunContext(
         state=ReactState(
             conversation_address=_test_conversation_address(),
-            agent_tentacle_id="inkling",
-            thread_id=_THREAD,
+            conversation=await conversations.ensure(
+                _THREAD, agent_tentacle_id="inkling"
+            ),
         ),
         deps=ReactDeps(
             agent=cast("Agent[None, ScriptedOutput]", object()),

@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.capabilities.harness.events import ActionBatchEvent
+from octomate.events import ActionBatchEvent
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredActionBatch

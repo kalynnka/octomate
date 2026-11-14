@@ -31,6 +31,14 @@
 .lt-fade-in { animation: lt-fade-in var(--motion-entry) var(--ease-out) both; animation-delay: calc(var(--i, 0) * 70ms); }
 .lt-fade-out{ animation: lt-fade-out var(--motion-base) var(--ease-out) both; pointer-events: none; }
 
+.trk-connection-motion { --entry-rise: -6px; animation: lt-fade-up var(--motion-base) var(--ease-out) both; }
+.trk-connection-motion[data-connected] { animation: lt-fade-up var(--motion-base) var(--ease-out) both, trk-connection-out var(--motion-fast) var(--ease-out) 850ms forwards; }
+@keyframes trk-connection-out { to { opacity: 0; transform: translateY(-6px); } }
+@media (prefers-reduced-motion: reduce) {
+  .trk-connection-motion { animation: lt-fade-in 80ms var(--ease-out) both; }
+  .trk-connection-motion[data-connected] { animation: lt-fade-in 80ms var(--ease-out) both, lt-fade-out 80ms var(--ease-out) 920ms forwards; }
+}
+
 @keyframes trk-locate-text {
   35% { color: var(--trk-locate-color); }
 }

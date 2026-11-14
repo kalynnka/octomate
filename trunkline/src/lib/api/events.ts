@@ -5,12 +5,29 @@
 import type { ApiUser } from './auth'
 import type { AskAnswer, EffortStep } from './types'
 
+export interface FileReference {
+  path: string
+  roles: string[]
+  start_line: number | null
+  end_line: number | null
+  note: string | null
+}
+
+export interface MessageAnnotations {
+  raw: string
+  source: 'codex' | 'claude'
+  contexts: { title: string; text: string; rollout_ids: string[] }[]
+  references: FileReference[]
+}
+
 // ---- pydantic-ai response parts -------------------------------------------
 
 export interface TextPart {
   part_kind: 'text'
   content: string
   id?: string | null
+  provider_name?: string | null
+  provider_details?: { annotations?: MessageAnnotations } | null
 }
 
 export interface ThinkingPart {
@@ -91,7 +108,7 @@ export interface RetryPromptPart {
 export type ModelRequestPart =
   | ToolReturnPart
   | RetryPromptPart
-  | { part_kind: 'user-prompt'; content: string | Array<unknown> }
+  | { part_kind: 'user-prompt'; content: string | Array<string | { kind: string; content?: string; metadata?: { annotations?: MessageAnnotations } }> }
   | { part_kind: 'system-prompt' }
 
 /** One persisted model message. This is the agent's own turn history, recorded
@@ -135,6 +152,8 @@ export interface ApiPage<T> {
 export interface TextPartDelta {
   part_delta_kind: 'text'
   content_delta: string
+  provider_name?: string | null
+  provider_details?: { annotations?: MessageAnnotations } | null
 }
 
 export interface ThinkingPartDelta {
@@ -228,7 +247,7 @@ export interface EnqueuedMessagesEvent {
 
 export interface WireSegment {
   type: string
-  data: Record<string, unknown>
+  data: Record<string, unknown> & { annotations?: MessageAnnotations }
 }
 
 export interface ResultSegmentEvent {

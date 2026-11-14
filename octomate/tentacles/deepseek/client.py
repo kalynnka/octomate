@@ -97,7 +97,7 @@ class DeepseekApiClient:
             )
 
     async def answering(self) -> bool:
-        """Only a refused connection means no harness is listening."""
+        """Probe readiness without making the optional settings API a launch gate."""
         result = await self.remote("settings/describe", {})
         if isinstance(result, OkResult):
             return True
@@ -107,19 +107,28 @@ class DeepseekApiClient:
             raise RuntimeError(
                 f"dsh at {self.base_url} requires authentication after startup"
             )
-        raise RuntimeError(
-            f"dsh at {self.base_url} cannot serve the required Remote API "
-            f"(settings/describe): {result.error.message}; update dsh and Octomate together"
+        logger.warning(
+            "dsh at %s could not answer the settings/describe readiness probe: %s "
+            "(%s); continuing with model discovery and the Remote connection",
+            self.base_url,
+            result.error.message,
+            result.error.code,
         )
+        return True
 
     async def call(self, method: str, payload: JsonValue) -> RpcResult:
         """One unary method: POST /api/<method>."""
         message = ClientRequest(rpc_id=str(uuid4()), method=method, payload=payload)
+        timeout = httpx.Timeout(self.http_client.timeout)
+        if method == "commands/execute":
+            # Commands return after model work such as compaction finishes.
+            timeout.read = None
         try:
             response = await self.http_client.post(
                 f"/api/{method}",
                 content=message.model_dump_json(by_alias=True),
                 headers=JSON_HEADERS,
+                timeout=timeout,
             )
         except httpx.ConnectError as error:
             return ErrResult(

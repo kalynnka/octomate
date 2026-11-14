@@ -19,7 +19,6 @@ from pydantic_ai import AgentStreamEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
-    RetryPromptPart,
     ToolCallPart,
     ToolReturnPart,
 )
@@ -28,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     SubagentSettledEvent,
     SubagentStartedEvent,
 )
@@ -104,6 +103,8 @@ async def _gate(
         channel_tentacle_id=ADDRESS.channel_tentacle_id,
         project=Relation(None),
     )
+    for agent in agents.values():
+        agent.conversations = conversations
     gate = OctomateSession(
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id="inkling",
@@ -388,10 +389,11 @@ async def test_a_refused_accomplice_settles_failed_and_a_nameless_one_never_star
 ):
     timeout = _call("call-timeout", name="timeout")
     retry = FunctionToolResultEvent(
-        RetryPromptPart(
+        ToolReturnPart(
             tool_name="commission",
             content="The accomplice exceeded its timeout.",
             tool_call_id="call-timeout",
+            outcome="retried",
         )
     )
     nameless = _call("call-nameless", brief="no name")
@@ -402,7 +404,7 @@ async def test_a_refused_accomplice_settles_failed_and_a_nameless_one_never_star
     assert isinstance(started, SubagentStartedEvent)
     assert isinstance(settled, SubagentSettledEvent)
     assert settled.status == "failed"
-    assert settled.response.startswith("The accomplice exceeded its timeout.")
+    assert "The accomplice exceeded its timeout." in settled.response
 
 
 async def test_an_accomplice_left_running_settles_as_cancelled_with_the_run() -> None:

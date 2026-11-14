@@ -5,7 +5,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
-import { Disclose, Fold } from '@/components/Fold'
+import { Fold } from '@/components/Fold'
 import { Icon } from '@/components/Icon'
 import { ThreadActivity } from '@/components/ThreadActivity'
 import { TextSwap } from '@/components/TextSwap'
@@ -28,7 +28,6 @@ interface ThreadRow {
   tag: string
   title: string
   agent: string
-  native: boolean
   on: boolean
   running: boolean
   pick?: () => void
@@ -317,7 +316,6 @@ export function ThreadsSidebar() {
                       tag: ntStarted ? selThreadId : 'THR-NEW',
                       title: ntTitle || 'untitled — new thread',
                       agent: `${ntAgent} · ${ntModel}`,
-                      native: false,
                       on: true,
                       running: currentRunning || activeKeys.has(`key:${selThreadId}`),
                     },
@@ -329,7 +327,6 @@ export function ThreadsSidebar() {
                 tag: t.tag ?? t.id,
                 title: t.title,
                 agent: t.agentLabel,
-                native: t.tone === 'native',
                 on: selected(t),
                 running: isRunning(t),
                 pick: () => selectThread(c.id, t.id, threadOrder.findIndex((row) => row.id === t.id) < currentThreadIndex ? 'up' : 'down'),
@@ -435,21 +432,20 @@ export function ThreadsSidebar() {
                     boxShadow: focused ? `inset 3px 0 0 ${c.brand}` : undefined,
                   }}
                 >
-                  <button type="button" className="trk-nav-button" aria-label={`${c.label} threads`}
+                  <button type="button" className="trk-nav-button trk-channel-toggle" aria-label={`${c.label} threads`}
                     aria-expanded={!folded} aria-controls={`trk-channel-${c.id}`}
                     onClick={() => toggleChannel(c.id)}
                     style={{ display: 'flex', alignItems: 'center', gap: 7, flex: 1, minWidth: 0, height: '100%' }}>
-                  <Disclose
-                    open={!folded}
-                    style={{ ...mono(8), color: 'var(--fg-3)', width: 9, flexShrink: 0 }}
-                  />
+                  <svg className="lt-disclose" data-open={folded ? undefined : ''} aria-hidden="true"
+                    width="9" height="9" viewBox="0 0 10 10" fill="currentColor"
+                    style={{ color: 'var(--fg-3)', flexShrink: 0 }}>
+                    <path d="m3 2 4 3-4 3Z" />
+                  </svg>
                   <span style={{ ...label(10, '.16em'), color: c.brand }}>{c.label}</span>
                   <span style={{ flex: 1, borderTop: '1px solid var(--line-color)' }} />
-                  {!railExpanded && (
-                    <span style={{ ...mono(8), color: 'var(--fg-3)' }}>
-                      <TextSwap>{folded ? `${ths.length} thr` : c.sub}</TextSwap>
-                    </span>
-                  )}
+                  <span style={{ ...mono(8), color: 'var(--fg-3)', whiteSpace: 'nowrap' }}>
+                    <TextSwap>{`${ths.length} thr`}</TextSwap>
+                  </span>
                   </button>
                   <button type="button" aria-label={`${pinned ? 'Unpin' : 'Pin'} ${c.label}`} aria-pressed={pinned}
                     onClick={(e) => {
@@ -547,14 +543,6 @@ export function ThreadsSidebar() {
                         >
                           <span style={{ ...mono(8.5, 700), color: c.brand, whiteSpace: 'nowrap', flexShrink: 0 }}>
                             <TextSwap>{t.tag}</TextSwap>
-                          </span>
-                          <span
-                            data-thread-origin={t.native ? 'native' : 'driven'}
-                            aria-label={t.native ? 'Native thread' : 'Driven thread'}
-                            title={t.native ? 'Native thread · tailed from the agent' : 'Driven thread · run by Octomate'}
-                            style={{ ...mono(7.5, 700), color: t.native ? 'var(--info-strong)' : 'var(--fg-3)', border: '1px solid var(--line-color)', padding: '0 2px', lineHeight: '12px', flexShrink: 0 }}
-                          >
-                            {t.native ? 'N' : 'D'}
                           </span>
                           <ThreadActivity id={t.id} threadKey={t.threadKey} enabled={!folded} fallback={t.agent} />
                         </div>

@@ -22,7 +22,7 @@ from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ActionBatchEvent,
     StreamEvents,
     TodoCompletedEvent,

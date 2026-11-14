@@ -22,7 +22,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 
-from octomate.capabilities.harness.events import StreamEvents
+from octomate.events import StreamEvents
 from octomate.tentacles.deepseek.adapter import DeepseekRunAccumulator
 from octomate.tentacles.deepseek.wire import SessionEventFrame
 from octomate.tentacles.feelers.output import render_stream_event_delta

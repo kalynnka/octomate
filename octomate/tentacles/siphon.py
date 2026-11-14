@@ -25,7 +25,7 @@ from anyio.abc import ObjectReceiveStream
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from pydantic import UUID7
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
     ActionBatchUpdatedEvent,

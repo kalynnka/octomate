@@ -35,8 +35,7 @@ from pydantic_ai.result import FinalResult
 from pydantic_ai.toolsets import FunctionToolset
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ResultSegmentEvent,
     ResultTextDeltaEvent,
     RunActivityChangedEvent,
@@ -44,6 +43,7 @@ from octomate.capabilities.harness.events import (
 )
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.todos import Todo
+from octomate.tentacles.inkling.agent import Agent
 
 
 class Row(BaseModel):

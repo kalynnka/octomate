@@ -5,7 +5,7 @@ from pydantic import BaseModel, JsonValue, ValidationError
 from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ActionBatchEvent,
     ReflexAsleepEvent,
     ReflexPhaseChangedEvent,

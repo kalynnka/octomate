@@ -61,12 +61,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.deferred import Interjections
-from octomate.capabilities.harness.events import ActionBatchEvent
-from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config import ChannelConfig, OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.database import async_session
+from octomate.events import ActionBatchEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import OctomateSession
@@ -93,9 +91,11 @@ from octomate.tentacles.codex.schemas import (
     ThreadStartParams,
     TurnStartParams,
 )
+from octomate.tentacles.deferred import Interjections
 from octomate.tentacles.slack.feelers.questions import SlackAskQuestionFeeler
 from octomate.tentacles.slack.ink import SlackInk
 from octomate.tentacles.slack.schema import SlackOutboundMessage
+from octomate.tentacles.stream import ReactStreamEvent
 from octomate.types.json import JsonObject
 from tests.support.channels import FakeChannelTentacle, RecordingTimeline, carried
 from tests.support.invocations import invocation_for
@@ -640,7 +640,7 @@ async def test_driven_names_are_persisted_and_revised_without_reading_turns(
             if name and name.strip():
                 expected = name.strip()
             stored_conversation = await octomate.conversations.get(
-                conversation.id, with_history=False
+                conversation.id, with_runs=False
             )
             thread = await octomate.threads.get(thread_id, with_messages=False)
             assert thread is not None
@@ -703,10 +703,10 @@ async def test_driven_child_name_does_not_rename_parent_thread(
             invocation=invocation,
         )
     assert (
-        await octomate.conversations.get(child.id, with_history=False)
+        await octomate.conversations.get(child.id, with_runs=False)
     ).name == "Child work"
     assert (
-        await octomate.conversations.get(parent.id, with_history=False)
+        await octomate.conversations.get(parent.id, with_runs=False)
     ).name == "Parent work"
     thread = await octomate.threads.get(thread_id, with_messages=False)
     assert thread is not None
@@ -912,7 +912,7 @@ async def test_run_resumes_prior_thread_and_applies_config(
     reset_fake_codex(text_script("done", thread_id="prev-thread"))
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "codex", "")] = FakeConversation(
-        thread_id=_THREAD, external_id="prev-thread"
+        agent_tentacle_id="codex", thread_id=_THREAD, external_id="prev-thread"
     )
     runtime = CodexSdkConfig(
         client_name="octomate-test", env={"EXISTING_RUNTIME_VALUE": "kept"}
@@ -1051,7 +1051,9 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
             assert (
                 await octomate.conversations.get(source.id)
             ).external_id == "thread-new"
-            assert len(destination.messages) == len(source.messages)
+            assert len(await ConversationManager().history(destination.id)) == len(
+                await ConversationManager().history(source.id)
+            )
         fork.assert_awaited_once_with(
             "thread-new",
             ThreadForkParams(
@@ -1086,8 +1088,12 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
             forked = await octomate.conversations.get(destination.id)
             assert original.external_id == "thread-new"
             assert forked.external_id == "thread-fork"
-            assert "local continuation" not in str(list(forked.messages))
-            assert "after" not in str(list(original.messages))
+            assert "local continuation" not in str(
+                list(await ConversationManager().history(forked.id))
+            )
+            assert "after" not in str(
+                list(await ConversationManager().history(original.id))
+            )
 
     # A fresh app-server must also select the persisted fork, without forking again.
     FakeCodex.script = text_script("restarted", thread_id="thread-fork")
@@ -1918,7 +1924,7 @@ async def test_session_is_driven_before_turn_dispatch_and_released_afterward(
     )
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "codex", "")] = FakeConversation(
-        thread_id=_THREAD, external_id=external_id
+        agent_tentacle_id="codex", thread_id=_THREAD, external_id=external_id
     )
     tentacle = _tentacle(conversations)
     dispatched: list[str] = []
@@ -2075,7 +2081,10 @@ async def test_the_conversations_preset_overrides_the_configured_one(
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "codex", "")] = FakeConversation(
-        thread_id=_THREAD, permission_mode=mode, external_id=external_id
+        agent_tentacle_id="codex",
+        thread_id=_THREAD,
+        permission_mode=mode,
+        external_id=external_id,
     )
     tentacle = _tentacle(
         conversations, config=CodexConfig(permission_mode="user_review")
@@ -2137,7 +2146,9 @@ async def test_a_warm_thread_reapplies_the_selected_preset(
     monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done", thread_id="thread-new"))
     conversations = FakeConversationManager()
-    conversation = FakeConversation(thread_id=_THREAD, permission_mode="auto_review")
+    conversation = FakeConversation(
+        agent_tentacle_id="codex", thread_id=_THREAD, permission_mode="auto_review"
+    )
     conversations.store[(_THREAD, "codex", "")] = conversation
     tentacle = _tentacle(conversations)
 
@@ -2305,7 +2316,7 @@ async def test_active_native_thread_refuses_a_changed_mcp_binding(
         )
         monkeypatch.setattr(FakeThread, "read", AsyncMock(return_value=metadata))
         conversations.store[(_THREAD, "codex", "")] = FakeConversation(
-            thread_id=_THREAD, external_id="thread-new"
+            agent_tentacle_id="codex", thread_id=_THREAD, external_id="thread-new"
         )
         with pytest.raises(RuntimeError, match="must be idle"):
             async with invocation_for(
@@ -2327,7 +2338,7 @@ async def test_unavailable_saved_modes_require_an_explicit_choice(
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "codex", "")] = FakeConversation(
-        thread_id=_THREAD, permission_mode=mode
+        agent_tentacle_id="codex", thread_id=_THREAD, permission_mode=mode
     )
     tentacle = _tentacle(
         conversations, config=CodexConfig(permission_mode="full_access")
@@ -2778,7 +2789,7 @@ async def test_cached_binding_reconfigures_a_changed_caller(
         key = tentacle.api_keys[session.user_profile.user_id]
         assert headers["Authorization"] == f"Bearer {key.token.get_secret_value()}"
         assert session.conversation_id is not None
-        stored = await conversations.get(session.conversation_id, with_history=False)
+        stored = await conversations.get(session.conversation_id, with_runs=False)
         assert stored.external_id == "thread-new"
         assert tentacle.ink.thread_bindings[stored.external_id] == (
             stored.id,
@@ -3346,7 +3357,7 @@ async def test_a_resumed_turn_opens_from_what_the_graph_resolved(
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "codex", "")] = FakeConversation(
-        thread_id=_THREAD, external_id="thread-prev"
+        agent_tentacle_id="codex", thread_id=_THREAD, external_id="thread-prev"
     )
     tentacle = _tentacle(conversations)
     results = DeferredToolResults(
@@ -3514,7 +3525,7 @@ async def test_async_questions_continue_and_answers_resume_the_same_thread(
         assert conversation.external_id == "thread-new"
         assert any(
             "Which region?" in (message.message_text or "")
-            for message in conversation.messages
+            for message in (await ConversationManager().history(conversation.id))
         )
 
         # Partial replies settle their cards without starting a premature turn.

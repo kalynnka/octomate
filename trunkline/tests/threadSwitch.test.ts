@@ -506,13 +506,47 @@ test('opening the same thread twice during connection renders each event once', 
 test('a failed connection releases the watch so the thread can be opened again', async () => {
   const id = 'failed-watch'
   mock.method(api, 'getThreadDetail', async () => ({ ...detail, key: id }))
+  mock.method(globalThis, 'fetch', async () => new Response(null, { status: 503 }))
   const actions = useConsole.getState().actions
   const opening = actions.selectThread('codex', id)
   LiveSocket.last().close()
   await opening
+  await tick()
   await actions.selectThread('codex', id)
   assert.equal(LiveSocket.opened.length, 2)
   assert.deepEqual(LiveSocket.opened.map(socket => socket.closed), [true, false])
+})
+
+test('resuming live updates reconnects only the lost watch and preserves the open conversation', async () => {
+  const id = 'resuming-watch'
+  const read = mock.method(api, 'getThreadDetail', async () => ({ ...detail, key: id }))
+  const actions = useConsole.getState().actions
+  await actions.selectThread('codex', id)
+  await actions.resumeLiveUpdates()
+  assert.equal(LiveSocket.opened.length, 1)
+  const old = LiveSocket.last()
+  old.close()
+  await tick()
+  useConsole.setState({ composer: 'Unsent draft', ledgerN: 80, open: { tool: true } })
+  const before = useConsole.getState()
+  await Promise.all([actions.resumeLiveUpdates(), actions.resumeLiveUpdates()])
+  assert.equal(useConsole.getState(), before)
+  assert.equal(read.mock.callCount(), 1)
+  assert.equal(LiveSocket.opened.length, 2)
+  assert.deepEqual(LiveSocket.opened.map(socket => socket.closed), [true, false])
+  LiveSocket.last().deliver({ event_kind: 'run_started', address: {
+    channel_tentacle_id: 'codex', chat_type: 'thread', chat_id: id, user_id: 'owner', channel_thread_id: null, shared: false,
+  } }, result, { event_kind: 'run_ended', thread_message_id: 'reply' })
+  assert.deepEqual(useConsole.getState().live.filter(item => item.kind === 'stream').map(item => item.text), ['Hello back'])
+  assert.equal(useConsole.getState().running, false)
+})
+
+test('resuming live updates leaves a draft with no saved thread alone', async () => {
+  useConsole.setState({ selThreadId: 'new-thread', ntOn: true, composer: 'Unsent draft' })
+  const before = useConsole.getState()
+  await before.actions.resumeLiveUpdates()
+  assert.equal(useConsole.getState(), before)
+  assert.equal(LiveSocket.opened.length, 0)
 })
 
 test('a superseded connection cannot resume watching when the reader returns', async () => {

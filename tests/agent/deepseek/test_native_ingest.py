@@ -13,7 +13,8 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import RunEndedEvent
+from octomate.events import RunEndedEvent
+from octomate.managers.conversation import ConversationManager
 from octomate.nerve import Impulse, Nerve, ThreadTopic
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import ThreadKey
@@ -245,7 +246,7 @@ async def test_native_titles_are_persisted_and_revised_outside_turns(
         ["修复会话名称", "修复会话名称", None, "", "  ", 42], start=5
     ):
         await feed_events(tailer, state, [ev(seq, "session/title", {"title": name})])
-        stored = await octomate.conversations.get(conversation.id, with_history=False)
+        stored = await octomate.conversations.get(conversation.id, with_runs=False)
         assert stored.name == "修复会话名称"
         thread = await octomate.threads.get(conversation.thread_id)
         assert thread is not None
@@ -486,7 +487,10 @@ async def test_hooks_and_stream_for_an_sdk_session_are_recorded_as_external() ->
     external = await native_conversation(octomate)
     assert external.id != sdk_conversation.id
     assert all(isinstance(run, ExternalAgentRun) for run in external.runs)
-    assert [message.message_text for message in external.messages] == [
+    assert [
+        message.message_text
+        for message in (await ConversationManager().history(external.id))
+    ] == [
         "ingest this",
         "done",
     ]
@@ -494,7 +498,10 @@ async def test_hooks_and_stream_for_an_sdk_session_are_recorded_as_external() ->
     assert sdk is not None
     assert sdk.external_id == SESSION_ID
     assert [run.id for run in sdk.runs] == ["sdk-run"]
-    assert [message.message_text for message in sdk.messages] == ["SDK prompt"]
+    assert [
+        message.message_text
+        for message in (await ConversationManager().history(sdk.id))
+    ] == ["SDK prompt"]
 
 
 async def test_a_prompt_hook_creates_the_session_skeleton() -> None:
@@ -626,14 +633,19 @@ async def test_steering_keeps_its_transcript_position_despite_its_clock(
     )
     await stream_events(tailer, octomate.nerve, records)
     conversation = await native_conversation(octomate)
-    assert [message.message_text for message in conversation.messages] == [
+    assert [
+        message.message_text
+        for message in (await ConversationManager().history(conversation.id))
+    ] == [
         "first ask",
         "first reply",
         "also check this",
         "final reply",
     ]
-    assert [message.id for message in conversation.messages] == sorted(
-        message.id for message in conversation.messages
+    assert [
+        message.id for message in (await ConversationManager().history(conversation.id))
+    ] == sorted(
+        message.id for message in (await ConversationManager().history(conversation.id))
     )
 
 

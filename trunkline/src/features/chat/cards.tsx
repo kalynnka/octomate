@@ -16,6 +16,7 @@ import { Disclose, Fold } from '@/components/Fold'
 import { Markdown } from '@/components/Markdown'
 import { CopyButton } from '@/components/CopyButton'
 import { toolHeader, toolSummary, type TraceGroup } from './trace'
+import { MessageReferences } from './MessageReferences'
 import { cardKind, display, ellipsis, fieldLabel, label, metaLine, microMeta, microSection, mono, sectionLabel, serif, statusNote } from '@/components/text'
 
 const ArtifactViewer = lazy(() => import('@/features/artifacts/ArtifactViewer').then(module => ({ default: module.ArtifactViewer })))
@@ -113,14 +114,15 @@ function ReplyPreview({ reply }: { reply: MessageReply }) {
   )
 }
 
-function UserRow({ item }: { item: Extract<LedgerItem, { kind: 'user' }> }) {
+function UserRow({ item, children }: { item: Extract<LedgerItem, { kind: 'user' }>; children?: ReactNode }) {
   const userId = useAuth((s) => s.user?.id)
   const group = useConsole((s) => s.detail?.kind === 'group')
   const incoming = group && (!userId || item.userId !== userId)
   return (
-    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry" style={{ display: 'flex', flexDirection: 'column', alignItems: incoming ? 'flex-start' : 'flex-end', gap: 6 }}>
+    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-user-message" style={{ display: 'flex', flexDirection: 'column', alignItems: incoming ? 'flex-start' : 'flex-end', gap: 6 }}>
       <CapsLabel>{item.who} · {item.t}</CapsLabel>
       {item.chips && item.chips.length > 0 && <UserChips chips={item.chips} width="min(440px,72%)" />}
+      <MessageReferences annotations={item.annotations} workspace={item.workspace} position="before" />
       <div
         style={{
           background: 'var(--card-bg)',
@@ -132,15 +134,16 @@ function UserRow({ item }: { item: Extract<LedgerItem, { kind: 'user' }> }) {
           padding: '10px 15px',
           ...serif(13.5),
           color: 'var(--fg-1)',
-          whiteSpace: 'pre-wrap',
           maxWidth: '72%',
         }}
       >
         {item.reply && <ReplyPreview reply={item.reply} />}
-        {item.text}
+        <Markdown text={item.text} />
       </div>
+      <MessageReferences annotations={item.annotations} workspace={item.workspace} position="after" />
+      {children}
       <div className="trk-message-actions">
-        <CopyButton text={item.text} label="Copy message" className="trk-message-copy" />
+        <CopyButton text={item.annotations?.raw ?? item.text} label="Copy message" className="trk-message-copy" />
       </div>
     </div>
   )
@@ -199,9 +202,9 @@ function DiffBlock({ uid, index, diff }: { uid: string; index: number; diff: Ext
   )
 }
 
-function AgentRow({ item, cardMax, showAgentLabel, showCopy }: { item: Extract<LedgerItem, { kind: 'agent' }>; cardMax: string; showAgentLabel: boolean; showCopy: boolean }) {
+function AgentRow({ item, cardMax, showAgentLabel, showCopy, children }: { item: Extract<LedgerItem, { kind: 'agent' }>; cardMax: string; showAgentLabel: boolean; showCopy: boolean; children?: ReactNode }) {
   return (
-    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" style={{ maxWidth: cardMax }}>
+    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" style={{ maxWidth: children ? '100%' : cardMax }}>
       {showAgentLabel && <AgentLabel label={item.label} />}
       <div style={{ minWidth: 0, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)', textWrap: 'pretty' }}>
         {item.reply && <ReplyPreview reply={item.reply} />}
@@ -209,7 +212,9 @@ function AgentRow({ item, cardMax, showAgentLabel, showCopy }: { item: Extract<L
           if (b.type === 'p')
             return (
               <div key={i} style={{ margin: i === item.blocks.length - 1 ? 0 : '0 0 10px' }}>
+                <MessageReferences annotations={b.annotations} workspace={item.workspace} position="before" />
                 <Markdown text={b.text} />
+                <MessageReferences annotations={b.annotations} workspace={item.workspace} position="after" />
               </div>
             )
           if (b.type === 'ul')
@@ -225,8 +230,9 @@ function AgentRow({ item, cardMax, showAgentLabel, showCopy }: { item: Extract<L
           return <DiffBlock key={i} uid={item.uid} index={i} diff={b.diff} />
         })}
       </div>
+      {children}
       {showCopy && <div className="trk-message-actions">
-        <CopyButton text={item.blocks.map(block => block.type === 'p' ? block.text : block.type === 'ul'
+        <CopyButton text={item.blocks.map(block => block.type === 'p' ? block.annotations?.raw ?? block.text : block.type === 'ul'
           ? block.items.map(line => `- ${line}`).join('\n')
           : `\`\`\`diff\n${block.diff.lines.map(line => line.text).join('\n')}\n\`\`\``).join('\n\n')}
           label="Copy message" className="trk-message-copy" />
@@ -1167,7 +1173,7 @@ function Rule({ children }: { children?: ReactNode }) {
   )
 }
 
-function StreamRow({ item, cardMax, showAgentLabel, showCopy }: { item: Extract<LedgerItem, { kind: 'stream' }>; cardMax: string; showAgentLabel: boolean; showCopy: boolean }) {
+function StreamRow({ item, cardMax, showAgentLabel, showCopy, children }: { item: Extract<LedgerItem, { kind: 'stream' }>; cardMax: string; showAgentLabel: boolean; showCopy: boolean; children?: ReactNode }) {
   const running = useConsole((s) => s.running)
   const streaming = item.streaming && running
   const target = useRef(item.text)
@@ -1198,18 +1204,21 @@ function StreamRow({ item, cardMax, showAgentLabel, showCopy }: { item: Extract<
     return () => { cancelAnimationFrame(frame); cancelAnimationFrame(scroll) }
   }, [streaming])
   return (
-    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" style={{ maxWidth: cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
+    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" style={{ maxWidth: children ? '100%' : cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
       {showAgentLabel && <AgentLabel label={item.label ?? botLabel()} />}
+      <MessageReferences annotations={item.annotations} workspace={item.workspace} position="before" />
       <Markdown text={streaming ? text : item.text} cursor={streaming} />
+      <MessageReferences annotations={item.annotations} workspace={item.workspace} position="after" />
+      {children}
       {showCopy && <div className="trk-message-actions">
-        <CopyButton text={streaming ? text : item.text} label="Copy message" className="trk-message-copy" />
+        <CopyButton text={item.annotations?.raw ?? item.text} label="Copy message" className="trk-message-copy" />
       </div>}
     </div>
   )
 }
 
 /** Dispatch a ledger item to its card. `i` staggers entry animations. */
-export function LedgerRow({ item, cardMax, i, showAgentLabel = true, showCopy = false }: { item: LedgerItem; cardMax: string; i?: number; showAgentLabel?: boolean; showCopy?: boolean }) {
+export function LedgerRow({ item, cardMax, i, showAgentLabel = true, showCopy = false, children }: { item: LedgerItem; cardMax: string; i?: number; showAgentLabel?: boolean; showCopy?: boolean; children?: ReactNode }) {
   const threadId = useConsole((s) => s.selThreadId)
   switch (item.kind) {
     case 'artifact':
@@ -1247,9 +1256,9 @@ export function LedgerRow({ item, cardMax, i, showAgentLabel = true, showCopy = 
         </div>
       )
     case 'user':
-      return <UserRow item={item} />
+      return <UserRow item={item}>{children}</UserRow>
     case 'agent':
-      return <AgentRow item={item} cardMax={cardMax} showAgentLabel={showAgentLabel} showCopy={showCopy} />
+      return <AgentRow item={item} cardMax={cardMax} showAgentLabel={showAgentLabel} showCopy={showCopy}>{children}</AgentRow>
     case 'code':
       return <CodeRow item={item} cardMax={cardMax} />
     case 'think':
@@ -1280,7 +1289,7 @@ export function LedgerRow({ item, cardMax, i, showAgentLabel = true, showCopy = 
         </div>
       )
     case 'stream':
-      return <StreamRow item={item} cardMax={cardMax} showAgentLabel={showAgentLabel} showCopy={showCopy} />
+      return <StreamRow item={item} cardMax={cardMax} showAgentLabel={showAgentLabel} showCopy={showCopy}>{children}</StreamRow>
     case 'end':
       return (
         <div id={`pm-${item.uid}`} style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 2 }}>

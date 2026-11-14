@@ -11,8 +11,7 @@ from pathlib import Path
 from typing import Annotated, Literal, Self
 
 import anyio
-from arcanus import BaseTransmuter, Relation
-from arcanus.base import Identity
+from arcanus import BaseTransmuter, Identity, Relation
 from pydantic import UUID7, AwareDatetime, ConfigDict, Field, model_validator
 from uuid_utils.compat import uuid7
 

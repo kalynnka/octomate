@@ -31,13 +31,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.agent import Agent
 from octomate.database import async_session
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import User
 from octomate.tentacles.inkling import InklingTentacle
+from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.base import InklingOutput
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from tests.support.invocations import invocation_for, volume_for
@@ -149,7 +149,6 @@ async def test_a_run_in_a_project_can_act_in_it(tmp_path: Path) -> None:
     await inkling_run(octomate, await a_thread(octomate, "chat", "inky"), scripted)
 
     assert scripted.tools[-1] == [
-        "inventory_agent_context",
         "read_file",
         "write_file",
         "edit_file",

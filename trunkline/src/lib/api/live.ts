@@ -15,7 +15,7 @@ import type {
   ApiThreadMessage,
   ApiUsage,
 } from './events'
-import { batchFeelers, botLabel, nativeQuestionAnswered, nativeQuestionReplies, promptText, replayRun, segmentText, type NativeQuestionReply, type ReplayChild } from './fold'
+import { batchFeelers, botLabel, nativeQuestionAnswered, nativeQuestionReplies, promptText, promptContent, replayRun, segmentText, type NativeQuestionReply, type ReplayChild } from './fold'
 import type {
   ChannelMeta,
   LedgerItem,
@@ -307,8 +307,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     }
   }
 
-  // Every row is keyed by its uuid7, which is when it was written; a run and the
-  // ledger are only appended to, so that is the order things happened in. A
+  // Order by persisted row IDs, using native model IDs for bound prompts. A
   // card's uid comes from the row it was read off, so reading further back never
   // renames the cards already shown. `session` is the conversation the card
   // belongs to, which is what the timeline buckets on.
@@ -348,29 +347,33 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
   const ranIn = new Map(
     own.flatMap((conversation) => conversation.runs.map((run) => [run.id, conversation] as const)),
   )
+  const runWorkspaces = new Map(own.flatMap(conversation => conversation.runs.map(run => [run.id, run.cwd ?? undefined] as const)))
+  const nativeRuns = new Set(own.flatMap(conversation => conversation.runs.filter(run => run.kind === 'external').map(run => run.id)))
 
-  // Inbound rows keep their own write order and words after binding to a request.
+  // Native model history is saved at run completion; its bound prompts must use
+  // that same ordering. Channel inbounds keep their original ledger write order.
   // An agent's outbound row is already represented by its model response.
   const boundArtifacts = new Set(modelMessages.flatMap(message => message.thread_messages
     .filter(row => row.kind === 'artifact').map(row => row.id)))
   const said = [
-    ...unbound.filter(message => !boundArtifacts.has(message.id)).map((message) => ({ key: message.id, message, session: undefined })),
+    ...unbound.filter(message => !boundArtifacts.has(message.id)).map((message) => ({ key: message.id, message, session: undefined, workspace: undefined })),
     ...modelMessages.flatMap((request) =>
       request.kind !== 'request'
         ? []
         : request.thread_messages
             .filter((message) => message.direction === 'inbound')
-            .map((message) => ({ key: message.id, message, session: ranIn.get(request.run_id)?.id })),
+            .map((message) => ({ key: nativeRuns.has(request.run_id) ? request.id : message.id, message, session: ranIn.get(request.run_id)?.id, workspace: runWorkspaces.get(request.run_id) })),
     ),
   ]
   const questionReplies: NativeQuestionReply[] = []
-  for (const { key, message, session } of said) {
+  for (const { key, message, session, workspace } of said) {
     if (message.kind === 'artifact') {
       keyed.push({ key, session, item: { kind: 'artifact', uid: message.id, artifactId: message.artifact_id } })
       continue
     }
     const text = textOf(message)
     const reply = replyOf(message)
+    const annotations = message.segments.find(segment => segment.data.annotations)?.data.annotations
     if (message.direction === 'inbound' && message.actor_kind === 'human') {
       questionReplies.push(...nativeQuestionReplies(text) ?? [])
       keyed.push({
@@ -383,6 +386,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
           who: message.sender?.name || 'operator',
           userId: message.sender?.user_id,
           text: promptText(text),
+          ...(annotations && { annotations, workspace }),
           ...(reply && { reply }),
         },
       })
@@ -430,12 +434,12 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     if (request.kind !== 'request' || request.thread_messages.some((m) => m.direction === 'inbound')) continue
     for (const [n, part] of request.parts.entries()) {
       if (part.part_kind !== 'user-prompt') continue
-      const text = typeof part.content === 'string' ? part.content : part.content.filter((c) => typeof c === 'string').join('\n')
+      const { text, annotations } = promptContent(part.content)
       questionReplies.push(...nativeQuestionReplies(text) ?? [])
       keyed.push({
         key: request.id,
         session: ranIn.get(request.run_id)?.id,
-        item: { kind: 'user', uid: `${request.id}.${n}`, t: request.timestamp ? clock(request.timestamp) : '', who: 'operator', text: promptText(text) },
+        item: { kind: 'user', uid: `${request.id}.${n}`, t: request.timestamp ? clock(request.timestamp) : '', who: 'operator', text: promptText(text), ...(annotations && { annotations, workspace: runWorkspaces.get(request.run_id) }) },
       })
     }
   }
@@ -451,12 +455,15 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
   for (const [runId, messages] of recorded) {
     const conversation = ranIn.get(runId)
     const agent = conversation?.agent_tentacle_id ?? 'agent'
-    const native = conversation?.runs.find(run => run.id === runId)?.kind === 'external'
+    const native = nativeRuns.has(runId)
     const deliveries = new Map(messages.flatMap((message) => {
       const outbound = message.thread_messages.find((row) => row.direction === 'outbound' && row.kind !== 'artifact')
       return outbound ? [[message.id, { label: botLabel(outbound.agent_tentacle_id ?? conversation?.agent_tentacle_id), reply: replyOf(outbound) }] as const] : []
     }))
     for (const card of replayRun(messages, agent, children, native)) {
+      if ((card.item.kind === 'agent' && card.item.blocks.some(block => block.type === 'p' && block.annotations)) || (card.item.kind === 'stream' && card.item.annotations)) {
+        card.item.workspace = runWorkspaces.get(runId)
+      }
       if (card.item.kind === 'ask' && card.item.nativeCallId) {
         card.item = nativeQuestionAnswered(card.item, questionReplies)
       }

@@ -1,7 +1,7 @@
 # Tools
 
-::: octomate.capabilities.ask
+::: octomate.tentacles.inkling.capabilities.ask
 
 ::: octomate.capabilities.history
 
-::: octomate.capabilities.tools
+::: octomate.tentacles.inkling.capabilities.tools

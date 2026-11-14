@@ -8,7 +8,7 @@ from acp import schema
 from anyio import Path as AsyncPath
 from pydantic import SecretStr, TypeAdapter
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
     ActionBatchUpdatedEvent,

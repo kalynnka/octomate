@@ -7,7 +7,7 @@
  * Every request goes through `apiFetch`: the reads are private to the signed-in
  * account, and the writes must carry the same-origin header (see lib/api/auth).
  */
-import { apiFetch, refuse } from './auth'
+import { apiFetch, fetchMe, refuse } from './auth'
 import type {
   ApiAgentInfo,
   ApiChannelInfo,
@@ -215,7 +215,7 @@ export const fetchThreadBatches = (id: string) =>
  * it, so a request sent after that misses nothing. `closed` settles when the
  * relay closes the socket, which a run outliving the console never does.
  */
-export function watchThread(
+export async function watchThread(
   thread: { id: string } | { key: string },
   onEvent: (event: WireEvent) => void,
   signal?: AbortSignal,
@@ -223,6 +223,22 @@ export function watchThread(
   const query = 'id' in thread
     ? `thread_id=${encodeURIComponent(thread.id)}`
     : `thread_key=${encodeURIComponent(thread.key)}`
+  try {
+    return await openThreadSocket(query, onEvent, signal)
+  } catch (error) {
+    if (signal?.aborted) throw error
+    // Browsers hide a rejected handshake's HTTP status; check the cookie session.
+    await fetchMe()
+    signal?.throwIfAborted()
+    return openThreadSocket(query, onEvent, signal)
+  }
+}
+
+function openThreadSocket(
+  query: string,
+  onEvent: (event: WireEvent) => void,
+  signal?: AbortSignal,
+): Promise<{ close: () => void; closed: Promise<void> }> {
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
   const socket = new WebSocket(`${scheme}://${location.host}/api/trunkline/live?${query}`)
   return new Promise((resolve, reject) => {

@@ -43,6 +43,7 @@ from openai_codex.generated.v2_all import (
     TurnCompletedNotification,
     TurnPlanUpdatedNotification,
     TurnStatus,
+    UserMessageThreadItem,
     WebSearchThreadItem,
 )
 from openai_codex.models import Notification, UnknownNotification
@@ -64,6 +65,7 @@ from pydantic_ai.messages import (
     PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
+    TextContent,
     TextPart,
     TextPartDelta,
     ThinkingPart,
@@ -77,7 +79,8 @@ from pydantic_ai.messages import ModelRequest as PydanticModelRequest
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.usage import RequestUsage, RunUsage
 
-from octomate.capabilities.harness.events import RunActivityChangedEvent, StreamEvents
+from octomate.events import RunActivityChangedEvent, StreamEvents
+from octomate.tentacles.codex.content import answer_part, prompt_content
 from octomate.tentacles.codex.html import visualization_text
 from octomate.types.json import JsonObject, JsonValue
 
@@ -114,6 +117,9 @@ class StreamingPartState:
     part: TextPart | ThinkingPart
     events: list[JsonValue] = field(default_factory=list)
     pending_text: str = ""  # Withhold incomplete visualization references from prose.
+    raw_text: str = (
+        ""  # Accumulated prose before separating a trailing memory citation.
+    )
     section_index: int = 0  # Preserve paragraph boundaries between reasoning sections.
 
 
@@ -261,6 +267,9 @@ class CodexRunAccumulator:
         self.usage_counted = False
 
     def begin(self, user_prompt: str | Sequence[UserContent] | None) -> None:
+        if isinstance(user_prompt, str):
+            content = prompt_content(user_prompt)
+            user_prompt = [content] if isinstance(content, TextContent) else content
         if user_prompt:
             self.messages.append(
                 PydanticModelRequest(
@@ -377,6 +386,9 @@ class CodexRunAccumulator:
             text, state.pending_text = visualization_text(
                 state.pending_text + payload.delta
             )
+            state.raw_text += text
+            visible = answer_part(state.raw_text, partial=True).content
+            text = visible[len(state.part.content) :]
             state.part.content += text
             self.result_text += text
             if not text:
@@ -641,6 +653,20 @@ class CodexRunAccumulator:
             )
         elif isinstance(item, WebSearchThreadItem):
             yield from self.complete_native_tool(item, event, outcome="success")
+        elif isinstance(item, UserMessageThreadItem):
+            prompts = [
+                message
+                for message in self.messages
+                if isinstance(message, PydanticModelRequest)
+            ]
+            if len(prompts) == 1 and not (prompts[0].metadata or {}).get(
+                "native_item_ids"
+            ):
+                prompts[0].metadata = {
+                    **(prompts[0].metadata or {}),
+                    "native_item_ids": [item.id],
+                }
+            self.pending_events.append(event)
         else:
             # User-message echoes and any other non-tool item: preserve the raw event
             # in metadata, but don't fabricate a tool call/return — they are messages.
@@ -654,14 +680,17 @@ class CodexRunAccumulator:
         text = (
             item.review if isinstance(item, ExitedReviewModeThreadItem) else item.text
         )
-        text = visualization_text(text, final=True)[0]
+        part = answer_part(visualization_text(text, final=True)[0])
+        part.id = item.id
+        part.provider_name = CODEX_PROVIDER_NAME
+        text = part.content
         state = self.streaming_parts.pop(item.id, None)
         if isinstance(item, AgentMessageThreadItem) and item.questions:
             # The tentacle presents structured questions as a batch. Keep their
             # text and notifications in history without also streaming prose.
             self.messages.append(
                 ModelResponse(
-                    parts=[TextPart(content=text, id=item.id)],
+                    parts=[part],
                     provider_name=CODEX_PROVIDER_NAME,
                     provider_response_id=item.id,
                     metadata=codex_metadata(
@@ -673,22 +702,16 @@ class CodexRunAccumulator:
             )
             return
         if state is None or not isinstance(state.part, TextPart):
-            part = TextPart(
-                content=text,
-                id=item.id,
-                provider_name=CODEX_PROVIDER_NAME,
-            )
             state = StreamingPartState(index=self.take_part_index(), part=part)
             yield PartStartEvent(index=state.index, part=part)
         else:
-            if state.pending_text and text.endswith(state.pending_text):
+            remaining = text[len(state.part.content) :]
+            if remaining:
                 yield PartDeltaEvent(
                     index=state.index,
-                    delta=TextPartDelta(
-                        state.pending_text, provider_name=CODEX_PROVIDER_NAME
-                    ),
+                    delta=TextPartDelta(remaining, provider_name=CODEX_PROVIDER_NAME),
                 )
-            state.part.content = text
+            state.part = part
         state.events.append(event)
         if (
             isinstance(item, ExitedReviewModeThreadItem)

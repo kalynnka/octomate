@@ -10,8 +10,18 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from anthropic.types import Message as AnthropicMessage
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
+from pydantic import (
+    AliasChoices,
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+)
 
+from octomate.schemas.compactions import NativeContext
+from octomate.types.compactions import CompactionTrigger
 from octomate.types.json import JsonObject
 
 logger = logging.getLogger(__name__)
@@ -38,6 +48,64 @@ class TranscriptSessionLine(TranscriptSchema):
     entrypoint: str
 
 
+class CompactSummaryAnchor(TranscriptSchema):
+    """The summary message UUID anchoring Claude's retained messages."""
+
+    anchor_uuid: str | None = Field(
+        default=None, validation_alias=AliasChoices("anchor_uuid", "anchorUuid")
+    )
+    uuids: list[str] | None = None
+    all_uuids: list[str] | None = Field(
+        default=None, validation_alias=AliasChoices("all_uuids", "allUuids")
+    )
+
+
+class CompactMetadata(TranscriptSchema):
+    """Completion metadata shared by the SDK and transcript boundary."""
+
+    trigger: CompactionTrigger = "unknown"
+    preserved_messages: CompactSummaryAnchor | None = Field(
+        default=None,
+        validation_alias=AliasChoices("preserved_messages", "preservedMessages"),
+    )
+    preserved_segment: CompactSummaryAnchor | None = Field(
+        default=None,
+        validation_alias=AliasChoices("preserved_segment", "preservedSegment"),
+    )
+
+    def context(
+        self, summary_uuid: str, last_item_id: str | None, omitted: set[str]
+    ) -> NativeContext | None:
+        """Use the explicit retained UUID list; a partial anchor is not a full list."""
+        if last_item_id is None:
+            return None
+        retained: list[str] = []
+        if self.preserved_messages is not None:
+            anchor = self.preserved_messages
+            if anchor.anchor_uuid != summary_uuid:
+                return None
+            ids = anchor.uuids if anchor.uuids is not None else anchor.all_uuids
+            if ids is None:
+                return None
+            retained = [id_ for id_ in ids if id_ not in omitted]
+        elif self.preserved_segment is not None:
+            return None
+        return NativeContext(
+            last_item_id=last_item_id, replacement_ids=[summary_uuid, *retained]
+        )
+
+
+class CompactBoundary(TranscriptSchema):
+    """A completed Claude compaction, identified by its boundary UUID."""
+
+    uuid: str
+    session_id: str = Field(validation_alias=AliasChoices("session_id", "sessionId"))
+    metadata: CompactMetadata = Field(
+        validation_alias=AliasChoices("compact_metadata", "compactMetadata")
+    )
+    timestamp: AwareDatetime | None = None
+
+
 class TranscriptUserMessage(TranscriptSchema):
     """The `message` of a user line: a plain prompt, or its raw content blocks."""
 
@@ -56,6 +124,7 @@ class TranscriptUserLine(TranscriptSessionLine):
     prompt_id: str = Field(alias="promptId")
     prompt_source: str | None = Field(default=None, alias="promptSource")
     permission_mode: str | None = Field(default=None, alias="permissionMode")
+    is_compact_summary: bool = Field(default=False, alias="isCompactSummary")
     origin: JsonObject | None = None
     source_tool_assistant_uuid: str | None = Field(
         default=None, alias="sourceToolAssistantUUID"
@@ -78,6 +147,9 @@ class TranscriptSystemLine(TranscriptSessionLine):
     type: Literal["system"]
     subtype: str
     level: str
+    compact_metadata: CompactMetadata | None = Field(
+        default=None, alias="compactMetadata"
+    )
     error: JsonObject | None = None
     max_retries: int | None = Field(default=None, alias="maxRetries")
     retry_attempt: int | None = Field(default=None, alias="retryAttempt")

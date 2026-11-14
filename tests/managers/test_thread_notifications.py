@@ -7,7 +7,8 @@ from pydantic_ai.messages import PartDeltaEvent, TextPartDelta
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import (
+from octomate.database import AsyncSession, async_session
+from octomate.events import (
     ThreadCommandOutcomeRecordedEvent,
     ThreadHandoffRecordedEvent,
     ThreadMessageRecordedEvent,
@@ -15,7 +16,6 @@ from octomate.capabilities.harness.events import (
     ThreadTitleChangedEvent,
     wire_event_adapter,
 )
-from octomate.database import AsyncSession, async_session
 from octomate.nerve import ChannelTopic, Impulse, ThreadTopic, UserTopic
 from octomate.schemas.commands import CommandIntent, CommandResult
 from octomate.schemas.events import MessageEvent

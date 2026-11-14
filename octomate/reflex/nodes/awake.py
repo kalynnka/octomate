@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from pydantic_graph import BaseNode, End, GraphRunContext
 
-from octomate.capabilities.harness.events import GatewayEvent
+from octomate.events import GatewayEvent
 from octomate.nerve import Impulse
 from octomate.reflex.nodes.react import React
 from octomate.reflex.nodes.resume_deferred import ResumeDeferred

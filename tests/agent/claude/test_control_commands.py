@@ -10,6 +10,7 @@ from claude_agent_sdk import ClaudeAgentOptions
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from uuid_utils.compat import uuid7
 
+from octomate.managers.conversation import ConversationManager
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
@@ -190,9 +191,9 @@ async def test_fork_copies_sdk_transcript_and_resumes_from_destination(
     assert source.external_id == session_id
     assert copied.permission_mode == source.permission_mode == "plan"
     assert copied.effort == source.effort == "max"
-    assert [message.parts for message in copied.messages] == [
-        message.parts for message in source.messages
-    ]
+    assert [
+        message.parts for message in (await ConversationManager().history(copied.id))
+    ] == [message.parts for message in (await ConversationManager().history(source.id))]
     target_cwd = (await agent.workspaces.resolve(target.id, None, context.user_id)).path
     assert target_cwd != context.cwd
     fork_file = transcripts_dir(target_cwd) / f"{copied.external_id}.jsonl"

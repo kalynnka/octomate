@@ -1,7 +1,7 @@
 """Hook-driven ingest of a native Codex session.
 
-Hooks establish session and run identities and signal transcript boundaries.
-Only the rollout tail writes messages.
+Hooks establish sessions and signal transcript boundaries.
+Only the rollout tail writes runs and messages.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class CodexHookIngest:
-    """Reserve native session/run identities and request a drain when a turn stops.
+    """Establish native sessions and request a drain when a turn stops.
 
     Hooks never write message history. The authenticated stream owns attribution
     and the rollout is the sole source of prompts, replies and tool activity.
@@ -102,7 +102,6 @@ class CodexHookIngest:
             async with self.locks.hold(event.session_id):
                 await self.start_session(event)
                 if event.hook_event_name == "UserPromptSubmit":
-                    await self.reserve_run(event)
                     logger.info(
                         "session %s: turn %s asked",
                         event.session_id,
@@ -110,8 +109,6 @@ class CodexHookIngest:
                     )
 
     async def on_stop(self, event: CodexHookInput) -> None:
-        async with self.locks.hold(event.session_id):
-            await self.reserve_run(event)
         # Return the hook so Codex can flush its terminal line; that line settles
         # the turn and asks the connected tail to drain.
         await self.tailer.stop_turn(event.session_id, event.turn_id)
@@ -139,9 +136,11 @@ class CodexHookIngest:
 
     async def start_session(self, event: CodexHookInput) -> None:
         thread = await self.session_thread(event)
-        await self.conversations.ensure(
+        conversation = await self.conversations.ensure(
             thread.id, agent_tentacle_id=self.tailer.agent_tentacle_id, native=True
         )
+        if conversation.external_id != event.session_id:
+            await self.conversations.set_external_id(conversation, event.session_id)
 
     async def session_thread(self, event: CodexHookInput) -> Thread:
         """This session's thread, filed under the project already holding the
@@ -160,20 +159,4 @@ class CodexHookIngest:
             ThreadKey(self.tailer.agent_tentacle_id, "thread", event.session_id),
             project=project,
             native=True,
-        )
-
-    async def reserve_run(self, event: CodexHookInput) -> None:
-        """Keep the native identity available without creating any messages."""
-        if not event.turn_id:
-            return
-        thread = await self.session_thread(event)
-        conversation = await self.conversations.ensure(
-            thread.id, agent_tentacle_id=self.tailer.agent_tentacle_id, native=True
-        )
-        await self.conversations.record_external_run(
-            conversation,
-            run_id=event.turn_id,
-            name=self.tailer.agent_tentacle_id,
-            cwd=Path(event.cwd) if event.cwd else None,
-            native_session_id=event.session_id,
         )

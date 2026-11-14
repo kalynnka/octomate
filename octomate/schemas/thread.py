@@ -5,8 +5,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Literal, Self
 
-from arcanus import BaseTransmuter, Relation, RelationCollection, Relationships
-from arcanus.base import Identity
+from arcanus import (
+    BaseTransmuter,
+    Identity,
+    Relation,
+    RelationCollection,
+    Relationships,
+)
 from pydantic import (
     UUID7,
     AfterValidator,

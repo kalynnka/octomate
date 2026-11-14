@@ -26,9 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.events import TodoCompletedEvent, TodoCreatedEvent
 from octomate.config.base import OctomateConfig
+from octomate.events import TodoCompletedEvent, TodoCreatedEvent
 from octomate.fibers import MemoryFiber
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.todos import TodoManager
@@ -40,6 +39,7 @@ from octomate.schemas.segments import MessageSegment
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.triage import AgentRoute, Claim
 from octomate.tentacles.inkling import InklingTentacle
+from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.base import InklingOutput
 from tests.agent.test_mcp_serving import over, served
 from tests.support.agents import FakeAgent

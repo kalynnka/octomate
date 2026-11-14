@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, ClassVar, Self, get_args, overload
 
 import anyio
 from httpx import URL
+from opentelemetry.trace import get_tracer
 from pydantic import UUID7, TypeAdapter
 from pydantic_ai import (
     AgentCapability,
@@ -25,7 +26,6 @@ from pydantic_ai import (
     AgentNativeTool,
     AgentRunResult,
     AgentRunResultEvent,
-    RunUsage,
     UsageLimits,
 )
 from pydantic_ai.agent import EventStreamHandler
@@ -35,6 +35,7 @@ from pydantic_ai.agent.abstract import (
     RunOutputDataT,
 )
 from pydantic_ai.capabilities import LocalWorkspace, Toolset
+from pydantic_ai.conversation import ConversationTypeAdapter
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import ModelRequest, UserContent, UserPromptPart
 from pydantic_ai.models import KnownModelName, Model
@@ -42,39 +43,30 @@ from pydantic_ai.output import OutputSpec
 from pydantic_ai.settings import ModelSettings, ThinkingEffort, merge_model_settings
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset, ApprovalRequiredToolset
+from pydantic_ai_harness.compaction import compact_now
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, Shell
 from pydantic_ai_harness.step_persistence.conversations import conversation_text
 from pydantic_ai_harness.step_persistence.naming import generate_name
-from pydantic_graph import GraphRunContext
 from rich.style import Style
 
-from octomate.capabilities import UserScopedCapability
-from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.deferred import (
-    DeclineResolver,
-    DeferredResolver,
-    DeferredSuspender,
-    PostureResolver,
-)
-from octomate.capabilities.harness.react import (
-    ReactDeps,
-    ReactEventStream,
-    ReactState,
-    ReactStreamEvent,
-    ResumeTurn,
-    StartTurn,
-    iter_react_graph_events,
-    resolve_conversation,
-)
 from octomate.config.agents import AgentRouteModelName, InklingConfig
-from octomate.managers.conversation import ConversationManager
+from octomate.managers.conversation import ConversationManager, ConversationStore
 from octomate.managers.habitat import Invocation
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH
+from octomate.schemas.commands import (
+    CommandCatalog,
+    CommandContext,
+    CommandDescriptor,
+    CommandError,
+    CommandIntent,
+    CommandOutcome,
+    CommandResult,
+)
 from octomate.schemas.conversation import ChannelAddress, Conversation
-from octomate.schemas.segments import MessageSegment
+from octomate.schemas.segments import MessageSegment, TextSegment
 from octomate.schemas.triage import Claim
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import inkling_logfire
@@ -82,8 +74,25 @@ from octomate.tentacles.agent import (
     AgentSpecInput,
     AgentTentacle,
 )
+from octomate.tentacles.deferred import DeferredSuspender
+from octomate.tentacles.inkling.agent import Agent
+from octomate.tentacles.inkling.capabilities import UserScopedCapability
+from octomate.tentacles.inkling.capabilities.compaction import SummarizingCompaction
+from octomate.tentacles.inkling.deferred import (
+    DeclineResolver,
+    DeferredResolver,
+    PostureResolver,
+)
 from octomate.tentacles.inkling.mcp import OctomateTools
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
+from octomate.tentacles.inkling.react import (
+    ReactDeps,
+    ReactState,
+    ResumeTurn,
+    StartTurn,
+    iter_react_graph_events,
+)
+from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from octomate.types.permissions import InklingPermissionMode, PermissionMode
 
 if TYPE_CHECKING:
@@ -210,6 +219,106 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         if conversation.external_id is not None:
             raise ValueError("Inkling conversations cannot have an external session id")
 
+    async def probe_commands(self, context: CommandContext) -> CommandCatalog:
+        return CommandCatalog(
+            context=context,
+            status="ready",
+            descriptors={
+                CommandDescriptor(
+                    id="builtin:compact",
+                    name="compact",
+                    description="Summarize older context while retaining recent messages.",
+                    argument_hint="[focus]",
+                    accepts_attachments=False,
+                    unavailable_reason=None
+                    if any(
+                        isinstance(cap, SummarizingCompaction)
+                        for cap in self.capabilities
+                    )
+                    else "Summarizing compaction is not configured for this agent.",
+                )
+            },
+        )
+
+    async def execute_command(
+        self,
+        context: CommandContext,
+        intent: CommandIntent,
+        *,
+        invocation: Invocation | None,
+        deferred_suspender: DeferredSuspender | None = None,
+        capabilities: Sequence[AgentCapability[None]] | None = None,
+    ) -> AsyncGenerator[CommandOutcome | ReactStreamEvent[InklingOutput], None]:
+        if intent.command_id != "builtin:compact":
+            yield CommandError(status="unknown", message="Unknown Inkling command.")
+            return
+        if intent.attachments:
+            yield CommandError(
+                status="unsupported", message="/compact does not accept attachments."
+            )
+            return
+        if context.conversation is None:
+            yield CommandError(
+                status="unavailable",
+                message="/compact requires an existing conversation.",
+            )
+            return
+        if (
+            context.agent_id != self.id
+            or context.conversation.agent_tentacle_id != self.id
+        ):
+            raise ValueError("command context does not belong to this agent")
+        strategy = next(
+            (
+                cap
+                for cap in self.capabilities
+                if isinstance(cap, SummarizingCompaction)
+            ),
+            None,
+        )
+        if strategy is None:
+            yield CommandError(
+                status="unavailable",
+                message="Summarizing compaction is not configured for this agent.",
+            )
+            return
+        selected = self.resolve_model(context.model)
+        if selected is None:
+            raise ValueError("Compaction requires a model")
+        loaded = await self.conversations.get(
+            context.conversation.id, with_runs=False, with_messages=True
+        )
+        # The summary agent consumes message values, not ORM relationships.
+        conversation = ConversationTypeAdapter.validate_python(
+            {**vars(loaded), "messages": [vars(message) for message in loaded.messages]}
+        )
+        compacted = await compact_now(
+            strategy,
+            conversation.messages,
+            model=self.models[selected],
+            focus=intent.arguments or None,
+            usage=conversation.usage,
+            conversation_id=conversation.conversation_id,
+            tracer=get_tracer("octomate.inkling"),
+            tokenizer=strategy.tokenizer,
+        )
+        changed = compacted != conversation.messages
+        if changed:
+            await ConversationStore(self.conversations).record_compaction(
+                conversation, after=compacted, trigger="manual"
+            )
+        yield CommandResult(
+            segments=[
+                TextSegment(
+                    data={
+                        "text": "Conversation context compacted."
+                        if changed
+                        else "No context compaction was needed."
+                    }
+                )
+            ]
+        )
+
     description: str = (
         "General assistant for conversation, questions, writing, analysis, and "
         "coordinating multi-step work."
@@ -237,7 +346,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         conversation_manager: ConversationManager | None = None,
         deferred_resolver: DeferredResolver | None = None,
         description: str | None = None,
-        claims: Mapping[KnownModelName, Claim] | None = None,
+        claims: Mapping[str, Claim] | None = None,
         permission_mode: InklingPermissionMode = "default",
         request_limit: int = 256,
         gateway: bool = True,
@@ -451,6 +560,25 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         with anyio.CancelScope(shield=True):
             await self.revoke_runtime_keys()
 
+    async def resolve_conversation(
+        self,
+        thread_id: UUID7,
+        *,
+        conversation_address: ChannelAddress,
+        conversation_id: UUID7 | None = None,
+    ) -> Conversation:
+        """Load the effective context Inkling passes to Pydantic AI."""
+        if conversation_id is None:
+            owner = await self.conversations.ensure(
+                thread_id, agent_tentacle_id=self.id, with_runs=False
+            )
+            conversation_id = owner.id
+        conversation = await self.conversations.get(
+            conversation_id, with_runs=False, with_messages=True
+        )
+        self.check_conversation(conversation, thread_id=thread_id)
+        return conversation
+
     @overload
     async def run(
         self,
@@ -471,7 +599,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -502,7 +629,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -532,7 +658,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -560,7 +685,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             deps=deps,
             model_settings=model_settings,
             usage_limits=usage_limits,
-            usage=usage,
             metadata=metadata,
             output_retries=output_retries,
             infer_name=infer_name,
@@ -634,7 +758,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -664,7 +787,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -693,7 +815,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -720,7 +841,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 deps=deps,
                 model_settings=model_settings,
                 usage_limits=usage_limits,
-                usage=usage,
                 metadata=metadata,
                 output_retries=output_retries,
                 infer_name=infer_name,
@@ -751,7 +871,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -781,7 +900,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -810,7 +928,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -822,8 +939,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         ReactStreamEvent[InklingOutput | RunOutputDataT],
         None,
     ]:
-        thread_id = invocation.thread_id
-        conversation_id = invocation.conversation_id
+        conversation = invocation.conversation
+        self.check_conversation(conversation, thread_id=invocation.thread_id)
         resolved_run_name = run_name or "react"
         # Effort IS pydantic-ai's `thinking` scale; pass it through, layered over
         # any run settings the caller passed. Nothing downgrades a grade the
@@ -847,11 +964,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
 
         capabilities = list(capabilities or [])
         # The core owns the session; the agent receives only its MCP connection.
-        octomate_session = (
-            self.octomate.gateway.get(conversation_id)
-            if conversation_id is not None
-            else None
-        )
+        octomate_session = self.octomate.gateway.get(conversation.id)
         profile = (
             octomate_session.user_profile if octomate_session is not None else None
         )
@@ -882,16 +995,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 max_retries=2,
             )
             capabilities.extend(OctomateTools.capabilities(client))
-        # The react graph carries only the thread/agent identity; each node fetches
-        # the live conversation (and its history) from the ConversationManager, the
-        # single source of truth — no message-history copy is threaded here. A
-        # conversation is owned by a thread, so the run needs one.
-
-        await self.resolve_conversation(
-            thread_id,
-            conversation_address=conversation_address,
-            conversation_id=conversation_id,
-        )
         workspace = invocation.storage.path
         if invocation.project is not None:
             capabilities.extend(self.workspace_capabilities(workspace))
@@ -914,7 +1017,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             instructions=instructions,
             model_settings=model_settings,
             usage_limits=usage_limits or UsageLimits(request_limit=self.request_limit),
-            usage=usage,
             metadata=metadata,
             output_retries=output_retries,
             infer_name=infer_name,
@@ -925,9 +1027,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         )
         state = ReactState(
             conversation_address=conversation_address,
-            agent_tentacle_id=self.id,
-            thread_id=thread_id,
-            conversation_id=conversation_id,
+            conversation=conversation,
             source_thread_address=source_thread_address,
             source_thread_message_ids=list(source_thread_message_ids or []),
         )
@@ -947,9 +1047,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 naming_model = self.naming_model or model or self.agent.model
                 if naming_model is None:
                     raise ValueError("session naming requires a model")
-                conversation = await resolve_conversation(
-                    GraphRunContext(state=state, deps=graph_deps)
-                )
                 naming_task = asyncio.create_task(
                     self.sync_session_name(
                         conversation, user_prompt, model=naming_model

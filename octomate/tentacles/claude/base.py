@@ -36,6 +36,7 @@ from claude_agent_sdk import (
     PermissionResultDeny,
     PreToolUseHookInput,
     ResultMessage,
+    SystemMessage,
     ToolPermissionContext,
 )
 from claude_agent_sdk.types import Message, SystemPromptPreset
@@ -60,7 +61,6 @@ from pydantic_ai import (
     AgentNativeTool,
     AgentRunResult,
     AgentRunResultEvent,
-    RunUsage,
     UsageLimits,
 )
 from pydantic_ai.agent.abstract import (
@@ -78,14 +78,12 @@ from rich.style import Style
 from starlette.datastructures import Headers
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.deferred import DeferredSuspender, Interjections
-from octomate.capabilities.harness.events import (
+from octomate.config.agents import Claim, ClaudeCodeConfig
+from octomate.config.channels import TrunklineChannelConfig
+from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
 )
-from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import Claim, ClaudeCodeConfig
-from octomate.config.channels import TrunklineChannelConfig
 from octomate.managers.habitat import Invocation
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
 from octomate.nerve import Impulse
@@ -132,9 +130,15 @@ from octomate.tentacles.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.claude.ink import ClaudeInk
 from octomate.tentacles.claude.mcp import octomate_mcp_server
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
-from octomate.tentacles.claude.transcript import relocate_session, transcripts_dir
+from octomate.tentacles.claude.transcript import (
+    CompactBoundary,
+    relocate_session,
+    transcripts_dir,
+)
+from octomate.tentacles.deferred import DeferredSuspender, Interjections
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
+from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from octomate.types.json import JsonObject
 from octomate.types.permissions import (
     ClaudePermissionMode,
@@ -592,8 +596,8 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         with fresh message ids, for this tentacle to resume; the staged copy goes."""
         conversations = self.conversations
         async with conversations.lock(target.key):
-            target = await conversations.get(target.id)
-            if target.messages or target.external_id:
+            target = await conversations.get(target.id, with_runs=False)
+            if target.external_id or await conversations.has_history(target.id):
                 raise ValueError("Transcript imports require an empty target")
             if source.external_id is None:
                 raise ValueError("Native Claude Code history has not been uploaded")
@@ -758,9 +762,37 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         return self.habitats.invoke(
             workspaces=self.workspaces,
             thread=thread,
-            conversation_id=context.conversation.id,
+            conversation=context.conversation,
             owner_id=context.user_id,
         )
+
+    async def record_compaction(
+        self, conversation: Conversation, message: Message, *, cwd: Path
+    ) -> None:
+        """Persist the SDK's completed boundary before yielding its presentation."""
+        if (
+            not isinstance(message, SystemMessage)
+            or message.subtype != "compact_boundary"
+        ):
+            return
+        boundary = CompactBoundary.model_validate(message.data)
+        await self.conversations.record_driven_compaction(
+            conversation,
+            native_session_id=boundary.session_id,
+            native_compaction_id=boundary.uuid,
+            trigger=boundary.metadata.trigger,
+            happened_at=boundary.timestamp,
+        )
+        messages = await self.ink.compaction_messages(boundary, cwd=cwd)
+        if messages:
+            await self.conversations.record_driven_compaction(
+                conversation,
+                native_session_id=boundary.session_id,
+                native_compaction_id=boundary.uuid,
+                trigger=boundary.metadata.trigger,
+                happened_at=boundary.timestamp,
+                messages=messages,
+            )
 
     async def execute_command(
         self,
@@ -977,14 +1009,9 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         command: ClaudeCommandDescriptor | None = None,
     ) -> AsyncGenerator[CommandOutcome | ReactStreamEvent[str], None]:
-        thread_id = invocation.thread_id
-        conversation_id = invocation.conversation_id
         cli_model = model.model_name if isinstance(model, Model) else model
-        conversation = await self.resolve_conversation(
-            thread_id,
-            conversation_address=conversation_address,
-            conversation_id=conversation_id,
-        )
+        conversation = invocation.conversation
+        self.check_conversation(conversation, thread_id=invocation.thread_id)
         effort = await self.resolve_effort(conversation, model=cli_model, effort=effort)
         if deferred_tool_results is not None:
             # A resumed run. The CLI takes no tool result back, so the graph's
@@ -1275,12 +1302,22 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                     agent_id=self.id, conversation_id=conversation.id
                 )
                 command_result: ResultMessage | None = None
+                compacted = False
                 async for message in messages:
                     if isinstance(message, ActionBatchEvent | ActionBatchAnsweredEvent):
                         yield message
                         continue
                     if command is not None and isinstance(message, ResultMessage):
                         command_result = message
+                    compacted |= (
+                        isinstance(message, SystemMessage)
+                        and message.subtype == "compact_boundary"
+                    )
+                    await self.record_compaction(
+                        conversation,
+                        message,
+                        cwd=storage.path,
+                    )
                     for event in accumulator.consume(
                         message, command=command is not None
                     ):
@@ -1307,6 +1344,10 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                     cwd=Path(run_cwd),
                     external_id=accumulator.session_id,
                     native_turn_id=prompt_id,
+                )
+            if compacted and accumulator.session_id:
+                await self.conversations.record_native_memberships(
+                    conversation, accumulator.session_id
                 )
             if command_result is not None and command_result.is_error:
                 raise RuntimeError(
@@ -1413,7 +1454,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -1444,7 +1484,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -1474,7 +1513,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -1531,7 +1569,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -1561,7 +1598,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -1590,7 +1626,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,

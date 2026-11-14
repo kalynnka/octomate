@@ -1,6 +1,7 @@
 """The shared SDK transport must keep reading while a human is deciding."""
 
 import asyncio
+import json
 from base64 import b64encode
 from collections.abc import AsyncGenerator
 from queue import Queue
@@ -20,8 +21,10 @@ from openai_codex.generated.v2_all import (
     UncommittedChangesReviewTarget,
 )
 from openai_codex.models import InitializeResponse
+from pydantic_ai.messages import CompactionPart
 
 from octomate.config.agents import CodexConfig as AgentCodexConfig
+from octomate.schemas.compactions import NativeMessage
 from octomate.tentacles.codex.client import SharedCodex
 from octomate.tentacles.codex.ink import CodexInk
 from octomate.types.json import JsonObject
@@ -31,6 +34,177 @@ class CommandTransport(NamedTuple):
     ink: CodexInk
     incoming: Queue[JsonObject | None]
     outgoing: Queue[JsonObject]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "available",
+        "missing",
+        "foreign",
+        "wrong_turn",
+        "wrong_item",
+        "unsupported",
+        "reused_id",
+        "malformed",
+    ],
+)
+async def test_compaction_content_is_read_from_the_runtime_and_matched_exactly(
+    command_transport: CommandTransport,
+    case: str,
+) -> None:
+    ink, incoming, outgoing = command_transport
+    reading = asyncio.create_task(
+        ink.compaction_messages("thread-a", "turn-a", "item-a")
+    )
+    request = await asyncio.to_thread(outgoing.get, True, 1)
+    assert request["method"] == "thread/read"
+    incoming.put(
+        {
+            "id": request["id"],
+            "result": {
+                "thread": {
+                    "id": "thread-a",
+                    "sessionId": "thread-a",
+                    "cliVersion": "0.160.0",
+                    "createdAt": 0,
+                    "updatedAt": 0,
+                    "cwd": "/remote/work",
+                    "ephemeral": False,
+                    "modelProvider": "openai",
+                    "preview": "",
+                    "source": "appServer",
+                    "status": {"type": "idle"},
+                    "turns": [],
+                    "path": None
+                    if case == "missing"
+                    else "/remote/codex/rollout.jsonl",
+                }
+            },
+        }
+    )
+    if case == "missing":
+        assert not await reading
+        assert outgoing.empty()
+        return
+    request = await asyncio.to_thread(outgoing.get, True, 1)
+    assert request["method"] == "fs/readFile"
+    assert request["params"] == {"path": "/remote/codex/rollout.jsonl"}
+    if case == "unsupported":
+        incoming.put(
+            {"id": request["id"], "error": {"code": -32601, "message": "unsupported"}}
+        )
+        assert not await reading
+        return
+    records: list[JsonObject] = [
+        {
+            "type": "session_meta",
+            "payload": {"id": "foreign" if case == "foreign" else "thread-a"},
+        },
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "task_started",
+                "turn_id": "other" if case == "wrong_turn" else "turn-a",
+            },
+        },
+        {
+            "type": "compacted",
+            "payload": {
+                "message": "Readable résumé",
+                "replacement_history": [
+                    {
+                        "type": "message",
+                        "id": "prompt-transcript-id",
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "Retained original"}
+                        ],
+                    },
+                    {
+                        "type": "compaction",
+                        "id": "checkpoint-a",
+                        "encrypted_content": "opaque-checkpoint",
+                    },
+                ],
+            },
+        },
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "thread_id": "thread-a",
+                "turn_id": "turn-a",
+                "item": {
+                    "type": "ContextCompaction",
+                    "id": "other" if case in {"wrong_item", "reused_id"} else "item-a",
+                },
+            },
+        },
+    ]
+    if case == "reused_id":
+        records.append(
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "item_completed",
+                    "thread_id": "thread-a",
+                    "turn_id": "turn-a",
+                    "item": {"type": "ContextCompaction", "id": "item-a"},
+                },
+            }
+        )
+    if case == "malformed":
+        records[2]["payload"] = {"replacement_history": []}
+    records[1:1] = [
+        {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "prior"}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "prompt-transcript-id",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Retained original"}],
+                "internal_chat_message_metadata_passthrough": {
+                    "turn_id": "prior",
+                    "content_item_kinds": ["user.text"],
+                },
+            },
+        },
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "thread_id": "thread-a",
+                "turn_id": "prior",
+                "item": {"type": "UserMessage", "id": "prompt-app-server-id"},
+            },
+        },
+        {"type": "event_msg", "payload": {"type": "task_complete", "turn_id": "prior"}},
+    ]
+    raw = "\n".join(
+        json.dumps({"timestamp": "2026-11-06T00:00:00Z", **record})
+        for record in records
+    )
+    incoming.put(
+        {
+            "id": request["id"],
+            "result": {"dataBase64": b64encode(raw.encode()).decode()},
+        }
+    )
+    messages = await reading
+    if case != "available":
+        assert not messages
+        return
+    assert len(messages) == 2
+    assert messages[0].message_text == "Readable résumé"
+    boundary = NativeMessage.model_validate(messages[0].metadata).compaction_context
+    assert boundary is not None
+    assert boundary.last_item_id == "prompt-transcript-id"
+    assert boundary.item_aliases == {"prompt-app-server-id": "prompt-transcript-id"}
+    part = messages[1].parts[0]
+    assert isinstance(part, CompactionPart)
+    assert part.provider_details == {"encrypted_content": "opaque-checkpoint"}
 
 
 @pytest.fixture

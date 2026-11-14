@@ -46,7 +46,6 @@ from pydantic_ai import (
     AgentNativeTool,
     AgentRunResult,
     AgentRunResultEvent,
-    RunUsage,
     UsageLimits,
 )
 from pydantic_ai.agent.abstract import (
@@ -64,14 +63,12 @@ from pydantic_ai.toolsets import AbstractToolset
 from rich.style import Style
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.deferred import DeferredSuspender
-from octomate.capabilities.harness.events import (
+from octomate.config.agents import Claim, DeepseekConfig
+from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
     MessageSentEvent,
 )
-from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import Claim, DeepseekConfig
 from octomate.managers.habitat import Invocation
 from octomate.nerve import Impulse
 from octomate.prompts import tagged
@@ -102,6 +99,7 @@ from octomate.tentacles.deepseek.adapter import (
 )
 from octomate.tentacles.deepseek.catalog import FORK_COMMAND, DeepseekCommandDescriptor
 from octomate.tentacles.deepseek.client import DeepseekApiClient
+from octomate.tentacles.deepseek.compactions import DeepseekCompactions
 from octomate.tentacles.deepseek.hooks import DeepseekHookInput
 from octomate.tentacles.deepseek.ingest import DeepseekHookIngest
 from octomate.tentacles.deepseek.ink import DeepseekInk, TurnFrame
@@ -122,8 +120,10 @@ from octomate.tentacles.deepseek.wire import (
     text_of,
     user_message_of,
 )
+from octomate.tentacles.deferred import DeferredSuspender
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
+from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from octomate.types.json import JsonObject, JsonValue
 from octomate.utils import drain_task
 
@@ -539,7 +539,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         return self.habitats.invoke(
             workspaces=self.workspaces,
             thread=thread,
-            conversation_id=context.conversation.id,
+            conversation=context.conversation,
             owner_id=context.user_id,
         )
 
@@ -593,7 +593,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             contextlib.AsyncExitStack() as resources,
         ):
             conversation = await self.conversations.get(
-                conversation.id, with_history=False
+                conversation.id, with_runs=False
             )
             if (
                 await self.conversations.latest_cwd(conversation.id)
@@ -657,6 +657,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 conversation.id
             )
         )
+        assert conversation.external_id is not None
+        compactions = DeepseekCompactions(
+            self.conversations, conversation, conversation.external_id
+        )
         entered = False
         settled = False
         run_id = str(uuid7())
@@ -671,6 +675,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             if isinstance(frame, SessionAssistantFrame):
                 events = accumulator.consume_assistant_stream(frame)
             else:
+                await compactions.consume(frame.event)
                 data = frame.event.data
                 if (
                     isinstance(data, dict)
@@ -688,6 +693,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 if (
                     frame.event.type == "user/message"
                     and (message := user_message_of(frame.event)) is not None
+                    and message.source.kind in {"user", "user-question-reply"}
                 ):
                     accumulator.begin(text_of(message.content))
                 if (
@@ -720,6 +726,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     else None
                 ),
             )
+            await compactions.record_memberships()
             if accumulator.turn_error or execution.result.kind == "error":
                 raise AgentRunError(
                     accumulator.turn_error
@@ -732,6 +739,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 )
             )
             return
+        await compactions.record_memberships()
         if accumulator.turn_error or execution.result.kind == "error":
             yield CommandError(
                 status="failed",
@@ -796,8 +804,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
 
     async def __aenter__(self) -> DeepseekTentacle:
         await self.ink.__aenter__()
-        # start_process leaves the client verified (settings/describe answered);
-        # the mux socket must then be open before anything prompts, so a run's
+        # The mux socket must be open before anything prompts, so a run's
         # first frames cannot outrun the subscribed baseline. A failed
         # handshake is a broken harness, not weather: fail the start rather
         # than retrying.
@@ -1056,9 +1063,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         capabilities: Sequence[AgentCapability[None]] | None = None,
         deferred_suspender: DeferredSuspender | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
-        thread_id = invocation.thread_id
-        conversation_id = invocation.conversation_id
         deepseek_model = model.model_name if isinstance(model, Model) else model
+        conversation = invocation.conversation
+        self.check_conversation(conversation, thread_id=invocation.thread_id)
         client = self.ink.client
         if not self.ink.running:
             # The client exists from birth, but a run needs the mux pump: an
@@ -1072,11 +1079,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 "session/prompt has no output schema"
             )
 
-        conversation = await self.resolve_conversation(
-            thread_id,
-            conversation_address=conversation_address,
-            conversation_id=conversation_id,
-        )
         accumulator = DeepseekRunAccumulator(
             context_window=await self.conversations.latest_context_window(
                 conversation.id
@@ -1114,7 +1116,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         ):
             async with self.conversation_locks.hold(str(conversation.id)):
                 conversation = await self.conversations.get(
-                    conversation.id, with_history=False
+                    conversation.id, with_runs=False
                 )
                 effort = await self.resolve_effort(
                     conversation, model=deepseek_model, effort=effort
@@ -1164,6 +1166,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                         suspender=deferred_suspender,
                         frames=queue,
                     )
+                    compactions = DeepseekCompactions(
+                        self.conversations, conversation, session_id
+                    )
                     prompted = False
                     try:
                         SessionPromptValue.model_validate(
@@ -1202,6 +1207,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                                 ):
                                     yield event
                                 continue
+                            await compactions.consume(frame.event)
                             if (
                                 self.config.instrument
                                 and frame.event.type != "assistant/chunk"
@@ -1249,6 +1255,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                         else None
                     ),
                 )
+                await compactions.record_memberships()
                 await self.sync_session_name(conversation, session_id)
         if source_thread_message_ids:
             if recorded_run is None:
@@ -1308,7 +1315,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -1339,7 +1345,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -1369,7 +1374,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -1423,7 +1427,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -1453,7 +1456,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -1482,7 +1484,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,

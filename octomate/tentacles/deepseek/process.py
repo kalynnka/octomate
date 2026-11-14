@@ -8,9 +8,9 @@ Extension configuration lives in a fresh private home. Settings, credentials,
 sessions and attachments use explicit paths under the native DSH home. DSH's
 session write leases prevent concurrent writers to a shared session.
 
-Compatibility is checked against the tested CLI release before starting; the
-Remote API handshake remains authoritative because development checkouts can
-change their protocol without changing the package version.
+The CLI version check is advisory. Required Remote operations determine
+compatibility because development checkouts can change their protocol without
+changing the package version.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ UNKNOWN_OPTION = re.compile(r"unknown option '([^']+)'")
 NO_OPEN = "--no-open"
 
 STOP_ESCALATE_SECONDS = 5.0
-TESTED_DSH_VERSION = "0.2.1-rc.2"
+TESTED_DSH_VERSION = "0.2.2-rc.1"
 DIAGNOSTIC_LINES = 24
 DIAGNOSTIC_WIDTH = 500
 TOKEN_QUERY = re.compile(r"([?&]token=)[^\s&#]+")
@@ -124,12 +124,12 @@ class DeepseekProcess:
             or re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][\w.-]+)?", version) is None
         ):
             logger.warning(
-                "Could not determine dsh version; tested with %s. Checking Remote API compatibility at startup.",
+                "Could not determine dsh version; tested with %s. Continuing startup.",
                 TESTED_DSH_VERSION,
             )
         elif version != TESTED_DSH_VERSION:
             logger.warning(
-                "dsh version %s differs from Octomate's tested version %s; checking Remote API compatibility. Update dsh and Octomate together if it fails.",
+                "dsh version %s differs from Octomate's tested version %s; continuing startup",
                 version,
                 TESTED_DSH_VERSION,
             )
@@ -264,6 +264,12 @@ class DeepseekProcess:
                     {"id": "hmr", "disabled": True},
                     {"id": "plugin-manager", "disabled": True},
                     {"id": "tool-plugin-manager", "disabled": True},
+                    # Presets must not expose profile-management tools whose
+                    # host service is disabled in this managed process.
+                    {
+                        "id": "agent-preset-registry",
+                        "isolate": {"profileContext": True},
+                    },
                 ]
             ).model_dump_json(),
         )

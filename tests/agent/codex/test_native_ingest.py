@@ -9,20 +9,31 @@ from pathlib import Path
 import anyio
 import pytest
 from anyio.abc import ObjectSendStream
-from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart
+from arcanus.materia.sqlalchemy import selectinload
+from pydantic_ai.messages import (
+    CompactionPart,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    UserPromptPart,
+)
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
+from octomate.database import async_session
+from octomate.managers.conversation import ConversationManager
 from octomate.nerve import Impulse, Nerve
+from octomate.schemas.compactions import Compaction, ExternalCompaction
+from octomate.schemas.messages import ModelMessage
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.codex.hooks import CodexHookInput
 from octomate.tentacles.codex.ingest import CodexHookIngest
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer, TailState
-from octomate.tentacles.codex.transcript import rollout_line_adapter
+from octomate.tentacles.codex.transcript import CompactedItem, rollout_line_adapter
 from octomate.tentacles.locks import SessionLocks
-from octomate.types.json import JsonObject
+from octomate.types.json import JsonObject, JsonValue
 from tests.support.managers import a_loaded_thread, a_thread
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
@@ -31,6 +42,103 @@ SESSION_ID = "codex-session"
 SESSION_ADDRESS = ThreadKey("codex", "thread", SESSION_ID).address(
     SENDER.channel_user_id
 )
+
+
+@pytest.mark.parametrize("order", ["driven_first", "native_first", "interleaved"])
+@pytest.mark.parametrize("driven_content", [False, True])
+@pytest.mark.parametrize("native_content", [False, True])
+async def test_native_completion_correlates_with_driven_compaction_without_new_identities(
+    in_memory_engine: AsyncEngine,
+    order: str,
+    driven_content: bool,
+    native_content: bool,
+) -> None:
+    app = Octomate()
+    _, tailer = wired(app)
+    owner = await app.conversations.ensure(await a_thread(), agent_tentacle_id="codex")
+    await app.conversations.set_external_id(owner, SESSION_ID)
+    payload: JsonObject = {"message": "Compacted earlier work"}
+    records = [
+        event(0, "task_started", turn_id=TURN_ID),
+        {
+            "timestamp": "2026-07-16T10:00:01Z",
+            "type": "compacted",
+            "payload": payload if native_content else {"message": ""},
+        },
+        {
+            "timestamp": "2026-07-16T10:00:02Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "thread_id": SESSION_ID,
+                "turn_id": TURN_ID,
+                "item": {"type": "ContextCompaction", "id": "compaction-item"},
+            },
+        },
+        event(3, "task_complete", turn_id=TURN_ID),
+    ]
+
+    async def driven() -> None:
+        messages = CompactedItem.model_validate(payload).to_messages(
+            datetime(2026, 7, 16, 10, 0, 1, tzinfo=UTC)
+        )
+        await app.conversations.record_driven_compaction(
+            owner,
+            native_session_id=SESSION_ID,
+            native_compaction_id="compaction-item",
+            trigger="manual",
+            happened_at=None,
+            messages=messages if driven_content else None,
+        )
+
+    async def identities() -> tuple[str, list[str]]:
+        async with async_session() as session:
+            rows = await session.list(
+                Compaction,
+                order_bys=[Compaction["recorded_at"]],
+                options=[selectinload(Compaction["messages"])],
+            )
+        first = rows[0]
+        return str(first.id), [str(message.id) for message in first.messages]
+
+    async with app.nerve.publish(SESSION_ADDRESS) as impulses:
+        state, _ = await tailer.attach_remote(
+            SESSION_ID, ROLLOUT_LABEL, SENDER, SESSION_ADDRESS, impulses
+        )
+        if order == "driven_first":
+            await driven()
+            original_id, original_messages = await identities()
+            await feed_records(tailer, state, records)
+        else:
+            offset = await feed_records(tailer, state, records[:2])
+            original_id, original_messages = await identities()
+            if order == "interleaved":
+                await driven()
+            await feed_records(tailer, state, records[2:], start=offset)
+            if order == "native_first":
+                await driven()
+        tailer.detach_remote(state)
+        state, _ = await tailer.attach_remote(
+            SESSION_ID, ROLLOUT_LABEL, SENDER, SESSION_ADDRESS, impulses
+        )
+        await feed_records(tailer, state, records)
+        tailer.detach_remote(state)
+    async with async_session() as session:
+        [stored] = await session.list(
+            Compaction, options=[selectinload(Compaction["messages"])]
+        )
+        assert await session.count(ExternalAgentRun) == 0
+        assert await session.count(ModelMessage) == int(
+            native_content or driven_content
+        )
+    assert str(stored.id) == original_id
+    assert stored.native_compaction_id == "compaction-item"
+    assert stored.conversation_id == owner.id
+    assert stored.trigger == "manual"
+    if native_content or driven_content:
+        assert stored.messages[0].message_text == "Compacted earlier work"
+    if original_messages:
+        assert [str(message.id) for message in stored.messages] == original_messages
 
 
 @pytest.fixture
@@ -221,7 +329,7 @@ async def test_context_snapshot_and_last_response_usage_persist_together(
     assert last.usage.cache_read_tokens == 7
 
 
-async def test_hooks_reserve_identity_and_only_rollout_writes_messages(
+async def test_hooks_bind_session_and_only_rollout_writes_runs_and_messages(
     tmp_path: Path,
     impulses: ObjectSendStream[Impulse],
 ) -> None:
@@ -264,10 +372,10 @@ async def test_hooks_reserve_identity_and_only_rollout_writes_messages(
         ).id,
         agent_tentacle_id="codex",
     )
-    [reserved] = conversation.runs
-    assert isinstance(reserved, ExternalAgentRun)
-    assert reserved.end_offset is None
-    assert not reserved.messages
+    assert conversation.external_id == SESSION_ID
+    assert not conversation.runs
+    async with async_session() as session:
+        assert await session.count(ExternalAgentRun) == 0
     unbound = await octomate.threads.messages_page(thread.id, unbound=True, limit=100)
     assert not unbound.items
     page = await octomate.conversations.messages_page(thread.id, limit=100)
@@ -478,7 +586,10 @@ async def test_hooks_for_an_sdk_session_are_recorded_as_external() -> None:
     assert sdk is not None
     assert sdk.external_id == SESSION_ID
     assert [run.id for run in sdk.runs] == ["sdk-run"]
-    assert [message.message_text for message in sdk.messages] == ["SDK prompt"]
+    assert [
+        message.message_text
+        for message in (await ConversationManager().history(sdk.id))
+    ] == ["SDK prompt"]
     await tailer.shutdown()
 
 
@@ -501,7 +612,7 @@ async def test_a_legacy_driven_flag_does_not_suppress_ingestion() -> None:
     await tailer.shutdown()
 
 
-def event(second: int, kind: str, **payload: str) -> dict[str, object]:
+def event(second: int, kind: str, **payload: JsonValue) -> dict[str, object]:
     return {
         "timestamp": f"2026-07-16T10:00:{second:02d}Z",
         "type": "event_msg",
@@ -781,7 +892,10 @@ async def test_thread_spawn_rollout_tree_records_resumed_child_runs(
         "call-spawn",
         "call-followup",
     ]
-    assert [message.message_text for message in child.messages] == [
+    assert [
+        message.message_text
+        for message in (await ConversationManager().history(child.id))
+    ] == [
         "first finding",
         "second finding",
     ]
@@ -832,7 +946,7 @@ async def test_guardian_rollout_is_not_ingested_as_a_subagent(
     await tailer.shutdown()
 
 
-def test_known_declined_rollout_line_types_are_modeled() -> None:
+def test_known_non_turn_rollout_line_types_are_modeled() -> None:
     for line_type in ("compacted", "inter_agent_communication_metadata"):
         line = rollout_line_adapter.validate_python(
             {
@@ -842,3 +956,380 @@ def test_known_declined_rollout_line_types_are_modeled() -> None:
             }
         )
         assert line.type == line_type
+
+
+async def test_compactions_without_turns_are_replay_safe(
+    impulses: ObjectSendStream[Impulse],
+) -> None:
+    records = [
+        {
+            "timestamp": "2026-07-16T10:00:01Z",
+            "type": "compacted",
+            "payload": {"message": "Résumé of earlier work"},
+        },
+        {
+            "timestamp": "2026-07-16T10:00:02Z",
+            "type": "compacted",
+            "payload": {"message": "Résumé of earlier work"},
+        },
+    ]
+    assert not await streamed_runs(impulses, records)
+    async with async_session() as session:
+        rows = await session.list(
+            ExternalCompaction,
+            order_bys=[ExternalCompaction["id"]],
+            options=[selectinload(ExternalCompaction["messages"])],
+        )
+    identities = [(row.id, row.messages[0].id) for row in rows]
+    assert len(rows) == 2
+    assert rows[0].start_offset == 0
+    assert rows[1].start_offset == rows[0].end_offset
+    assert rows[0].happened_at == datetime(2026, 7, 16, 10, 0, 1, tzinfo=UTC)
+    for row in rows:
+        assert row.happened_at is not None
+        assert row.native_session_id == SESSION_ID
+        assert row.native_compaction_id is None
+        assert row.trigger == "unknown"
+        assert row.source == str(ROLLOUT_LABEL)
+        assert row.messages[0].run_id is None
+        assert row.messages[0].compaction_id == row.id
+        assert row.messages[0].parts == [
+            UserPromptPart("Résumé of earlier work", timestamp=row.happened_at)
+        ]
+    assert not await streamed_runs(impulses, records)
+    async with async_session() as session:
+        replayed = await session.list(
+            ExternalCompaction,
+            order_bys=[ExternalCompaction["id"]],
+            options=[selectinload(ExternalCompaction["messages"])],
+        )
+    assert [(row.id, row.messages[0].id) for row in replayed] == identities
+    octomate = Octomate()
+    thread = await a_loaded_thread(
+        octomate.threads, ThreadKey("codex", "thread", SESSION_ID)
+    )
+    assert not thread.messages
+
+
+@pytest.mark.parametrize(
+    "checkpoint",
+    [
+        {"type": "compaction", "id": "checkpoint", "encrypted_content": "opaque"},
+        {
+            "type": "compaction_summary",
+            "id": "checkpoint",
+            "encrypted_content": "opaque",
+        },
+        {
+            "type": "context_compaction",
+            "id": "checkpoint",
+            "encrypted_content": "opaque",
+        },
+        {"type": "context_compaction", "id": "checkpoint"},
+    ],
+)
+async def test_compaction_checkpoints_preserve_opaque_content(
+    impulses: ObjectSendStream[Impulse], checkpoint: JsonObject
+) -> None:
+    assert not await streamed_runs(
+        impulses,
+        [
+            {
+                "timestamp": "2026-07-16T10:00:01Z",
+                "type": "compacted",
+                "payload": {
+                    "message": "",
+                    "compaction_response_id": "summary-response",
+                    "replacement_history": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "retained context"}
+                            ],
+                        },
+                        checkpoint,
+                    ],
+                },
+            }
+        ],
+    )
+    async with async_session() as session:
+        rows = await session.list(
+            ExternalCompaction,
+            options=[selectinload(ExternalCompaction["messages"])],
+        )
+    assert len(rows) == 1
+    assert len(rows[0].messages) == 1
+    response = rows[0].messages[0]
+    assert isinstance(response, ModelResponse)
+    assert response.provider_response_id == "summary-response"
+    assert response.run_id is None
+    assert response.parts == [
+        CompactionPart(
+            id="checkpoint",
+            provider_name="openai_codex",
+            provider_details={"encrypted_content": "opaque"}
+            if "encrypted_content" in checkpoint
+            else None,
+        )
+    ]
+
+
+@pytest.mark.parametrize("driven", [False, True])
+async def test_compactions_survive_turn_replay_and_use_the_runtime_owner(
+    impulses: ObjectSendStream[Impulse], driven: bool
+) -> None:
+    octomate = Octomate()
+    owner = None
+    if driven:
+        owner = await octomate.conversations.ensure(
+            await a_thread(), agent_tentacle_id="codex"
+        )
+        await octomate.conversations.record_agent_run(
+            owner,
+            run_id=TURN_ID,
+            messages=[
+                ModelRequest(parts=[UserPromptPart("original prompt")]),
+                ModelResponse(parts=[TextPart("original answer")]),
+            ],
+            native_turn_id=TURN_ID,
+            external_id=SESSION_ID,
+        )
+    records = [
+        event(0, "task_started", turn_id=TURN_ID),
+        event(1, "user_message", message="original prompt"),
+        {
+            "timestamp": "2026-07-16T10:00:02Z",
+            "type": "compacted",
+            "payload": {"message": "summary inside a turn"},
+        },
+        answer_item(3, "original answer"),
+        event(4, "task_complete", turn_id=TURN_ID),
+    ]
+    await streamed_runs(impulses, records)
+    await streamed_runs(impulses, records)
+    async with async_session() as session:
+        rows = await session.list(ExternalCompaction)
+    assert len(rows) == 1
+    if owner is not None:
+        assert rows[0].conversation_id == owner.id
+    conversation = await octomate.conversations.get(rows[0].conversation_id)
+    assert [run.id for run in conversation.runs] == [TURN_ID]
+    assert [
+        message.message_text
+        for message in (await ConversationManager().history(conversation.id))
+    ] == [
+        "original prompt",
+        "original answer",
+    ]
+
+
+async def test_subagent_compactions_exclude_inherited_parent_history(
+    impulses: ObjectSendStream[Impulse],
+) -> None:
+    octomate = Octomate()
+    _, tailer = wired(octomate)
+    state, _ = await tailer.attach_remote(
+        SESSION_ID, ROLLOUT_LABEL, SENDER, SESSION_ADDRESS, impulses
+    )
+    await feed_records(tailer, state, [parent_metadata()])
+    await feed_records(
+        tailer,
+        state,
+        [
+            child_metadata(),
+            {
+                "timestamp": "2026-07-16T10:00:03Z",
+                "type": "compacted",
+                "payload": {"message": "inherited parent summary"},
+            },
+            event(4, "task_started", turn_id=CHILD_TURN_ONE),
+            event(5, "task_complete", turn_id=CHILD_TURN_ONE),
+            {
+                "timestamp": "2026-07-16T10:00:06Z",
+                "type": "compacted",
+                "payload": {"message": "child summary"},
+            },
+        ],
+        key="rollout-child.jsonl",
+    )
+    tailer.detach_remote(state)
+    async with async_session() as session:
+        rows = await session.list(
+            ExternalCompaction,
+            options=[selectinload(ExternalCompaction["messages"])],
+        )
+    assert len(rows) == 1
+    assert rows[0].native_session_id == CHILD_THREAD_ID
+    assert rows[0].source == "rollout-child.jsonl"
+    assert rows[0].messages[0].message_text == "child summary"
+    child = await octomate.conversations.get(rows[0].conversation_id)
+    assert child.subagent_id == CHILD_THREAD_ID
+    assert not child.runs
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"message": 7},
+        {"message": "partial summary", "replacement_history": [{"type": "compaction"}]},
+    ],
+)
+async def test_malformed_compactions_and_notifications_create_no_records(
+    impulses: ObjectSendStream[Impulse], payload: JsonObject
+) -> None:
+    assert not await streamed_runs(
+        impulses,
+        [
+            event(0, "context_compacted"),
+            {
+                "timestamp": "2026-07-16T10:00:01Z",
+                "type": "compacted",
+                "payload": payload,
+            },
+        ],
+    )
+    async with async_session() as session:
+        assert await session.count(ExternalCompaction) == 0
+
+
+@pytest.mark.parametrize("driven", [False, True])
+@pytest.mark.parametrize("retained", ["user-item", "answer-item", "missing-item"])
+async def test_replacement_history_reuses_archive_identities(
+    impulses: ObjectSendStream[Impulse], driven: bool, retained: str
+) -> None:
+    app = Octomate()
+    if driven:
+        owner = await app.conversations.ensure(
+            await a_thread(), agent_tentacle_id="codex"
+        )
+        await app.conversations.record_agent_run(
+            owner,
+            run_id=TURN_ID,
+            native_turn_id=TURN_ID,
+            external_id=SESSION_ID,
+            messages=[
+                ModelRequest(
+                    parts=[UserPromptPart("same text")],
+                    metadata={"native_item_ids": ["app-server-user-item"]},
+                ),
+                ModelResponse(
+                    parts=[TextPart("same text")], provider_response_id="answer-item"
+                ),
+            ],
+        )
+        await app.conversations.record_driven_compaction(
+            owner,
+            native_session_id=SESSION_ID,
+            native_compaction_id="compact-item",
+            trigger="manual",
+            happened_at=None,
+            messages=CompactedItem(
+                message="",
+                replacement_history=[
+                    {
+                        "type": "compaction",
+                        "id": "checkpoint",
+                        "encrypted_content": "opaque",
+                    }
+                ],
+            ).to_messages(datetime(2026, 7, 16, 10, 0, 4, tzinfo=UTC)),
+        )
+    records = [
+        event(0, "task_started", turn_id=TURN_ID),
+        event(1, "user_message", message="same text"),
+        {
+            "timestamp": "2026-07-16T10:00:02Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "user-item",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "same text"}],
+                "internal_chat_message_metadata_passthrough": {
+                    "turn_id": TURN_ID,
+                    "content_item_kinds": ["user.text"],
+                },
+            },
+        },
+        event(
+            2,
+            "item_completed",
+            thread_id=SESSION_ID,
+            turn_id=TURN_ID,
+            item={"type": "UserMessage", "id": "app-server-user-item"},
+        ),
+        {
+            "timestamp": "2026-07-16T10:00:03Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "answer-item",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "same text"}],
+            },
+        },
+        {
+            "timestamp": "2026-07-16T10:00:04Z",
+            "type": "compacted",
+            "payload": {
+                "message": "",
+                "replacement_history": [
+                    {
+                        "type": "compaction",
+                        "id": "checkpoint",
+                        "encrypted_content": "opaque",
+                    },
+                    {
+                        "type": "message",
+                        "role": "user" if retained == "user-item" else "assistant",
+                        "id": retained,
+                        "content": [{"type": "input_text", "text": "same text"}],
+                    },
+                ],
+            },
+        },
+        {
+            "timestamp": "2026-07-16T10:00:05Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "thread_id": SESSION_ID,
+                "turn_id": TURN_ID,
+                "item": {"type": "ContextCompaction", "id": "compact-item"},
+            },
+        },
+        event(6, "task_complete", turn_id=TURN_ID),
+    ]
+    await streamed_runs(impulses, records)
+    async with async_session() as session:
+        [row] = await session.list(
+            Compaction, options=[selectinload(Compaction["messages"])]
+        )
+    owner = await app.conversations.get(row.conversation_id)
+    archive = await app.conversations.history(owner.id)
+    assert len(archive) == 2
+    assert row.membership_complete is (retained != "missing-item"), (
+        row.native_compaction_id,
+        [(message.kind, message.metadata) for message in [*archive, *row.messages]],
+    )
+    if row.membership_complete:
+        expected = [row.messages[0].id, archive[retained == "answer-item"].id]
+        assert [
+            message.id for message in await app.conversations.effective_messages(owner)
+        ] == expected
+        child = await app.conversations.ensure(
+            await a_thread("child"), agent_tentacle_id="codex"
+        )
+        await app.conversations.fork(owner, child, external_id="child-session")
+        assert [
+            message.id for message in await app.conversations.effective_messages(child)
+        ] == expected
+    await streamed_runs(impulses, records)
+    assert [message.id for message in await app.conversations.history(owner.id)] == [
+        message.id for message in archive
+    ]
+    async with async_session() as session:
+        assert await session.count(Compaction) == 1

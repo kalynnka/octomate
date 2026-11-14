@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 import httpx
 import pytest
 from anyio.abc import ObjectSendStream
+from arcanus.materia.sqlalchemy import selectinload
 from octomate_cli.streaming.deepseek import DshHistoryClient, new_entries
 from octomate_protocol.deepseek import (
     ErrResult,
@@ -26,12 +27,16 @@ from pydantic import HttpUrl
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import FunctionToolResultEvent, PartStartEvent
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 from websockets.asyncio.client import connect
 from websockets.typing import Origin
 
 from octomate import Octomate
 from octomate.config.agents import DeepseekConfig
+from octomate.database import async_session
 from octomate.nerve import Impulse
+from octomate.schemas.commands import CommandContext, CommandIntent, CommandResult
+from octomate.schemas.compactions import Compaction
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
@@ -165,7 +170,7 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
             tentacle, conversation_address=address, thread_id=thread
         ) as invocation:
             resumed = await tentacle.run(
-                "Continue",
+                "Continue. " + "Disposable integration context. " * 500,
                 conversation_address=address,
                 invocation=invocation,
                 model="octomate-test:mock",
@@ -177,6 +182,45 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
         assert len(approvals) == 2
         assert len(questions) == 2
         assert all(frame.session_id == first_session for frame in approvals + questions)
+        context = CommandContext(
+            agent_id=tentacle.id,
+            user_id=uuid7(),
+            address=address,
+            cwd=tmp_path,
+            conversation=conversation,
+        )
+        catalog = await tentacle.discover_commands(context)
+        compact = next(item for item in catalog.descriptors if item.name == "compact")
+        async with invocation_for(
+            tentacle,
+            conversation_address=address,
+            thread_id=thread,
+            conversation_id=conversation.id,
+        ) as prepared:
+            outcomes = [
+                item
+                async for item in tentacle.execute_command(
+                    context, CommandIntent(command_id=compact.id), invocation=prepared
+                )
+            ]
+        assert isinstance(outcomes[-1], CommandResult), outcomes
+        async with async_session() as session:
+            [compaction] = await session.list(
+                Compaction, options=[selectinload(Compaction["messages"])]
+            )
+        assert compaction.native_session_id == first_session
+        assert compaction.trigger == "manual"
+        assert len(compaction.messages) == 1
+        summary = compaction.messages[0].message_text
+        assert summary is not None
+        assert "integration verified" in summary
+        assert compaction.messages[0].run_id is None
+        assert compaction.membership_complete
+        assert [
+            message.id
+            for message in await conversations.effective_messages(conversation)
+        ] == [compaction.messages[0].id, conversation.runs[-1].messages[-1].id]
+        assert len((await conversations.get(conversation.id)).runs) == 2
         assert tentacle.process is not None
         assert tentacle.process.launch_token is not None
         monkeypatch.setenv(
@@ -208,6 +252,8 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
             await tailer.feed_remote(state, json.dumps(record))
         assert state.conversation is not None
         assert state.conversation.name == conversation.name
+        async with async_session() as session:
+            assert await session.count(Compaction) == 1
         tailer.detach_remote(state)
         reader = DeepseekProcess(
             executable=executable,

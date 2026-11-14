@@ -34,6 +34,7 @@ from octomate.tentacles.deepseek.adapter import (
     DeepseekRunAccumulator,
     deepseek_metadata,
 )
+from octomate.tentacles.deepseek.compactions import DeepseekCompactions
 from octomate.tentacles.deepseek.wire import (
     HistoryEntry,
     SessionEvent,
@@ -95,6 +96,7 @@ class PendingPrompt:
     time: datetime
     seq: int
     via_gateway: bool
+    event: SessionEvent
 
 
 def human_prompt(event: SessionEvent) -> PendingPrompt | None:
@@ -113,6 +115,7 @@ def human_prompt(event: SessionEvent) -> PendingPrompt | None:
         time=event_time(event),
         seq=event.seq,
         via_gateway=message.source.rpc_id is not None,
+        event=event,
     )
 
 
@@ -150,6 +153,7 @@ class TailState:
     address: ChannelAddress  # The native surface resolved by the tentacle.
     impulses: ObjectSendStream[Impulse]  # The publisher open for this connection.
     conversation: Conversation | None = None
+    compactions: DeepseekCompactions | None = None
     recorded: set[str] = field(default_factory=set)
     floor: int = -1
     prompts: list[PendingPrompt] = field(default_factory=list)
@@ -217,6 +221,12 @@ class DeepseekEventTailer:
             thread.id, agent_tentacle_id=self.agent_tentacle_id, native=True
         )
         state.recorded = state.conversation.native_run_ids
+        state.compactions = DeepseekCompactions(
+            self.conversation_manager,
+            state.conversation,
+            session_id,
+            source=str(transcript_path),
+        )
         state.context_window = await self.conversation_manager.latest_context_window(
             state.conversation.id
         )
@@ -275,6 +285,10 @@ class DeepseekEventTailer:
 
     async def process_entry(self, state: TailState, entry: HistoryEntry) -> None:
         event = entry.event
+        assert state.compactions is not None
+        await state.compactions.consume(event)
+        if event.type == "compaction/end" and state.open_turn is None:
+            await state.compactions.record_memberships()
         if event.seq <= state.floor:
             return
         if event.type == "request/context":
@@ -351,6 +365,7 @@ class DeepseekEventTailer:
         if turn.native is None:
             if event.type == "turn/end":
                 state.open_turn = None
+                await state.compactions.record_memberships()
             return
         if event.type == "user/message":
             prompt = human_prompt(event)
@@ -378,7 +393,7 @@ class DeepseekEventTailer:
             message_id=f"{state.session_id}:message:{prompt.seq}",
             text=prompt.text,
             timestamp=prompt.time,
-            metadata=deepseek_metadata(),
+            metadata=deepseek_metadata([prompt.event.model_dump(mode="json")]),
         )
 
     async def fold(self, turn: OpenTurn, state: TailState, entry: HistoryEntry) -> None:
@@ -439,6 +454,8 @@ class DeepseekEventTailer:
                     end_offset=turn.end_seq,
                 )
                 span.set_attribute("committed", run is not None)
+                if state.compactions is not None:
+                    await state.compactions.record_memberships()
                 await turn.native.close(
                     run, run_id=run_id, answer=turn.accumulator.result_text
                 )

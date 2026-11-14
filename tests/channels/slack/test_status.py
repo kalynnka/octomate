@@ -13,7 +13,7 @@ from pydantic_ai.messages import (
     ToolCallPart,
 )
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ReflexAwakeEvent,
     RunActivityChangedEvent,
     RunEndedEvent,

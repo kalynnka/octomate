@@ -20,8 +20,8 @@ from pydantic_ai.messages import (
 from slack_sdk.models.messages.chunk import TaskUpdateChunk
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.events import ActionBatchEvent, StreamEvents
 from octomate.config import DiscordStreamConfig
+from octomate.events import ActionBatchEvent, StreamEvents
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.deferred import (
     ApprovalRequest,

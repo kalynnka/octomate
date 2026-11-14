@@ -54,7 +54,7 @@ from pydantic_ai.messages import (
     PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
-    RetryPromptPart,
+    TextContent,
     TextPart,
     TextPartDelta,
     ThinkingPart,
@@ -67,7 +67,8 @@ from pydantic_ai.messages import (
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.usage import RequestUsage, RunUsage
 
-from octomate.capabilities.harness.events import RunActivityChangedEvent, StreamEvents
+from octomate.events import RunActivityChangedEvent, StreamEvents
+from octomate.tentacles.claude.content import prompt_content
 from octomate.tentacles.claude.transcript import (
     TranscriptAssistantLine,
     TranscriptUserLine,
@@ -286,6 +287,9 @@ class ClaudeRunAccumulator:
     streaming_active: bool = False
 
     def begin(self, user_prompt: str | Sequence[UserContent] | None) -> None:
+        if isinstance(user_prompt, str):
+            content = prompt_content(user_prompt)
+            user_prompt = [content] if isinstance(content, TextContent) else content
         if user_prompt:
             self.messages.append(
                 ModelRequest(parts=[UserPromptPart(content=user_prompt)])
@@ -302,11 +306,16 @@ class ClaudeRunAccumulator:
         off disk converts to the SDK shape and shares this one translation."""
         if isinstance(message, TranscriptAssistantLine):
             yield from self._consume_assistant(
-                assistant_message_from_transcript(message.message)
+                replace(
+                    assistant_message_from_transcript(message.message),
+                    uuid=message.uuid,
+                )
             )
         elif isinstance(message, TranscriptUserLine):
             yield from self._consume_tool_results(
-                user_message_from_transcript(message.message)
+                replace(
+                    user_message_from_transcript(message.message), uuid=message.uuid
+                )
             )
         elif isinstance(message, StreamEvent):
             yield from self._consume_stream_event(message)
@@ -320,6 +329,23 @@ class ClaudeRunAccumulator:
                 return
             yield from self._consume_assistant(message)
         elif isinstance(message, UserMessage):
+            if isinstance(message.content, str) and message.uuid is not None:
+                prompts = [
+                    item
+                    for item in self.messages
+                    if isinstance(item, ModelRequest)
+                    and any(isinstance(part, UserPromptPart) for part in item.parts)
+                ]
+                if (
+                    len(prompts) == 1
+                    and not (prompts[0].metadata or {}).get("native_item_ids")
+                    and any(
+                        isinstance(part, UserPromptPart)
+                        and part.content == message.content
+                        for part in prompts[0].parts
+                    )
+                ):
+                    prompts[0].metadata = {"native_item_ids": [message.uuid]}
             yield from self._consume_tool_results(message)
         elif isinstance(message, SystemMessage):
             # A direct command can compact without producing a model run.
@@ -595,6 +621,9 @@ class ClaudeRunAccumulator:
                     usage=response_usage,
                     provider_name=CLAUDE_PROVIDER_NAME,
                     provider_response_id=message.message_id,
+                    metadata={"native_item_ids": [message.uuid]}
+                    if message.uuid
+                    else None,
                     finish_reason=(
                         FINISH_REASON_MAP.get(message.stop_reason)
                         if message.stop_reason
@@ -614,10 +643,11 @@ class ClaudeRunAccumulator:
             if isinstance(block, ToolResultBlock):
                 name = self.tool_names.get(block.tool_use_id, "")
                 if block.is_error:
-                    part: ModelRequestPart = RetryPromptPart(
+                    part = ToolReturnPart(
                         content=str(block.content) if block.content is not None else "",
-                        tool_name=name or None,
+                        tool_name=name,
                         tool_call_id=block.tool_use_id,
+                        outcome="retried",
                     )
                 else:
                     part = ToolReturnPart(
@@ -628,4 +658,11 @@ class ClaudeRunAccumulator:
                 parts.append(part)
                 yield FunctionToolResultEvent(part=part)
         if parts:
-            self.messages.append(ModelRequest(parts=parts))
+            self.messages.append(
+                ModelRequest(
+                    parts=parts,
+                    metadata={"native_item_ids": [message.uuid]}
+                    if message.uuid
+                    else None,
+                )
+            )

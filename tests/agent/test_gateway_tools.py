@@ -26,9 +26,9 @@ from pydantic_ai.usage import RunUsage
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.capabilities.history import HistoryCapability
 from octomate.config.channels import TrunklineChannelConfig
+from octomate.events import MessageSentEvent
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpManager
 from octomate.managers.thread import ThreadManager
@@ -199,7 +199,9 @@ async def test_accomplices_run_and_resume_without_harness_specific_metadata(
     parent = await conversations.ensure(
         thread_id, agent_tentacle_id=session.current_agent_id
     )
-    agent = FakeAgent(id="research", models={model: "selected-model"})
+    agent = FakeAgent(
+        id="research", models={model: "selected-model"}, conversations=conversations
+    )
     agent.reception_output = "Three findings"
     session = replace(
         session,

@@ -19,15 +19,17 @@ from unittest.mock import AsyncMock
 
 from arcanus import Relation
 from pydantic import UUID7
+from pydantic_ai import Conversation as PydanticConversation
+from pydantic_ai._conversation_marks import mark_stored
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.config.agents import AgentRouteModelName
 from octomate.config.mirrors import MirrorsConfig
 from octomate.config.workspaces import WorkspacesConfig
 from octomate.database import async_session
+from octomate.events import ActionBatchEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.project import ProjectManager
@@ -41,12 +43,14 @@ from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
+    ConversationKey,
 )
 from octomate.schemas.deferred import (
     DeferredActionBatch,
     DeferredApproval,
     DeferredQuestion,
 )
+from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.project import DirectoryUpstream, Project
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.segments import MessageSegment
@@ -176,9 +180,8 @@ def fixed_session(
 
 
 @dataclass
-class FakeConversation:
-    """Stand-in whose `messages` is a plain list react can read + accumulate
-    into, since the real arcanus relation can't be appended to detached."""
+class FakeConversation(PydanticConversation):
+    """In-memory context for graph tests without database persistence."""
 
     id: UUID7 = field(default_factory=uuid7)
     messages: list[ModelMessage] = field(default_factory=list)
@@ -192,6 +195,14 @@ class FakeConversation:
     permission_mode: AgentPermissionMode | None = None
     effort: str | None = None
     allowed_tools: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.conversation_id = str(self.id)
+
+    @property
+    def key(self) -> ConversationKey:
+        assert self.thread_id is not None
+        return ConversationKey(self.thread_id, self.agent_tentacle_id, self.subagent_id)
 
 
 @dataclass
@@ -228,7 +239,7 @@ class FakeConversationManager(ConversationManager):
         agent_tentacle_id: str | None = None,
         subagent_id: str = "",
         parent_conversation_id: UUID7 | None = None,
-        with_history: bool = True,
+        with_runs: bool = True,
         native: bool = False,
     ) -> Conversation:
         self.ensured.append((thread_id, agent_tentacle_id))
@@ -249,12 +260,31 @@ class FakeConversationManager(ConversationManager):
         return cast(Conversation, conversation)
 
     async def get(
-        self, conversation_id: UUID7, *, with_history: bool = True
+        self,
+        conversation_id: UUID7,
+        *,
+        with_runs: bool = True,
+        with_messages: bool = False,
     ) -> Conversation:
         for conversation in self.store.values():
             if conversation.id == conversation_id:
                 return cast(Conversation, conversation)
         raise ValueError(f"unknown conversation {conversation_id}")
+
+    async def history(
+        self, conversation_id: UUID7, *, limit: int | None = None
+    ) -> list[ModelMessage]:
+        messages = (await self.get(conversation_id)).messages
+        return (
+            list(messages)
+            if limit is None
+            else list(messages[-limit:])
+            if limit
+            else []
+        )
+
+    async def has_history(self, conversation_id: UUID7) -> bool:
+        return bool((await self.get(conversation_id)).messages)
 
     async def set_external_id(
         self,
@@ -326,6 +356,53 @@ class FakeConversationManager(ConversationManager):
         if external_id is not None:
             fake.external_id = external_id
         return None
+
+    async def record_conversation(
+        self, conversation: PydanticConversation
+    ) -> list[ModelRequest | ModelResponse]:
+        fake = next(
+            item
+            for item in self.store.values()
+            if str(item.id) == conversation.conversation_id
+        )
+        pending = conversation.messages[len(fake.messages) :]
+        rows: list[ModelRequest | ModelResponse] = []
+        if pending:
+            run_id = pending[0].run_id
+            assert run_id is not None
+            await self.record_agent_run(await self.get(fake.id), run_id, pending)
+            rows = fake.runs[-1].messages.bless([vars(message) for message in pending])
+        fake.usage = conversation.usage
+        fake.deferred_tool_requests = conversation.deferred_tool_requests
+        fake.revision = conversation.revision = str(uuid7())
+        mark_stored(fake, fake.messages)
+        mark_stored(conversation, conversation.messages)
+        return rows
+
+    async def record_run_metadata(
+        self,
+        run_id: str,
+        *,
+        name: str,
+        model_name: str | None,
+        context_window: int | None,
+        context_used: int | None,
+        permission_mode: AgentPermissionMode | None,
+        cwd: Path | None,
+        returned_calls: set[str],
+    ) -> None:
+        for index, (conversation, label, messages) in enumerate(self.runs):
+            if label.endswith(f":{run_id}"):
+                self.runs[index] = (conversation, f"{name}:{run_id}", messages)
+                run = next(run for run in conversation.runs if run.id == run_id)
+                run.name = name
+                run.model_name = model_name
+                run.context_window = context_window
+                run.context_used = context_used
+                run.permission_mode = permission_mode
+                run.cwd = cwd
+                return
+        raise ValueError(f"unknown run {run_id}")
 
     async def grant_session_tool(
         self,

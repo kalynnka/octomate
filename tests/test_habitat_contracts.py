@@ -13,7 +13,6 @@ from pydantic_ai.models.test import TestModel
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.agent import Agent
 from octomate.config.agents import InklingConfig
 from octomate.config.base import OctomateConfig
 from octomate.config.habitat import NativeHabitatConfig, SbxHabitatConfig
@@ -30,6 +29,7 @@ from octomate.schemas.habitat import (
 )
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.inkling import InklingTentacle
+from octomate.tentacles.inkling.agent import Agent
 
 IMAGE = "octomate-sandbox@sha256:" + "a" * 64
 

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import UUID7
-from sqlalchemy import ForeignKey, Integer, String, Uuid
+from sqlalchemy import JSON, ForeignKey, Integer, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from octomate.models.base import Base, MapperArgs, PathString, UTCDateTime
@@ -44,17 +44,49 @@ class AgentRun(Base, TransmuterProxiedMixin):
     kind: Mapped[str] = mapped_column(
         String, nullable=False, server_default="octomate", index=True
     )
+    name: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        default=None,
+        index=True,
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime, nullable=True, index=True
+    )
+
     conversation_id: Mapped[UUID7] = mapped_column(
         Uuid,
         ForeignKey("conversations.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    name: Mapped[str | None] = mapped_column(
+    parent_run_id: Mapped[str | None] = mapped_column(
         String,
         nullable=True,
         default=None,
         index=True,
+        comment=(
+            "The run whose tool call spawned this one (a subagent's turn). An "
+            "unenforced reference, not a FK: native ingest supersedes a provisional "
+            "parent by deleting and reinserting the same id across two commits, "
+            "which an enforced constraint would block or cascade."
+        ),
+    )
+    parent_tool_call_id: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        default=None,
+        comment=(
+            "The ToolCallPart in the parent run's timeline this run answers, so a "
+            "tool call can expand into its subagent's full timeline."
+        ),
+    )
+
+    agent_name: Mapped[str | None] = mapped_column(
+        String, comment="Harness agent identity, distinct from the run's display name."
+    )
+    registration_id: Mapped[str | None] = mapped_column(
+        String, comment="Durable registration invocation that claimed this run."
     )
     model_name: Mapped[str | None] = mapped_column(
         String,
@@ -88,29 +120,9 @@ class AgentRun(Base, TransmuterProxiedMixin):
             "question."
         ),
     )
-    parent_run_id: Mapped[str | None] = mapped_column(
-        String,
-        nullable=True,
-        default=None,
-        index=True,
-        comment=(
-            "The run whose tool call spawned this one (a subagent's turn). An "
-            "unenforced reference, not a FK: native ingest supersedes a provisional "
-            "parent by deleting and reinserting the same id across two commits, "
-            "which an enforced constraint would block or cascade."
-        ),
-    )
-    parent_tool_call_id: Mapped[str | None] = mapped_column(
-        String,
-        nullable=True,
-        default=None,
-        comment=(
-            "The ToolCallPart in the parent run's timeline this run answers, so a "
-            "tool call can expand into its subagent's full timeline."
-        ),
-    )
-    started_at: Mapped[datetime | None] = mapped_column(
-        UTCDateTime, nullable=True, index=True
+
+    native_session_id: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True
     )
     native_turn_id: Mapped[str | None] = mapped_column(
         String,
@@ -118,8 +130,12 @@ class AgentRun(Base, TransmuterProxiedMixin):
         index=True,
         comment="The native ingest turn key, retained on driven runs to recognize replay.",
     )
-    native_session_id: Mapped[str | None] = mapped_column(
-        String, nullable=True, index=True
+
+    meta: Mapped[dict[str, str] | None] = mapped_column(
+        "metadata",
+        JSON(none_as_null=True),
+        nullable=True,
+        comment="Harness registration metadata; NULL means unregistered, while an empty object is a valid registration.",
     )
 
     # The conversation the run ran in; `Conversation.runs` is every history that

@@ -18,10 +18,11 @@ from pydantic_ai_harness.step_persistence.conversations import conversation_text
 from pydantic_ai_harness.step_persistence.naming import NamingResult
 
 from octomate import Octomate
-from octomate.capabilities.ask import AskCapability
+from octomate.managers.conversation import ConversationManager
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling import base as inkling_base
+from octomate.tentacles.inkling.capabilities.ask import AskCapability
 from tests.support.invocations import invocation_for
 
 pytestmark = pytest.mark.usefixtures("in_memory_engine")
@@ -152,9 +153,9 @@ async def test_new_prompts_name_and_revise_the_session_and_thread(
     assert "user: Investigate the gateway" in naming_requests[0]
     assert "assistant: Expose MCP tools." not in naming_requests[0]
     assert len(conversation.runs) == 1
-    assert conversation_text(conversation.messages) == conversation_text(
-        first.all_messages()
-    )
+    assert conversation_text(
+        await ConversationManager().history(conversation.id)
+    ) == conversation_text(first.all_messages())
 
     async with invocation_for(
         tentacle, conversation_address=ADDRESS, thread_id=thread_id

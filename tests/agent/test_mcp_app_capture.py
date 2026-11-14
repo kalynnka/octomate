@@ -17,13 +17,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.auth import current_user
-from octomate.capabilities.harness.events import (
+from octomate.config.channels import TrunklineChannelConfig
+from octomate.database import async_session
+from octomate.events import (
     ArtifactAvailableEvent,
     WireEvent,
     wire_event_adapter,
 )
-from octomate.config.channels import TrunklineChannelConfig
-from octomate.database import async_session
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpClientKey, McpUnavailable
 from octomate.mcp.server import CALL_MCP_TOOL, tentacles_mcp

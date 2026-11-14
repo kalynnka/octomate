@@ -28,6 +28,7 @@ from octomate.nerve import (
     Nerve,
     UserTopic,
 )
+from octomate.schemas.conversation import Conversation
 from octomate.schemas.habitat import (
     HabitatFailed,
     HabitatProgress,
@@ -51,7 +52,7 @@ class Invocation:
     """
 
     id: UUID7  # Allocated by core before acquisition, shared with lifecycle events.
-    conversation_id: UUID7
+    conversation: Conversation  # Resolved by core; the run's history and settings.
     workspace: Workspace  # Prepared volume composition, owned by core for this call.
     habitat: Habitat  # Prepared environment, owned by core for this call.
 
@@ -113,7 +114,7 @@ class HabitatManager:
         *,
         workspaces: WorkspaceManager,
         thread: Thread,
-        conversation_id: UUID7,
+        conversation: Conversation,
         owner_id: UUID7 | None,
     ) -> AsyncGenerator[Invocation]:
         """Own one native call's resources for the full consumption of its events."""
@@ -129,7 +130,7 @@ class HabitatManager:
             async with workspaces.open(thread.id, project, owner_id) as workspace:
                 yield Invocation(
                     id=invocation_id,
-                    conversation_id=conversation_id,
+                    conversation=conversation,
                     workspace=workspace,
                     habitat=habitat,
                 )

@@ -34,9 +34,8 @@ from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import ActionBatchEvent
-from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config.agents import ClaudeCodeConfig
+from octomate.events import ActionBatchEvent
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
@@ -48,6 +47,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
+from octomate.tentacles.stream import ReactStreamEvent
 from tests.support.invocations import invocation_for
 from tests.support.managers import (
     FakeConversation,
@@ -323,7 +323,9 @@ async def test_persisted_allowed_tool_skips_the_card(
 ) -> None:
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
     monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval")
-    seeded = FakeConversation(allowed_tools=["Bash"])
+    seeded = FakeConversation(
+        thread_id=_THREAD, agent_tentacle_id="claude", allowed_tools=["Bash"]
+    )
     tentacle, _dam, suspender = _build(FakePresentedBatch(), conversation=seeded)
 
     await _drain(tentacle, suspender)
@@ -338,7 +340,9 @@ async def test_permission_mode_drives_the_sdk(
 ) -> None:
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
     monkeypatch.setattr(ScriptedClaudeClient, "mode", "question")  # no can_use_tool
-    seeded = FakeConversation(permission_mode="plan")
+    seeded = FakeConversation(
+        thread_id=_THREAD, agent_tentacle_id="claude", permission_mode="plan"
+    )
     question = DeferredQuestion(
         tool_name="AskUserQuestion",
         tool_call_id="q1",
@@ -393,6 +397,8 @@ async def test_the_conversations_posture_reaches_the_sdk(
         # Pre-granted so the scripted gated call needs no card; the posture is what
         # this asserts, not the gating.
         conversation=FakeConversation(
+            thread_id=_THREAD,
+            agent_tentacle_id="claude",
             permission_mode=stored,  # pyright: ignore[reportArgumentType]
             allowed_tools=["Bash"],
         ),

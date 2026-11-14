@@ -12,12 +12,12 @@ import discord
 import pytest
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.events import (
+from octomate.config import DiscordStreamConfig
+from octomate.events import (
     ResultSegmentEvent,
     ResultTextDeltaEvent,
     TodoCreatedEvent,
 )
-from octomate.config import DiscordStreamConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
     ImageData,

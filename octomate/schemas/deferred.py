@@ -14,12 +14,12 @@ from typing import (
 
 from arcanus import (
     BaseTransmuter,
+    Identity,
     Relation,
     RelationCollection,
     Relationship,
     Relationships,
 )
-from arcanus.base import Identity
 from pydantic import (
     UUID7,
     AwareDatetime,

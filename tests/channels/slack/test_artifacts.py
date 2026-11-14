@@ -9,14 +9,14 @@ from slack_bolt.request.async_request import AsyncBoltRequest
 from slack_sdk.web.async_client import AsyncWebClient
 from slack_sdk.web.async_slack_response import AsyncSlackResponse
 
-from octomate.capabilities.harness.events import (
+from octomate.config import SlackChannelConfig
+from octomate.database import async_session
+from octomate.events import (
     ArtifactAvailableEvent,
     RunEndedEvent,
     RunResultEvent,
     RunStartedEvent,
 )
-from octomate.config import SlackChannelConfig
-from octomate.database import async_session
 from octomate.nerve import ChannelTopic, Impulse
 from octomate.schemas.artifacts import ArtifactOverview, McpAppArtifact
 from octomate.schemas.segments import MarkdownSegment

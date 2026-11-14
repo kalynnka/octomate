@@ -163,7 +163,7 @@ class DshHistoryClient:
             )
         )
         with connect_sync(
-            url, additional_headers=headers, open_timeout=RPC_TIMEOUT
+            url, additional_headers=headers, open_timeout=RPC_TIMEOUT, max_size=None
         ) as socket:
             socket.send(
                 RemoteSessionFollow(
@@ -413,6 +413,8 @@ async def run_tail(
                 return
             attempt = 0
         except ConnectionClosed as closed:
+            if closed.sent is not None and closed.sent.code in {1002, 1003, 1007, 1009}:
+                raise
             code = closed.rcvd.code if closed.rcvd is not None else None
             if code == REFUSED:
                 reason = closed.rcvd.reason if closed.rcvd is not None else ""

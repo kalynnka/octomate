@@ -13,7 +13,7 @@ from pydantic_ai.exceptions import AgentRunError
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
 )

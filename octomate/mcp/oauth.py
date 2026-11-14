@@ -12,7 +12,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     LinkProfileAuthorizationEvent,
     OAuthAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,

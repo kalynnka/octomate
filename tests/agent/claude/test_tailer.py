@@ -22,8 +22,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import RunEndedEvent
 from octomate.database import async_session
+from octomate.events import RunEndedEvent
+from octomate.managers.conversation import ConversationManager
 from octomate.nerve import Impulse, Nerve, ThreadTopic
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelResponse
@@ -721,7 +722,12 @@ async def test_a_streamed_session_reconstructs_full_fidelity() -> None:
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id="claude"
     )
-    texts = json.dumps([message.message_text for message in conversation.messages])
+    texts = json.dumps(
+        [
+            message.message_text
+            for message in (await ConversationManager().history(conversation.id))
+        ]
+    )
     assert "subagent chatter" not in texts
 
 
@@ -1006,7 +1012,10 @@ async def test_a_subagent_transcript_becomes_a_child_run() -> None:
         message.platform_message_id != child_run.id for message in thread.messages
     )
     # And the child's timeline never leaks into the parent conversation's history.
-    assert all("audit the repo" != message.message_text for message in parent.messages)
+    assert all(
+        "audit the repo" != message.message_text
+        for message in (await ConversationManager().history(parent.id))
+    )
 
 
 async def test_a_resumed_subagent_adds_a_second_run_to_one_conversation() -> None:

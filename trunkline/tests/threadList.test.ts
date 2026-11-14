@@ -57,17 +57,29 @@ after(async () => {
 
 test('the subscription opens before the snapshot; queued changes survive the read', async () => {
   let resolve!: (rows: ApiThread[]) => void
+  let ready = 0
   const snapshot = mock.method(api, 'listThreads', () => new Promise<ApiThread[]>(done => { resolve = done }))
-  stop = watchThreads(error => errors.push(error))
+  stop = watchThreads(error => errors.push(error), () => { ready++ })
   assert.equal(snapshot.mock.callCount(), 0)
   assert.equal(LiveSocket.last().url, 'ws://console.test/api/trunkline/live/user')
   await tick()
+  assert.equal(ready, 0)
   LiveSocket.last().deliver({ event_kind: 'thread_title_changed', thread_id: thread.id, title: 'Renamed', updated_at: '2026-10-16T02:00:00Z' })
   resolve([thread])
   await tick()
   assert.equal(rows()[0].title, 'Renamed')
   assert.equal(snapshot.mock.callCount(), 1)
+  assert.equal(ready, 1)
   assert.deepEqual(errors, [])
+})
+
+test('a failed snapshot reports failure without announcing recovery', async () => {
+  mock.method(api, 'listThreads', async () => { throw new Error('Snapshot unavailable') })
+  let ready = false
+  stop = watchThreads(error => errors.push(error), () => { ready = true })
+  await tick()
+  assert.equal(ready, false)
+  assert.deepEqual(errors, ['Snapshot unavailable'])
 })
 
 test('specific events update known rows and ordering without further reads', async () => {
@@ -225,7 +237,8 @@ for (const reading of ['snapshot', 'unseen row']) {
     const pending = new Promise<ApiThread[]>(done => { resolve = done })
     mock.method(api, 'listThreads', () => reading === 'snapshot' ? pending : Promise.resolve([]))
     mock.method(globalThis, 'fetch', async () => Response.json((await pending)[0]))
-    stop = watchThreads(error => errors.push(error))
+    let ready = 0
+    stop = watchThreads(error => errors.push(error), () => { ready++ })
     await tick()
     if (reading === 'unseen row') {
       LiveSocket.last().deliver({ event_kind: 'thread_message_recorded', thread_id: thread.id, message_id: 'message', updated_at: thread.updated_at })
@@ -239,6 +252,7 @@ for (const reading of ['snapshot', 'unseen row']) {
     assert.equal(LiveSocket.last().closed, true)
     assert.deepEqual(rows(), [])
     assert.deepEqual(errors, [])
+    assert.equal(ready, reading === 'snapshot' ? 0 : 1)
   })
 }
 

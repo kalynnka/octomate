@@ -15,14 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import (
+from octomate.config import AcpAgentConfig, OctomateConfig
+from octomate.database import async_session
+from octomate.events import (
     ActionBatchEvent,
     ReflexAsleepEvent,
     RunEndedEvent,
     RunStartedEvent,
 )
-from octomate.config import AcpAgentConfig, OctomateConfig
-from octomate.database import async_session
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.nerve import ThreadTopic
 from octomate.reflex.state import ReflexResult

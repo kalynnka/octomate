@@ -20,7 +20,7 @@ function changedThread(thread: ApiThread, event: ThreadEvent): ApiThread {
 
 /** Watch the signed-in user's topic before taking a snapshot. Events received
  *  during a read are applied afterwards; an unseen row is read only by its id. */
-export function watchThreads(onError: (message: string) => void): () => void {
+export function watchThreads(onError: (message: string) => void, onReady?: () => void): () => void {
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
   const socket = new WebSocket(`${scheme}://${location.host}/api/trunkline/live/user`)
   let stopped = false
@@ -43,6 +43,7 @@ export function watchThreads(onError: (message: string) => void): () => void {
     updates = queryClient.cancelQueries({ queryKey: ['threads'] }).then(async () => {
       if (stopped) return
       await queryClient.fetchQuery({ queryKey: ['threads'], queryFn: api.listThreads, staleTime: 0, retry: false })
+      if (!stopped) onReady?.()
     }).catch(fail)
   }
   socket.onmessage = (message) => {

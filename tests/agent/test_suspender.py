@@ -15,7 +15,7 @@ from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.events import ActionBatchEvent
+from octomate.events import ActionBatchEvent
 from octomate.managers.deferred import DeferredActionManager
 from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.conversation import ChannelAddress

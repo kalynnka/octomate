@@ -33,10 +33,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import ActionBatchEvent
-from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config.agents import DeepseekConfig
 from octomate.database import async_session
+from octomate.events import ActionBatchEvent
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -57,6 +56,7 @@ from octomate.tentacles.deepseek.wire import (
     SessionEventFrame,
     StreamErrorFrame,
 )
+from octomate.tentacles.stream import ReactStreamEvent
 from octomate.types.json import JsonObject, JsonValue
 from tests.support.invocations import invocation_for
 from tests.support.managers import (
@@ -452,9 +452,7 @@ async def test_driven_names_are_persisted_and_revised(
             assert result.output == "done"
             if name and name.strip():
                 expected = name.strip()
-            stored = await octomate.conversations.get(
-                conversation.id, with_history=False
-            )
+            stored = await octomate.conversations.get(conversation.id, with_runs=False)
             thread = await octomate.threads.get(thread_id, with_messages=False)
             assert thread is not None
             assert stored.name == expected
@@ -507,10 +505,10 @@ async def test_driven_child_name_does_not_rename_parent_thread(
             invocation=invocation,
         )
     assert (
-        await octomate.conversations.get(child.id, with_history=False)
+        await octomate.conversations.get(child.id, with_runs=False)
     ).name == "Child work"
     assert (
-        await octomate.conversations.get(parent.id, with_history=False)
+        await octomate.conversations.get(parent.id, with_runs=False)
     ).name == "Parent work"
     thread = await octomate.threads.get(thread_id, with_messages=False)
     assert thread is not None
@@ -659,7 +657,7 @@ async def test_run_reuses_the_stored_session_and_skips_create(
     FakeDeepseekApi.reset(turn_events("again"))
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "deepseek", "")] = FakeConversation(
-        thread_id=_THREAD, external_id="sess-old"
+        agent_tentacle_id="deepseek", thread_id=_THREAD, external_id="sess-old"
     )
     tentacle = _tentacle(conversations)
 
@@ -783,7 +781,7 @@ async def test_the_conversations_posture_overrides_the_configured_one(
     )
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "deepseek", "")] = FakeConversation(
-        thread_id=_THREAD, permission_mode=mode
+        agent_tentacle_id="deepseek", thread_id=_THREAD, permission_mode=mode
     )
     tentacle = _tentacle(conversations)
 
@@ -814,7 +812,9 @@ async def test_an_unavailable_posture_fails_before_prompting(
     FakeDeepseekApi.reset(turn_events())
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "deepseek", "")] = FakeConversation(
-        thread_id=_THREAD, permission_mode="bypassPermissions"
+        agent_tentacle_id="deepseek",
+        thread_id=_THREAD,
+        permission_mode="bypassPermissions",
     )
     tentacle = _tentacle(conversations)
     async with tentacle:
@@ -1966,7 +1966,7 @@ async def test_shared_thread_cannot_resume_dsh_in_the_previous_owners_tree(
         ) as initial:
             await agent.run("start", conversation_address=KEY, invocation=initial)
         assert (
-            await app.conversations.latest_cwd(initial.conversation_id)
+            await app.conversations.latest_cwd(initial.conversation.id)
             == initial.storage.path
         )
         FakeDeepseekApi.calls.clear()

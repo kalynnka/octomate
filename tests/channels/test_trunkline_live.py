@@ -12,8 +12,8 @@ from starlette.websockets import WebSocket
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import wire_event_adapter
 from octomate.config.channels import TrunklineChannelConfig
+from octomate.events import wire_event_adapter
 from octomate.nerve import EventTopic, Impulse, ThreadTopic, UserTopic
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.trunkline import base as trunkline_base

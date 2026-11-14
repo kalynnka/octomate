@@ -498,7 +498,10 @@ def build_trunkline_router(
         "/threads/{thread_id}/conversations",
         summary="The thread's agent conversations, each with its runs",
         response_model_exclude={
-            "__all__": {"messages": True, "runs": {"__all__": {"messages"}}}
+            "__all__": {
+                "messages": True,
+                "runs": {"__all__": {"messages"}},
+            }
         },
     )
     async def thread_conversations(
@@ -630,7 +633,7 @@ def build_trunkline_router(
         The next run reads it; a run already going keeps the level it started at.
         """
         try:
-            conversation = await conversations.get(conversation_id, with_history=False)
+            conversation = await conversations.get(conversation_id, with_runs=False)
         except ValueError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         thread = await accessible_thread(conversation.thread_id, threads, user)

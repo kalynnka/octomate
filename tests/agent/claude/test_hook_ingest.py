@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.database import async_session
+from octomate.managers.conversation import ConversationManager
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
@@ -212,7 +213,10 @@ async def test_hooks_for_an_sdk_session_are_recorded_as_external() -> None:
     assert sdk is not None
     assert sdk.external_id == SESSION_ID
     assert [run.id for run in sdk.runs] == ["sdk-run"]
-    assert [message.message_text for message in sdk.messages] == ["SDK prompt"]
+    assert [
+        message.message_text
+        for message in (await ConversationManager().history(sdk.id))
+    ] == ["SDK prompt"]
 
 
 async def reserved(octomate: Octomate) -> list[tuple[str, list[str | None]]]:

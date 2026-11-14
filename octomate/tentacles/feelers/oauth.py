@@ -17,7 +17,7 @@ from abc import ABC, abstractmethod
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     LinkProfileAuthorizationEvent,
     OAuthAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,

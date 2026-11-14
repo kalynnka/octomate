@@ -13,7 +13,8 @@ import discord
 import pytest
 from pydantic_ai.usage import RunUsage
 
-from octomate.capabilities.harness.events import (
+from octomate.config import DiscordStreamConfig
+from octomate.events import (
     ActionBatchEvent,
     ReflexAwakeEvent,
     RunActivityChangedEvent,
@@ -21,7 +22,6 @@ from octomate.capabilities.harness.events import (
     RunResultEvent,
     RunStartedEvent,
 )
-from octomate.config import DiscordStreamConfig
 from octomate.nerve import ChannelTopic, Impulse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey

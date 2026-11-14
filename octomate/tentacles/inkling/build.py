@@ -54,12 +54,19 @@ def build_inkling(
     )
     from pydantic_ai_harness.warn_on_cache_busts import WarnOnCacheBusts
 
-    from octomate.capabilities.ask import AskCapability
-    from octomate.capabilities.tools import ToolFailureCapability
     from octomate.managers.spills import SpillStore
+    from octomate.tentacles.inkling.capabilities.ask import AskCapability
+    from octomate.tentacles.inkling.capabilities.compaction import (
+        CompactOnRequest,
+        SummarizingCompaction,
+    )
+    from octomate.tentacles.inkling.capabilities.tools import ToolFailureCapability
     from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 
+    compaction = SummarizingCompaction[None](max_fraction=0.9, keep_messages=20)
     capabilities: list[AgentCapability[None]] = [
+        compaction,
+        CompactOnRequest(compaction),
         # Observational only: it warns, it never edits a request. A collapsed prompt
         # cache is otherwise invisible — the run still succeeds, just slower and dearer.
         WarnOnCacheBusts(),

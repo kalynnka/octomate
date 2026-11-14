@@ -11,7 +11,6 @@ from pydantic_ai.messages import UserContent
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_graph import BaseNode, End, GraphRunContext
 
-from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.reflex.state import (
     ReflexDeps,
     ReflexGraphResult,
@@ -20,6 +19,7 @@ from octomate.reflex.state import (
 from octomate.schemas.triage import SummonDecision
 from octomate.telemetry import reflex_logfire
 from octomate.tentacles.channel import ChannelOutput
+from octomate.tentacles.stream import ReactStreamEvent
 
 
 @dataclass
@@ -81,14 +81,17 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             await claim.land(ctx.deps, state.thread, decision)
             state.handoff = None
         runtime = ctx.deps.runtime
+        if state.thread is None:
+            raise ValueError("agent run requires a thread to own its conversation")
+        conversation = await agent.resolve_conversation(
+            state.thread.id, conversation_address=target_address
+        )
+        state.conversation_id = conversation.id
         session, suspender, capabilities = await runtime.resources(ctx)
         # A summon names the level it hands over at; every other turn runs at the
         # one the conversation was set to.
         effort = decision.effort
-        if effort is None and state.conversation_id is not None:
-            conversation = await ctx.deps.conversation_manager.get(
-                state.conversation_id, with_history=False
-            )
+        if effort is None:
             effort = await agent.resolve_effort(conversation, model=model)
         if state.user_profile is not None:
             await runtime.prepare_user(
@@ -109,13 +112,13 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         )
 
         async def events() -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
-            if state.thread is None or state.conversation_id is None:
-                raise ValueError("React requires a resolved thread and conversation")
+            if state.thread is None:
+                raise ValueError("React requires a resolved thread")
             async with (
                 agent.habitats.invoke(
                     workspaces=ctx.deps.workspaces,
                     thread=state.thread,
-                    conversation_id=state.conversation_id,
+                    conversation=conversation,
                     owner_id=state.user_profile.user_id if state.user_profile else None,
                 ) as invocation,
                 agent.run_stream_events(

@@ -7,8 +7,7 @@ from datetime import UTC, datetime
 from functools import cached_property
 from typing import Annotated, Literal, Self
 
-from arcanus import BaseTransmuter
-from arcanus.base import Identity
+from arcanus import BaseTransmuter, Identity
 from fastmcp.apps import AppConfig, ResourceCSP
 from mcp.types import CallToolResult, Tool
 from pydantic import (

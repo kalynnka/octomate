@@ -21,15 +21,14 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.events import (
+from octomate.config import ChannelConfig, ChannelStreamConfig
+from octomate.config.mirrors import MirrorsConfig
+from octomate.events import (
     GatewayEvent,
     MessageSentEvent,
     ResultSegmentEvent,
     RunErrorEvent,
 )
-from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config import ChannelConfig, ChannelStreamConfig
-from octomate.config.mirrors import MirrorsConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager, OctomateSession
@@ -81,6 +80,7 @@ from octomate.schemas.user import UserProfile
 from octomate.schemas.volumes import GitVolume, UnregisteredProjectError
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.channel import ChannelOutput, ChannelSurfaces
+from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from tests.support.agents import FakeAgent, RecordedRun
 from tests.support.channels import FakeChannelTentacle, FakeOctomate, RecordingInk
 from tests.support.invocations import volume_for
@@ -192,7 +192,7 @@ def _state(
     return ReflexState(
         source_target=_source_target(address),
         user_prompt=user_prompt,
-        thread=thread,
+        thread=thread or _thread(address),
     )
 
 
@@ -663,7 +663,12 @@ async def test_non_stream_reception_presents_only_the_final_output() -> None:
 
     await _run(
         React(),
-        state=ReflexState(source_target=target, target=target, decision=_summon()),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=_thread(address),
+        ),
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
     )
 
@@ -787,7 +792,7 @@ async def test_a_turn_that_failed_still_saves_its_workspace(
 
 
 async def test_a_turn_with_no_thread_saves_nothing() -> None:
-    # A workspace belongs to a thread, so a turn without one has none to save.
+    # A turn without an owning thread must fail before running or saving.
     address = _key()
     agent = FakeAgent(id="other", reception_output="done")
     host = RecordingWorkspaceManager()
@@ -800,16 +805,17 @@ async def test_a_turn_with_no_thread_saves_nothing() -> None:
     )
     target = _source_target(address)
 
-    await _run(
-        React(),
-        state=ReflexState(source_target=target, target=target, decision=_summon()),
-        deps=_deps(
-            conversations=FakeConversationManager(),
-            channels={"im": im},
-            agent=agent,
-            workspaces=host,
-        ),
-    )
+    with pytest.raises(ValueError, match="requires a thread"):
+        await _run(
+            React(),
+            state=ReflexState(source_target=target, target=target, decision=_summon()),
+            deps=_deps(
+                conversations=FakeConversationManager(),
+                channels={"im": im},
+                agent=agent,
+                workspaces=host,
+            ),
+        )
 
     assert host.saved == []
 
@@ -936,7 +942,10 @@ async def test_react_passes_the_decision_effort_to_the_run() -> None:
     await _run(
         React(),
         state=ReflexState(
-            source_target=target, target=target, decision=_summon(effort="high")
+            source_target=target,
+            target=target,
+            decision=_summon(effort="high"),
+            thread=_thread(address),
         ),
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
     )
@@ -1757,7 +1766,12 @@ async def test_reception_fails_fast_when_stream_produces_no_result() -> None:
     with pytest.raises(RuntimeError, match="completed without a result"):
         await _run(
             React(),
-            state=ReflexState(source_target=target, target=target, decision=_summon()),
+            state=ReflexState(
+                source_target=target,
+                target=target,
+                decision=_summon(),
+                thread=_thread(address),
+            ),
             deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
         )
 

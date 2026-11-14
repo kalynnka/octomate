@@ -18,11 +18,9 @@ from pydantic_ai import AgentCapability
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.capabilities.harness.deferred import DeferredSuspender
-from octomate.capabilities.harness.events import MessageSentEvent
-from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config.habitat import SbxHabitatConfig
 from octomate.database import async_session
+from octomate.events import MessageSentEvent
 from octomate.managers.commands import CommandManager, ValidatedCommand
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.habitat import Invocation
@@ -42,6 +40,8 @@ from octomate.schemas.user import User, UserProfile
 from octomate.schemas.volumes.storage import HostDirectory
 from octomate.tentacles.channel import ChannelOutput
 from octomate.tentacles.codex.catalog import APP_COMMANDS
+from octomate.tentacles.deferred import DeferredSuspender
+from octomate.tentacles.stream import ReactStreamEvent
 from octomate.types.permissions import PermissionMode
 from tests.agent.test_command_manager import DiscoveringAgent
 from tests.support.channels import FakeChannelTentacle
@@ -86,7 +86,7 @@ class ExecutingAgent(DiscoveringAgent):
         return self.habitats.invoke(
             workspaces=self.workspaces,
             thread=thread,
-            conversation_id=context.conversation.id,
+            conversation=context.conversation,
             owner_id=context.user_id,
         )
 
@@ -643,7 +643,7 @@ async def test_execution_checks_access_and_selection_after_discovery(
     elif change == "permission":
         agent.permission_modes = (PermissionMode(value="plan", name="Plan"),)
         await app.conversations.set_permission_mode(
-            context.conversation.model_copy(), "plan"
+            replace(context.conversation), "plan"
         )
     elif change == "workspace":
         project = a_project(tmp_path / "project")
@@ -1017,7 +1017,7 @@ async def test_core_keeps_command_workspace_until_adapter_cleanup(
             assert prepared.owner_id == context.user_id
             assert context.conversation is not None
             assert prepared.thread_id == context.conversation.thread_id
-            assert prepared.conversation_id == context.conversation.id
+            assert prepared.conversation.id == context.conversation.id
             if not isinstance(result, CommandResult | CommandError):
                 assert await asyncio.to_thread(prepared.storage.path.is_dir)
                 assert len([event async for event in result]) == 1

@@ -8,7 +8,7 @@ from uuid import UUID
 
 from pydantic import UUID7, JsonValue, TypeAdapter
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchUpdatedEvent,
 )

@@ -42,14 +42,12 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.deferred import DeferredSuspender
-from octomate.capabilities.harness.events import (
+from octomate.config.acp import AcpAgentConfig
+from octomate.config.agents import Claim
+from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
 )
-from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.acp import AcpAgentConfig
-from octomate.config.agents import Claim
 from octomate.managers.habitat import Invocation
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
@@ -63,6 +61,8 @@ from octomate.tentacles.acp.client import NativeAcpClient, NativeAcpSession
 from octomate.tentacles.acp.elicitation import AcpForm, AcpFormValidationError
 from octomate.tentacles.acp.history import AcpHistory
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
+from octomate.tentacles.deferred import DeferredSuspender
+from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from octomate.utils import drain_task
 
 if TYPE_CHECKING:
@@ -199,7 +199,6 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -230,7 +229,6 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             deps=deps,
             model_settings=model_settings,
             usage_limits=usage_limits,
-            usage=usage,
             metadata=metadata,
             output_retries=output_retries,
             infer_name=infer_name,
@@ -265,7 +263,6 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         deps: None = None,
         model_settings: AgentModelSettings[None] | None = None,
         usage_limits: UsageLimits | None = None,
-        usage: RunUsage | None = None,
         metadata: AgentMetadata[None] | None = None,
         output_retries: int | None = None,
         infer_name: bool = True,
@@ -284,7 +281,6 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                     instructions,
                     model_settings,
                     usage_limits,
-                    usage,
                     metadata,
                     output_retries,
                     toolsets,
@@ -325,9 +321,9 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         model: str | None,
         effort: str | None,
     ) -> AsyncGenerator[ReactStreamEvent[str]]:
-        thread_id = invocation.thread_id
-        conversation_id = invocation.conversation_id
         provider = self.config.provider
+        conversation = invocation.conversation
+        self.check_conversation(conversation, thread_id=invocation.thread_id)
         if isinstance(user_prompt, str):
             text = user_prompt
         else:
@@ -339,9 +335,6 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             text = "\n".join(parts)
         if not text.strip():
             raise ValueError("ACP requires a non-empty text prompt")
-        conversation = await self.resolve_conversation(
-            thread_id, conversation_address=address, conversation_id=conversation_id
-        )
         effort = await self.resolve_effort(conversation, model=model, effort=effort)
         sender = await self.octomate.users.profile(
             address.channel_tentacle_id, address.user_id

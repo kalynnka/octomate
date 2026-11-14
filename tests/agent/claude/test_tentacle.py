@@ -518,7 +518,7 @@ async def test_run_resumes_prior_session(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "claude", "")] = FakeConversation(
-        thread_id=_THREAD, external_id="prev-sess"
+        agent_tentacle_id="claude", thread_id=_THREAD, external_id="prev-sess"
     )
     tentacle = _tentacle(conversations)
 
@@ -663,7 +663,7 @@ async def test_run_honors_per_run_model(
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "claude", "")] = FakeConversation(
-        thread_id=_THREAD, permission_mode=permission_mode
+        agent_tentacle_id="claude", thread_id=_THREAD, permission_mode=permission_mode
     )
     tentacle = _tentacle(
         conversations,
@@ -1151,7 +1151,7 @@ async def test_a_resumed_run_opens_from_what_the_graph_resolved(
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "claude", "")] = FakeConversation(
-        thread_id=_THREAD, external_id="prev-sess"
+        agent_tentacle_id="claude", thread_id=_THREAD, external_id="prev-sess"
     )
     tentacle = _tentacle(conversations)
     results = DeferredToolResults(

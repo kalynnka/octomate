@@ -171,7 +171,7 @@ async def test_context_changes_do_not_reuse_catalogs(
         case "session":
             changed = replace(
                 context,
-                conversation=conversation.model_copy(update={"external_id": "resumed"}),
+                conversation=replace(conversation, external_id="resumed"),
             )
         case _:
             pytest.fail(f"unhandled scope {scope}")

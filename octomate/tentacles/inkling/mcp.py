@@ -18,12 +18,12 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.toolsets import ApprovalRequiredToolset
 
-from octomate.capabilities.harness.events import (
+from octomate.capabilities.history import HISTORY_TOOLS, history_instructions
+from octomate.events import (
     SubagentActivityStatus,
     SubagentSettledEvent,
     SubagentStartedEvent,
 )
-from octomate.capabilities.history import HISTORY_TOOLS, history_instructions
 from octomate.mcp.gateway import (
     HANDOFF_INSTRUCTION,
     gateway_instructions,

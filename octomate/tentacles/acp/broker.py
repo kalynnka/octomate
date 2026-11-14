@@ -25,7 +25,7 @@ from anyio.abc import ObjectReceiveStream
 from pydantic import UUID7, JsonValue, TypeAdapter
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.events import ActionBatchEvent, ReflexAsleepEvent
+from octomate.events import ActionBatchEvent, ReflexAsleepEvent
 from octomate.nerve import Impulse, ThreadTopic
 from octomate.schemas.awakes import (
     DeferredActionBatchResponse,

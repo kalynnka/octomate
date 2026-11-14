@@ -13,9 +13,8 @@ from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.agent import Agent
-from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.config import ChannelConfig
+from octomate.events import MessageSentEvent
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.user import UserManager
 from octomate.nerve import ChannelTopic, Nerve
@@ -25,6 +24,7 @@ from octomate.schemas.triage import DIRECT_TARGET, DirectTarget
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.channel import ChannelSurfaces
+from octomate.tentacles.inkling.agent import Agent
 from octomate.types.json import JsonObject
 from tests.support.agents import FakeAgent, ScriptedStream, ScriptedTurn
 from tests.support.channels import FakeChannelTentacle

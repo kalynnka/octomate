@@ -10,7 +10,7 @@ from typing import Literal, Self
 import discord
 from pydantic import UUID7
 
-from octomate.capabilities.harness.events import (
+from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchUpdatedEvent,
 )

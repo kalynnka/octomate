@@ -21,7 +21,7 @@ from pydantic import UUID7
 from pydantic_ai.models import Model
 from pydantic_ai.tools import DeferredToolRequests
 
-from octomate.capabilities.harness.events import WireEvent
+from octomate.events import WireEvent
 from octomate.managers.base import Manager
 from octomate.managers.workspaces.mirrors import run_git
 from octomate.nerve import ChannelTopic, Impulse, Nerve, ThreadTopic
@@ -196,13 +196,18 @@ class OctomateSession:
         thread = await self.threads.get(thread_id, with_messages=False)
         if thread is None:
             raise ValueError(f"unknown thread {thread_id}")
+        conversation = await agent.resolve_conversation(
+            thread_id,
+            conversation_address=conversation_address,
+            conversation_id=child.id,
+        )
         try:
             async with (
                 asyncio.timeout(commission_timeout),
                 agent.habitats.invoke(
                     workspaces=self.workspaces,
                     thread=thread,
-                    conversation_id=child.id,
+                    conversation=conversation,
                     owner_id=self.user_profile.user_id if self.user_profile else None,
                 ) as invocation,
             ):

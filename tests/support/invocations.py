@@ -8,7 +8,7 @@ from pydantic import UUID7
 from octomate.database import async_session
 from octomate.managers.habitat import Invocation
 from octomate.managers.workspaces import WorkspaceManager
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.thread import Thread
 from octomate.schemas.volumes import GitVolume
 from octomate.tentacles.agent import AgentTentacle
@@ -21,13 +21,15 @@ async def invocation_for(
     conversation_address: ChannelAddress,
     thread_id: UUID7,
     conversation_id: UUID7 | None = None,
+    conversation: Conversation | None = None,
     owner_id: UUID7 | None = None,
 ) -> AsyncGenerator[Invocation]:
-    conversation = await agent.resolve_conversation(
-        thread_id,
-        conversation_address=conversation_address,
-        conversation_id=conversation_id,
-    )
+    if conversation is None:
+        conversation = await agent.resolve_conversation(
+            thread_id,
+            conversation_address=conversation_address,
+            conversation_id=conversation_id,
+        )
     thread = (
         await agent.threads.get(thread_id, with_messages=False)
         if owner_id is not None or agent.workspaces.projects.roots
@@ -48,7 +50,7 @@ async def invocation_for(
     async with agent.habitats.invoke(
         workspaces=agent.workspaces,
         thread=thread,
-        conversation_id=conversation.id,
+        conversation=conversation,
         owner_id=owner_id,
     ) as invocation:
         yield invocation

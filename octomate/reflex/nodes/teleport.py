@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pydantic_ai.tools import DeferredToolResults
 from pydantic_graph import BaseNode, End, GraphRunContext
 
-from octomate.capabilities.harness.events import ReflexPhaseChangedEvent
+from octomate.events import ReflexPhaseChangedEvent
 from octomate.nerve import Impulse
 from octomate.reflex.crossing import announce_crossing, open_crossing
 from octomate.reflex.nodes.react import React

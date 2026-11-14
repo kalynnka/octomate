@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { create } from 'zustand'
+import { ApiError, fetchMe } from '@/lib/api/auth'
 import type { WireEvent } from '@/lib/api/events'
 
 interface Activity {
@@ -39,8 +40,10 @@ function syncActivity() {
       const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
       const current = new WebSocket(`${scheme}://${location.host}/api/trunkline/live/activity`)
       socket = current
+      let connected = false
       current.onopen = () => {
         if (socket !== current) return
+        connected = true
         opened = true
         syncActivity()
       }
@@ -50,10 +53,23 @@ function syncActivity() {
         observers.get(update.key)?.receive(update)
       }
       current.onerror = () => current.close()
-      current.onclose = event => {
+      current.onclose = async event => {
+        if (socket !== current) return
+        opened = false
+        if (!connected && event.code !== 1008 && observers.size) {
+          try {
+            await fetchMe()
+          } catch (error) {
+            if (socket !== current) return
+            if (error instanceof ApiError && error.status === 401) {
+              socket = undefined
+              useActivity.setState({}, true)
+              return
+            }
+          }
+        }
         if (socket !== current) return
         socket = undefined
-        opened = false
         if (observers.size && event.code !== 1008) retry = setTimeout(() => {
           retry = undefined
           syncActivity()
@@ -65,6 +81,14 @@ function syncActivity() {
       thread_keys: [...observers.keys()].filter(key => key.startsWith('key:')).map(key => key.slice(4)),
     }))
   })
+}
+
+/** Resume a retry immediately when the tab returns from the background. */
+export function resumeActivity() {
+  if (!retry) return
+  clearTimeout(retry)
+  retry = undefined
+  syncActivity()
 }
 
 /** Use the channel status wording without trailing ellipses, tool arguments, or thoughts. */
