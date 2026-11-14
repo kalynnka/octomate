@@ -18,8 +18,8 @@ from octomate.schemas.commands import CommandResult
 from octomate.schemas.thread import ThreadCommand
 from tests.agent.test_command_ledger import receipt as receipt
 
-PREVIOUS = "d6ddcf644273"
-REVISION = "4681c219c827"
+PREVIOUS = "a1a2d6fe9638"
+REVISION = "2746bd1cd91e"
 
 
 @pytest.mark.parametrize("completed", [False, True])
@@ -44,7 +44,9 @@ async def test_command_intent_column_roundtrip_preserves_ledger_and_search(
         sqlite3.connect(target) as copied,
     ):
         original.backup(copied)
+        # The schema this revision starts from: the old column name, no volumes.
         copied.execute("ALTER TABLE thread_messages RENAME COLUMN intent TO invocation")
+        copied.execute("DROP TABLE volumes")
         before = copied.execute("SELECT * FROM thread_messages ORDER BY id").fetchall()
         triggers = copied.execute(
             "SELECT name, sql FROM sqlite_master "
@@ -67,9 +69,9 @@ async def test_command_intent_column_roundtrip_preserves_ledger_and_search(
     monkeypatch.setattr("logging.config.fileConfig", Mock())
     await asyncio.to_thread(command.stamp, config, PREVIOUS)
 
-    for migrate, revision, column, removed in (
-        (command.upgrade, REVISION, "intent", "invocation"),
-        (command.downgrade, PREVIOUS, "invocation", "intent"),
+    for migrate, revision, column, removed, volumes in (
+        (command.upgrade, REVISION, "intent", "invocation", True),
+        (command.downgrade, PREVIOUS, "invocation", "intent", False),
     ):
         await asyncio.to_thread(migrate, config, revision)
         with sqlite3.connect(target) as copied:
@@ -79,6 +81,11 @@ async def test_command_intent_column_roundtrip_preserves_ledger_and_search(
             }
             assert column in columns
             assert removed not in columns
+            assert volumes == bool(
+                copied.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='volumes'"
+                ).fetchall()
+            )
             assert (
                 copied.execute("SELECT * FROM thread_messages ORDER BY id").fetchall()
                 == before
