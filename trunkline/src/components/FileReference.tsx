@@ -1,16 +1,31 @@
-import { useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Icon } from './Icon'
 
-/** Workspace paths are references until the console can serve their contents. */
+/**
+ * Workspace paths are references until the console can serve their contents. One with an
+ * absolute path is a real link to that file, so the browser's own menu can copy its address.
+ */
 export function FileReference({ path, label = path, chip = false, target, children }: { path: string; label?: string; chip?: boolean; target?: HTMLElement; children?: ReactNode }) {
   const [unavailable, setUnavailable] = useState(false)
   const [open, setOpen] = useState(false)
-  const trigger = useRef<HTMLButtonElement>(null)
+  const trigger = useRef<HTMLAnchorElement>(null)
+  const href = path.startsWith('/') ? `file://${encodeURI(path)}` : undefined
+  const explain = () => { setUnavailable(true); setOpen(true) }
   const tooltip = useRef<HTMLSpanElement>(null)
   const tooltipId = useId()
+  // The card is the fallback for a file that could not be opened; until then the reference is just a link.
+  const shown = open && unavailable
+  // The card outlives the pointer's trip from the reference into it, so its path can be selected or copied there.
+  const closing = useRef<number>(undefined)
+  const stay = () => window.clearTimeout(closing.current)
+  const leave = () => {
+    stay()
+    closing.current = window.setTimeout(() => { if (document.activeElement !== trigger.current) setOpen(false) }, 200)
+  }
+  useEffect(() => stay, [])
   useLayoutEffect(() => {
-    if (!open) return
+    if (!shown) return
     const button = trigger.current!
     const popup = tooltip.current!
     const bounds = button.getBoundingClientRect()
@@ -26,29 +41,41 @@ export function FileReference({ path, label = path, chip = false, target, childr
       window.removeEventListener('scroll', close, true)
       window.removeEventListener('resize', close)
     }
-  }, [open, unavailable, target])
+  }, [shown, target])
   const control = <>
-    <button
+    <a
       ref={trigger}
-      type="button"
+      href={href}
+      role={href ? undefined : 'button'}
+      tabIndex={href ? undefined : 0}
       className={`trk-file-reference ${chip ? 'trk-reference-chip' : 'trk-reference-link'}`}
       aria-label={`${unavailable ? 'Unavailable file' : 'Open file'}: ${path}`}
-      aria-describedby={open ? tooltipId : undefined}
+      aria-describedby={shown ? tooltipId : undefined}
       aria-disabled={unavailable || undefined}
       data-unavailable={unavailable ? '' : undefined}
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => { if (document.activeElement !== trigger.current) setOpen(false) }}
+      onMouseEnter={() => { stay(); setOpen(true) }}
+      onMouseLeave={leave}
       onFocus={() => setOpen(true)}
-      onBlur={() => setOpen(false)}
-      onKeyDown={event => { if (event.key === 'Escape') setOpen(false) }}
-      onClick={() => { setUnavailable(true); setOpen(true) }}
+      onBlur={() => { if (!tooltip.current?.matches(':hover')) setOpen(false) }}
+      onKeyDown={event => {
+        if (event.key === 'Escape') setOpen(false)
+        // Without an address it is a button, which the keyboard presses itself.
+        if (!href && (event.key === 'Enter' || event.key === ' ')) {
+          event.preventDefault()
+          explain()
+        }
+      }}
+      onClick={event => {
+        event.preventDefault()
+        explain()
+      }}
     >
       {chip && !unavailable && <Icon name="file" size={12} />}
       {unavailable ? <code>{label}</code> : <span className="trk-reference-name">{label}</span>}
-    </button>
-    {open && createPortal(<span ref={tooltip} id={tooltipId} role="tooltip" className="trk-reference-tooltip">
+    </a>
+    {shown && createPortal(<span ref={tooltip} id={tooltipId} role="tooltip" className="trk-reference-tooltip" onMouseEnter={stay} onMouseLeave={leave}>
       <strong>{path}</strong>
-      {unavailable && <span>This file can’t be opened here yet. Ask the agent to show its contents or check the path.</span>}
+      <span>This file can’t be opened here yet. Ask the agent to show its contents or check the path.</span>
       {children}
     </span>, document.body)}
   </>
