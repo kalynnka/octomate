@@ -20,9 +20,10 @@
 .trk-artifact [role="alert"] { color: var(--color-terra); }
 .trk-artifact-loading { width: 100%; height: 240px; border-radius: var(--radius-soft-md); }
 .trk-artifact-stage { position: relative; }
-.trk-artifact-stage[data-loading] { height: 240px; overflow: hidden; }
+.trk-artifact-stage[data-loading] { overflow: hidden; }
 .trk-artifact-stage[data-loading] > .trk-artifact-loading { position: absolute; inset: 0; }
-.trk-artifact-stage[data-loading] > .trk-artifact-frame { visibility: hidden; }
+/* The hidden frame holds the placeholder's height, so the card opens from it to the app's own height in one move. */
+.trk-artifact-stage[data-loading] > .trk-artifact-frame { height: 240px; visibility: hidden; }
 .trk-artifact [data-folded] .trk-artifact-loading::after { animation: none; }
 .trk-artifact-frame { position: static; width: 100%; max-width: none; max-height: none; box-sizing: border-box; padding: 0; margin: 0; border: 0; border-radius: var(--radius-soft-md); background: var(--card-bg); color: var(--fg-1); }
 .trk-artifact-frame:not([data-display-mode="fullscreen"]) { height: var(--artifact-height); overflow: hidden; transition: height var(--motion-entry) var(--ease-in-out); }
