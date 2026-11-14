@@ -28,7 +28,6 @@ from octomate.managers.workspaces.transfers import copy_ignored
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
 from octomate.schemas.volumes import GitVolume, UnregisteredProjectError, Volume
-from octomate.schemas.volumes.storage import HostDirectory
 from octomate.schemas.workspaces import Workspace
 from octomate.telemetry import workspace_logfire
 
@@ -153,10 +152,6 @@ class WorkspaceManager(Manager):
         workspace = await self.resolve(thread_id, project, owner_id, ref)
         async with self.enter(workspace):
             yield workspace
-
-    def storage(self, path: Path) -> HostDirectory:
-        """Share a directory's lock and active uses across resolved workspace views."""
-        return self.host_storage.get(path)
 
     @asynccontextmanager
     async def enter(self, workspace: Workspace) -> AsyncGenerator[Workspace]:

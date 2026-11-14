@@ -422,7 +422,7 @@ async def test_two_materializations_of_one_tree_serialize(
     opened = await a_workspace(manager, await a_bound_thread(manager), owner)
     await materialize(manager, opened, mirror)
 
-    lock = manager.storage(opened.path).lock
+    lock = manager.host_storage.get(opened.path).lock
     await lock.acquire()
     second = asyncio.create_task(materialize(manager, opened, mirror))
     for _ in range(5):
@@ -1476,7 +1476,7 @@ async def test_active_project_storage_cannot_be_reclaimed(
 ) -> None:
     thread = await a_bound_thread(manager)
     workspace = await a_workspace(manager, thread, owner)
-    storage = manager.storage(workspace.path)
+    storage = manager.host_storage.get(workspace.path)
     async with manager.enter(workspace):
         (workspace.path / "work.md").write_text("in use")
         assert await manager.prune(idle=0) == []
@@ -1822,7 +1822,7 @@ async def test_failed_chat_entry_releases_only_its_own_claim(
                 pytest.fail("a failed volume was entered")
         if overlapping:
             assert first.path.is_dir()
-            assert manager.storage(first.path).uses == 1
+            assert manager.host_storage.get(first.path).uses == 1
     assert all(
         not storage.uses for storage in manager.host_storage.directories.values()
     )

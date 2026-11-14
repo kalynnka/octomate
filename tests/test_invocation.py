@@ -40,7 +40,7 @@ async def test_native_invocation_borrows_the_owners_chat_workspace(
         )
         assert invocation.owner_id == owner_id
         assert invocation.thread_id == thread_id
-        assert invocation.storage is workspaces.storage(workspace.path)
+        assert invocation.storage is workspaces.host_storage.get(workspace.path)
         assert invocation.storage.path.is_dir()
         assert invocation.habitat is habitat
         assert invocation.cwd == workspace.path
@@ -271,7 +271,7 @@ async def test_core_and_workspace_contexts_share_the_same_storage(
     ) as invocation:
         (invocation.storage.path / "work").write_text("retained")
         async with app.workspaces.open(thread.id, None, owner.id) as workspace:
-            assert app.workspaces.storage(workspace.path) is invocation.storage
+            assert app.workspaces.host_storage.get(workspace.path) is invocation.storage
             assert invocation.storage.uses == 2
             assert (workspace.path / "work").read_text() == "retained"
         assert invocation.storage.uses == 1
