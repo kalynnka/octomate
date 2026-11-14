@@ -135,6 +135,7 @@ async def test_direct_command_delivers_feedback_without_model_history_and_replay
             state=state,
             deps=ReflexDeps(
                 workspaces=app.workspaces,
+                habitats=app.habitats,
                 agents=app.agents,
                 channels=app.channels,
                 conversation_manager=app.conversations,
@@ -369,6 +370,7 @@ async def test_command_gateway_handoff_continues_in_the_same_reflex_graph(
     async with app.nerve.publish(signal.context.address) as impulses:
         deps = ReflexDeps(
             workspaces=app.workspaces,
+            habitats=app.habitats,
             agents=app.agents,
             channels=app.channels,
             conversation_manager=app.conversations,

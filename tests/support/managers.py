@@ -26,12 +26,14 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from uuid_utils.compat import uuid7
 
 from octomate.config.agents import AgentRouteModelName
+from octomate.config.habitat import NativeHabitatConfig
 from octomate.config.mirrors import MirrorsConfig
 from octomate.config.workspaces import WorkspacesConfig
 from octomate.database import async_session
 from octomate.events import ActionBatchEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import OctomateSession
+from octomate.managers.habitat import HabitatManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.storages import HostStorageManager
 from octomate.managers.thread import ThreadManager, message_text_from_segments
@@ -67,6 +69,11 @@ from octomate.schemas.user import UserProfile
 from octomate.schemas.volumes import GitVolume
 from octomate.types.deferred import DeferredBatchStatus, DeferredResponseMode
 from octomate.types.permissions import AgentPermissionMode
+
+
+def a_habitat_manager(workspaces: WorkspaceManager) -> HabitatManager:
+    """A native habitat manager preparing runs in `workspaces`."""
+    return HabitatManager(NativeHabitatConfig(), Nerve(), workspaces)
 
 
 def a_workspace_manager(

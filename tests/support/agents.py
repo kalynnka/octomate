@@ -50,13 +50,11 @@ from octomate import Octomate
 from octomate.config.agents import (
     AgentRouteModelName,
 )
-from octomate.config.habitat import NativeHabitatConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.habitat import HabitatManager, Invocation
 from octomate.managers.project import ProjectManager
 from octomate.managers.workspaces import WorkspaceManager
-from octomate.nerve import Nerve
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.triage import (
     DIRECT_TARGET,
@@ -75,7 +73,7 @@ from octomate.tentacles.inkling.capabilities.ask import AskCapability
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from octomate.types.json import JsonObject
-from tests.support.managers import a_workspace_manager
+from tests.support.managers import a_habitat_manager, a_workspace_manager
 
 FakeRunOutput = ChannelOutput
 FAKE_CONTEXT = cast(RunContext[None], None)
@@ -177,11 +175,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     conversations: ConversationManager = field(default_factory=ConversationManager)
     projects: ProjectManager = field(default_factory=ProjectManager)
     workspaces: WorkspaceManager = field(default_factory=a_workspace_manager)
-    habitats: HabitatManager = field(
-        default_factory=lambda: HabitatManager(
-            config=NativeHabitatConfig(), nerve=Nerve()
-        )
-    )
+    habitats: HabitatManager = field(init=False)
     reception_output: ChannelOutput = "handled"
     reception_summon: SummonDecision | None = None
     reception_scheme: SchemeDecision | None = None
@@ -235,6 +229,9 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     turns: list[RecordedRun] = field(default_factory=list)
     # Every `relocate` the graph asked for: the conversation's id and where to.
     relocated: list[tuple[UUID7, Path]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.habitats = a_habitat_manager(self.workspaces)
 
     def resolve_model(
         self, model: AgentRouteModelName | None = None

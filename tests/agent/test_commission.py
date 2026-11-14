@@ -444,7 +444,14 @@ async def test_commission_inherits_the_parent_owner_in_a_project(
     thread = await app.threads.ensure(
         ThreadKey("im", "thread", "shared", "turn"), project=project
     )
-    gate, agents, conversations, ctx = await _gate()
+    gate, agents, conversations, ctx = await _gate(
+        agents={
+            "inkling": cast(AgentTentacle, FakeAgent(id="inkling")),
+            "claude": cast(
+                AgentTentacle, FakeAgent(id="claude", workspaces=app.workspaces)
+            ),
+        }
+    )
     gate.thread_id = thread.id
     gate.threads = app.threads
     gate.workspaces = app.workspaces

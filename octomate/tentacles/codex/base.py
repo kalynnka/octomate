@@ -860,7 +860,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         if thread is None or context.conversation is None:
             raise ValueError("A runtime command requires a conversation")
         return self.habitats.invoke(
-            workspaces=self.workspaces,
             thread=thread,
             conversation=context.conversation,
             owner_id=context.user_id,

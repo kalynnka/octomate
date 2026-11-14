@@ -190,7 +190,7 @@ class Octomate(FastAPI):
             config=self.config.workspaces,
         )
         self.threads = ThreadManager(users=self.users, nerve=self.nerve)
-        self.habitats = HabitatManager(self.config.habitat, self.nerve)
+        self.habitats = HabitatManager(self.config.habitat, self.nerve, self.workspaces)
         self.deferred_actions = DeferredActionManager(nerve=self.nerve)
         self.commands = CommandManager(
             tentacles=self.tentacles,
@@ -377,6 +377,7 @@ class Octomate(FastAPI):
                 async with self.nerve.publish(origin) as impulses:
                     deps = ReflexDeps(
                         workspaces=self.workspaces,
+                        habitats=self.habitats,
                         agents=self.agents,
                         channels=self.channels,
                         conversation_manager=self.conversations,

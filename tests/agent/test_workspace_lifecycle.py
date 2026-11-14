@@ -67,6 +67,7 @@ async def context(
                 action_manager=app.deferred_actions,
                 gateway=app.gateway,
                 workspaces=app.workspaces,
+                habitats=app.habitats,
                 impulses=impulses,
             ),
         )

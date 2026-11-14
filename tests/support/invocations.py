@@ -48,7 +48,6 @@ async def invocation_for(
                 database.add(thread)
                 await database.commit()
     async with agent.habitats.invoke(
-        workspaces=agent.workspaces,
         thread=thread,
         conversation=conversation,
         owner_id=owner_id,

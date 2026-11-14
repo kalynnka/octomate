@@ -168,7 +168,6 @@ async def test_core_prepares_and_releases_native_chat(
     thread = await app.threads.ensure(ThreadKey("im", "thread", "room", "turn"))
     conversation = Conversation(thread_id=thread.id, agent_tentacle_id="inkling")
     async with app.habitats.invoke(
-        workspaces=app.workspaces,
         thread=thread,
         conversation=conversation,
         owner_id=owner_id,
@@ -204,7 +203,6 @@ async def test_core_uses_the_workspace_volume_lifecycle(
         ThreadKey("im", "thread", "room", "turn"), project=project
     )
     async with app.habitats.invoke(
-        workspaces=app.workspaces,
         thread=thread,
         conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
         owner_id=owner_id,
@@ -243,7 +241,6 @@ async def test_core_stops_native_habitat_when_volume_preparation_fails(
 
     with pytest.raises(RuntimeError, match="mirror failed"):
         async with app.habitats.invoke(
-            workspaces=app.workspaces,
             thread=thread,
             conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
             owner_id=owner.id,
@@ -264,7 +261,6 @@ async def test_core_and_workspace_contexts_share_the_same_storage(
     owner = await a_user()
     thread = await app.threads.ensure(ThreadKey("im", "thread", "room", "turn"))
     async with app.habitats.invoke(
-        workspaces=app.workspaces,
         thread=thread,
         conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
         owner_id=owner.id,
@@ -289,13 +285,11 @@ async def test_core_isolates_two_owners_in_a_shared_thread(
     conversation = Conversation(thread_id=thread.id, agent_tentacle_id="inkling")
     async with (
         app.habitats.invoke(
-            workspaces=app.workspaces,
             thread=thread,
             conversation=conversation,
             owner_id=alice.id,
         ) as first,
         app.habitats.invoke(
-            workspaces=app.workspaces,
             thread=thread,
             conversation=conversation,
             owner_id=bob.id,
@@ -317,7 +311,6 @@ async def test_core_releases_chat_on_failure_and_cancellation(
     thread = await app.threads.ensure(ThreadKey("im", "dm", "alice"))
     with pytest.raises(error):
         async with app.habitats.invoke(
-            workspaces=app.workspaces,
             thread=thread,
             conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
             owner_id=None,
@@ -341,7 +334,6 @@ async def test_core_refuses_anonymous_project_and_managed_dispatch(
     )
     with pytest.raises(UnregisteredProjectError):
         async with app.habitats.invoke(
-            workspaces=app.workspaces,
             thread=thread,
             conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
             owner_id=None,
@@ -350,7 +342,6 @@ async def test_core_refuses_anonymous_project_and_managed_dispatch(
     app.habitats.config = SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64)
     with pytest.raises(HabitatError, match="Managed habitat dispatch"):
         async with app.habitats.invoke(
-            workspaces=app.workspaces,
             thread=thread,
             conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
             owner_id=(await a_user()).id,
@@ -372,7 +363,6 @@ async def test_core_checkpoints_an_empty_project_without_a_git_index(
         project=project,
     )
     async with app.habitats.invoke(
-        workspaces=app.workspaces,
         thread=thread,
         conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
         owner_id=(await a_user()).id,

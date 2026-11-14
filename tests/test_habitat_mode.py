@@ -14,6 +14,7 @@ from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
 from octomate.schemas.habitat import InvocationScope
+from tests.support.managers import a_workspace_manager
 from tests.test_habitat_contracts import IMAGE
 
 
@@ -94,7 +95,9 @@ def test_invalid_modes_are_rejected(
 async def test_each_user_gets_one_vm_shared_by_their_invocations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    manager = HabitatManager(SbxHabitatConfig(image=IMAGE, idle_timeout=60), Nerve())
+    manager = HabitatManager(
+        SbxHabitatConfig(image=IMAGE, idle_timeout=60), Nerve(), a_workspace_manager()
+    )
     monkeypatch.setattr(SbxHabitat, "prepare", AsyncMock())
     stop = AsyncMock()
     monkeypatch.setattr(SbxHabitat, "stop", stop)

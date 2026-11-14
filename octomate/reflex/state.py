@@ -37,6 +37,7 @@ from octomate.events import (
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager, OctomateSession
+from octomate.managers.habitat import HabitatManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import Impulse
@@ -225,6 +226,8 @@ class ReflexDeps:
     # For the bookkeeping a finished turn owes and the agent has no part in:
     # leaving the thread's workspace somewhere losing the directory cannot cost it.
     workspaces: WorkspaceManager
+    # Prepares each run's workspace and habitat before the agent is called.
+    habitats: HabitatManager
     conversation_manager: ConversationManager
     action_manager: DeferredActionManager
     gateway: GatewayManager

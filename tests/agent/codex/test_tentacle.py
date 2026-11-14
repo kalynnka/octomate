@@ -1014,6 +1014,7 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
         gateway=octomate.gateway,
         impulses=unwired(),
         workspaces=octomate.workspaces,
+        habitats=octomate.habitats,
     )
     async with tentacle:
         async with invocation_for(

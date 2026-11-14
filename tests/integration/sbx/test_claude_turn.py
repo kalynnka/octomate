@@ -26,6 +26,7 @@ from octomate.schemas.habitat import InvocationScope
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.transport import HabitatTransport
 from octomate.types.json import JsonObject
+from tests.support.managers import a_workspace_manager
 
 pytestmark = [
     pytest.mark.timeout(600),
@@ -41,7 +42,9 @@ async def guest() -> AsyncGenerator[tuple[HabitatManager, InvocationScope, SbxHa
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
-    manager = HabitatManager(SbxHabitatConfig(image=image), Nerve())
+    manager = HabitatManager(
+        SbxHabitatConfig(image=image), Nerve(), a_workspace_manager()
+    )
     scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
     sandbox = manager.residence(scope).habitat
     assert isinstance(sandbox, SbxHabitat)

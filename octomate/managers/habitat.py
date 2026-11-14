@@ -105,6 +105,7 @@ class Residence:
 class HabitatManager:
     config: HabitatConfig
     nerve: Nerve
+    workspaces: WorkspaceManager
     residences: dict[UUID7, Residence] = field(default_factory=dict, init=False)
     closed: bool = field(default=False, init=False)
 
@@ -112,7 +113,6 @@ class HabitatManager:
     async def invoke(
         self,
         *,
-        workspaces: WorkspaceManager,
         thread: Thread,
         conversation: Conversation,
         owner_id: UUID7 | None,
@@ -121,13 +121,12 @@ class HabitatManager:
         if not isinstance(self.config, NativeHabitatConfig):
             raise HabitatError("Managed habitat dispatch is not yet supported")
         invocation_id = uuid7()
-        project = (
-            await workspaces.projects.of(thread) if workspaces.projects.roots else None
-        )
+        projects = self.workspaces.projects
+        project = await projects.of(thread) if projects.roots else None
         habitat = NativeHabitat()
         await habitat.prepare()
         try:
-            async with workspaces.open(thread.id, project, owner_id) as workspace:
+            async with self.workspaces.open(thread.id, project, owner_id) as workspace:
                 yield Invocation(
                     id=invocation_id,
                     conversation=conversation,

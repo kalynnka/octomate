@@ -20,6 +20,7 @@ from octomate.habitat.sbx import SbxHabitat, SbxOptions
 from octomate.managers.habitat import HabitatError, HabitatManager
 from octomate.nerve import HabitatTopic, Nerve, UserTopic
 from octomate.schemas.habitat import HabitatFailed, HabitatProgress, InvocationScope
+from tests.support.managers import a_workspace_manager
 from tests.support.nerve import held
 from tests.test_habitat_contracts import IMAGE
 
@@ -31,7 +32,9 @@ def scope() -> InvocationScope:
 
 @pytest.fixture
 def manager(monkeypatch: pytest.MonkeyPatch, scope: InvocationScope) -> HabitatManager:
-    manager = HabitatManager(SbxHabitatConfig(image=IMAGE, idle_timeout=0.01), Nerve())
+    manager = HabitatManager(
+        SbxHabitatConfig(image=IMAGE, idle_timeout=0.01), Nerve(), a_workspace_manager()
+    )
     monkeypatch.setattr(SbxHabitat, "preflight", AsyncMock())
     monkeypatch.setattr(
         SbxHabitat,
