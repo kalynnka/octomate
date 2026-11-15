@@ -2,15 +2,9 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterator
-from datetime import UTC, datetime
-from pathlib import Path
 
 import anyio
 import pytest
-from alembic.config import Config
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
-from alembic.script import ScriptDirectory
 from openai_codex.generated.v2_all import (
     AgentMessageDeltaNotification,
     AgentMessageThreadItem,
@@ -24,15 +18,11 @@ from pydantic_ai.messages import (
     TextPart,
     UserPromptPart,
 )
-from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import AsyncEngine
-from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.events import StreamEvents, wire_event_adapter
 from octomate.nerve import Impulse
 from octomate.schemas.annotations import MessageAnnotations
-from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.claude.content import prompt_content as claude_prompt
@@ -49,9 +39,6 @@ from tests.support.nerve import held
 IDE = "# Context from my IDE setup:\n\n## Active file: src/main.py\n\n## Active selection of the file:\nrun()\n\n## Open tabs:\n- main.py: src/main.py\n- My file.py: src/My file.py\n\n## My request:\nlaunch a PR.\n"
 CLAUDE = "<ide_opened_file>The user opened the file /work/main.py in the IDE. This may or may not be related to the current task.</ide_opened_file>\n<browser_instruction># Claude in Chrome browser automation\nUse browser tools.</browser_instruction>\nMy actual request."
 CITATION = "<oai-mem-citation>\n<citation_entries>\nMEMORY.md:274-275|note=[Verified against current code]\n</citation_entries>\n<rollout_ids>\n01a1863b-63d4-78d1-9a53-944134fc9f01\n</rollout_ids>\n</oai-mem-citation>"
-MIGRATION = ScriptDirectory.from_config(
-    Config(str(Path(__file__).resolve().parents[3] / "octomate/migrations/alembic.ini"))
-).get_revision("90e954ec0b2d")
 
 
 def test_codex_context_keeps_the_request_and_deduplicates_file_roles() -> None:
@@ -355,76 +342,4 @@ async def test_claude_ingest_persists_clean_prompt_and_annotations() -> None:
     assert (
         MessageAnnotations.model_validate(content.metadata["annotations"])
         == segment.data["annotations"]
-    )
-
-
-async def test_migration_cleans_unbound_ledger_and_preserves_raw_model_payloads(
-    in_memory_engine: AsyncEngine,
-) -> None:
-    octomate = Octomate()
-    inbound = await octomate.threads.record_native_prompt(
-        codex.SESSION_ADDRESS,
-        message_id="legacy",
-        text=IDE,
-        sender=codex.SENDER,
-        timestamp=datetime.now(UTC),
-    )
-    thread = await a_loaded_thread(
-        octomate.threads, ThreadKey.from_address(codex.SESSION_ADDRESS)
-    )
-    conversation = await octomate.conversations.ensure(
-        thread.id, agent_tentacle_id="codex"
-    )
-    raw = "Answer.\n\n" + CITATION
-    run = await octomate.conversations.record_external_run(
-        conversation,
-        str(uuid7()),
-        messages=[
-            ModelRequest(parts=[UserPromptPart(IDE)]),
-            ModelResponse(parts=[TextPart(raw, provider_details={"kept": "value"})]),
-        ],
-        native_session_id="legacy",
-        end_offset=100,
-    )
-    assert run is not None
-    # Leave the inbound row unbound, as older imports did.
-    await octomate.threads.bind_native_run(
-        codex.SESSION_ADDRESS, run, prompts={}, answer=raw, sender=codex.SENDER
-    )
-
-    def migrate(connection: Connection) -> None:
-        assert MIGRATION is not None
-        with Operations.context(MigrationContext.configure(connection)):
-            MIGRATION.module.upgrade()
-            persisted = connection.exec_driver_sql(
-                "SELECT parts, message_text FROM model_messages ORDER BY id"
-            ).all()
-            MIGRATION.module.downgrade()
-            MIGRATION.module.upgrade()
-            assert (
-                connection.exec_driver_sql(
-                    "SELECT parts, message_text FROM model_messages ORDER BY id"
-                ).all()
-                == persisted
-            )
-
-    async with in_memory_engine.begin() as connection:
-        await connection.run_sync(migrate)
-    thread = await a_loaded_thread(
-        octomate.threads, ThreadKey.from_address(codex.SESSION_ADDRESS)
-    )
-    assert [row.message_text for row in thread.messages] == ["launch a PR.", "Answer."]
-    assert thread.messages[0].id == inbound.id
-    page = await octomate.conversations.messages_page(thread.id, limit=100)
-    response = next(
-        message for message in page.items if isinstance(message, ModelResponse)
-    )
-    part = response.parts[0]
-    assert isinstance(part, TextPart)
-    assert part.content == "Answer."
-    assert part.provider_details is not None
-    assert part.provider_details["kept"] == "value"
-    assert (
-        MessageAnnotations.model_validate(part.provider_details["annotations"]).raw
-        == raw
     )

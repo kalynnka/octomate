@@ -51,6 +51,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store_true",
         help="Run the manual native sandbox integration tests with synthetic fixtures.",
     )
+    parser.addoption(
+        "--migration-base",
+        default="origin/main",
+        help="The git ref whose migrations this tree's must extend (default: origin/main).",
+    )
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
