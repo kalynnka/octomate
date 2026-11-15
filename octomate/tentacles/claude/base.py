@@ -84,6 +84,7 @@ from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
 )
+from octomate.habitat import ManagedHabitat
 from octomate.managers.habitat import Invocation
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
 from octomate.nerve import Impulse
@@ -169,7 +170,8 @@ logger = logging.getLogger(__name__)
 class ClaudeTentacle(AgentTentacle[str, None]):
     """Claude Agent SDK runner exposed as an Octomate agent tentacle.
 
-    A run drives a `ClaudeSDKClient` over a local subprocess, translating its
+    A run drives a `ClaudeSDKClient` over the CLI's stdio, a local subprocess
+    or one inside the owner's sandbox, translating its
     message stream through `ClaudeRunAccumulator` into live
     stream events (proxied to the channel feelers) and persisted
     `ModelMessage`s. The Claude session id is stored on the conversation as
@@ -201,6 +203,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
     # A Claude run stays live in-process; `pending` (from `AgentTentacle`) parks a
     # waiter per gated tool / question until `Octomate.kick` delivers the response.
     in_process: ClassVar[bool] = True
+    supports_managed_habitat: ClassVar[bool] = True
 
     permission_modes: tuple[PermissionMode, ...] = tuple(
         PermissionMode(value=mode, name=mode) for mode in get_args(ClaudePermissionMode)
@@ -1156,7 +1159,8 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             return {}
 
         project = invocation.project
-        run_cwd = str(invocation.workspace.path)
+        managed = isinstance(invocation.habitat, ManagedHabitat)
+        run_cwd = str(invocation.cwd)
         octomate_session = self.octomate.gateway.get(conversation.id)
         # The turn's server, mounted in process with the session closed over —
         # identity by closure, nothing on the wire names it. Its tools take the
@@ -1199,7 +1203,10 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             cwd=run_cwd,
             # A project's other roots are directories this work legitimately spans —
             # a settings tree, a sibling checkout — so Claude may reach them too.
-            add_dirs=[str(root) for root in project.extra_roots] if project else [],
+            # A sandbox mounts the owner's storage alone, so they are not there.
+            add_dirs=[str(root) for root in project.extra_roots]
+            if project and not managed
+            else [],
             model=cli_model,
             effort=claude_effort_adapter.validate_python(effort)
             if effort is not None
@@ -1262,7 +1269,9 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             run_name=run_name or self.id,
             conversation_address=str(conversation_address),
             **agent_input_message_attributes(user_prompt),
-            transport="local",
+            habitat=invocation.habitat.name,
+            habitat_mode=self.habitats.config.mode,
+            habitat_managed=managed,
         ):
             # The SDK injects the active W3C context when connecting. Starting a
             # client inside each run's span also reparents resumed sessions.
@@ -1272,6 +1281,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                     self.ink.stream(
                         prompt_text,
                         options=options,
+                        habitat=invocation.habitat,
                         conversation_id=conversation.id,
                         should_interrupt=lambda: (
                             octomate_session is not None

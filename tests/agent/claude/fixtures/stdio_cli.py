@@ -41,7 +41,17 @@ def finish(text: str) -> None:
 
 
 with Path(os.environ["CLAUDE_TEST_LOG"]).open("w") as log:
-    log.write(json.dumps({"pid": os.getpid(), "argv": sys.argv}) + "\n")
+    log.write(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "argv": sys.argv,
+                "cwd": str(Path.cwd()),
+                "config": os.environ.get("CLAUDE_CONFIG_DIR"),
+            }
+        )
+        + "\n"
+    )
     log.flush()
     for line in sys.stdin:
         message = json.loads(line)

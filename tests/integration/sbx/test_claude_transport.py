@@ -38,7 +38,10 @@ async def test_guest_cli_controls_and_process_cleanup() -> None:
         setting_sources=[],
     )
     try:
-        async with HabitatTransport.client(manager, scope, options) as client:
+        async with (
+            manager.enter(scope, uuid7()),
+            HabitatTransport.client(sandbox, options) as client,
+        ):
             assert len(state.invocations) == 1
             assert await client.get_server_info() is not None
             await client.set_permission_mode("default")

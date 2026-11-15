@@ -147,7 +147,10 @@ async def test_model_tools_resume_interrupt_and_cancel(
         session_id=str(uuid7()),
     )
     prompt = f"Use Bash to run exactly: {command}\nThen reply with the token you wrote."
-    async with HabitatTransport.client(manager, scope, options) as client:
+    async with (
+        manager.enter(scope, uuid7()),
+        HabitatTransport.client(sandbox, options) as client,
+    ):
         async with asyncio.TaskGroup() as tasks:
             response = tasks.create_task(turn(client, prompt))
             async with asyncio.timeout(120):
@@ -180,7 +183,10 @@ async def test_model_tools_resume_interrupt_and_cancel(
     assert await cli_pids(sandbox) == []
 
     resumed = replace(options, session_id=None, resume=options.session_id, tools=[])
-    async with HabitatTransport.client(manager, scope, resumed) as client:
+    async with (
+        manager.enter(scope, uuid7()),
+        HabitatTransport.client(sandbox, resumed) as client,
+    ):
         result = await turn(
             client,
             "What token did you write in the previous turn? Reply with only that token; do not use tools.",
@@ -191,7 +197,10 @@ async def test_model_tools_resume_interrupt_and_cancel(
     interrupt = asyncio.Event()
 
     async def pending(fresh: ClaudeAgentOptions) -> None:
-        async with HabitatTransport.client(manager, scope, fresh) as client:
+        async with (
+            manager.enter(scope, uuid7()),
+            HabitatTransport.client(sandbox, fresh) as client,
+        ):
             await client.query(prompt)
             await interrupt.wait()
             await client.interrupt()

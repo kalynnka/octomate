@@ -16,24 +16,39 @@ from claude_agent_sdk import (
     ToolPermissionContext,
 )
 from pydantic import BaseModel
+from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import PartDeltaEvent
+from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
+from octomate import Octomate
+from octomate.config.agents import ClaudeCodeConfig
 from octomate.config.habitat import SbxHabitatConfig
 from octomate.fibers import FiberError
+from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.habitat import InvocationScope
+from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.transport import HabitatTransport
 from octomate.types.json import JsonObject
-from tests.support.managers import a_workspace_manager
+from tests.support.invocations import invocation_for
+from tests.support.managers import (
+    FakeConversationManager,
+    a_thread,
+    a_workspace_manager,
+)
+from tests.support.users import a_user
 from tests.test_habitat_contracts import IMAGE
 
 
 class ProcessInfo(BaseModel):
     pid: int
     argv: list[str]
+    cwd: str
+    config: str | None
 
 
 @pytest.fixture
@@ -54,7 +69,8 @@ def options(tmp_path: Path) -> ClaudeAgentOptions:
 
 
 @pytest.fixture
-def manager(tmp_path: Path) -> HabitatManager:
+def executable(tmp_path: Path) -> Path:
+    """A stand-in sbx that runs the guest command as a host process."""
     executable = tmp_path / "sbx"
     executable.write_text(
         f"#!{sys.executable}\n"
@@ -77,6 +93,11 @@ def manager(tmp_path: Path) -> HabitatManager:
         "os.execvpe(command[0], command, os.environ)\n"
     )
     executable.chmod(0o700)
+    return executable
+
+
+@pytest.fixture
+def manager(executable: Path) -> HabitatManager:
     return HabitatManager(
         SbxHabitatConfig(executable=str(executable), image=IMAGE),
         Nerve(),
@@ -117,8 +138,11 @@ async def test_native_events_approval_and_controls_share_the_connection(
     accumulator.begin("Run the tool")
     deltas: list[str] = []
     try:
-        async with HabitatTransport.client(manager, scope, options) as client:
-            assert len(manager.residence(scope).invocations) == 1
+        async with (
+            manager.enter(scope, uuid7()) as residence,
+            HabitatTransport.client(residence.habitat, options) as client,
+        ):
+            assert len(residence.invocations) == 1
             assert await client.get_server_info() == {"commands": [], "models": []}
             await client.query("Run the tool")
             async with asyncio.timeout(5):
@@ -172,7 +196,10 @@ async def test_initialization_failure_releases_process_and_lease(
     try:
         async with asyncio.timeout(5):
             with pytest.raises(FiberError, match="stream closed"):
-                async with HabitatTransport.client(manager, scope, options):
+                async with (
+                    manager.enter(scope, uuid7()) as residence,
+                    HabitatTransport.client(residence.habitat, options),
+                ):
                     pytest.fail("The CLI exited before initialization")
     finally:
         await manager.close()
@@ -216,7 +243,10 @@ async def test_interrupt_and_cancellation_release_process_and_lease(
     options.can_use_tool = approve
 
     async def run() -> None:
-        async with HabitatTransport.client(manager, scope, options) as client:
+        async with (
+            manager.enter(scope, uuid7()) as residence,
+            HabitatTransport.client(residence.habitat, options) as client,
+        ):
             await client.query("Wait for approval")
             await asked.wait()
             if cancel_task:
@@ -242,5 +272,88 @@ async def test_interrupt_and_cancellation_release_process_and_lease(
     info = ProcessInfo.model_validate_json(
         (await anyio.Path(options.env["CLAUDE_TEST_LOG"]).read_text()).splitlines()[0]
     )
+    with pytest.raises(ProcessLookupError):
+        os.kill(info.pid, 0)
+
+
+async def test_a_driven_turn_runs_inside_the_owners_sandbox(
+    in_memory_engine: AsyncEngine,
+    executable: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = tmp_path / "protocol.jsonl"
+    cli = tmp_path / "claude"
+    cli.write_text(
+        f"#!{sys.executable}\n"
+        f"import os\nos.environ['CLAUDE_TEST_LOG'] = {str(log)!r}\n"
+        + Path(__file__).with_name("fixtures").joinpath("stdio_cli.py").read_text()
+    )
+    cli.chmod(0o700)
+    # The guest finds `claude` on its own path; the stand-in sbx shares the host's.
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(SbxHabitat, "prepare", AsyncMock())
+    monkeypatch.setattr(SbxHabitat, "stop", AsyncMock())
+    host = Octomate(conversations=FakeConversationManager())
+    host.habitats.config = SbxHabitatConfig(executable=str(executable), image=IMAGE)
+    tentacle = ClaudeTentacle(
+        host,
+        auth=host.auth,
+        habitats=host.habitats,
+        config=ClaudeCodeConfig(),
+        commands=host.commands,
+        projects=host.projects,
+        threads=host.threads,
+        files=host.files,
+        conversations=host.conversations,
+        deferred_actions=host.deferred_actions,
+        workspaces=host.workspaces,
+        users=host.users,
+        bearers=host.bearers,
+        mcp=host.mcp,
+    )
+    owner = await a_user()
+    address = ChannelAddress(
+        channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
+    )
+    try:
+        async with (
+            asyncio.timeout(10),
+            invocation_for(
+                tentacle,
+                conversation_address=address,
+                thread_id=await a_thread(),
+                owner_id=owner.id,
+            ) as invocation,
+            # The scripted CLI asks to use a tool; with no user to ask, the
+            # run declines over the same connection and the turn finishes.
+            tentacle.run_stream_events(
+                "Run the tool",
+                conversation_address=address,
+                invocation=invocation,
+                run_name="react",
+                interactive=False,
+            ) as stream,
+        ):
+            results = [
+                event
+                async for event in stream
+                if isinstance(event, AgentRunResultEvent)
+            ]
+            assert isinstance(invocation.habitat, SbxHabitat)
+            assert host.habitats.residences[owner.id].invocations == {invocation.id}
+    finally:
+        await host.habitats.close()
+    assert [event.result.output for event in results] == ["Approved"]
+    assert not host.habitats.residences[owner.id].invocations
+    info = ProcessInfo.model_validate_json(
+        (await anyio.Path(log).read_text()).splitlines()[0]
+    )
+    assert info.cwd == str(invocation.cwd)
+    assert info.config == invocation.environment["CLAUDE_CONFIG_DIR"]
+    # The sandbox is the boundary: Claude's own is not configured, and no
+    # host settings are loaded.
+    assert "--settings" not in info.argv
+    assert "--setting-sources=" in info.argv
     with pytest.raises(ProcessLookupError):
         os.kill(info.pid, 0)

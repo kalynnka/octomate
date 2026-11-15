@@ -20,6 +20,7 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import Message
 from pydantic_ai.messages import UserPromptPart
 
+from octomate.habitat import Habitat, ManagedHabitat
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.tentacles.claude.catalog import ClaudeCommandDescriptor, ClaudeServerInfo
 from octomate.tentacles.claude.transcript import (
@@ -28,6 +29,7 @@ from octomate.tentacles.claude.transcript import (
     prompt_text,
     relocate_session,
 )
+from octomate.tentacles.claude.transport import HabitatTransport
 
 
 class ClaudeInk:
@@ -120,47 +122,62 @@ class ClaudeInk:
         prompt: str,
         *,
         options: ClaudeAgentOptions,
+        habitat: Habitat,
         conversation_id: uuid.UUID,
         should_interrupt: Callable[[], bool],
         command: ClaudeCommandDescriptor | None = None,
     ) -> AsyncGenerator[Message]:
-        """Stream a turn, superseding the prior client for this conversation."""
+        """Stream a turn, superseding the prior client for this conversation.
+
+        The CLI starts inside a managed habitat, with paths as the guest sees
+        them; otherwise it is a local process confined by Claude's own sandbox.
+        """
         if options.cwd is None:
             raise ValueError("Driven Claude runs require a workspace")
+        options.setting_sources = []
         async with contextlib.AsyncExitStack() as resources:
-            # Claude falls back to shared temp storage when this path is too long.
-            temp = resources.enter_context(
-                TemporaryDirectory(prefix="octo-", dir="/tmp")
-            )
-            temp_root = str(await asyncio.to_thread(Path(temp).resolve))
-            options.env["CLAUDE_CODE_TMPDIR"] = temp_root
-            # These native filesystem settings are not in the SDK types yet.
-            options.settings = json.dumps(
-                {
-                    "permissions": {"blockReadsOutsideWorkingDirectories": True},
-                    "sandbox": {
-                        "enabled": True,
-                        "failIfUnavailable": True,
-                        "autoAllowBashIfSandboxed": False,
-                        "allowUnsandboxedCommands": False,
-                        "excludedCommands": [],
-                        "enableWeakerNestedSandbox": False,
-                        "filesystem": {
-                            "denyRead": ["/tmp", gettempdir()],
-                            "allowRead": [str(options.cwd), temp_root],
-                            "allowWrite": [temp_root],
+            if isinstance(habitat, ManagedHabitat):
+                # The habitat is the boundary, so Claude's own sandbox stays off.
+                client = await resources.enter_async_context(
+                    HabitatTransport.client(habitat, options)
+                )
+            else:
+                # Claude falls back to shared temp storage when this path is too long.
+                temp = resources.enter_context(
+                    TemporaryDirectory(prefix="octo-", dir="/tmp")
+                )
+                temp_root = str(await asyncio.to_thread(Path(temp).resolve))
+                options.env["CLAUDE_CODE_TMPDIR"] = temp_root
+                # These native filesystem settings are not in the SDK types yet.
+                options.settings = json.dumps(
+                    {
+                        "permissions": {"blockReadsOutsideWorkingDirectories": True},
+                        "sandbox": {
+                            "enabled": True,
+                            "failIfUnavailable": True,
+                            "autoAllowBashIfSandboxed": False,
+                            "allowUnsandboxedCommands": False,
+                            "excludedCommands": [],
+                            "enableWeakerNestedSandbox": False,
+                            "filesystem": {
+                                "denyRead": ["/tmp", gettempdir()],
+                                "allowRead": [str(options.cwd), temp_root],
+                                "allowWrite": [temp_root],
+                            },
                         },
-                    },
-                }
-            )
-            options.setting_sources = []
-            # The SDK merges env into the parent environment; empty values scrub it.
-            options.env.update(
-                {key: "" for key in os.environ if key.upper().startswith("OCTOMATE_")}
-            )
-            client = await resources.enter_async_context(
-                ClaudeSDKClient(options=options)
-            )
+                    }
+                )
+                # The SDK merges env into the parent environment; empty values scrub it.
+                options.env.update(
+                    {
+                        key: ""
+                        for key in os.environ
+                        if key.upper().startswith("OCTOMATE_")
+                    }
+                )
+                client = await resources.enter_async_context(
+                    ClaudeSDKClient(options=options)
+                )
             if command is not None:
                 info = ClaudeServerInfo.model_validate(await client.get_server_info())
                 commands = {entry.id: entry for entry in info.commands or ()}
