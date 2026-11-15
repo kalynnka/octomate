@@ -187,17 +187,21 @@ class TrunklineSiphon(Siphon):
         """Nothing to subscribe to until a socket opens."""
         return self
 
-    async def watch(self, websocket: WebSocket, topic: EventTopic) -> None:
+    async def watch(
+        self, websocket: WebSocket, topic: EventTopic, *, replay: bool = False
+    ) -> None:
         """Hold the console's socket on a topic until the console closes it,
         sending each event the nerve carries to that topic down it meanwhile.
         The subscription is open before the handshake completes, so a request
-        the console sends once the socket is open misses nothing. A thread's
-        socket starts with what a kick still awake has said there since its last
-        run ended, which the ledger does not hold yet. A console
-        `CONSOLE_BACKLOG` events behind is closed with 1013 to read its state
-        again; one that is gone ends the same way, once its close is read."""
+        the console sends once the socket is open misses nothing. With `replay`,
+        a thread's socket starts with what a kick still awake has said there
+        since its last run ended, which the ledger does not hold yet: a console
+        that reads the thread once the socket is open has every run in one or
+        the other. A console `CONSOLE_BACKLOG` events behind is closed with 1013
+        to read its state again; one that is gone ends the same way, once its
+        close is read."""
         nerve = self.channel.octomate.nerve
-        kept = nerve.retained.get(topic, [])
+        kept = nerve.retained.get(topic, []) if replay else []
         # A run is in the ledger by the time it ends, and the console reads it
         # there, so the socket starts past the last one that ended. It is sought
         # from the end, over no more than the socket then replays.
@@ -210,7 +214,7 @@ class TrunklineSiphon(Siphon):
             0,
         )
         async with nerve.subscribe(
-            topic, backlog=CONSOLE_BACKLOG, replay=ended
+            topic, backlog=CONSOLE_BACKLOG, replay=ended if replay else None
         ) as impulses:
             await websocket.accept()
 
