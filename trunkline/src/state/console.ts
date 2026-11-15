@@ -693,10 +693,11 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   /** Keep observed native turns in place when they settle. Driven turns also
    *  record inbound messages outside the stream, so they still read the ledger,
    *  as does a native turn whose opening was missed. The socket starts with what
-   *  a kick still awake has said since its last run ended. `again` is for a thread
-   *  already shown whose socket was lost: once the new one is open the thread is
-   *  read again, and what the overlay held gives way to that read and the socket.
-   *  A watch the relay closes is opened again that way shortly after. */
+   *  a kick still awake has said since its last run ended. With `again` the thread
+   *  is read once the socket is held, and what was read or folded before gives way
+   *  to that read and the socket: a thread being opened is read while its socket
+   *  opens, and one already shown may have lost its socket. A watch the relay
+   *  closes is opened again that way shortly after. */
   const watchOpen = async (thId: string, again = false) => {
     clearTimeout(rewatch)
     if (viewing?.thId === thId) return
@@ -1126,16 +1127,19 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         }))
         scrollChatBottom()
         if (!animate) replayView()
-        watched = watchOpen(thId)
+        watched = watchOpen(thId, true)
       }
       const refresh = async () => {
-        // The thread is read once its socket is held, so a run that ends
-        // meanwhile is in the read or on the socket.
-        await watched
-        const detail = await readThread(thId)
+        // The thread is read while its socket opens, so neither waits for the
+        // other. A run that ended between that read and the socket is in
+        // neither: the watch reads the thread again once the socket is held.
+        const opened = readThread(thId).then((detail) => {
+          if (selection !== threadSelection || get().selThreadId !== thId) return
+          showDetail(detail)
+          scrollChatBottom()
+        })
+        await Promise.all([opened, watched])
         if (selection !== threadSelection || get().selThreadId !== thId) return
-        showDetail(detail)
-        scrollChatBottom()
         void (async () => {
           for (let page = 1; page < PRELOAD_PAGES; page++) await pageBack(thId)
         })()

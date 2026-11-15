@@ -100,16 +100,21 @@ test('a first visit starts its transition without waiting for data', async () =>
   assert.deepEqual(useConsole.getState().detail, detail)
 })
 
-test('a thread is read once its socket is held', async () => {
+test('a thread is shown while its socket opens, and read again once the socket is held', async () => {
   LiveSocket.autoOpen = false
-  const read = mock.method(api, 'getThreadDetail', async () => ({ ...detail, key: 'held-first' }))
-  const switching = useConsole.getState().actions.selectThread('codex', 'held-first')
-  const socket = await socketOn('thread_id=held-first')
-  await tick()
-  assert.equal(read.mock.callCount(), 0)
+  const id = 'opening-socket'
+  let reads = 0
+  // A run is saved between the first read and the socket.
+  mock.method(api, 'getThreadDetail', async () => ({ ...detail, key: id, msgCount: ++reads }))
+  const switching = useConsole.getState().actions.selectThread('codex', id)
+  const socket = await socketOn(`thread_id=${id}`)
+  for (let at = 0; at < 200 && useConsole.getState().detail?.key !== id; at++) await tick()
+  assert.equal(useConsole.getState().detail?.msgCount, 1)
+  assert.equal(reads, 1)
   socket.onopen?.()
   await switching
-  assert.equal(read.mock.callCount(), 1)
+  assert.equal(useConsole.getState().detail?.msgCount, 2)
+  assert.equal(reads, 2)
 })
 
 test('a turn that settles while the thread is being read has it read again', async () => {
@@ -458,7 +463,7 @@ test('a persisted usage read cannot update the thread selected while it was pend
   const metrics = mock.method(api, 'getThreadMetrics', () => reading)
   run.deliver({ event_kind: 'reflex_awake' }, result, { event_kind: 'reflex_asleep' })
   for (let at = 0; at < 200 && metrics.mock.callCount() < 1; at++) await tick()
-  assert.equal(getDetail.mock.callCount(), 1)
+  assert.equal(getDetail.mock.callCount(), 2)
   assert.equal(metrics.mock.callCount(), 1)
 
   await actions.selectThread('trunkline', 'other')
@@ -586,7 +591,7 @@ test('resuming live updates reconnects only the lost watch, reads the thread aga
   await actions.selectThread('codex', id)
   await actions.resumeLiveUpdates()
   assert.equal(LiveSocket.opened.length, 1)
-  assert.equal(read.mock.callCount(), 1)
+  assert.equal(read.mock.callCount(), 2)
   const old = LiveSocket.last()
   old.close()
   await tick()
@@ -594,7 +599,7 @@ test('resuming live updates reconnects only the lost watch, reads the thread aga
   await Promise.all([actions.resumeLiveUpdates(), actions.resumeLiveUpdates()])
   const { composer, ledgerN, open } = useConsole.getState()
   assert.deepEqual({ composer, ledgerN, open }, { composer: 'Unsent draft', ledgerN: 80, open: { tool: true } })
-  assert.equal(read.mock.callCount(), 2)
+  assert.equal(read.mock.callCount(), 3)
   assert.equal(LiveSocket.opened.length, 2)
   assert.deepEqual(LiveSocket.opened.map(socket => socket.closed), [true, false])
   LiveSocket.last().deliver({ event_kind: 'run_started', address: {
