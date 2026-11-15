@@ -145,6 +145,8 @@ async def test_model_tools_resume_interrupt_and_cancel(
         max_turns=4,
         max_budget_usd=0.5,
         session_id=str(uuid7()),
+        # The kit keeps the credential in the owner's configuration volume.
+        env={"CLAUDE_CONFIG_DIR": f"{sandbox.config_dir}/.claude"},
     )
     prompt = f"Use Bash to run exactly: {command}\nThen reply with the token you wrote."
     async with (
