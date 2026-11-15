@@ -77,6 +77,7 @@ from octomate.schemas.todos import Todo
 from octomate.schemas.triage import GatewayAction
 from octomate.schemas.user import UserProfile
 from octomate.types.deferred import DeferredResponseMode
+from octomate.types.threads import KickOutcome
 
 SubagentActivityKind = Literal["commission", "whisper"]
 SubagentActivityStatus = Literal["completed", "failed", "timed_out", "cancelled"]
@@ -114,9 +115,7 @@ class ReflexAsleepEvent(BaseModel):
     a console waits for before it reads the thread again."""
 
     event_kind: Literal["reflex_asleep"] = "reflex_asleep"
-    outcome: (
-        Literal["completed", "failed", "cancelled", "deferred", "handed_off"] | None
-    ) = Field(
+    outcome: KickOutcome | None = Field(
         default=None,
         description="How the whole kick ended, after its runs and gateway operations. "
         "Deferred means awaiting a later continuation; None means unreported.",
@@ -129,6 +128,11 @@ class ReflexPhaseChangedEvent(BaseModel):
     event_kind: Literal["reflex_phase_changed"] = "reflex_phase_changed"
     phase: Literal["preparing", "routing", "moving", "finalizing"] = Field(
         description="The phase the reflex has actually entered."
+    )
+    spell: GatewayAction | None = Field(
+        default=None,
+        description="The gateway spell a moving phase carries out; None in any "
+        "other phase.",
     )
 
 
@@ -205,17 +209,23 @@ class RunStartedEvent(BaseModel):
         description="The profile supplying a native session's prompts; None "
         "when the run does not have a single native sender.",
     )
+    agent_tentacle_id: str | None = Field(
+        default=None,
+        description="The agent taking this run, so a reader can say who picked "
+        "the turn up; None means unreported.",
+    )
+
+
+RunActivity = Literal["working", "thinking", "using_tools", "writing", "compacting"]
 
 
 class RunActivityChangedEvent(BaseModel):
     """A harness reported activity within the enclosing run's existing brackets."""
 
     event_kind: Literal["run_activity_changed"] = "run_activity_changed"
-    activity: Literal["working", "thinking", "using_tools", "writing", "compacting"] = (
-        Field(
-            description="Canonical run activity, supported by a real signal. Existing "
-            "part and tool events still describe their own activity."
-        )
+    activity: RunActivity = Field(
+        description="Canonical run activity, supported by a real signal. Existing "
+        "part and tool events still describe their own activity."
     )
     display_text: str | None = Field(
         default=None,

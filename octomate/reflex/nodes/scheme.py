@@ -49,7 +49,10 @@ class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         if origin.address is None:
             raise ValueError("Scheme requires a resolved origin")
         await ctx.deps.impulses.send(
-            Impulse(ReflexPhaseChangedEvent(phase="moving"), origin.address)
+            Impulse(
+                ReflexPhaseChangedEvent(phase="moving", spell="scheme"),
+                origin.address,
+            )
         )
         # Where the gate resolved this to: this channel's direct messages, or another
         # channel's, with the account there taken from the identity registry.

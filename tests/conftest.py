@@ -26,6 +26,7 @@ from octomate.managers.conversation import ConversationStore
 from octomate.models import Base
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.messages import ModelRequest, ModelResponse
+from octomate.tentacles.feelers import status
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.capabilities.persistence import StepPersistence
 from tests.support.config import ISOLATED_HOME, without_dotenv
@@ -63,6 +64,12 @@ def inkling_session_names(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     naming = AsyncMock()
     monkeypatch.setattr(InklingTentacle, "sync_session_name", naming)
     return naming
+
+
+@pytest.fixture(autouse=True)
+def plain_status_phrases(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Status phrases are drawn at random; a test reads the first of each pool."""
+    monkeypatch.setattr(status, "choice", lambda pool: pool[0])
 
 
 @pytest.fixture(autouse=True)

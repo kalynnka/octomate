@@ -1185,23 +1185,21 @@ function StreamRow({ item, cardMax, showAgentLabel, showCopy, children }: { item
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)')
     let at = performance.now()
     let frame: number
-    let scroll = 0
     const print = (now: number) => {
       if (printed.current !== target.current) {
         if (!target.current.startsWith(printed.current)) printed.current = ''
         const remaining = Array.from(target.current.slice(printed.current.length))
-        const count = reduced.matches ? remaining.length : Math.max(1, Math.ceil(remaining.length * Math.min((now - at) / 60, 1)))
+        // Each frame prints a share of what is left, so a block that lands at once is
+        // typed out briskly and eases to a stop over a few hundred milliseconds.
+        const count = reduced.matches ? remaining.length : Math.max(1, Math.ceil(remaining.length * Math.min((now - at) / 240, 1)))
         printed.current += remaining.slice(0, count).join('')
-        const log = document.getElementById('trk-chatlog')
-        const pinned = log && log.scrollHeight - log.scrollTop - log.clientHeight < 48
         setText(printed.current)
-        if (pinned) scroll = requestAnimationFrame(() => { log.scrollTop = log.scrollHeight })
       }
       at = now
       frame = requestAnimationFrame(print)
     }
     frame = requestAnimationFrame(print)
-    return () => { cancelAnimationFrame(frame); cancelAnimationFrame(scroll) }
+    return () => cancelAnimationFrame(frame)
   }, [streaming])
   return (
     <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" style={{ maxWidth: children ? '100%' : cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>

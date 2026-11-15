@@ -337,8 +337,9 @@ async def test_user_socket_requires_sign_in(
         )
     )
     socket = ConsoleSocket(octomate, path=path)
-    refused = await asyncio.wait_for(socket.outbound.get(), 1)
-    await socket.task
+    # The disconnect ends a socket that was let in, so its accept is what fails.
+    await socket.leave()
+    refused = socket.outbound.get_nowait()
     assert refused["type"] == "websocket.http.response.start"
     assert refused["status"] == 401
     assert octomate.nerve.subscribers == {}

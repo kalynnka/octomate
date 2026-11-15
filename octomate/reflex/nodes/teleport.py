@@ -55,7 +55,10 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             raise ValueError("Teleport requires a resolved origin and thread")
         origin_address = origin.address
         await ctx.deps.impulses.send(
-            Impulse(ReflexPhaseChangedEvent(phase="moving"), origin_address)
+            Impulse(
+                ReflexPhaseChangedEvent(phase="moving", spell="teleport"),
+                origin_address,
+            )
         )
         source = state.thread
         hint = self.request.hint or "Octomate is continuing this request here."

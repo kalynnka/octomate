@@ -45,7 +45,7 @@ from octomate.schemas.awakes import (
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import ThreadKey, ThreadMessage
+from octomate.schemas.thread import Kick, ThreadKey, ThreadMessage
 from octomate.schemas.triage import (
     Claim,
     SummonDecision,
@@ -854,6 +854,10 @@ async def test_status_facts_keep_the_reflex_open_across_runs(ending: str) -> Non
     )
     assert sum(isinstance(event, ReflexAwakeEvent) for event in events) == 1
     assert sum(isinstance(event, ReflexAsleepEvent) for event in events) == 1
+    async with async_session() as session:
+        [kick] = await session.list(Kick, limit=None)
+    assert kick.outcome == events[-1].outcome
+    assert kick.woke_at <= kick.slept_at
     phases = [
         event.phase for event in events if isinstance(event, ReflexPhaseChangedEvent)
     ]
@@ -951,6 +955,9 @@ async def test_status_outcomes_survive_failed_or_cancelled_lifecycle(
         events = [impulse.event for impulse in held(live)]
 
     assert events[-1] == ReflexAsleepEvent(outcome="cancelled" if cancel else "failed")
+    async with async_session() as session:
+        [kick] = await session.list(Kick, limit=None)
+    assert kick.outcome == ("cancelled" if cancel else "failed")
     ended = [event.outcome for event in events if isinstance(event, RunEndedEvent)]
     assert (
         ended

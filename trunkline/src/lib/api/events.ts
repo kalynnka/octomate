@@ -369,6 +369,7 @@ export interface RunStartedEvent {
   event_kind: 'run_started'
   address: ChannelAddress
   sender?: ApiUserProfile | null
+  agent_tentacle_id?: string | null
 }
 
 export interface RunActivityChangedEvent {
@@ -427,6 +428,7 @@ export interface ReflexAsleepEvent {
 export interface ReflexPhaseChangedEvent {
   event_kind: 'reflex_phase_changed'
   phase: 'preparing' | 'routing' | 'moving' | 'finalizing'
+  spell?: 'summon' | 'scheme' | 'teleport' | null
 }
 
 /** What a channel adds to an address to show it. `inside` marks a place to

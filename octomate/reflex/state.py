@@ -652,7 +652,12 @@ class ReflexRuntime:
 
         await ctx.deps.impulses.send(
             Impulse(
-                RunStartedEvent(address=address, sender=ctx.state.user_profile), address
+                RunStartedEvent(
+                    address=address,
+                    sender=ctx.state.user_profile,
+                    agent_tentacle_id=suspender.agent_tentacle_id,
+                ),
+                address,
             )
         )
         ended = RunEndedEvent(outcome="failed")

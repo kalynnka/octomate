@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from arcanus import Cursor, Page, Relation
 from arcanus.expression import Expression
 from arcanus.materia.sqlalchemy import aliased, noload, selectinload
-from pydantic import UUID7
+from pydantic import UUID7, AwareDatetime
 from pydantic_ai.messages import FilePart, TextContent, TextPart
 from sqlalchemy import ColumnElement, and_, or_, select
 
@@ -40,6 +40,8 @@ from octomate.schemas.thread import (
     ATTRIBUTABLE_KINDS,
     ChannelActorKind,
     Handoff,
+    Kick,
+    KickOutcome,
     MessageBinding,
     MessageBindingKind,
     Thread,
@@ -939,6 +941,16 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             ThreadHandoffRecordedEvent(thread_id=thread.id, handoff=handoff),
         )
         return handoff
+
+    async def record_kick(
+        self, thread: Thread, *, woke_at: AwareDatetime, outcome: KickOutcome
+    ) -> Kick:
+        """File a kick that just fell asleep on `thread`, timed from `woke_at`."""
+        kick = Kick(thread_id=thread.id, woke_at=woke_at, outcome=outcome)
+        async with async_session() as session:
+            session.add(kick)
+            await session.commit()
+        return kick
 
     async def chat_message(self, profile: UserProfile, handle: str) -> ThreadMessage:
         """The chat message `handle` names within this person's history — the threads

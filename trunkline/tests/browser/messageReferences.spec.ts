@@ -9,7 +9,7 @@ const userText = `launch a PR.\n\n\n\nThen review.\n\n> make the backfill script
 const browserInstructions = 'Use browser tools.\n\n## Loading tools\n\nLoad the tools needed for the task together. Read the page before choosing an action, and check the result after each interaction.\n\n- Inspect the current page.\n- Choose the required browser tools.\n- Verify the result before continuing.\n\n## Recording\n\nKeep the instructions with the assistant activity so the full context can be inspected without expanding the user message.'
 const fixture: { ide: MessageAnnotations; claude: MessageAnnotations; citation: MessageAnnotations; bodies: string[]; raw: string[]; events: WireEvent[] } = JSON.parse(execFileSync(`${root}/.venv/bin/python`, ['-c', `
 import json, sys
-from octomate.capabilities.harness.events import wire_event_adapter
+from octomate.events import wire_event_adapter
 from tests.agent.test_message_annotations import IDE, CLAUDE, CITATION, citation_events, codex_prompt, claude_prompt, answer_part
 raw = 'Answer.\\n\\n' + CITATION
 ide_raw = IDE.replace('launch a PR.', sys.argv[1]).replace('My file.py', 'Run macOS isolation audit.command')
@@ -90,7 +90,8 @@ for (const width of [1280, 390]) {
     }
     await expect(ide.locator(':scope > .trk-message-references')).toHaveCount(1)
     await expect(claude.getByRole('button', { name: 'Opened file', exact: true })).toHaveCount(0)
-    await expect(claude.getByRole('button', { name: 'Open file: /work/main.py', exact: true })).toHaveCount(1)
+    // A reference with an absolute path is a link to the file; a relative one has no address and stays a button.
+    await expect(claude.getByRole('link', { name: 'Open file: /work/main.py', exact: true })).toHaveAttribute('href', 'file:///work/main.py')
     const longReference = ide.getByRole('button', { name: 'Open file: src/Run macOS isolation audit.command', exact: true })
     expect(await longReference.locator('.trk-reference-name').evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true)
     for (const message of [ide, claude]) {
@@ -127,12 +128,13 @@ for (const width of [1280, 390]) {
     const context = ideCard.getByRole('button', { name: 'IDE context', exact: true })
     await expect(context).toHaveAttribute('aria-expanded', 'false')
     const reference = ide.getByRole('button', { name: 'Open file: src/main.py', exact: true })
+    // The card is the fallback for a file that could not be opened, so nothing shows until then.
     await reference.focus()
-    await expect(page.getByRole('tooltip')).toBeVisible()
-    await expect(page.getByRole('tooltip')).toContainText('Active file · Selection · Open tab')
+    await expect(page.getByRole('tooltip')).toHaveCount(0)
     await page.keyboard.press('Enter')
     await expect(ide.getByRole('button', { name: 'Unavailable file: src/main.py', exact: true }).locator('code')).toHaveText('main.py')
     await expect(page.getByRole('tooltip')).toContainText('This file can’t be opened here yet.')
+    await expect(page.getByRole('tooltip')).toContainText('Active file · Selection · Open tab')
     await expect(page.locator('html')).toHaveAttribute('data-copied', code)
     await context.press('Enter')
     await expect(context).toHaveAttribute('aria-expanded', 'true')
