@@ -15,7 +15,7 @@ from octomate.nerve import Nerve, UserTopic
 from octomate.schemas.habitat import HabitatProgress, InvocationScope
 from tests.support.managers import a_workspace_manager
 from tests.support.nerve import held
-from tests.test_habitat_contracts import IMAGE
+from tests.workspaces.test_habitat_contracts import IMAGE
 
 
 @pytest.fixture

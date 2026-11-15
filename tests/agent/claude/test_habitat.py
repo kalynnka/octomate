@@ -28,7 +28,7 @@ from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.transport import HabitatTransport
 from octomate.types.json import JsonObject
 from tests.support.managers import a_workspace_manager
-from tests.test_habitat_contracts import IMAGE
+from tests.workspaces.test_habitat_contracts import IMAGE
 
 
 class ProcessInfo(BaseModel):

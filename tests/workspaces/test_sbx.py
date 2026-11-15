@@ -16,7 +16,7 @@ import octomate.habitat.sbx as sbx_module
 from octomate.config.habitat import SbxHabitatConfig
 from octomate.habitat import HabitatError
 from octomate.habitat.sbx import SbxHabitat
-from tests.test_habitat_contracts import IMAGE
+from tests.workspaces.test_habitat_contracts import IMAGE
 
 
 class ProcessInfo(BaseModel):

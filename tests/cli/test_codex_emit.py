@@ -65,7 +65,10 @@ def router() -> Iterator[tuple[str, Received]]:
             pass
 
     server = HTTPServer(("127.0.0.1", 0), Handler)
-    Thread(target=server.serve_forever, daemon=True).start()
+    # `shutdown` waits out one poll, which defaults to half a second per test.
+    Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+    ).start()
     yield f"http://127.0.0.1:{server.server_port}/hooks/codex", received
     server.shutdown()
 

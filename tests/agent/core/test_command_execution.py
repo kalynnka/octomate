@@ -42,7 +42,7 @@ from octomate.tentacles.codex.catalog import APP_COMMANDS
 from octomate.tentacles.deferred import DeferredSuspender
 from octomate.tentacles.stream import ReactStreamEvent
 from octomate.types.permissions import PermissionMode
-from tests.agent.test_command_manager import DiscoveringAgent
+from tests.agent.core.test_command_manager import DiscoveringAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import RecordingSuspender, a_project, a_registry
 

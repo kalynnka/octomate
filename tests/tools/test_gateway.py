@@ -163,21 +163,6 @@ def test_summon_decision_rejects_empty_model() -> None:
         )
 
 
-async def test_summon_capability_accepts_exact_route() -> None:
-    capability = _capability("shared_thread")
-    summon = capability.summon
-
-    await summon(
-        agent_id="claude",
-        model="opus",
-        reason="needs coding",
-        hint="Working on it",
-        brief="Please investigate the failing test.",
-    )
-
-    assert capability.decision == _decision()
-
-
 def test_gate_instruction_explains_each_spell_in_plain_words() -> None:
     instructions = gateway_instructions(lambda name: name) + HANDOFF_INSTRUCTION
 

@@ -36,10 +36,10 @@ from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import Thread, ThreadArtifact
 from octomate.schemas.user import User
 from octomate.tentacles.trunkline import TrunklineTentacle
-from tests.managers.test_mcp import connected
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import fixed_session
 from tests.support.users import a_user
+from tests.tools.test_mcp_manager import connected
 
 
 @dataclass

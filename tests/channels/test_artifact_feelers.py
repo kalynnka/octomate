@@ -22,11 +22,11 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.thread import ThreadArtifact
 from octomate.schemas.user import UserProfile
-from tests.agent.test_mcp_app_ledger import app_artifact as app_artifact
-from tests.agent.test_mcp_app_ledger import app_entry as app_entry
 from tests.support.channels import FakeChannelTentacle
 from tests.support.nerve import drawing
 from tests.support.users import a_user
+from tests.tools.test_mcp_app_ledger import app_artifact as app_artifact
+from tests.tools.test_mcp_app_ledger import app_entry as app_entry
 
 ADDRESS = ChannelAddress("im", "group", "chat", "alice", shared=True)
 
