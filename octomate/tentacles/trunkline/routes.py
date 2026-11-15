@@ -760,12 +760,27 @@ def build_trunkline_live_router(channel: TrunklineTentacle) -> APIRouter:
                 "sent before any thread exists answers on."
             ),
         ] = None,
+        replay: Annotated[
+            bool,
+            Query(
+                description="Start with what a kick still awake on the thread "
+                "has said since its last run ended, which the thread's history "
+                "does not hold yet. Left off, the socket carries only what "
+                "happens from then on, as one opened for a request about to be "
+                "sent wants."
+            ),
+        ] = False,
     ) -> None:
         """The thread's events as they happen, for as long as the socket is open:
         what a directive, a batch answer or a thread operation sets going, and
         the kick's `reflex_asleep` last. The thread is named by `thread_id` or by
         `thread_key`, one of the two; a socket naming neither, or both, is
-        closed with 1008."""
+        closed with 1008.
+
+        The subscription precedes acceptance. To show a thread, open the socket
+        with `replay` and read the thread after the handshake: a run that ended
+        before the socket opened is in that read, and one still going is on the
+        socket from its start."""
         if thread_id is not None and thread_key is None:
             thread = await threads.get(thread_id, with_messages=False, user_id=user.id)
             if thread is None:
@@ -780,6 +795,6 @@ def build_trunkline_live_router(channel: TrunklineTentacle) -> APIRouter:
                 code=1008, reason="Name the thread by its id or by its key, not both"
             )
             return
-        await channel.siphon.watch(websocket, ThreadTopic(key))
+        await channel.siphon.watch(websocket, ThreadTopic(key), replay=replay)
 
     return router

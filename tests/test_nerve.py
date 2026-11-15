@@ -30,6 +30,7 @@ HERE = ChannelAddress("web", "thread", "lu", "lu", channel_thread_id="t1")
 THERE = ChannelAddress("web", "thread", "lu", "lu", channel_thread_id="t2")
 FAR = ChannelAddress("slack", "dm", "D1", "U1")
 EVENT = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="hi"))
+LATER = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="there"))
 
 
 @pytest.mark.parametrize("supplied", [False, True])
@@ -124,6 +125,170 @@ async def test_a_reader_past_its_backlog_reads_what_was_held_and_ends() -> None:
 
 def test_delivering_where_nobody_subscribes_is_nothing() -> None:
     Nerve().deliver(ChannelTopic("web"), Impulse(EVENT, HERE))
+
+
+async def test_a_replaying_thread_reader_starts_with_what_a_retaining_publisher_said() -> (
+    None
+):
+    nerve = Nerve()
+    thread = ThreadTopic(ThreadKey.from_address(HERE))
+    async with (
+        nerve.subscribe(ChannelTopic("web")) as routed,
+        nerve.publish(HERE, retain=True) as impulses,
+    ):
+        await impulses.send(Impulse(EVENT, HERE))
+        await routed.receive()
+        async with (
+            nerve.subscribe(thread, replay=0) as late,
+            nerve.subscribe(thread) as fresh,
+        ):
+            await impulses.send(Impulse(LATER, HERE))
+            await routed.receive()
+
+            assert [impulse.event for impulse in held(late)] == [EVENT, LATER]
+            assert [impulse.event for impulse in held(fresh)] == [LATER]
+
+
+async def test_a_replaying_reader_starts_past_the_offset_it_names() -> None:
+    nerve = Nerve()
+    thread = ThreadTopic(ThreadKey.from_address(HERE))
+    async with (
+        nerve.subscribe(ChannelTopic("web")) as routed,
+        nerve.publish(HERE, retain=True) as impulses,
+    ):
+        for event in (EVENT, LATER, EVENT):
+            await impulses.send(Impulse(event, HERE))
+            await routed.receive()
+
+        assert [impulse.event for impulse in nerve.retained[thread]] == [
+            EVENT,
+            LATER,
+            EVENT,
+        ]
+        async with nerve.subscribe(thread, replay=1) as late:
+            assert [impulse.event for impulse in held(late)] == [LATER, EVENT]
+        async with nerve.subscribe(thread, replay=3) as late:
+            assert held(late) == []
+
+
+async def test_a_replay_is_read_one_impulse_at_a_time() -> None:
+    nerve = Nerve()
+    thread = ThreadTopic(ThreadKey.from_address(HERE))
+    async with (
+        nerve.subscribe(ChannelTopic("web")) as routed,
+        nerve.publish(HERE, retain=True) as impulses,
+    ):
+        for event in (EVENT, LATER):
+            await impulses.send(Impulse(event, HERE))
+            await routed.receive()
+        async with nerve.subscribe(thread, replay=0) as late:
+            await impulses.send(Impulse(EVENT, HERE))
+            await routed.receive()
+
+            assert [(await late.receive()).event for _ in range(3)] == [
+                EVENT,
+                LATER,
+                EVENT,
+            ]
+
+
+async def test_only_what_reaches_the_asking_thread_is_kept_for_it() -> None:
+    nerve = Nerve()
+    async with (
+        nerve.subscribe(ChannelTopic("web")) as routed,
+        nerve.publish(HERE, retain=True) as impulses,
+    ):
+        await impulses.send(Impulse(EVENT, THERE, private=True))
+        await routed.receive()
+        await impulses.send(Impulse(LATER, THERE))
+        await routed.receive()
+
+        assert [
+            impulse.event
+            for impulse in nerve.retained[ThreadTopic(ThreadKey.from_address(HERE))]
+        ] == [LATER]
+        assert ThreadTopic(ThreadKey.from_address(THERE)) not in nerve.retained
+
+
+async def test_a_supplied_fiber_cannot_replay() -> None:
+    nerve = Nerve()
+    with pytest.raises(ValueError, match="cannot replay"):
+        async with nerve.subscribe(
+            ThreadTopic(ThreadKey.from_address(HERE)),
+            fiber=MemoryFiber[Impulse](),
+            replay=0,
+        ):
+            pass
+
+
+async def test_a_retaining_publisher_keeps_nothing_past_its_block() -> None:
+    nerve = Nerve()
+    thread = ThreadTopic(ThreadKey.from_address(HERE))
+    async with nerve.publish(HERE, retain=True) as impulses:
+        await impulses.send(Impulse(EVENT, HERE))
+
+    assert nerve.retained == {}
+    async with nerve.subscribe(thread, replay=0) as late:
+        assert held(late) == []
+
+
+async def test_a_publisher_that_does_not_retain_is_not_replayed() -> None:
+    nerve = Nerve()
+    async with (
+        nerve.subscribe(ChannelTopic("web")) as routed,
+        nerve.publish(HERE) as impulses,
+    ):
+        await impulses.send(Impulse(EVENT, HERE))
+        await routed.receive()
+        async with nerve.subscribe(
+            ThreadTopic(ThreadKey.from_address(HERE)), replay=0
+        ) as late:
+            assert held(late) == []
+
+
+async def test_retaining_publishers_on_one_thread_keep_in_one_stream_until_the_last_closes() -> (
+    None
+):
+    nerve = Nerve()
+    thread = ThreadTopic(ThreadKey.from_address(HERE))
+    async with nerve.subscribe(ChannelTopic("web")) as routed:
+        ending = nerve.publish(HERE, retain=True)
+        first = await ending.__aenter__()
+        await first.send(Impulse(EVENT, HERE))
+        await routed.receive()
+        async with nerve.publish(HERE, retain=True) as following:
+            await following.send(Impulse(LATER, HERE))
+            await routed.receive()
+            await first.send(Impulse(EVENT, HERE))
+            await routed.receive()
+            await ending.__aexit__(None, None, None)
+
+            async with nerve.subscribe(thread, replay=0) as late:
+                assert [impulse.event for impulse in held(late)] == [
+                    EVENT,
+                    LATER,
+                    EVENT,
+                ]
+    assert nerve.retained == {}
+    assert nerve.retaining == {}
+
+
+async def test_the_replay_does_not_count_against_the_backlog() -> None:
+    nerve = Nerve()
+    async with (
+        nerve.subscribe(ChannelTopic("web")) as routed,
+        nerve.publish(HERE, retain=True) as impulses,
+    ):
+        for _ in range(3):
+            await impulses.send(Impulse(EVENT, HERE))
+            await routed.receive()
+        async with nerve.subscribe(
+            ThreadTopic(ThreadKey.from_address(HERE)), backlog=1, replay=0
+        ) as late:
+            await impulses.send(Impulse(LATER, HERE))
+            await routed.receive()
+
+            assert [impulse.event for impulse in held(late)] == [EVENT] * 3 + [LATER]
 
 
 async def test_multiple_publications_notify_only_the_chosen_user_topics() -> None:

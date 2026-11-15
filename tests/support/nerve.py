@@ -17,7 +17,7 @@ from octomate.events import (
     ReflexAsleepEvent,
     wire_event_adapter,
 )
-from octomate.fibers import Fiber
+from octomate.fibers import Fiber, ReplayFiber
 from octomate.nerve import ChannelTopic, Impulse
 from octomate.reflex.graph import ReflexGraphResult
 from octomate.schemas.awakes import AwakeSignal
@@ -44,8 +44,10 @@ def held[ItemT](live: ObjectReceiveStream[ItemT]) -> list[ItemT]:
     """Everything the nerve has handed `live` that it has yet to read, taken now."""
     assert isinstance(live, Fiber | MemoryObjectReceiveStream)
     receiver = live.receiver if isinstance(live, Fiber) else live
+    replayed = len(live.kept) if isinstance(live, ReplayFiber) else 0
     return [
-        live.receive_nowait() for _ in range(receiver.statistics().current_buffer_used)
+        live.receive_nowait()
+        for _ in range(replayed + receiver.statistics().current_buffer_used)
     ]
 
 
