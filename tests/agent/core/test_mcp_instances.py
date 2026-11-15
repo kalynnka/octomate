@@ -27,8 +27,8 @@ from octomate.schemas.mcp import McpServerSummary
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude.mcp import octomate_mcp_server
 from octomate.tentacles.mcp import BareMcpTentacle
-from tests.agent.test_mcp import ENCRYPTION_KEY, a_turn, an_upstream, upstream_of
-from tests.agent.test_mcp_serving import over, served
+from tests.agent.core.test_mcp import ENCRYPTION_KEY, a_turn, an_upstream, upstream_of
+from tests.agent.core.test_mcp_serving import over, served
 from tests.channels.slack.test_mcp import into
 from tests.managers.test_mcp import install_request
 from tests.support.agents import FakeAgent

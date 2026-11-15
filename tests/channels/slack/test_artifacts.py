@@ -26,7 +26,7 @@ from octomate.tentacles.slack import SlackTentacle
 from octomate.tentacles.slack.feelers.actions import SlackBlockAction
 from octomate.tentacles.slack.feelers.artifacts import SlackArtifactFeeler
 from octomate.tentacles.slack.ink import SlackInk
-from tests.agent.test_mcp_app_ledger import app_artifact as app_artifact
+from tests.agent.core.test_mcp_app_ledger import app_artifact as app_artifact
 from tests.channels.slack.fakes import FakeSlackInk, slack_channel, slack_key
 from tests.support.channels import FakeOctomate
 from tests.support.nerve import drawing

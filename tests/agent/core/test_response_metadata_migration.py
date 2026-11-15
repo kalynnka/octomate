@@ -52,7 +52,7 @@ async def test_response_metadata_migration_preserves_history_on_a_copy(
     ) == await asyncio.to_thread(target.resolve)
     assert source != target
     module_path = await asyncio.to_thread(Path(__file__).resolve)
-    config = Config(str(module_path.parents[2] / "alembic.ini"))
+    config = Config(str(module_path.parents[3] / "alembic.ini"))
     # Alembic's CLI logging setup disables pytest's existing application loggers.
     monkeypatch.setattr("logging.config.fileConfig", Mock())
     await asyncio.to_thread(command.stamp, config, "ad5c96d8b83a")

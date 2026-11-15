@@ -326,7 +326,7 @@ async def test_context_schema_and_backfill_preserve_history_on_a_copy(
     assert actual == await asyncio.to_thread(target.resolve)
     assert actual != source
     module_path = await asyncio.to_thread(Path(__file__).resolve)
-    config = Config(str(module_path.parents[2] / "alembic.ini"))
+    config = Config(str(module_path.parents[3] / "alembic.ini"))
     # Alembic's logging setup would disable pytest's existing loggers.
     monkeypatch.setattr("logging.config.fileConfig", Mock())
     await asyncio.to_thread(command.stamp, config, PREVIOUS)

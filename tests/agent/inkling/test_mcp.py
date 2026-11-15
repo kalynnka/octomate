@@ -41,7 +41,7 @@ from octomate.schemas.triage import AgentRoute, Claim
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.base import InklingOutput
-from tests.agent.test_mcp_serving import over, served
+from tests.agent.core.test_mcp_serving import over, served
 from tests.support.agents import FakeAgent
 from tests.support.invocations import invocation_for
 from tests.support.managers import FakeConversationManager

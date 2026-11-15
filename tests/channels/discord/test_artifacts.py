@@ -25,7 +25,7 @@ from octomate.schemas.thread import ThreadArtifact, ThreadMessage
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.discord import DiscordTentacle
 from octomate.tentacles.discord.feelers.artifacts import DiscordArtifactFeeler
-from tests.agent.test_mcp_app_ledger import app_artifact as app_artifact
+from tests.agent.core.test_mcp_app_ledger import app_artifact as app_artifact
 from tests.channels.discord.fakes import (
     a_dm_channel,
     a_message,

@@ -13,8 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate.config.database import database_settings
 from octomate.schemas.artifacts import McpAppArtifact
 from octomate.schemas.thread import ThreadArtifact
-from tests.agent.test_mcp_app_ledger import app_artifact as app_artifact
-from tests.agent.test_mcp_app_ledger import app_entry as app_entry
+from tests.agent.core.test_mcp_app_ledger import app_artifact as app_artifact
+from tests.agent.core.test_mcp_app_ledger import app_entry as app_entry
 
 PREVIOUS = "741f7a1817c2"
 REVISION = "642099f8b906"
@@ -41,7 +41,7 @@ def migration_copy(
     )
     assert actual == target.resolve()
     assert actual != source
-    config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
+    config = Config(str(Path(__file__).resolve().parents[3] / "alembic.ini"))
     monkeypatch.setattr("logging.config.fileConfig", Mock())
     command.stamp(config, REVISION)
     command.downgrade(config, PREVIOUS)

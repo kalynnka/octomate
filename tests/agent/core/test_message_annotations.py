@@ -50,7 +50,7 @@ IDE = "# Context from my IDE setup:\n\n## Active file: src/main.py\n\n## Active 
 CLAUDE = "<ide_opened_file>The user opened the file /work/main.py in the IDE. This may or may not be related to the current task.</ide_opened_file>\n<browser_instruction># Claude in Chrome browser automation\nUse browser tools.</browser_instruction>\nMy actual request."
 CITATION = "<oai-mem-citation>\n<citation_entries>\nMEMORY.md:274-275|note=[Verified against current code]\n</citation_entries>\n<rollout_ids>\n01a1863b-63d4-78d1-9a53-944134fc9f01\n</rollout_ids>\n</oai-mem-citation>"
 MIGRATION = ScriptDirectory.from_config(
-    Config(str(Path(__file__).resolve().parents[2] / "octomate/migrations/alembic.ini"))
+    Config(str(Path(__file__).resolve().parents[3] / "octomate/migrations/alembic.ini"))
 ).get_revision("90e954ec0b2d")
 
 

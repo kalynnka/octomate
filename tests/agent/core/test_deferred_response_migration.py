@@ -1,4 +1,4 @@
-"""Adding response workspace references preserves existing history."""
+"""The routing migration preserves actions and separates their continuation paths."""
 
 import asyncio
 import sqlite3
@@ -8,29 +8,18 @@ from unittest.mock import Mock
 import pytest
 from alembic import command
 from alembic.config import Config
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine
-from uuid_utils.compat import uuid7
 
 from octomate.config.database import database_settings
-from octomate.managers import ConversationManager
-from tests.support.managers import a_thread
+from tests.agent.core.test_deferred_actions import _create_batch
 
 
-async def test_workspace_reference_migration_preserves_history_on_a_copy(
+async def test_migration_backfills_response_modes_on_a_copy(
     in_memory_engine: AsyncEngine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    manager = ConversationManager()
-    conversation = await manager.ensure(await a_thread(), agent_tentacle_id="inkling")
-    await manager.record_agent_run(
-        conversation,
-        run_id=str(uuid7()),
-        messages=[
-            ModelRequest(parts=[UserPromptPart("hello")]),
-            ModelResponse(parts=[TextPart("hi")]),
-        ],
-    )
+    live = await _create_batch("live")
+    resumable = await _create_batch("resume")
     source = await asyncio.to_thread(Path(in_memory_engine.url.database or "").resolve)
     assert source.is_relative_to(await asyncio.to_thread(tmp_path.resolve))
     target = tmp_path / "migration-copy.db"
@@ -39,10 +28,16 @@ async def test_workspace_reference_migration_preserves_history_on_a_copy(
         sqlite3.connect(target) as copied,
     ):
         original.backup(copied)
-        copied.execute("ALTER TABLE model_messages DROP COLUMN workspace_ref")
-        before = copied.execute("SELECT * FROM model_messages ORDER BY id").fetchall()
+        copied.execute("ALTER TABLE deferred_action_batches DROP COLUMN response_mode")
+        before_batches = copied.execute(
+            "SELECT * FROM deferred_action_batches ORDER BY id"
+        ).fetchall()
+        before_actions = copied.execute(
+            "SELECT * FROM deferred_actions ORDER BY id"
+        ).fetchall()
         columns = [
-            row[1] for row in copied.execute("PRAGMA table_info(model_messages)")
+            row[1]
+            for row in copied.execute("PRAGMA table_info(deferred_action_batches)")
         ]
 
     monkeypatch.setattr(database_settings, "db_url", f"sqlite+aiosqlite:///{target}")
@@ -51,22 +46,26 @@ async def test_workspace_reference_migration_preserves_history_on_a_copy(
     ) == await asyncio.to_thread(target.resolve)
     assert source != target
     module_path = await asyncio.to_thread(Path(__file__).resolve)
-    config = Config(str(module_path.parents[2] / "alembic.ini"))
+    config = Config(str(module_path.parents[3] / "alembic.ini"))
     # Alembic's CLI logging setup disables pytest's existing application loggers.
     monkeypatch.setattr("logging.config.fileConfig", Mock())
-    await asyncio.to_thread(command.stamp, config, "9413e47fcf52")
-    await asyncio.to_thread(command.upgrade, config, "741f7a1817c2")
+    await asyncio.to_thread(command.stamp, config, "cfecde28ca54")
+    await asyncio.to_thread(command.upgrade, config, "39d7ab82a352")
 
     with sqlite3.connect(target) as copied:
-        assert copied.execute(
-            "SELECT workspace_ref FROM model_messages"
-        ).fetchall() == [
-            (None,),
-            (None,),
-        ]
+        modes = dict(
+            copied.execute("SELECT id, response_mode FROM deferred_action_batches")
+        )
+        assert modes == {live.id.hex: "live", resumable.id.hex: "resume"}
         assert copied.execute("PRAGMA foreign_key_check").fetchall() == []
         names = ", ".join(f'"{name}"' for name in columns)
         assert (
-            copied.execute(f"SELECT {names} FROM model_messages ORDER BY id").fetchall()
-            == before
+            copied.execute(
+                f"SELECT {names} FROM deferred_action_batches ORDER BY id"
+            ).fetchall()
+            == before_batches
+        )
+        assert (
+            copied.execute("SELECT * FROM deferred_actions ORDER BY id").fetchall()
+            == before_actions
         )

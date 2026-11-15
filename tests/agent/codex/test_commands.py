@@ -30,7 +30,7 @@ from octomate.tentacles.codex import ink as codex_ink
 from octomate.tentacles.codex.catalog import APP_COMMANDS
 from octomate.tentacles.codex.schemas import CodexCommandDescriptor
 from octomate.types.json import JsonObject
-from tests.agent.test_model_discovery import codex_model
+from tests.agent.core.test_model_discovery import codex_model
 
 
 @pytest.fixture

@@ -34,7 +34,7 @@ from octomate.schemas.oauth import (
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.mcp import OAuthMcpTentacle, build_mcp
 from octomate.types.oauth import HttpsUrl
-from tests.agent.test_mcp import ENCRYPTION_KEY, a_turn, an_upstream
+from tests.agent.core.test_mcp import ENCRYPTION_KEY, a_turn, an_upstream
 from tests.managers.test_mcp import connected
 from tests.managers.test_oauth import (
     FakeAuthorizationCodeFlow,

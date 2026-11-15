@@ -51,7 +51,7 @@ from octomate.mcp.server import (
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.slack import SlackTentacle
 from octomate.tentacles.slack.ink import SlackInk
-from tests.agent.test_mcp_serving import OCTOMATE_TOOLS, over, served
+from tests.agent.core.test_mcp_serving import OCTOMATE_TOOLS, over, served
 from tests.channels.slack.fakes import FakeSlackInk, compose_slack_feelers
 from tests.channels.slack.test_oauth import slack_transport
 from tests.support.channels import FakeChannelTentacle

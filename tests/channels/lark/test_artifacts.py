@@ -20,7 +20,7 @@ from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.thread import ThreadArtifact, ThreadMessage
 from octomate.schemas.user import UserProfile
-from tests.agent.test_mcp_app_ledger import app_artifact as app_artifact
+from tests.agent.core.test_mcp_app_ledger import app_artifact as app_artifact
 from tests.channels.lark.fakes import FakeLarkInk, lark_channel
 from tests.support.channels import RecordingStatusFeeler
 from tests.support.nerve import drawing

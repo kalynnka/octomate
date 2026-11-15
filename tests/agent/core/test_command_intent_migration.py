@@ -16,7 +16,7 @@ from octomate.config.database import database_settings
 from octomate.database import async_session
 from octomate.schemas.commands import CommandResult
 from octomate.schemas.thread import ThreadCommand
-from tests.agent.test_command_ledger import receipt as receipt
+from tests.agent.core.test_command_ledger import receipt as receipt
 
 PREVIOUS = "a1a2d6fe9638"
 REVISION = "2746bd1cd91e"
@@ -65,7 +65,7 @@ async def test_command_intent_column_roundtrip_preserves_ledger_and_search(
     assert actual == await asyncio.to_thread(target.resolve)
     assert actual != source
     module_path = await asyncio.to_thread(Path(__file__).resolve)
-    config = Config(str(module_path.parents[2] / "alembic.ini"))
+    config = Config(str(module_path.parents[3] / "alembic.ini"))
     monkeypatch.setattr("logging.config.fileConfig", Mock())
     await asyncio.to_thread(command.stamp, config, PREVIOUS)
 

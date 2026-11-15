@@ -334,7 +334,7 @@ async def test_migration_refuses_to_discard_context_or_inherited_history(
     ) == await asyncio.to_thread(target.resolve)
     assert source != target
     module_path = await asyncio.to_thread(Path(__file__).resolve)
-    config = Config(str(module_path.parents[2] / "alembic.ini"))
+    config = Config(str(module_path.parents[3] / "alembic.ini"))
     monkeypatch.setattr("logging.config.fileConfig", Mock())
     await asyncio.to_thread(command.stamp, config, "a1a2d6fe9638")
     with sqlite3.connect(target) as copied:

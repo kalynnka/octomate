@@ -25,7 +25,7 @@ from octomate.schemas.oauth import AuthorizationLink, OAuthGrant
 from octomate.schemas.user import User
 from octomate.tentacles.lark import LarkTentacle
 from octomate.tentacles.lark.oauth import LarkMcpBearerAuth, LarkOAuthConnector
-from tests.agent.test_mcp import a_turn, upstream_of
+from tests.agent.core.test_mcp import a_turn, upstream_of
 from tests.channels.slack.test_mcp import into
 from tests.managers.test_oauth_routes import browser
 from tests.support.users import a_user

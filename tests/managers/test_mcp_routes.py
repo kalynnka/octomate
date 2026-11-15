@@ -14,7 +14,7 @@ from octomate.schemas.mcp import OAuthMcp
 from octomate.schemas.oauth import OAuthConnection, OAuthOperation
 from octomate.schemas.user import User, UserProfile
 from octomate.types.oauth import OAuthFlowKind
-from tests.agent.test_mcp import ENCRYPTION_KEY
+from tests.agent.core.test_mcp import ENCRYPTION_KEY
 from tests.managers.test_oauth import (
     FakeAuthorizationCodeFlow,
     FakeDeviceFlow,

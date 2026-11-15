@@ -17,8 +17,8 @@ from octomate.config.database import database_settings
 from octomate.database import async_session
 from octomate.schemas.artifacts import InstalledMcpAppSource, McpAppArtifact
 from octomate.schemas.thread import ThreadArtifact
-from tests.agent.test_mcp_app_ledger import app_artifact as app_artifact
-from tests.agent.test_mcp_app_ledger import app_entry as app_entry
+from tests.agent.core.test_mcp_app_ledger import app_artifact as app_artifact
+from tests.agent.core.test_mcp_app_ledger import app_entry as app_entry
 
 PREVIOUS = "af0f6303cafe"
 REVISION = "ad5c96d8b83a"
@@ -58,7 +58,7 @@ async def migration_copy(
     assert actual == await asyncio.to_thread(target.resolve)
     assert actual != source
     module_path = await asyncio.to_thread(Path(__file__).resolve)
-    config = Config(str(module_path.parents[2] / "alembic.ini"))
+    config = Config(str(module_path.parents[3] / "alembic.ini"))
     monkeypatch.setattr("logging.config.fileConfig", Mock())
     return config, target, encoded
 
