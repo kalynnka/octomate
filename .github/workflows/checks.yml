@@ -75,8 +75,30 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
         run: uv run --no-sync python .github/checks/changed.py "$BASE_SHA"
 
+  migrations:
+    name: Alembic migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: "0.13.7"
+          python-version: "3.13"
+          enable-cache: true
+          cache-suffix: checks
+      - run: uv sync --locked
+      - name: Upgrade a database at the base's head to this head
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
+        run: uv run --no-sync pytest -q tests/migrations --migration-base "$BASE_SHA"
+
   test:
     name: Unit tests · ${{ matrix.suite }} (${{ matrix.python }})
+    needs: migrations
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -94,6 +116,8 @@ jobs:
           - agent-inkling
           - channels
           - cli
+          - tools
+          - workspaces
           - core
         include:
           - suite: agent-core
@@ -112,13 +136,20 @@ jobs:
             paths: tests/channels
           - suite: cli
             paths: tests/cli
-          # Everything the suites above do not name, so a new test folder runs
-          # here until it is given a suite of its own.
+          - suite: tools
+            paths: tests/tools
+          - suite: workspaces
+            paths: tests/workspaces
+          # Everything the suites above and the migrations job do not name, so a
+          # new test folder runs here until it is given a suite of its own.
           - suite: core
             paths: >-
               tests
+              --ignore=tests/migrations
               --ignore=tests/channels
               --ignore=tests/cli
+              --ignore=tests/tools
+              --ignore=tests/workspaces
               --ignore=tests/agent/core
               --ignore=tests/agent/codex
               --ignore=tests/agent/claude
