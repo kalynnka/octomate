@@ -26,11 +26,11 @@ from octomate.schemas.mcp import NoAuthMcp, OAuthMcp
 from octomate.schemas.oauth import OAuthConnection
 from octomate.schemas.thread import Thread, ThreadArtifact, ThreadLedger, ThreadMessage
 from octomate.schemas.user import User
-from tests.agent.core.test_mcp_app_ledger import app_artifact as app_artifact
-from tests.agent.core.test_mcp_app_ledger import app_entry as app_entry
-from tests.managers.test_mcp import connected
 from tests.support.managers import a_thread
 from tests.support.users import a_user, auth_config
+from tests.tools.test_mcp_app_ledger import app_artifact as app_artifact
+from tests.tools.test_mcp_app_ledger import app_entry as app_entry
+from tests.tools.test_mcp_manager import connected
 
 
 @dataclass

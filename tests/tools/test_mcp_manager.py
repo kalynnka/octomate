@@ -35,11 +35,11 @@ from octomate.schemas.oauth import OAuthCipher, OAuthConnection, OAuthOperation
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.claude.mcp import sdk_tool
 from octomate.types.oauth import OAuthConnectionStatus
-from tests.agent.core.test_mcp import a_turn, an_upstream, upstream_of
 from tests.channels.slack.test_mcp import into
 from tests.support.managers import fixed_session
 from tests.support.mcp import discover
 from tests.support.users import a_user
+from tests.tools.test_mcp import a_turn, an_upstream, upstream_of
 
 
 @pytest.fixture(autouse=True)

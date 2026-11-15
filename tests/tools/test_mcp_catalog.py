@@ -11,11 +11,11 @@ from octomate.managers.mcp import McpUnavailable
 from octomate.mcp.server import CALL_MCP_TOOL, LIST_MCPS, tentacles_mcp
 from octomate.schemas.mcp import BearerMcp, McpInstallRequest, NoAuthMcp
 from octomate.tentacles.mcp import BareMcpTentacle, build_mcp
-from tests.agent.core.test_mcp import ENCRYPTION_KEY, a_turn, an_upstream
-from tests.managers.test_mcp import connected
 from tests.support.managers import fixed_session
 from tests.support.mcp import discover
 from tests.support.users import a_user
+from tests.tools.test_mcp import ENCRYPTION_KEY, a_turn, an_upstream
+from tests.tools.test_mcp_manager import connected
 
 
 @pytest.fixture(autouse=True)

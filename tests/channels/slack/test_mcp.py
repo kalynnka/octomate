@@ -51,7 +51,6 @@ from octomate.mcp.server import (
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.slack import SlackTentacle
 from octomate.tentacles.slack.ink import SlackInk
-from tests.agent.core.test_mcp_serving import OCTOMATE_TOOLS, over, served
 from tests.channels.slack.fakes import FakeSlackInk, compose_slack_feelers
 from tests.channels.slack.test_oauth import slack_transport
 from tests.support.channels import FakeChannelTentacle
@@ -59,6 +58,7 @@ from tests.support.managers import FakeThreadManager, fixed_session
 from tests.support.mcp import discover, install_tentacle
 from tests.support.nerve import drained
 from tests.support.users import a_api_key, a_user, auth_config
+from tests.tools.test_mcp_serving import OCTOMATE_TOOLS, over, served
 
 ENCRYPTION_KEY = SecretStr(urlsafe_b64encode(bytes(range(32))).decode())
 BEARER = {"Authorization": "Bearer steve-token"}

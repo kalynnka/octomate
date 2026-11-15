@@ -27,13 +27,13 @@ from octomate.schemas.mcp import McpServerSummary
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude.mcp import octomate_mcp_server
 from octomate.tentacles.mcp import BareMcpTentacle
-from tests.agent.core.test_mcp import ENCRYPTION_KEY, a_turn, an_upstream, upstream_of
-from tests.agent.core.test_mcp_serving import over, served
 from tests.channels.slack.test_mcp import into
-from tests.managers.test_mcp import install_request
 from tests.support.agents import FakeAgent
 from tests.support.managers import fixed_session
 from tests.support.users import a_api_key, a_user, auth_config
+from tests.tools.test_mcp import ENCRYPTION_KEY, a_turn, an_upstream, upstream_of
+from tests.tools.test_mcp_manager import install_request
+from tests.tools.test_mcp_serving import over, served
 
 
 async def test_served_endpoint_uses_authenticated_owner_and_sees_new_installs(

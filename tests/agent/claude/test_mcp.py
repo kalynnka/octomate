@@ -35,7 +35,6 @@ from octomate.schemas.triage import (
 )
 from octomate.tentacles.claude.mcp import octomate_mcp_server, sdk_tool
 from octomate.tentacles.mcp import BareMcpTentacle
-from tests.agent.core.test_mcp import ENCRYPTION_KEY, an_upstream, upstream_of
 from tests.channels.slack.test_mcp import into
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
@@ -46,6 +45,7 @@ from tests.support.managers import (
 )
 from tests.support.mcp import install_tentacle
 from tests.support.users import a_user
+from tests.tools.test_mcp import ENCRYPTION_KEY, an_upstream, upstream_of
 
 CLAUDE_ROUTE = AgentRoute(
     agent_id="claude",
