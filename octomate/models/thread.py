@@ -26,6 +26,7 @@ from uuid_utils.compat import uuid7
 from octomate.models.base import Base, MapperArgs, UTCDateTime
 from octomate.types.threads import (
     ChannelActorKind,
+    KickOutcome,
     MessageBindingKind,
     ThreadKind,
     ThreadMessageDirection,
@@ -441,7 +442,7 @@ class ThreadCommand(ThreadMessage):
         nullable=True,
         comment="The command's target conversation; NULL after that conversation is deleted.",
     )
-    invocation: Mapped[JsonValue] = mapped_column(
+    intent: Mapped[JsonValue] = mapped_column(
         JSON,
         nullable=True,
         comment="Explicit command intent with raw arguments and resolved attachments.",
@@ -543,6 +544,40 @@ class Handoff(Base, TransmuterProxiedMixin):
 
     def __gt__(self, other: Handoff) -> bool:
         return self.id > other.id
+
+
+class Kick(Base, TransmuterProxiedMixin):
+    """One reflex from waking to falling asleep, written once it is asleep."""
+
+    __tablename__ = "kicks"
+
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    thread_id: Mapped[UUID7] = mapped_column(
+        Uuid,
+        ForeignKey("threads.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        comment=(
+            "The thread the kick ended on: where it was asked, or where a move "
+            "carried it."
+        ),
+    )
+    woke_at: Mapped[datetime] = mapped_column(
+        UTCDateTime,
+        nullable=False,
+        index=True,
+        comment="When the reflex woke, before anything it did.",
+    )
+    slept_at: Mapped[datetime] = mapped_column(
+        UTCDateTime,
+        nullable=False,
+        comment="When the reflex fell asleep, every run and move of the kick over.",
+    )
+    outcome: Mapped[KickOutcome] = mapped_column(
+        String,
+        nullable=False,
+        comment="How the whole kick ended; deferred awaits a later kick to continue.",
+    )
 
 
 class ThreadMessageFTS(Base, TransmuterProxiedMixin):

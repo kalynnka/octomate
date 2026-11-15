@@ -40,6 +40,7 @@ from octomate.tentacles.inkling.base import InklingOutput
 from octomate.types.json import JsonObject
 from tests.integration.native_sandbox.matrix import NativeCall, ToolOutcome
 from tests.integration.native_sandbox.provider import ScriptedProvider, local_provider
+from tests.support.invocations import invocation_for
 
 ADDRESS = ChannelAddress(
     channel_tentacle_id="sandbox-audit",
@@ -52,7 +53,7 @@ ADDRESS = ChannelAddress(
 
 @asynccontextmanager
 async def inkling_runner(
-    octomate: Octomate, thread_id: UUID7
+    octomate: Octomate, thread_id: UUID7, *, owner_id: UUID7
 ) -> AsyncIterator[NativeCall]:
     async def call(kind: Literal["shell", "file"], argument: str) -> ToolOutcome:
         outcome: ToolOutcome | None = None
@@ -103,14 +104,18 @@ async def inkling_runner(
             agent=agent,
             permission_mode="bypassPermissions",
         )
-        await tentacle.run(
-            "Execute the synthetic probe once.",
+        async with invocation_for(
+            tentacle,
             conversation_address=ADDRESS,
-            conversation=await tentacle.resolve_conversation(
-                thread_id, conversation_address=ADDRESS
-            ),
-            output_type=output,
-        )
+            thread_id=thread_id,
+            owner_id=owner_id,
+        ) as invocation:
+            await tentacle.run(
+                "Execute the synthetic probe once.",
+                conversation_address=ADDRESS,
+                invocation=invocation,
+                output_type=output,
+            )
         assert outcome is not None, "the native tool never returned a result"
         return outcome
 
@@ -119,9 +124,7 @@ async def inkling_runner(
 
 @asynccontextmanager
 async def codex_runner(
-    octomate: Octomate,
-    thread_id: UUID7,
-    tmp_path: Path,
+    octomate: Octomate, thread_id: UUID7, tmp_path: Path, *, owner_id: UUID7
 ) -> AsyncIterator[NativeCall]:
     state = ScriptedProvider("responses")
     home = tmp_path / "codex-home"
@@ -175,14 +178,18 @@ async def codex_runner(
                 state.arguments = {"cmd": argument, "max_output_tokens": 4000}
                 state.call_id = str(uuid7())
                 state.outcome = None
-                await tentacle.run(
-                    "Execute the synthetic probe once.",
+                async with invocation_for(
+                    tentacle,
                     conversation_address=ADDRESS,
-                    conversation=await tentacle.resolve_conversation(
-                        thread_id, conversation_address=ADDRESS
-                    ),
-                    interactive=False,
-                )
+                    thread_id=thread_id,
+                    owner_id=owner_id,
+                ) as invocation:
+                    await tentacle.run(
+                        "Execute the synthetic probe once.",
+                        conversation_address=ADDRESS,
+                        invocation=invocation,
+                        interactive=False,
+                    )
                 assert state.outcome is not None, (
                     "Codex never returned its native tool result"
                 )
@@ -197,6 +204,8 @@ async def claude_runner(
     thread_id: UUID7,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    owner_id: UUID7,
 ) -> AsyncIterator[NativeCall]:
     state = ScriptedProvider("anthropic")
     home = tmp_path / "claude-home"
@@ -240,14 +249,18 @@ async def claude_runner(
                     if kind == "shell"
                     else {"file_path": argument}
                 )
-                await tentacle.run(
-                    "Execute the synthetic probe once.",
+                async with invocation_for(
+                    tentacle,
                     conversation_address=ADDRESS,
-                    conversation=await tentacle.resolve_conversation(
-                        thread_id, conversation_address=ADDRESS
-                    ),
-                    model="claude-sonnet-4-6",
-                )
+                    thread_id=thread_id,
+                    owner_id=owner_id,
+                ) as invocation:
+                    await tentacle.run(
+                        "Execute the synthetic probe once.",
+                        conversation_address=ADDRESS,
+                        invocation=invocation,
+                        model="claude-sonnet-4-6",
+                    )
                 assert state.outcome is not None, (
                     "Claude never returned its native tool result"
                 )
@@ -265,6 +278,8 @@ async def deepseek_runner(
     thread_id: UUID7,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    owner_id: UUID7,
 ) -> AsyncIterator[NativeCall]:
     executable = os.environ.get("DSH_TEST_EXECUTABLE")
     if executable is None:
@@ -340,13 +355,19 @@ async def deepseek_runner(
             .replace("__AUDIT_RESULT__", json.dumps(str(result_path)))
         )
         await anyio.Path(plugin).write_text(source)
-        async with tentacle:
+        async with (
+            tentacle,
+            invocation_for(
+                tentacle,
+                conversation_address=ADDRESS,
+                thread_id=thread_id,
+                owner_id=owner_id,
+            ) as invocation,
+        ):
             await tentacle.run(
                 "Execute the synthetic probe once.",
                 conversation_address=ADDRESS,
-                conversation=await tentacle.resolve_conversation(
-                    thread_id, conversation_address=ADDRESS
-                ),
+                invocation=invocation,
                 model="octomate-test:mock",
                 interactive=False,
             )

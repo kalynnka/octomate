@@ -33,7 +33,7 @@ from octomate.database import async_session
 from octomate.managers.conversation import ConversationManager, ConversationStore
 from octomate.managers.steps import StepStore
 from octomate.providers import ProviderRegistry
-from octomate.schemas.commands import CommandContext, CommandInvocation, CommandResult
+from octomate.schemas.commands import CommandContext, CommandIntent, CommandResult
 from octomate.schemas.compactions import Compaction, CompactionMembership
 from octomate.schemas.conversation import ChannelAddress, Conversation, ConversationRun
 from octomate.schemas.messages import ModelResponse as StoredModelResponse
@@ -53,6 +53,7 @@ from octomate.tentacles.inkling.react import (
     build_react_graph,
     iter_react_graph_events,
 )
+from tests.support.invocations import invocation_for
 
 pytestmark = pytest.mark.usefixtures("in_memory_engine")
 
@@ -137,22 +138,36 @@ async def test_supplied_conversation_must_belong_to_the_agent(
         conversation.thread_id, agent_tentacle_id="other"
     )
     if streaming:
-        async with inkling.run_stream_events(
-            "continue",
-            conversation=foreign,
-            conversation_address=ADDRESS,
-            model=TestModel(),
-        ) as stream:
+        async with (
+            invocation_for(
+                inkling,
+                conversation_address=ADDRESS,
+                thread_id=foreign.thread_id,
+                conversation=foreign,
+            ) as invocation,
+            inkling.run_stream_events(
+                "continue",
+                invocation=invocation,
+                conversation_address=ADDRESS,
+                model=TestModel(),
+            ) as stream,
+        ):
             with pytest.raises(ValueError, match="does not belong"):
                 await anext(stream)
     else:
         with pytest.raises(ValueError, match="does not belong"):
-            await inkling.run(
-                "continue",
-                conversation=foreign,
+            async with invocation_for(
+                inkling,
                 conversation_address=ADDRESS,
-                model=TestModel(),
-            )
+                thread_id=foreign.thread_id,
+                conversation=foreign,
+            ) as invocation:
+                await inkling.run(
+                    "continue",
+                    invocation=invocation,
+                    conversation_address=ADDRESS,
+                    model=TestModel(),
+                )
     assert await StepStore().list_runs() == []
 
 
@@ -178,26 +193,40 @@ async def test_configured_turns_register_before_tools_and_archive_once(
 
     result: AgentRunResult[InklingOutput] | None = None
     if streaming:
-        async with inkling.run_stream_events(
-            "look up",
-            conversation_address=ADDRESS,
-            conversation=context,
-            output_type=str,
-            model=TestModel(call_tools=["lookup"]),
-            toolsets=[FunctionToolset([lookup])],
-        ) as stream:
+        async with (
+            invocation_for(
+                inkling,
+                conversation_address=ADDRESS,
+                thread_id=context.thread_id,
+                conversation=context,
+            ) as invocation,
+            inkling.run_stream_events(
+                "look up",
+                conversation_address=ADDRESS,
+                invocation=invocation,
+                output_type=str,
+                model=TestModel(call_tools=["lookup"]),
+                toolsets=[FunctionToolset([lookup])],
+            ) as stream,
+        ):
             async for event in stream:
                 if isinstance(event, AgentRunResultEvent):
                     result = event.result
     else:
-        result = await inkling.run(
-            "look up",
+        async with invocation_for(
+            inkling,
             conversation_address=ADDRESS,
+            thread_id=context.thread_id,
             conversation=context,
-            output_type=str,
-            model=TestModel(call_tools=["lookup"]),
-            toolsets=[FunctionToolset([lookup])],
-        )
+        ) as invocation:
+            result = await inkling.run(
+                "look up",
+                conversation_address=ADDRESS,
+                invocation=invocation,
+                output_type=str,
+                model=TestModel(call_tools=["lookup"]),
+                toolsets=[FunctionToolset([lookup])],
+            )
     load.assert_not_awaited()
     assert result is not None
     await assert_completed_run(conversation, result)
@@ -213,15 +242,16 @@ async def test_configured_turns_register_before_tools_and_archive_once(
     assert effect.status == "completed"
     assert await store.list_unresolved_tool_effects(run_id=result.run_id) == []
 
-    second = await inkling.run(
-        "continue",
-        conversation_address=ADDRESS,
-        conversation=await inkling.resolve_conversation(
-            conversation.thread_id, conversation_address=ADDRESS
-        ),
-        output_type=str,
-        model=TestModel(call_tools=[]),
-    )
+    async with invocation_for(
+        inkling, conversation_address=ADDRESS, thread_id=conversation.thread_id
+    ) as invocation:
+        second = await inkling.run(
+            "continue",
+            conversation_address=ADDRESS,
+            invocation=invocation,
+            output_type=str,
+            model=TestModel(call_tools=[]),
+        )
     await assert_completed_run(conversation, second)
     assert second.usage.requests == result.usage.requests + 1
     assert second.usage.tool_calls == result.usage.tool_calls == 1
@@ -303,16 +333,17 @@ async def test_model_failure_preserves_the_registered_run_and_settled_checkpoint
         return "settled result"
 
     with pytest.raises(RuntimeError, match="model failed"):
-        await inkling.run(
-            "go",
-            conversation_address=ADDRESS,
-            conversation=await inkling.resolve_conversation(
-                conversation.thread_id, conversation_address=ADDRESS
-            ),
-            output_type=str,
-            model=FunctionModel(stream_function=fail),
-            toolsets=[FunctionToolset([lookup])],
-        )
+        async with invocation_for(
+            inkling, conversation_address=ADDRESS, thread_id=conversation.thread_id
+        ) as invocation:
+            await inkling.run(
+                "go",
+                conversation_address=ADDRESS,
+                invocation=invocation,
+                output_type=str,
+                model=FunctionModel(stream_function=fail),
+                toolsets=[FunctionToolset([lookup])],
+            )
     store = StepStore()
     [record] = await store.list_runs()
     events = await store.list_events(run_id=record.run_id)
@@ -341,27 +372,29 @@ async def test_model_failure_preserves_the_registered_run_and_settled_checkpoint
 async def test_deferred_resume_registers_a_new_run_in_the_same_conversation(
     inkling: InklingTentacle, conversation: Conversation
 ) -> None:
-    first = await inkling.run(
-        "ask before proceeding",
-        conversation_address=ADDRESS,
-        conversation=await inkling.resolve_conversation(
-            conversation.thread_id, conversation_address=ADDRESS
-        ),
-        model=TestModel(call_tools=["ask_questions"]),
-    )
+    async with invocation_for(
+        inkling, conversation_address=ADDRESS, thread_id=conversation.thread_id
+    ) as invocation:
+        first = await inkling.run(
+            "ask before proceeding",
+            conversation_address=ADDRESS,
+            invocation=invocation,
+            model=TestModel(call_tools=["ask_questions"]),
+        )
     assert isinstance(first.output, DeferredToolRequests)
     await assert_completed_run(conversation, first)
-    second = await inkling.run(
-        conversation_address=ADDRESS,
-        conversation=await inkling.resolve_conversation(
-            conversation.thread_id, conversation_address=ADDRESS
-        ),
-        output_type=str,
-        deferred_tool_results=DeferredToolResults(
-            calls={call.tool_call_id: "proceed" for call in first.output.calls}
-        ),
-        model=TestModel(call_tools=[]),
-    )
+    async with invocation_for(
+        inkling, conversation_address=ADDRESS, thread_id=conversation.thread_id
+    ) as invocation:
+        second = await inkling.run(
+            conversation_address=ADDRESS,
+            invocation=invocation,
+            output_type=str,
+            deferred_tool_results=DeferredToolResults(
+                calls={call.tool_call_id: "proceed" for call in first.output.calls}
+            ),
+            model=TestModel(call_tools=[]),
+        )
     await assert_completed_run(conversation, second)
     assert second.usage.requests == first.usage.requests + 1
     assert second.run_id != first.run_id
@@ -388,16 +421,17 @@ async def test_tool_failure_is_recorded_when_the_model_can_continue(
     def broken() -> str:
         raise RuntimeError("tool failed")
 
-    result = await inkling.run(
-        "use the tool",
-        conversation_address=ADDRESS,
-        conversation=await inkling.resolve_conversation(
-            conversation.thread_id, conversation_address=ADDRESS
-        ),
-        output_type=str,
-        model=TestModel(call_tools=["broken"]),
-        toolsets=[FunctionToolset([broken])],
-    )
+    async with invocation_for(
+        inkling, conversation_address=ADDRESS, thread_id=conversation.thread_id
+    ) as invocation:
+        result = await inkling.run(
+            "use the tool",
+            conversation_address=ADDRESS,
+            invocation=invocation,
+            output_type=str,
+            model=TestModel(call_tools=["broken"]),
+            toolsets=[FunctionToolset([broken])],
+        )
     await assert_completed_run(conversation, result)
     store = StepStore()
     events = await store.list_events(run_id=result.run_id)
@@ -415,15 +449,16 @@ async def test_tool_failure_is_recorded_when_the_model_can_continue(
 async def test_failed_continuation_saves_usage_without_rearchiving_prior_turns(
     inkling: InklingTentacle, conversation: Conversation, streaming: bool
 ) -> None:
-    first = await inkling.run(
-        "remember",
-        conversation_address=ADDRESS,
-        conversation=await inkling.resolve_conversation(
-            conversation.thread_id, conversation_address=ADDRESS
-        ),
-        output_type=str,
-        model=TestModel(call_tools=[]),
-    )
+    async with invocation_for(
+        inkling, conversation_address=ADDRESS, thread_id=conversation.thread_id
+    ) as invocation:
+        first = await inkling.run(
+            "remember",
+            conversation_address=ADDRESS,
+            invocation=invocation,
+            output_type=str,
+            model=TestModel(call_tools=[]),
+        )
     prior = await inkling.conversations.history(conversation.id)
     requests = 0
 
@@ -531,29 +566,32 @@ async def test_subagent_inherits_persistence_and_records_parent_lineage(
     results: list[AgentRunResult[InklingOutput]] = []
 
     async def delegate() -> str:
-        result = await inkling.subagent_run(
-            "help",
+        async with invocation_for(
+            inkling,
             conversation_address=ADDRESS,
-            conversation=await inkling.resolve_conversation(
-                conversation.thread_id,
+            thread_id=conversation.thread_id,
+            conversation_id=child.id,
+        ) as invocation:
+            result = await inkling.subagent_run(
+                "help",
                 conversation_address=ADDRESS,
-                conversation_id=child.id,
-            ),
-            model=TestModel(call_tools=[]),
-        )
+                invocation=invocation,
+                model=TestModel(call_tools=[]),
+            )
         results.append(result)
         return "delegated"
 
-    parent = await inkling.run(
-        "delegate",
-        conversation_address=ADDRESS,
-        conversation=await inkling.resolve_conversation(
-            conversation.thread_id, conversation_address=ADDRESS
-        ),
-        output_type=str,
-        model=TestModel(call_tools=["delegate"]),
-        toolsets=[FunctionToolset([delegate])],
-    )
+    async with invocation_for(
+        inkling, conversation_address=ADDRESS, thread_id=conversation.thread_id
+    ) as invocation:
+        parent = await inkling.run(
+            "delegate",
+            conversation_address=ADDRESS,
+            invocation=invocation,
+            output_type=str,
+            model=TestModel(call_tools=["delegate"]),
+            toolsets=[FunctionToolset([delegate])],
+        )
     assert results, parent.output
     [result] = results
     await assert_completed_run(conversation, parent)
@@ -587,13 +625,19 @@ async def test_compact_command_persists_context_and_usage_without_a_run(
     conversation: Conversation,
     summarizing: SummarizingCompaction[None],
 ) -> None:
-    await inkling.run(
-        "old question " * 200,
-        conversation=conversation,
+    async with invocation_for(
+        inkling,
         conversation_address=ADDRESS,
-        output_type=str,
-        model=TestModel(call_tools=[], custom_output_text="old answer " * 200),
-    )
+        thread_id=conversation.thread_id,
+        conversation=conversation,
+    ) as invocation:
+        await inkling.run(
+            "old question " * 200,
+            invocation=invocation,
+            conversation_address=ADDRESS,
+            output_type=str,
+            model=TestModel(call_tools=[], custom_output_text="old answer " * 200),
+        )
     loaded = await inkling.resolve_conversation(
         conversation.thread_id, conversation_address=ADDRESS
     )
@@ -630,7 +674,8 @@ async def test_compact_command_persists_context_and_usage_without_a_run(
         event
         async for event in inkling.execute_command(
             context,
-            CommandInvocation(command_id=descriptor.id, arguments="unfinished work"),
+            CommandIntent(command_id=descriptor.id, arguments="unfinished work"),
+            invocation=None,
         )
     ]
     assert isinstance(outcome, CommandResult)
@@ -666,13 +711,19 @@ async def test_compact_command_persists_context_and_usage_without_a_run(
         received.extend(messages)
         yield "continued"
 
-    await inkling.run(
-        "continue",
-        conversation=restored,
+    async with invocation_for(
+        inkling,
         conversation_address=ADDRESS,
-        output_type=str,
-        model=FunctionModel(reply, stream_function=stream_reply),
-    )
+        thread_id=restored.thread_id,
+        conversation=restored,
+    ) as invocation:
+        await inkling.run(
+            "continue",
+            invocation=invocation,
+            conversation_address=ADDRESS,
+            output_type=str,
+            model=FunctionModel(reply, stream_function=stream_reply),
+        )
     assert any(isinstance(p, CompactionPart) for m in received for p in m.parts)
     assert not any(
         isinstance(p, UserPromptPart) and "old question" in str(p.content)
@@ -695,7 +746,7 @@ async def test_compact_command_with_empty_context_does_not_create_history(
     [outcome] = [
         event
         async for event in inkling.execute_command(
-            context, CommandInvocation(command_id="builtin:compact")
+            context, CommandIntent(command_id="builtin:compact"), invocation=None
         )
     ]
     assert isinstance(outcome, CommandResult)
@@ -721,13 +772,19 @@ async def test_requested_compaction_persists_once_and_keeps_tool_pairs(
     streaming: bool,
     automatic: bool,
 ) -> None:
-    await inkling.run(
-        "old question " * 200,
-        conversation=conversation,
+    async with invocation_for(
+        inkling,
         conversation_address=ADDRESS,
-        output_type=str,
-        model=TestModel(call_tools=[], custom_output_text="old answer " * 200),
-    )
+        thread_id=conversation.thread_id,
+        conversation=conversation,
+    ) as invocation:
+        await inkling.run(
+            "old question " * 200,
+            invocation=invocation,
+            conversation_address=ADDRESS,
+            output_type=str,
+            model=TestModel(call_tools=[], custom_output_text="old answer " * 200),
+        )
     summarizing.max_messages = 4 if automatic else 10000
     summarizing.keep_messages = 2
     calls = 0
@@ -776,24 +833,38 @@ async def test_requested_compaction_persists_once_and_keeps_tool_pairs(
     model = FunctionModel(reply, stream_function=stream_reply)
     result: AgentRunResult[InklingOutput] | None = None
     if streaming:
-        async with inkling.run_stream_events(
-            "compact yourself",
-            conversation=loaded,
-            conversation_address=ADDRESS,
-            output_type=str,
-            model=model,
-        ) as stream:
+        async with (
+            invocation_for(
+                inkling,
+                conversation_address=ADDRESS,
+                thread_id=loaded.thread_id,
+                conversation=loaded,
+            ) as invocation,
+            inkling.run_stream_events(
+                "compact yourself",
+                invocation=invocation,
+                conversation_address=ADDRESS,
+                output_type=str,
+                model=model,
+            ) as stream,
+        ):
             async for event in stream:
                 if isinstance(event, AgentRunResultEvent):
                     result = event.result
     else:
-        result = await inkling.run(
-            "compact yourself",
-            conversation=loaded,
+        async with invocation_for(
+            inkling,
             conversation_address=ADDRESS,
-            output_type=str,
-            model=model,
-        )
+            thread_id=loaded.thread_id,
+            conversation=loaded,
+        ) as invocation:
+            result = await inkling.run(
+                "compact yourself",
+                invocation=invocation,
+                conversation_address=ADDRESS,
+                output_type=str,
+                model=model,
+            )
     assert result is not None
     assert calls == 2
     restored = await inkling.resolve_conversation(
@@ -820,13 +891,19 @@ async def test_compaction_archives_originals_and_continues_from_summary(
     summarizing: SummarizingCompaction[None],
     streaming: bool,
 ) -> None:
-    first = await inkling.run(
-        "old question " * 200,
-        conversation=conversation,
+    async with invocation_for(
+        inkling,
         conversation_address=ADDRESS,
-        output_type=str,
-        model=TestModel(call_tools=[], custom_output_text="old answer " * 200),
-    )
+        thread_id=conversation.thread_id,
+        conversation=conversation,
+    ) as invocation:
+        first = await inkling.run(
+            "old question " * 200,
+            invocation=invocation,
+            conversation_address=ADDRESS,
+            output_type=str,
+            model=TestModel(call_tools=[], custom_output_text="old answer " * 200),
+        )
     loaded = await inkling.resolve_conversation(
         conversation.thread_id, conversation_address=ADDRESS
     )
@@ -846,24 +923,38 @@ async def test_compaction_archives_originals_and_continues_from_summary(
     model = FunctionModel(reply, stream_function=stream_reply)
     result: AgentRunResult[InklingOutput] | None = None
     if streaming:
-        async with inkling.run_stream_events(
-            "continue",
-            conversation=loaded,
-            conversation_address=ADDRESS,
-            output_type=str,
-            model=model,
-        ) as stream:
+        async with (
+            invocation_for(
+                inkling,
+                conversation_address=ADDRESS,
+                thread_id=loaded.thread_id,
+                conversation=loaded,
+            ) as invocation,
+            inkling.run_stream_events(
+                "continue",
+                invocation=invocation,
+                conversation_address=ADDRESS,
+                output_type=str,
+                model=model,
+            ) as stream,
+        ):
             async for event in stream:
                 if isinstance(event, AgentRunResultEvent):
                     result = event.result
     else:
-        result = await inkling.run(
-            "continue",
-            conversation=loaded,
+        async with invocation_for(
+            inkling,
             conversation_address=ADDRESS,
-            output_type=str,
-            model=model,
-        )
+            thread_id=loaded.thread_id,
+            conversation=loaded,
+        ) as invocation:
+            result = await inkling.run(
+                "continue",
+                invocation=invocation,
+                conversation_address=ADDRESS,
+                output_type=str,
+                model=model,
+            )
     assert result is not None
     assert any(isinstance(part, CompactionPart) for part in received[0].parts)
     assert len(received) == 1
@@ -894,13 +985,19 @@ async def test_compaction_archives_originals_and_continues_from_summary(
 
     summarizing.max_messages = 100
     received.clear()
-    third = await inkling.run(
-        "next turn",
-        conversation=restored,
+    async with invocation_for(
+        inkling,
         conversation_address=ADDRESS,
-        output_type=str,
-        model=model,
-    )
+        thread_id=restored.thread_id,
+        conversation=restored,
+    ) as invocation:
+        third = await inkling.run(
+            "next turn",
+            invocation=invocation,
+            conversation_address=ADDRESS,
+            output_type=str,
+            model=model,
+        )
     assert any(isinstance(part, CompactionPart) for part in received[0].parts)
     assert not any(
         isinstance(p, UserPromptPart) and "old question" in str(p.content)
@@ -936,14 +1033,20 @@ async def test_multiple_compactions_keep_independent_membership_and_tool_pairs(
     async def lookup() -> str:
         return "large tool result " * 500
 
-    result = await inkling.run(
-        "long original request " * 200,
-        conversation=conversation,
+    async with invocation_for(
+        inkling,
         conversation_address=ADDRESS,
-        output_type=str,
-        model=FunctionModel(stream_function=reply),
-        toolsets=[FunctionToolset([lookup])],
-    )
+        thread_id=conversation.thread_id,
+        conversation=conversation,
+    ) as invocation:
+        result = await inkling.run(
+            "long original request " * 200,
+            invocation=invocation,
+            conversation_address=ADDRESS,
+            output_type=str,
+            model=FunctionModel(stream_function=reply),
+            toolsets=[FunctionToolset([lookup])],
+        )
     async with async_session() as session:
         compactions = await session.list(Compaction, limit=None)
         assert len(compactions) == 3
@@ -997,13 +1100,19 @@ async def test_compacted_run_preserves_failures_and_revision_checks(
     outcome: str,
     streaming: bool,
 ) -> None:
-    first = await inkling.run(
-        "old question " * 200,
-        conversation=conversation,
+    async with invocation_for(
+        inkling,
         conversation_address=ADDRESS,
-        output_type=str,
-        model=TestModel(call_tools=[], custom_output_text="old answer " * 200),
-    )
+        thread_id=conversation.thread_id,
+        conversation=conversation,
+    ) as invocation:
+        first = await inkling.run(
+            "old question " * 200,
+            invocation=invocation,
+            conversation_address=ADDRESS,
+            output_type=str,
+            model=TestModel(call_tools=[], custom_output_text="old answer " * 200),
+        )
     loaded = await inkling.resolve_conversation(
         conversation.thread_id, conversation_address=ADDRESS
     )
@@ -1067,25 +1176,32 @@ async def test_rejected_summary_does_not_record_a_compaction(
     summarizing: SummarizingCompaction[None],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    first = await inkling.run(
-        "old question " * 20,
-        conversation=conversation,
+    async with invocation_for(
+        inkling,
         conversation_address=ADDRESS,
-        output_type=str,
-        model=TestModel(call_tools=[], custom_output_text="old answer " * 20),
-    )
+        thread_id=conversation.thread_id,
+        conversation=conversation,
+    ) as invocation:
+        first = await inkling.run(
+            "old question " * 20,
+            invocation=invocation,
+            conversation_address=ADDRESS,
+            output_type=str,
+            model=TestModel(call_tools=[], custom_output_text="old answer " * 20),
+        )
     summarizing.model = TestModel(custom_output_text="a much larger summary " * 2000)
     record = AsyncMock(wraps=ConversationStore.record_compaction)
     monkeypatch.setattr(ConversationStore, "record_compaction", record)
-    result = await inkling.run(
-        "continue",
-        conversation=await inkling.resolve_conversation(
-            conversation.thread_id, conversation_address=ADDRESS
-        ),
-        conversation_address=ADDRESS,
-        output_type=str,
-        model=TestModel(call_tools=[], custom_output_text="continued"),
-    )
+    async with invocation_for(
+        inkling, conversation_address=ADDRESS, thread_id=conversation.thread_id
+    ) as invocation:
+        result = await inkling.run(
+            "continue",
+            invocation=invocation,
+            conversation_address=ADDRESS,
+            output_type=str,
+            model=TestModel(call_tools=[], custom_output_text="continued"),
+        )
     record.assert_not_awaited()
     assert result.usage.requests == first.usage.requests + 2
     assert not any(
@@ -1100,13 +1216,19 @@ async def test_compaction_archives_unsaved_input_before_replacing_it(
     conversation: Conversation,
     summarizing: SummarizingCompaction[None],
 ) -> None:
-    first = await inkling.run(
-        "old question " * 200,
-        conversation=conversation,
+    async with invocation_for(
+        inkling,
         conversation_address=ADDRESS,
-        output_type=str,
-        model=TestModel(call_tools=[], custom_output_text="old answer " * 200),
-    )
+        thread_id=conversation.thread_id,
+        conversation=conversation,
+    ) as invocation:
+        first = await inkling.run(
+            "old question " * 200,
+            invocation=invocation,
+            conversation_address=ADDRESS,
+            output_type=str,
+            model=TestModel(call_tools=[], custom_output_text="old answer " * 200),
+        )
     loaded = await inkling.resolve_conversation(
         conversation.thread_id, conversation_address=ADDRESS
     )
@@ -1114,13 +1236,19 @@ async def test_compaction_archives_unsaved_input_before_replacing_it(
         run_id=first.run_id, parts=[TextPart("unsaved continuation")]
     )
     loaded.messages.append(pending)
-    result = await inkling.run(
-        "continue",
-        conversation=loaded,
+    async with invocation_for(
+        inkling,
         conversation_address=ADDRESS,
-        output_type=str,
-        model=TestModel(call_tools=[], custom_output_text="continued"),
-    )
+        thread_id=loaded.thread_id,
+        conversation=loaded,
+    ) as invocation:
+        result = await inkling.run(
+            "continue",
+            invocation=invocation,
+            conversation_address=ADDRESS,
+            output_type=str,
+            model=TestModel(call_tools=[], custom_output_text="continued"),
+        )
     archive = await inkling.conversations.history(conversation.id)
     assert [m.parts for m in archive[:3]] == [m.parts for m in loaded.messages]
     assert len(archive) == 5

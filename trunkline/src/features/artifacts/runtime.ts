@@ -205,6 +205,18 @@ export function mountArtifact(
     dispose()
   }
   const timeout = window.setTimeout(() => fail('The artifact did not finish loading.'), 15000)
+  // The frame stays behind its placeholder until the app has said how tall it is,
+  // so it opens once at that height instead of opening at a guess and correcting.
+  let sized = false
+  let reveal: number | undefined
+  let revealBy = 0
+  const settle = (wait: number) => {
+    window.clearTimeout(reveal)
+    reveal = window.setTimeout(() => {
+      reveal = undefined
+      onReady()
+    }, Math.max(0, Math.min(wait, revealBy - performance.now())))
+  }
   const updateDimensions = () => {
     if (disposed) return
     const containerDimensions = dimensions()
@@ -249,11 +261,14 @@ export function mountArtifact(
       }
       if (disposed) return
       window.clearTimeout(timeout)
-      onReady()
+      revealBy = performance.now() + 400
+      settle(sized ? 200 : 400)
     })().catch(() => fail('The saved artifact could not be replayed.'))
   })
   bridge.addEventListener('sizechange', ({ height }) => {
     if (!initialized || disposed || height == null || !Number.isFinite(height)) return
+    sized = true
+    if (reveal !== undefined) settle(120)
     const nextHeight = Math.min(1000, Math.max(artifact.kind === 'html' ? 1 : 100, Math.ceil(height)))
     if (nextHeight === requestedHeight) return
     if (log && displayMode === 'inline' && document.activeElement === iframe) {
@@ -413,6 +428,7 @@ export function mountArtifact(
     if (disposed) return
     disposed = true
     window.clearTimeout(timeout)
+    window.clearTimeout(reveal)
     window.removeEventListener('pagehide', dispose)
     window.removeEventListener('resize', updateDimensions)
     resize.disconnect()

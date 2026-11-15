@@ -59,6 +59,10 @@ async function mockViews(page: Page, options: { html?: string; htmlArtifact?: bo
 async function contentFrame(page: Page, label = 'row-a'): Promise<Frame> {
   const frame = page.frameLocator(`iframe[title="${label}"]`).frameLocator('iframe')
   await expect(frame.locator('#result')).toHaveText(label)
+  // The card stays behind its placeholder until the app's height is known, then opens to it.
+  const shown = page.locator(`dialog.trk-artifact-frame:has(> iframe[title="${label}"])`)
+  await expect(shown).not.toHaveAttribute('inert')
+  await expect.poll(() => shown.evaluate(el => el.getAnimations().length)).toBe(0)
   // Match the containing frame element rather than relying on load order.
   for (const candidate of page.frames().filter((one) => one.url() === 'about:srcdoc')) {
     if (await candidate.locator('#result').textContent() === label) return candidate
@@ -501,6 +505,32 @@ for (const path of ['/artifacts', '/work/artifacts']) {
     expect(reads.every((url) => url.endsWith('/api/artifacts/app-a'))).toBe(true)
   })
 }
+
+test('an app that reports its height opens from the placeholder straight to that height', async ({ page }) => {
+  const label = "document.querySelector('#result').textContent = data.params.structuredContent.label;"
+  await mockViews(page, { html: appHtml.replace(label, `${label} send('ui/notifications/size-changed', { height: 300 });`) })
+  await page.addInitScript(() => {
+    const heights: number[] = []
+    Object.assign(window, { heights })
+    const sample = () => {
+      const stage = document.querySelector('#pm-row-a .trk-artifact-stage')
+      if (stage) heights.push(Math.round(stage.getBoundingClientRect().height))
+      requestAnimationFrame(sample)
+    }
+    requestAnimationFrame(sample)
+  })
+  await page.goto('/tests/browser/harness.html')
+  await page.addStyleTag({ content: readFileSync('src/styles/motion.css', 'utf8') })
+  await contentFrame(page)
+  const stage = page.locator('#pm-row-a .trk-artifact-stage')
+  await expect(stage).toHaveAttribute('aria-busy', 'false')
+  await expect(stage).toHaveCSS('height', '300px')
+  const heights = await page.evaluate(() => (window as unknown as { heights: number[] }).heights)
+  // Never the 480px guess: the placeholder's 240px, then one move to the reported 300px.
+  expect(heights[0]).toBe(240)
+  expect(Math.max(...heights)).toBe(300)
+  expect(heights).toEqual([...heights].sort((a, b) => a - b))
+})
 
 test('resize is bounded, theme is updated, and removing cards tears down frames', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 })
@@ -950,6 +980,8 @@ for (const htmlArtifact of [false, true]) {
     const card = page.locator('#pm-row-a')
     const frame = card.frameLocator('iframe').frameLocator('iframe')
     await expect(frame.locator('#result')).toHaveText(htmlArtifact ? 'Saved chart' : 'row-a')
+    // Typing reaches the app only once its card has been revealed.
+    await expect(card.locator('dialog.trk-artifact-frame')).not.toHaveAttribute('inert')
     await expect(frame.locator('body')).toHaveCSS('background-color', 'rgb(237, 230, 214)')
     await expect(frame.locator('#increment')).toHaveCSS('background-color', 'rgb(246, 241, 229)')
     await expect(frame.getByLabel('Note')).toHaveCSS('background-color', 'rgb(220, 210, 188)')

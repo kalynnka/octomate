@@ -97,12 +97,16 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     raise RuntimeError(
                         f"project {signal.project!r} vanished before summon"
                     )
+                workspace = await ctx.deps.workspaces.resolve(
+                    ctx.state.thread.id,
+                    project,
+                    signal.user_profile.user_id,
+                    signal.ref,
+                )
                 ctx.state.thread = await ctx.deps.thread_manager.bind(
                     ctx.state.thread.id, project
                 )
-                await ctx.deps.workspaces.open(ctx.state.thread.id, project).prepare(
-                    signal.ref
-                )
+                await ctx.deps.workspaces.prepare(workspace)
             await ctx.deps.impulses.send(
                 Impulse(
                     GatewayEvent(action="summon", destination=destination), destination

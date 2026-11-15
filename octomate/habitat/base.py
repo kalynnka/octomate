@@ -1,9 +1,13 @@
-"""The base class every habitat provider subclasses."""
+"""Shared habitat lifecycle and managed runtime capabilities."""
 
 from abc import ABC, abstractmethod
 from contextlib import AbstractAsyncContextManager
+from pathlib import Path, PurePosixPath
 
 from anyio.abc import ByteStream
+from pydantic import UUID7
+
+from octomate.schemas.volumes import Volume
 
 
 class HabitatError(RuntimeError):
@@ -11,12 +15,33 @@ class HabitatError(RuntimeError):
 
 
 class Habitat(ABC):
-    """One user's isolated, durable agent runtime; a sandbox is one kind."""
+    """The execution environment core prepares for an agent invocation."""
 
     @property
     @abstractmethod
     def name(self) -> str:
         """Stable identifier of this habitat."""
+
+    @abstractmethod
+    def path(self, volume: Volume) -> Path | PurePosixPath:
+        """The volume location visible to the harness in this environment."""
+
+    @abstractmethod
+    async def prepare(self) -> None:
+        """Make the environment ready before an adapter runs in it."""
+
+    @abstractmethod
+    async def stop(self) -> None:
+        """Release the environment's runtime resources, preserving persistent data."""
+
+
+class ManagedHabitat(Habitat):
+    """One registered user's persistent runtime, hosting agent processes."""
+
+    user_id: UUID7  # The registered user whose private runtime this is.
+
+    def path(self, volume: Volume) -> PurePosixPath:
+        raise HabitatError("Managed habitat volume mounts are not yet supported")
 
     @property
     @abstractmethod
@@ -24,15 +49,7 @@ class Habitat(ABC):
         """Seconds to keep the runtime after its last invocation ends."""
 
     @abstractmethod
-    async def prepare(self) -> None:
-        """Create or reuse, start, and validate the runtime before returning."""
-
-    @abstractmethod
     def execute(
         self, *command: str, workdir: str, env: dict[str, str] | None = None
     ) -> AbstractAsyncContextManager[ByteStream]:
         """Run a command with duplex stdio, closing and reaping it on exit."""
-
-    @abstractmethod
-    async def stop(self) -> None:
-        """Stop the runtime, preserving persistent data."""

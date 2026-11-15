@@ -120,6 +120,20 @@ test('a repeated label refreshes expiry without rerendering; later activity reap
   assert.equal(text(), 'Routing')
 })
 
+test('a kick start time is kept with its status and a repeat of it does not rerender', async () => {
+  observe()
+  await tick()
+  const narrated = { ...update({ ...thinking, display_text: 'Mulling it over' }), started_at: '2026-11-14T09:00:00Z' }
+  LiveSocket.last().deliver(narrated)
+  const first = activity.useActivity.getState()['id:first']
+  assert.equal(first?.text, 'Mulling it over')
+  assert.equal(first?.startedAt, Date.parse('2026-11-14T09:00:00Z'))
+  LiveSocket.last().deliver(narrated)
+  assert.equal(activity.useActivity.getState()['id:first'], first)
+  LiveSocket.last().deliver(update(thinking))
+  assert.equal(activity.useActivity.getState()['id:first']?.startedAt, undefined)
+})
+
 for (const terminal of ['run_ended', 'reflex_asleep', 'run_error'] as const) {
   test(`${terminal} clears immediately and its old timer cannot clear a new label`, async () => {
     observe()

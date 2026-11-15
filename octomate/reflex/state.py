@@ -10,7 +10,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Sequence
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, overload
@@ -27,6 +27,7 @@ from octomate.config.agents import AgentRouteModelName
 from octomate.config.channels import AgentModelConfig
 from octomate.events import (
     MessageSentEvent,
+    ReflexPhaseChangedEvent,
     RunActivityChangedEvent,
     RunEndedEvent,
     RunErrorEvent,
@@ -498,6 +499,38 @@ class ReflexDeps:
 class ReflexRuntime:
     """Stateless orchestration in graph deps; invocation resources stay with callers."""
 
+    @asynccontextmanager
+    async def finalizing(
+        self, ctx: GraphRunContext[ReflexState, ReflexDeps]
+    ) -> AsyncGenerator[None]:
+        """Publish finalization, and save the registered work a failed turn left.
+
+        A run that ends checkpoints its own volume. A failure outside the run closes
+        it unsaved, and an unsaved tree is one the sweep never reclaims.
+        """
+        failed = False
+        try:
+            yield
+        except Exception:
+            failed = True
+            raise
+        finally:
+            state = ctx.state
+            await ctx.deps.impulses.send(
+                Impulse(
+                    ReflexPhaseChangedEvent(phase="finalizing"),
+                    state.target.address if state.target is not None else None,
+                )
+            )
+            profile = state.user_profile
+            if (
+                failed
+                and state.thread is not None
+                and profile is not None
+                and profile.user_id is not None
+            ):
+                await ctx.deps.workspaces.save(state.thread, profile.user_id)
+
     async def resources(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
@@ -619,7 +652,12 @@ class ReflexRuntime:
 
         await ctx.deps.impulses.send(
             Impulse(
-                RunStartedEvent(address=address, sender=ctx.state.user_profile), address
+                RunStartedEvent(
+                    address=address,
+                    sender=ctx.state.user_profile,
+                    agent_tentacle_id=suspender.agent_tentacle_id,
+                ),
+                address,
             )
         )
         ended = RunEndedEvent(outcome="failed")
@@ -731,10 +769,19 @@ class ReflexRuntime:
         thread_id = state.thread.id if state.thread else None
         output = run_result.output
         with reflex_logfire.span("reflex.finish", run_id=run_result.run_id) as span:
-            if session is not None and session.dismissing and state.thread is not None:
+            profile = state.user_profile
+            if (
+                session is not None
+                and session.dismissing
+                and state.thread is not None
+                and profile is not None
+                and profile.user_id is not None
+            ):
                 # The agent said this thread's work is done: its tree goes now
                 # that the run is out of it, saved first and kept if that failed.
-                result = await ctx.deps.workspaces.dismiss(state.thread)
+                result = await ctx.deps.workspaces.dismiss(
+                    state.thread, profile.user_id
+                )
                 span.set_attribute(
                     "react.dismissed",
                     result,

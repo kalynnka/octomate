@@ -5,6 +5,7 @@ import { useTrunklineRuntime } from './runtime'
 import { ChatHeader } from './ChatHeader'
 import { ProjectStrip } from './ProjectStrip'
 import { NewThreadStrip } from './NewThreadStrip'
+import { ActivityLine } from './ActivityLine'
 import { ChatLog } from './ChatLog'
 import { Composer } from './Composer'
 import { SessionBar } from './SessionBar'
@@ -48,6 +49,7 @@ export function ChatMain() {
             {!ntOn && hasWorkspace && <ProjectStrip />}
             {ntOn && <NewThreadStrip />}
             <ChatLog />
+            <ActivityLine />
             <Composer />
             <SessionBar />
           </>

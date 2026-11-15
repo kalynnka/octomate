@@ -5,7 +5,8 @@ over the real ConversationManager/ThreadManager on in-memory SQLite."""
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from typing import cast
 from unittest.mock import AsyncMock
 
@@ -44,7 +45,7 @@ from octomate.schemas.awakes import (
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import ThreadKey, ThreadMessage
+from octomate.schemas.thread import Kick, ThreadKey, ThreadMessage
 from octomate.schemas.triage import (
     Claim,
     SummonDecision,
@@ -65,6 +66,7 @@ from tests.support.channels import (
 from tests.support.managers import a_loaded_thread, the_sub_thread
 from tests.support.nerve import awake_on, held, kicked
 from tests.support.scenarios import mid_run_notice
+from tests.support.users import a_user
 
 
 @pytest.fixture(autouse=True)
@@ -874,6 +876,10 @@ async def test_status_facts_keep_the_reflex_open_across_runs(ending: str) -> Non
     )
     assert sum(isinstance(event, ReflexAwakeEvent) for event in events) == 1
     assert sum(isinstance(event, ReflexAsleepEvent) for event in events) == 1
+    async with async_session() as session:
+        [kick] = await session.list(Kick, limit=None)
+    assert kick.outcome == events[-1].outcome
+    assert kick.woke_at <= kick.slept_at
     phases = [
         event.phase for event in events if isinstance(event, ReflexPhaseChangedEvent)
     ]
@@ -943,6 +949,9 @@ async def test_status_outcomes_survive_failed_or_cancelled_lifecycle(
     cancel: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    owner = await a_user()
+    event = _event()
+    event.sender.user_id = owner.id
     app = Octomate()
     app.connect(FakeAgent())
     app.connect(FakeChannelTentacle(config=_entry_config(stream=False)))
@@ -954,14 +963,23 @@ async def test_status_outcomes_survive_failed_or_cancelled_lifecycle(
     elif phase == "execution":
         monkeypatch.setattr(ReflexDeps, "carry", failure)
     else:
-        monkeypatch.setattr(app.workspaces, "save", failure)
+
+        @asynccontextmanager
+        async def finalizing(*_args: object) -> AsyncGenerator[None]:
+            yield
+            await failure()
+
+        monkeypatch.setattr(ReflexRuntime, "finalizing", finalizing)
 
     async with app.nerve.subscribe(ThreadTopic(ThreadKey.from_address(_key()))) as live:
         with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
-            await kicked(app, UserMessageSignal([_event()]))
+            await kicked(app, UserMessageSignal([event]))
         events = [impulse.event for impulse in held(live)]
 
     assert events[-1] == ReflexAsleepEvent(outcome="cancelled" if cancel else "failed")
+    async with async_session() as session:
+        [kick] = await session.list(Kick, limit=None)
+    assert kick.outcome == ("cancelled" if cancel else "failed")
     ended = [event.outcome for event in events if isinstance(event, RunEndedEvent)]
     assert (
         ended

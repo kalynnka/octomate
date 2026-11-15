@@ -562,7 +562,6 @@ class McpManager(Manager, Locks[UUID7]):
             if (
                 scope.native
                 or scope.thread_id is None
-                or scope.threads is None
                 or channel is None
                 or address is None
             ):

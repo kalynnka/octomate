@@ -4,6 +4,8 @@ import type { LedgerItem } from '../../src/lib/api/types'
 
 for (const width of [1280, 390]) {
   test(`thread activity survives selection and expires independently of controls at ${width}px`, async ({ page }) => {
+    // Each phrase is held on screen before the next may replace it, so the many changes below take a while.
+    test.setTimeout(90_000)
     await page.setViewportSize({ width, height: 900 })
     await page.emulateMedia({ reducedMotion: 'reduce' })
     await page.clock.install()
@@ -79,7 +81,19 @@ for (const width of [1280, 390]) {
     await page.goto(`/threads/${first.id}`, { waitUntil: 'domcontentloaded' })
     await expect(page).toHaveTitle('Trunkline · Octomate')
     await expect(page).toHaveURL(new RegExp(`/threads/${first.id}$`))
-    const activity = page.locator('#trk-chatlog .trk-activity')
+    const activity = page.locator('.trk-activity-dock .trk-activity')
+    // The status line floats on the composer's top edge, outside the scrolling ledger, and takes no
+    // room from it: the ledger and its scrollbar still reach the composer.
+    const docked = () => activity.evaluate(el => {
+      const dock = el.closest('.trk-activity-dock')!
+      const composer = dock.nextElementSibling!.getBoundingClientRect()
+      const above = composer.top - el.getBoundingClientRect().bottom
+      return {
+        scrolls: dock.closest('#trk-chatlog') !== null, composer: dock.nextElementSibling!.querySelector('.trk-composer-frame') !== null,
+        gap: Math.round(composer.top - document.querySelector('#trk-chatlog')!.getBoundingClientRect().bottom) + Number(above < 0 || above > 8),
+      }
+    })
+    const lastRow = () => page.locator('#trk-chatlog .trk-ledger-col').evaluate(el => el.lastElementChild?.textContent)
     const status = activity.locator('[data-text-current]')
     const sidebar = page.locator('#trk-sb-panel')
     if (width === 390) await page.getByRole('button', { name: 'Show channels', exact: true }).first().click()
@@ -118,8 +132,8 @@ for (const width of [1280, 390]) {
     }, history)
     send(first, { event_kind: 'run_activity_changed', activity: 'working' })
     await expect(status).toHaveText('Working')
-    expect(await activity.evaluate(el => el.parentElement?.previousElementSibling?.textContent)).toBe('Session ready')
-    expect(await activity.evaluate(el => el.parentElement === el.parentElement?.parentElement?.lastElementChild)).toBe(true)
+    expect(await lastRow()).toBe('Session ready')
+    expect(await docked()).toEqual({ scrolls: false, composer: true, gap: 0 })
     await page.screenshot({ animations: 'disabled', path: `/private/tmp/trunkline-status/activity-start-${width}.png` })
     await page.clock.fastForward(120_001)
     await expect(activity).toHaveCount(0)
@@ -130,20 +144,42 @@ for (const width of [1280, 390]) {
     await expect(activity).toHaveCount(1)
     send(first, { event_kind: 'reflex_awake' }, { event_kind: 'run_activity_changed', activity: 'thinking' })
     await expect(status).toHaveText('Thinking')
+    // The kick timer lives in the session bar, away from the status line, and turns with the bar's clock.
+    const timer = page.locator('.trk-kick-timer')
+    await expect(timer).toHaveCount(0)
+    const woke = new Date(await page.evaluate(() => Date.now()) - 65_000).toISOString()
+    for (const key of watched) {
+      activitySocket!.send(JSON.stringify({ key, event: { event_kind: 'run_activity_changed', activity: 'thinking' }, attention: false, started_at: woke }))
+    }
+    // The page clock keeps running, so read the timer instead of pinning it to one second.
+    const elapsed = async () => {
+      const [minutes, seconds] = (await timer.textContent())!.replace('kick ', '').split(':').map(Number)
+      return minutes * 60 + seconds
+    }
+    await expect(timer).toHaveText(/^kick 1:\d\d$/)
+    const counted = await elapsed()
+    expect(counted).toBeGreaterThanOrEqual(64)
+    await page.clock.fastForward(1_000)
+    await expect.poll(elapsed).toBeGreaterThan(counted)
+    await expect(status).toHaveText('Thinking')
+    await expect(activity.locator('.trk-kick-timer')).toHaveCount(0)
+    await expect(activity).toHaveText('Thinking')
+    await page.screenshot({ animations: 'disabled', path: `/private/tmp/trunkline-status/activity-timer-${width}.png` })
     await page.clock.fastForward(120_001)
     await expect(activity).toHaveCount(0)
+    await expect(timer).toHaveCount(0)
     send(first, { event_kind: 'part_start', index: 0, part: { part_kind: 'text', content: 'The latest reply' } })
     await expect(status).toHaveText('Writing the response')
     send(first, { event_kind: 'part_delta', index: 0, delta: { part_delta_kind: 'text', content_delta: ' keeps growing.' } })
     await expect(page.locator('#trk-chatlog')).toContainText('The latest reply keeps growing.')
-    expect(await activity.evaluate(el => el.parentElement === el.parentElement?.parentElement?.lastElementChild)).toBe(true)
+    expect(await docked()).toEqual({ scrolls: false, composer: true, gap: 0 })
     send(first, {
       event_kind: 'function_tool_call',
       part: { part_kind: 'tool-call', tool_call_id: 'status-tool', tool_name: 'codex_mcp_tool_call', args: {} },
     })
     await expect(status).toHaveText('Using tools')
-    expect(await activity.evaluate(el => el.parentElement?.previousElementSibling?.textContent)).toContain('codex_mcp_tool_call')
-    expect(await activity.evaluate(el => el.parentElement === el.parentElement?.parentElement?.lastElementChild)).toBe(true)
+    expect(await lastRow()).toContain('codex_mcp_tool_call')
+    expect(await docked()).toEqual({ scrolls: false, composer: true, gap: 0 })
     await page.screenshot({ animations: 'disabled', path: `/private/tmp/trunkline-status/activity-tool-${width}.png` })
     const question: WireEvent = {
       event_kind: 'action_batch', batch_id: 'batch', blocks_run: true, response_mode: 'live', approvals: [],
@@ -173,38 +209,72 @@ for (const width of [1280, 390]) {
     await expect(page.locator('#trk-chathead [data-thread-activity]')).toHaveCount(0)
     await expect(activity).toHaveCount(1)
     await expect(page.locator('.trk-composer-activity')).toHaveCount(0)
-    expect(await activity.evaluate(el => el.parentElement === el.parentElement?.parentElement?.lastElementChild)).toBe(true)
+    expect(await docked()).toEqual({ scrolls: false, composer: true, gap: 0 })
     const dots = activity.locator('.lt-dots i')
-    const shimmer = activity.locator('.lt-text-swap')
     await expect(dots).toHaveCount(3)
     expect((await activity.locator('.lt-dots').boundingBox())!.x).toBeLessThan((await status.boundingBox())!.x)
     await expect(dots.first()).toHaveCSS('animation-name', 'none')
-    await expect(shimmer).toHaveCSS('animation-name', 'none')
-    await expect(shimmer).not.toHaveCSS('color', 'rgba(0, 0, 0, 0)')
+    await expect(status).not.toHaveCSS('animation-name', /trk-(text-shimmer|line-in)/)
+    await expect(status).not.toHaveCSS('color', 'rgba(0, 0, 0, 0)')
     await page.emulateMedia({ reducedMotion: 'no-preference' })
     await expect(dots.first()).toHaveCSS('animation-name', 'lt-dot-pulse')
-    await expect(shimmer).toHaveCSS('animation-name', 'trk-text-shimmer')
-    const initialPosition = await shimmer.evaluate(el => getComputedStyle(el).backgroundPositionX)
-    await expect.poll(() => shimmer.evaluate(el => getComputedStyle(el).backgroundPositionX)).not.toBe(initialPosition)
+    await expect(status).toHaveCSS('animation-name', /trk-text-shimmer/)
+    const initialPosition = await status.evaluate(el => getComputedStyle(el).backgroundPositionX)
+    await expect.poll(() => status.evaluate(el => getComputedStyle(el).backgroundPositionX)).not.toBe(initialPosition)
     await expect.poll(() => dots.first().evaluate(el => el.getAnimations()[0]?.playState)).toBe('running')
     const initialOpacity = await dots.first().evaluate(el => getComputedStyle(el).opacity)
     await expect.poll(() => dots.first().evaluate(el => getComputedStyle(el).opacity)).not.toBe(initialOpacity)
+    // A new phrase rolls in as the next line while the old one rolls out.
+    send(first, { event_kind: 'run_activity_changed', activity: 'working', display_text: 'Mulling it over…' })
+    await expect(status).toHaveText('Mulling it over')
+    await expect(status).toHaveCSS('animation-name', /^trk-line-in, trk-text-shimmer$/)
+    send(first, { event_kind: 'run_activity_changed', activity: 'compacting' })
+    await expect(status).toHaveText('Compacting context')
+    // A burst holds the phrase on screen, then shows only the latest: the ones in between never roll past.
+    await page.evaluate(() => {
+      const seen: string[] = []
+      Object.assign(window, { seen })
+      new MutationObserver(() => {
+        const text = document.querySelector('.trk-activity [data-text-current]')?.textContent
+        if (text && seen.at(-1) !== text) seen.push(text)
+      }).observe(document.querySelector('.trk-activity-dock')!, { childList: true, subtree: true, characterData: true })
+    })
+    for (const text of ['Reading files…', 'Poking around…', 'Wrapping up…']) send(first, { event_kind: 'run_activity_changed', activity: 'working', display_text: text })
+    await expect(status).toHaveText('Wrapping up')
+    expect((await page.evaluate(() => (window as unknown as { seen: string[] }).seen)).filter(text => text !== 'Compacting context')).toEqual(['Wrapping up'])
+    send(first, { event_kind: 'run_activity_changed', activity: 'compacting' })
+    await expect(status).toHaveText('Compacting context')
     await page.emulateMedia({ reducedMotion: 'reduce' })
     await expect(dots.first()).toHaveCSS('animation-name', 'none')
-    await expect(shimmer).toHaveCSS('animation-name', 'none')
-    const placement = await activity.evaluate(el => {
-      const row = el.parentElement!
-      const message = row.previousElementSibling!.getBoundingClientRect()
-      const status = row.getBoundingClientRect()
-      return { gap: status.top - message.bottom, before: row.previousElementSibling?.textContent, last: row === row.parentElement?.lastElementChild }
-    })
-    expect(placement.gap).toBeGreaterThanOrEqual(0)
-    expect(Math.round(placement.gap)).toBeLessThanOrEqual(14)
-    expect(placement.before).toContain('Include a progress report?')
-    expect(placement.last).toBe(true)
+    await expect(status).not.toHaveCSS('animation-name', /trk-(text-shimmer|line-in)/)
+    expect(await docked()).toEqual({ scrolls: false, composer: true, gap: 0 })
+    expect(await lastRow()).toContain('Include a progress report?')
     await page.screenshot({ animations: 'disabled', path: `/private/tmp/trunkline-status/activity-tail-${width}.png` })
     await page.emulateMedia({ reducedMotion: 'no-preference' })
-    const motion = page.locator('.trk-activity-motion')
+    // A row that joins the tail unfolds, so the rows above it are pushed up over a moment.
+    await page.evaluate(() => {
+      const unfolded: string[] = []
+      const animate = Element.prototype.animate
+      Element.prototype.animate = function (keyframes, options) {
+        if (Array.isArray(keyframes) && 'marginBottom' in keyframes[0]) unfolded.push(this.className)
+        return animate.call(this, keyframes, options)
+      }
+      Object.assign(window, { unfolded })
+    })
+    const unfolded = () => page.evaluate(() => (window as unknown as { unfolded: string[] }).unfolded)
+    const bars = page.locator('#trk-chatlog :is(.trk-trace-row, .trk-trace-group)')
+    const before = await bars.count()
+    send(first, { event_kind: 'function_tool_call', part: { part_kind: 'tool-call', tool_call_id: 'unfolding-tool', tool_name: 'read', args: {} } })
+    await expect.poll(() => bars.count()).toBeGreaterThan(before)
+    const opened = await unfolded()
+    expect(opened.some(name => /^trk-trace-(row|group)$/.test(name))).toBe(true)
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    const settled = await bars.count()
+    send(first, { event_kind: 'function_tool_call', part: { part_kind: 'tool-call', tool_call_id: 'still-tool', tool_name: 'read', args: {} } })
+    await expect.poll(() => bars.count()).toBeGreaterThan(settled)
+    expect(await unfolded()).toEqual(opened)
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
+    const motion = page.locator('.trk-activity-dock')
     await motion.evaluate(el => {
       const observer = new MutationObserver(() => el.getAnimations().forEach(animation => animation.pause()))
       observer.observe(el, { attributes: true, attributeFilter: ['data-exiting'] })
@@ -216,7 +286,7 @@ for (const width of [1280, 390]) {
       const animation = el.getAnimations()[0]
       animation.currentTime = 75
       return { name: getComputedStyle(el).animationName, duration: animation.effect!.getTiming().duration, opacity: Number(getComputedStyle(el).opacity) }
-    })).toMatchObject({ name: 'lt-fade-out', duration: 150 })
+    })).toMatchObject({ name: 'trk-dock-leave', duration: 380 })
     const opacity = await motion.evaluate(el => Number(getComputedStyle(el).opacity))
     expect(opacity).toBeGreaterThan(0)
     expect(opacity).toBeLessThan(1)

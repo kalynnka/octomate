@@ -252,10 +252,10 @@ async def test_clearing_status_waits_for_a_delayed_running_update(
         )
     if cancelled:
         assert isinstance(results[0], asyncio.CancelledError)
-        assert ink.statuses == ["Working…", ""]
+        assert ink.statuses == ["Starting…", ""]
     else:
         assert results == [None]
-        assert ink.statuses == ["Working…", ""]
+        assert ink.statuses == ["Starting…", ""]
 
 
 async def test_slack_thinking_appends_coalesce_off_the_drive_loop() -> None:

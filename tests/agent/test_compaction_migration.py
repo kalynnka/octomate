@@ -120,7 +120,10 @@ async def test_compaction_migration_preserves_history_on_a_copy(
             for table in tables
         } == before
     await asyncio.to_thread(command.upgrade, config, REVISION)
+    # The copy carries today's schema, so it is compared as the newest revision.
+    await asyncio.to_thread(command.stamp, config, "head")
     await asyncio.to_thread(command.check, config)
+    await asyncio.to_thread(command.stamp, config, REVISION)
     with sqlite3.connect(target) as copied:
         assert copied.execute("PRAGMA foreign_key_check").fetchall() == []
         assert copied.execute(
@@ -194,7 +197,9 @@ async def test_compaction_migration_preserves_history_on_a_copy(
             await session.commit()
         with pytest.raises(RuntimeError, match="saved conversation usage"):
             await asyncio.to_thread(command.downgrade, config, PREVIOUS)
+        await asyncio.to_thread(command.stamp, config, "head")
         await asyncio.to_thread(command.check, config)
+        await asyncio.to_thread(command.stamp, config, REVISION)
         async with maker() as session:
             stored = await session.get(
                 Conversation,
