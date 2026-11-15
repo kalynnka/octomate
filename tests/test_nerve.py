@@ -18,6 +18,7 @@ from octomate.nerve import (
     HabitatTopic,
     Impulse,
     Nerve,
+    Stimulus,
     ThreadTopic,
     UserTopic,
 )
@@ -323,3 +324,35 @@ async def test_supplied_memory_fibers_use_the_same_api_and_remain_caller_owned(
     finally:
         publisher.close()
         subscriber.close()
+
+
+async def test_a_stimulus_reaches_the_inbound_subscribers_of_its_topic() -> None:
+    nerve = Nerve[PartDeltaEvent]()
+    topic = ThreadTopic(ThreadKey.from_address(HERE))
+    first, second, other = (MemoryFiber[Stimulus[PartDeltaEvent]]() for _ in range(3))
+    with (
+        nerve.inbound.accept(topic, first),
+        nerve.inbound.accept(topic, second),
+        nerve.inbound.accept(ThreadTopic(ThreadKey.from_address(THERE)), other),
+    ):
+        nerve.inbound.deliver(topic, Stimulus(EVENT))
+        assert held(first) == [Stimulus(EVENT)]
+        assert held(second) == [Stimulus(EVENT)]
+        assert held(other) == []
+    assert not nerve.inbound.subscribers
+    # Leaving keeps each fiber open for its owner.
+    assert [first.closed, second.closed, other.closed] == [False] * 3
+
+
+async def test_the_two_directions_of_one_topic_never_cross() -> None:
+    nerve = Nerve[PartDeltaEvent]()
+    topic = ThreadTopic(ThreadKey.from_address(HERE))
+    stimuli = MemoryFiber[Stimulus[PartDeltaEvent]]()
+    async with nerve.subscribe(topic) as impulses:
+        with nerve.inbound.accept(topic, stimuli):
+            nerve.deliver(topic, Impulse(EVENT))
+            assert held(impulses) == [Impulse(EVENT)]
+            assert held(stimuli) == []
+            nerve.inbound.deliver(topic, Stimulus(EVENT))
+            assert held(impulses) == []
+            assert held(stimuli) == [Stimulus(EVENT)]

@@ -25,6 +25,7 @@ from octomate.nerve import (
     HabitatTopic,
     Impulse,
     Nerve,
+    Stimulus,
     ThreadTopic,
     Topic,
     UserTopic,
@@ -442,3 +443,22 @@ async def test_immediate_close_releases_stdio_before_reader_task_starts() -> Non
         with pytest.raises(anyio.BrokenResourceError):
             await sending.send(b"unused")
     assert not nerve.subscribers
+
+
+async def test_a_stimulus_crosses_a_pipe_to_the_far_side() -> None:
+    core = Nerve[PartDeltaEvent]()
+    topic = UserTopic(uuid7())
+    adapter = TypeAdapter(Stimulus[PartDeltaEvent])
+    sending, receiving = anyio.create_memory_object_stream[bytes](2)
+    async with (
+        StdioFiber(adapter, output=sending) as link,
+        StdioFiber(adapter, input=receiving) as guest,
+    ):
+        link.start()
+        guest.start()
+        with core.inbound.accept(topic, link):
+            core.inbound.deliver(topic, Stimulus(EVENT))
+            received = await guest.receive()
+            assert_type(received, Stimulus[PartDeltaEvent])
+            assert received == Stimulus(EVENT)
+    assert not core.inbound.subscribers
