@@ -93,6 +93,7 @@ jobs:
           - agent-deepseek
           - agent-inkling
           - channels
+          - cli
           - core
         include:
           - suite: agent-core
@@ -109,12 +110,15 @@ jobs:
             paths: tests/agent/inkling
           - suite: channels
             paths: tests/channels
+          - suite: cli
+            paths: tests/cli
           # Everything the suites above do not name, so a new test folder runs
           # here until it is given a suite of its own.
           - suite: core
             paths: >-
               tests
               --ignore=tests/channels
+              --ignore=tests/cli
               --ignore=tests/agent/core
               --ignore=tests/agent/codex
               --ignore=tests/agent/claude
