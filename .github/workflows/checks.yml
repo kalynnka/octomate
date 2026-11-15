@@ -48,6 +48,12 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels its stale run; pushes and release calls
+# each keep a group of their own.
+concurrency:
+  group: checks-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     name: Ruff and types
@@ -70,14 +76,51 @@ jobs:
         run: uv run --no-sync python .github/checks/changed.py "$BASE_SHA"
 
   test:
-    name: Unit tests (Python ${{ matrix.python }})
-    needs: lint
+    name: Unit tests · ${{ matrix.suite }} (${{ matrix.python }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.12", "3.13", "3.14", "3.15"]
+        # Pull requests test the deployed Python; main and releases test every
+        # supported one.
+        python: ${{ fromJSON(github.event_name == 'pull_request' && '["3.13"]' || '["3.12", "3.13", "3.14", "3.15"]') }}
+        suite:
+          - agent-core
+          - agent-codex
+          - agent-claude
+          - agent-acp
+          - agent-deepseek
+          - agent-inkling
+          - channels
+          - core
+        include:
+          - suite: agent-core
+            paths: tests/agent/core
+          - suite: agent-codex
+            paths: tests/agent/codex
+          - suite: agent-claude
+            paths: tests/agent/claude
+          - suite: agent-acp
+            paths: tests/agent/acp
+          - suite: agent-deepseek
+            paths: tests/agent/deepseek
+          - suite: agent-inkling
+            paths: tests/agent/inkling
+          - suite: channels
+            paths: tests/channels
+          # Everything the suites above do not name, so a new test folder runs
+          # here until it is given a suite of its own.
+          - suite: core
+            paths: >-
+              tests
+              --ignore=tests/channels
+              --ignore=tests/agent/core
+              --ignore=tests/agent/codex
+              --ignore=tests/agent/claude
+              --ignore=tests/agent/acp
+              --ignore=tests/agent/deepseek
+              --ignore=tests/agent/inkling
     steps:
       - uses: actions/checkout@v4
         with:
@@ -90,7 +133,11 @@ jobs:
           cache-suffix: checks
       - run: uv sync --locked
       - name: Run unit tests
-        run: uv run --no-sync pytest -q -n 2 --dist worksteal --durations=25
+        env:
+          SUITE_PATHS: ${{ matrix.paths }}
+        run: |
+          read -ra paths <<< "$SUITE_PATHS"
+          uv run --no-sync pytest -q -n 4 --dist worksteal --durations=25 "${paths[@]}"
 
   integration-tests:
     name: Integration tests (${{ matrix.harness }})
