@@ -376,6 +376,33 @@ def database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
+@pytest.fixture
+def in_process_migrations(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run `migrate`'s Alembic upgrades in-process against the database each one
+    names, sparing a fresh interpreter's import of the whole app per call;
+    `test_actual_migrations_initialize_empty_database` keeps the real subprocess."""
+
+    def upgrade(
+        arguments: list[str], *, env: dict[str, str] | None = None, check: bool
+    ) -> None:
+        assert arguments == [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(deployment.ALEMBIC_INI),
+            "upgrade",
+            "head",
+        ]
+        assert check
+        url = (env if env is not None else os.environ)["OCTOMATE_DB_URL"]
+        with monkeypatch.context() as patch:
+            patch.setattr(database_settings, "db_url", url)
+            command.upgrade(Config(str(deployment.ALEMBIC_INI)), "head")
+
+    monkeypatch.setattr(deployment, "subprocess", Mock(run=upgrade))
+
+
 def test_backup_includes_wal_and_preserves_source(database: Path) -> None:
     with sqlite3.connect(database) as connection:
         connection.execute("PRAGMA journal_mode=WAL")
@@ -541,6 +568,7 @@ def test_failed_rehearsal_never_migrates_source(
 @pytest.mark.parametrize(
     "previous", ["0d0112888c17", "f973cff9f077", "ebb904508e50", "2dca6fab4aca"]
 )
+@pytest.mark.usefixtures("in_process_migrations")
 def test_actual_upgrade_rehearses_on_a_copy(database: Path, previous: str) -> None:
     script = ScriptDirectory.from_config(Config(str(deployment.ALEMBIC_INI)))
     head = script.get_current_head()
@@ -553,6 +581,7 @@ def test_actual_upgrade_rehearses_on_a_copy(database: Path, previous: str) -> No
     assert deployment.revisions(snapshot.backup) == (previous,)
 
 
+@pytest.mark.usefixtures("in_process_migrations")
 def test_actual_upgrade_backfills_search_and_downgrade_keeps_source(
     database: Path,
 ) -> None:

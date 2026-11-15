@@ -4,6 +4,7 @@ import os
 import shutil
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -12,6 +13,7 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.script import ScriptDirectory
+from argon2 import PasswordHasher
 from octomate_cli.config import cli_settings
 from pydantic_ai import Conversation as PydanticConversation
 from pydantic_ai import RunContext
@@ -21,6 +23,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 import octomate.database as database
+import octomate.managers.auth as auth_manager
 from octomate.config.base import OCTOMATE_HOME_ENV
 from octomate.managers.conversation import ConversationStore
 from octomate.models import Base
@@ -70,6 +73,17 @@ def inkling_session_names(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
 def plain_status_phrases(monkeypatch: pytest.MonkeyPatch) -> None:
     """Status phrases are drawn at random; a test reads the first of each pool."""
     monkeypatch.setattr(status, "choice", lambda pool: pool[0])
+
+
+@pytest.fixture(autouse=True)
+def cheap_password_hashing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Argon2id at its minimum cost rather than its 64 MiB default, which spends
+    ~80ms per hash — and every `AuthManager` hashes a dummy password on creation."""
+    monkeypatch.setattr(
+        auth_manager,
+        "PasswordHasher",
+        partial(PasswordHasher, time_cost=1, memory_cost=8, parallelism=1),
+    )
 
 
 @pytest.fixture(autouse=True)
