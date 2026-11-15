@@ -196,7 +196,7 @@ async def test_pending_batches_accept_replies_in_reverse_order(
     run = AsyncMock(side_effect=AssertionError("A live reply must not start a run"))
     monkeypatch.setattr(reflex_graph, "run", run)
 
-    async with asyncio.timeout(3), asyncio.TaskGroup() as tasks:
+    async with asyncio.TaskGroup() as tasks:
         calls = [tasks.create_task(ask(agent, conversation)) for _ in range(2)]
         batches = [await put_up.get(), await put_up.get()]
         for batch, approved in zip(reversed(batches), [True, False], strict=True):

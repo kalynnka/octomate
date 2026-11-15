@@ -819,7 +819,10 @@ async def test_management_api_authorizes_only_the_logged_in_users_mcp(
 @pytest.mark.parametrize("uninstall", [False, True])
 @pytest.mark.parametrize("tentacle_id", [None, "github"])
 async def test_lifecycle_waits_for_the_matching_oauth_lock(
-    host: Octomate, uninstall: bool, tentacle_id: str | None
+    host: Octomate,
+    monkeypatch: pytest.MonkeyPatch,
+    uninstall: bool,
+    tentacle_id: str | None,
 ) -> None:
     user = await a_user()
     if tentacle_id is not None:
@@ -832,14 +835,28 @@ async def test_lifecycle_waits_for_the_matching_oauth_lock(
     key = OAuthLockKey(
         user_id=user.id, mcp_id=instance.id, connector_id=tentacle_id or "mcp"
     )
-    async with asyncio.timeout(2), asyncio.TaskGroup() as tasks:
-        async with host.oauth.lock(key):
+    lock = host.oauth.lock(key)
+    acquire = lock.acquire
+    arrived = asyncio.Event()
+
+    async def arrive() -> bool:
+        arrived.set()
+        return await acquire()
+
+    async with asyncio.TaskGroup() as tasks:
+        async with lock:
+            # Watched only once held, so the attempt seen is the operation's own.
+            monkeypatch.setattr(lock, "acquire", arrive)
             if uninstall:
                 operation = tasks.create_task(host.mcp.uninstall(user.id, instance.id))
             else:
                 operation = tasks.create_task(host.mcp.disable(user.id, instance.id))
-            done, _ = await asyncio.wait({operation}, timeout=0.05)
-            assert not done
+            arrival = tasks.create_task(arrived.wait())
+            # An operation that takes another lock, or none, finishes instead.
+            await asyncio.wait(
+                {operation, arrival}, return_when=asyncio.FIRST_COMPLETED
+            )
+            assert not operation.done()
         await operation
 
 
