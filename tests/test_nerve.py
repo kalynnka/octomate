@@ -24,19 +24,21 @@ from octomate.nerve import (
 )
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
+from octomate.signals import InterruptRunSignal
 from tests.support.nerve import held
 
 HERE = ChannelAddress("web", "thread", "lu", "lu", channel_thread_id="t1")
 THERE = ChannelAddress("web", "thread", "lu", "lu", channel_thread_id="t2")
 FAR = ChannelAddress("slack", "dm", "D1", "U1")
 EVENT = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="hi"))
+SIGNAL = InterruptRunSignal(invocation_id=uuid7())
 
 
 @pytest.mark.parametrize("supplied", [False, True])
 async def test_specialized_nerve_preserves_fiber_and_stream_event_types(
     supplied: bool,
 ) -> None:
-    nerve = Nerve[PartDeltaEvent]()
+    nerve = Nerve[Impulse[PartDeltaEvent]]()
     topic = UserTopic(uuid7())
     async with (
         MemoryFiber[Impulse[PartDeltaEvent]]() as publisher,
@@ -325,33 +327,19 @@ async def test_supplied_memory_fibers_use_the_same_api_and_remain_caller_owned(
         subscriber.close()
 
 
-async def test_a_stimulus_reaches_the_inbound_subscribers_of_its_topic() -> None:
-    nerve = Nerve[PartDeltaEvent]()
+async def test_a_stimulus_reaches_the_subscribers_of_its_topic() -> None:
+    signals = Nerve[Stimulus]()
     topic = ThreadTopic(ThreadKey.from_address(HERE))
-    first, second, other = (MemoryFiber[Stimulus[PartDeltaEvent]]() for _ in range(3))
+    first, second, other = (MemoryFiber[Stimulus]() for _ in range(3))
     with (
-        nerve.inbound.accept(topic, first),
-        nerve.inbound.accept(topic, second),
-        nerve.inbound.accept(ThreadTopic(ThreadKey.from_address(THERE)), other),
+        signals.accept(topic, first),
+        signals.accept(topic, second),
+        signals.accept(ThreadTopic(ThreadKey.from_address(THERE)), other),
     ):
-        nerve.inbound.deliver(topic, Stimulus(EVENT))
-        assert held(first) == [Stimulus(EVENT)]
-        assert held(second) == [Stimulus(EVENT)]
+        signals.deliver(topic, Stimulus(SIGNAL))
+        assert held(first) == [Stimulus(SIGNAL)]
+        assert held(second) == [Stimulus(SIGNAL)]
         assert held(other) == []
-    assert not nerve.inbound.subscribers
+    assert not signals.subscribers
     # Leaving keeps each fiber open for its owner.
     assert [first.closed, second.closed, other.closed] == [False] * 3
-
-
-async def test_the_two_directions_of_one_topic_never_cross() -> None:
-    nerve = Nerve[PartDeltaEvent]()
-    topic = ThreadTopic(ThreadKey.from_address(HERE))
-    stimuli = MemoryFiber[Stimulus[PartDeltaEvent]]()
-    async with nerve.subscribe(topic) as impulses:
-        with nerve.inbound.accept(topic, stimuli):
-            nerve.deliver(topic, Impulse(EVENT))
-            assert held(impulses) == [Impulse(EVENT)]
-            assert held(stimuli) == []
-            nerve.inbound.deliver(topic, Stimulus(EVENT))
-            assert held(impulses) == []
-            assert held(stimuli) == [Stimulus(EVENT)]

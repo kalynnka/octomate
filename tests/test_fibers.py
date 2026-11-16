@@ -4,6 +4,7 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, asynccontextmanager
+from pathlib import Path
 from typing import assert_type
 
 import anyio
@@ -35,8 +36,21 @@ from octomate.nerve import (
     UserTopic,
     impulse_adapter,
 )
+from octomate.schemas.awakes import (
+    CommandSignal,
+    DeferredActionBatchResponse,
+    DrivenGatewaySignal,
+    NativeGatewaySignal,
+    SummonSignal,
+    UserMessageSignal,
+)
+from octomate.schemas.commands import CommandContext, CommandIntent
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.thread import ThreadKey
+from octomate.schemas.triage import SummonDecision, TeleportDecision
+from octomate.schemas.user import UserProfile
+from octomate.signals import InterruptRunSignal, Priming, Signal
 from tests.support.nerve import held
 
 HERE = ChannelAddress("web", "thread", "u", "u", channel_thread_id="asking")
@@ -449,9 +463,10 @@ async def test_immediate_close_releases_stdio_before_reader_task_starts() -> Non
 
 
 async def test_a_stimulus_crosses_a_pipe_to_the_far_side() -> None:
-    core = Nerve[PartDeltaEvent]()
+    core = Nerve[Stimulus[Signal]]()
     topic = UserTopic(uuid7())
-    adapter = TypeAdapter(Stimulus[PartDeltaEvent])
+    sent = Stimulus(InterruptRunSignal(invocation_id=uuid7()))
+    adapter = TypeAdapter(Stimulus[Signal])
     sending, receiving = anyio.create_memory_object_stream[bytes](2)
     async with (
         StdioFiber(adapter, output=sending) as link,
@@ -459,9 +474,61 @@ async def test_a_stimulus_crosses_a_pipe_to_the_far_side() -> None:
     ):
         link.start()
         guest.start()
-        with core.inbound.accept(topic, link):
-            core.inbound.deliver(topic, Stimulus(EVENT))
+        with core.accept(topic, link):
+            core.deliver(topic, sent)
             received = await guest.receive()
-            assert_type(received, Stimulus[PartDeltaEvent])
-            assert received == Stimulus(EVENT)
-    assert not core.inbound.subscribers
+            assert_type(received, Stimulus[Signal])
+            assert received == sent
+    assert not core.subscribers
+
+
+async def test_signals_cross_a_pipe_as_themselves_with_their_priming() -> None:
+    profile = UserProfile(channel_tentacle_id="web", channel_user_id="u")
+    summon = SummonDecision(
+        reason="asked", agent_id="claude", model=None, hint="On it", brief="Do it"
+    )
+    teleport = TeleportDecision(agent_id="claude", hint="Moving", destination=THERE)
+    priming = Priming(
+        invocation_id=uuid7(),
+        session_id=str(uuid7()),
+        resume=False,
+        output_schema={"type": "object", "properties": {"n": {"type": "integer"}}},
+        allowed_tools=["Bash"],
+        cwd=Path("/home/agent/workspace"),
+    )
+    signals: list[Signal] = [
+        UserMessageSignal(
+            [MessageEvent(tentacle_id="web", user_id="u", chat_id="u", raw="hello")]
+        ),
+        DeferredActionBatchResponse(batch_id=uuid7(), approvals={uuid7(): True}),
+        CommandSignal(
+            CommandContext("claude", uuid7(), HERE, Path("/w"), None),
+            CommandIntent(command_id="compact"),
+            "delivery",
+        ),
+        NativeGatewaySignal(teleport, "claude", profile, HERE),
+        DrivenGatewaySignal(uuid7(), teleport, "claude", profile, HERE),
+        SummonSignal(summon, THERE, "inkling", profile),
+        InterruptRunSignal(invocation_id=priming.invocation_id),
+    ]
+    stimuli = TypeAdapter(Stimulus[Signal])
+    sending, receiving = anyio.create_memory_object_stream[bytes](2)
+    async with (
+        StdioFiber(stimuli, output=sending) as link,
+        StdioFiber(stimuli, input=receiving) as guest,
+    ):
+        link.start()
+        guest.start()
+        for signal in signals:
+            sent = Stimulus(signal, priming)
+            await link.send(sent)
+            received = await guest.receive()
+            # Each arrives as itself, not as a neighbour in the union.
+            assert type(received.signal) is type(signal)
+            assert received.priming == priming
+            # A profile is a transmuter, which does not compare by its fields.
+            assert stimuli.dump_json(received) == stimuli.dump_json(sent)
+    with pytest.raises(ValidationError):
+        stimuli.validate_python(
+            {"signal": {"event_kind": "interrupt_run_signal"}, "priming": None}
+        )

@@ -26,12 +26,11 @@ ledger when it opens.
 user notifications by delivering separately to each authorized user's topic.
 `Nerve.publish` owns channel and thread routing for kicks and native tails.
 
-A nerve runs two ways, and the two differ in nothing but direction. Both carry
-the nerve's events, in different envelopes: impulses run outbound, from whoever
-acted to whoever watches; stimuli run inbound, to whoever is to act. Each
-direction is a cord with its own subscribers over the same topics, so a
-subscriber of one never reads the other. The nerve itself is the outbound cord
-and holds the inbound one as `Nerve.inbound`.
+A nerve runs one way and carries one kind of envelope. Events run outbound, as
+impulses, from whoever acted to whoever watches. Signals run inbound, as
+stimuli, to whoever is to act, on a nerve of their own over the same topics, so
+a subscriber of one direction never reads the other. Kick routing belongs to
+the outbound nerve alone: `Nerve.publish` takes impulses.
 """
 
 from __future__ import annotations
@@ -59,9 +58,11 @@ from octomate.fibers import FIBER_BUFFER as FIBER_BUFFER
 from octomate.fibers import Fiber, FiberError, MemoryFiber
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
+from octomate.signals import Priming, Signal
 
 EventT = TypeVar("EventT", default=WireEvent, covariant=True)
 NerveEventT = TypeVar("NerveEventT", default=WireEvent)
+SignalT = TypeVar("SignalT", default=Signal, covariant=True)
 
 
 # Python 3.12 needs typing_extensions for a type parameter with a default.
@@ -94,10 +95,12 @@ class Impulse(Generic[EventT]):
     )
 )
 @dataclass(frozen=True)
-class Stimulus(Generic[EventT]):
-    """One event on its way in, to whoever is to act on it."""
+class Stimulus(Generic[SignalT]):
+    """One signal on its way in, to whoever is to act on it."""
 
-    event: EventT
+    signal: SignalT
+    # What core resolved for the turn the signal asks for; None when it asks for none.
+    priming: Priming | None = None
 
 
 @dataclass(frozen=True)
@@ -132,12 +135,14 @@ type EventTopic = ChannelTopic | ThreadTopic | UserTopic
 type Topic = EventTopic | HabitatTopic
 
 
+SentT = TypeVar("SentT", default=Impulse[WireEvent])
+
 impulse_adapter: TypeAdapter[Impulse[WireEvent]] = TypeAdapter(Impulse[WireEvent])
 
 
-class Cord[SentT]:
-    """One direction of a nerve: what is delivered to a topic reaches every
-    fiber accepting that topic."""
+class Nerve(Generic[SentT]):
+    """Route one kind of envelope, impulses or stimuli, through publishers and
+    subscribers backed by any fiber."""
 
     def __init__(self) -> None:
         # Each subscriber's fiber, by the topic it hears.
@@ -180,27 +185,17 @@ class Cord[SentT]:
             ):
                 fiber.fail(FiberError("Subscriber fiber cannot accept publication"))
 
-
-class Nerve(Cord[Impulse[NerveEventT]], Generic[NerveEventT]):
-    """Route impulses outbound through publishers and subscribers backed by any
-    fiber, and stimuli inbound through the same."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.inbound = Cord[Stimulus[NerveEventT]]()
-
     @asynccontextmanager
     async def subscribe(
         self,
         topic: Topic,
         *,
         backlog: float = math.inf,
-        fiber: Fiber[Impulse[NerveEventT]] | None = None,
-    ) -> AsyncGenerator[ObjectReceiveStream[Impulse[NerveEventT]]]:
-        """The receive end of a stream of the topic's impulses, from now until
+        fiber: Fiber[SentT] | None = None,
+    ) -> AsyncGenerator[ObjectReceiveStream[SentT]]:
+        """The receive end of a stream of what the topic is sent, from now until
         the block ends. Nothing is dropped: a reader that falls more than
-        `backlog` impulses behind reads what was held for it, and then its
-        stream ends.
+        `backlog` behind reads what was held for it, and then its stream ends.
 
         `ChannelTopic` names a channel's addresses, `ThreadTopic` wraps one
         `ThreadKey`, `UserTopic` wraps a registered user's UUID, and `HabitatTopic`
@@ -208,12 +203,10 @@ class Nerve(Cord[Impulse[NerveEventT]], Generic[NerveEventT]):
         Publishers choose authorized topics before publishing; the nerve does
         not filter subscribers within a topic.
 
-        A supplied fiber receives the same impulses as a local subscription.
+        A supplied fiber receives the same as a local subscription.
         Its caller owns its buffering and closure; leaving only unsubscribes it.
         """
-        subscriber = (
-            fiber if fiber is not None else MemoryFiber[Impulse[NerveEventT]](backlog)
-        )
+        subscriber = fiber if fiber is not None else MemoryFiber[SentT](backlog)
         try:
             with self.accept(topic, subscriber):
                 yield subscriber
@@ -223,7 +216,7 @@ class Nerve(Cord[Impulse[NerveEventT]], Generic[NerveEventT]):
 
     @asynccontextmanager
     async def publish(
-        self,
+        self: Nerve[Impulse[NerveEventT]],
         origin: ChannelAddress | Topic | None,
         *,
         fiber: Fiber[Impulse[NerveEventT]] | None = None,
