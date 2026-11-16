@@ -18,6 +18,7 @@ from octomate.config.habitat import (
     NativeHabitatConfig,
     SbxHabitatConfig,
 )
+from octomate.events import HabitatEvent, HabitatFailedEvent, HabitatProgressEvent
 from octomate.habitat import Habitat, ManagedHabitat, NativeHabitat
 from octomate.habitat import HabitatError as HabitatError
 from octomate.habitat.sbx import SbxHabitat
@@ -29,12 +30,7 @@ from octomate.nerve import (
     UserTopic,
 )
 from octomate.schemas.conversation import Conversation
-from octomate.schemas.habitat import (
-    HabitatFailed,
-    HabitatProgress,
-    HabitatStatus,
-    InvocationScope,
-)
+from octomate.schemas.habitat import InvocationScope
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
 from octomate.schemas.volumes import Volume
@@ -115,7 +111,7 @@ class Invocation:
 class Residence:
     user_id: UUID7
     habitat: ManagedHabitat
-    status: HabitatStatus
+    status: HabitatEvent
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     invocations: set[UUID7] = field(default_factory=set)
     needs_cleanup: bool = False  # Preparation began and shutdown has not completed.
@@ -200,7 +196,7 @@ class HabitatManager:
             self.residences[scope.user_id] = Residence(
                 user_id=scope.user_id,
                 habitat=habitat,
-                status=HabitatProgress(
+                status=HabitatProgressEvent(
                     user_id=scope.user_id,
                     habitat=habitat.name,
                     sequence=0,
@@ -209,7 +205,7 @@ class HabitatManager:
             )
         return self.residences[scope.user_id]
 
-    def status(self, scope: InvocationScope) -> HabitatStatus:
+    def status(self, scope: InvocationScope) -> HabitatEvent:
         return self.residence(scope).status
 
     def report(
@@ -226,7 +222,7 @@ class HabitatManager:
         if error is not None:
             if phase != "failed":
                 raise ValueError("Habitat errors require the failed phase")
-            residence.status = HabitatFailed(
+            residence.status = HabitatFailedEvent(
                 user_id=residence.user_id,
                 habitat=residence.habitat.name,
                 sequence=residence.status.sequence + 1,
@@ -237,7 +233,7 @@ class HabitatManager:
         else:
             if phase == "failed":
                 raise ValueError("Failed habitat reports require an error")
-            residence.status = HabitatProgress(
+            residence.status = HabitatProgressEvent(
                 user_id=residence.user_id,
                 habitat=residence.habitat.name,
                 sequence=residence.status.sequence + 1,

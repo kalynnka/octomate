@@ -15,11 +15,12 @@ from uuid_utils.compat import uuid7
 
 import octomate.habitat.sbx as sbx_module
 from octomate.config.habitat import SbxHabitatConfig
+from octomate.events import HabitatFailedEvent, HabitatProgressEvent
 from octomate.habitat import ManagedHabitat
 from octomate.habitat.sbx import SbxHabitat, SbxOptions
 from octomate.managers.habitat import HabitatError, HabitatManager
 from octomate.nerve import HabitatTopic, Nerve, UserTopic
-from octomate.schemas.habitat import HabitatFailed, HabitatProgress, InvocationScope
+from octomate.schemas.habitat import InvocationScope
 from tests.support.managers import a_workspace_manager
 from tests.support.nerve import held
 from tests.test_habitat_contracts import IMAGE
@@ -174,7 +175,7 @@ async def test_create_mounts_only_the_owners_root_scoped_and_budgeted(
             assert held(lifecycle) == observations
             phases: list[str] = []
             for impulse in observations:
-                assert isinstance(impulse.event, HabitatProgress)
+                assert isinstance(impulse.event, HabitatProgressEvent)
                 phases.append(impulse.event.phase)
             assert phases == ["preparing", "ready"]
         await manager.close()
@@ -289,7 +290,7 @@ async def test_configuration_mismatch_stops_runtime_without_replacing_it(
     with pytest.raises(HabitatError, match="settings differ"):
         async with manager.enter(scope, uuid7()):
             pytest.fail("mismatched habitat was accepted")
-    assert isinstance(manager.status(scope), HabitatFailed)
+    assert isinstance(manager.status(scope), HabitatFailedEvent)
     assert not manager.residence(scope).needs_cleanup
     assert "create" not in [c.args[0] for c in command.await_args_list]
     command.assert_any_await("stop", manager.residence(scope).habitat.name)
@@ -305,10 +306,10 @@ async def test_idle_stop_runs_only_after_last_reference(
             assert manager.residence(scope).idle is None
         async with asyncio.timeout(1):
             event = (await events.receive()).event
-            assert isinstance(event, HabitatProgress)
+            assert isinstance(event, HabitatProgressEvent)
             assert event.phase == "stopping"
             event = (await events.receive()).event
-            assert isinstance(event, HabitatProgress)
+            assert isinstance(event, HabitatProgressEvent)
             assert event.phase == "stopped"
     assert not manager.residence(scope).needs_cleanup
     await manager.close()
@@ -326,7 +327,7 @@ async def test_failed_stop_keeps_cleanup_pending(
     with pytest.raises(HabitatError, match="stop failed"):
         await manager.stop(manager.residence(scope))
     assert manager.residence(scope).needs_cleanup
-    assert isinstance(manager.status(scope), HabitatFailed)
+    assert isinstance(manager.status(scope), HabitatFailedEvent)
     command.side_effect = normal
     await manager.close()
     assert not manager.residence(scope).needs_cleanup

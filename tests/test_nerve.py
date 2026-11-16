@@ -11,7 +11,7 @@ from anyio.abc import ObjectReceiveStream, ObjectSendStream
 from pydantic_ai.messages import PartDeltaEvent, TextPartDelta
 from uuid_utils.compat import uuid7
 
-from octomate.events import MessageSentEvent
+from octomate.events import HabitatFailedEvent, HabitatProgressEvent, MessageSentEvent
 from octomate.fibers import MemoryFiber
 from octomate.nerve import (
     ChannelTopic,
@@ -23,7 +23,6 @@ from octomate.nerve import (
     UserTopic,
 )
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.habitat import HabitatFailed, HabitatProgress
 from octomate.schemas.thread import ThreadKey
 from tests.support.nerve import held
 
@@ -248,12 +247,12 @@ async def test_habitat_lifecycle_events_share_the_same_subscribers() -> None:
     topic = HabitatTopic(uuid7())
     sent: list[Impulse] = [
         Impulse(
-            HabitatProgress(
+            HabitatProgressEvent(
                 user_id=topic.user_id, habitat="local", sequence=1, phase="preparing"
             )
         ),
         Impulse(
-            HabitatFailed(
+            HabitatFailedEvent(
                 user_id=topic.user_id, habitat="local", sequence=2, message="failed"
             )
         ),

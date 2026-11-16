@@ -21,6 +21,8 @@ One stream, with these event families:
   handoffs, ledger entries and command outcomes published by the thread manager.
 - **Subagent lifecycle** (`SubagentStartedEvent`/`SubagentSettledEvent`) — an
   accomplice's run opening and finishing around its `commission` or `whisper` call.
+- **Habitat lifecycle** (`HabitatEvent`) — the phases a user's habitat passes
+  through, published by the habitat manager.
 
 Display, action and subagent events are emitted by capabilities (a capability
 bundles a tool + instructions + `wrap_run_event_stream`) or the suspender; the
@@ -44,6 +46,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -70,7 +73,6 @@ from octomate.schemas.deferred import (
     DeferredQuestion,
     QuestionAnswer,
 )
-from octomate.schemas.habitat import HabitatFailed, HabitatProgress
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.thread import Handoff
 from octomate.schemas.todos import Todo
@@ -195,6 +197,35 @@ type ThreadEvent = (
     | ThreadMessageRecordedEvent
     | ThreadCommandOutcomeRecordedEvent
 )
+
+
+class HabitatObservation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    user_id: UUID7
+    habitat: str
+    sequence: int = Field(ge=0, description="Monotonic within this manager lifetime.")
+    updated_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
+    invocation_id: UUID7 | None = None
+    thread_id: UUID7 | None = None
+
+
+class HabitatProgressEvent(HabitatObservation):
+    event_kind: Literal["habitat_progress"] = "habitat_progress"
+    phase: Literal["unknown", "preparing", "starting", "ready", "stopping", "stopped"]
+
+
+class HabitatFailedEvent(HabitatObservation):
+    event_kind: Literal["habitat_failed"] = "habitat_failed"
+    phase: Literal["failed"] = "failed"
+    message: str = Field(
+        description="Operator-actionable text without guest diagnostics."
+    )
+
+
+type HabitatEvent = Annotated[
+    HabitatProgressEvent | HabitatFailedEvent, Field(discriminator="event_kind")
+]
 
 
 class RunStartedEvent(BaseModel):
@@ -591,8 +622,7 @@ type WireEvent = (
     | RunEndedEvent
     | RunErrorEvent
     | GatewayEvent
-    | HabitatProgress
-    | HabitatFailed
+    | HabitatEvent
 )
 
 # Serialization-only: wire consumers never validate events back in, so the

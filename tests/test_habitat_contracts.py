@@ -17,16 +17,14 @@ from octomate.config.agents import InklingConfig
 from octomate.config.base import OctomateConfig
 from octomate.config.habitat import NativeHabitatConfig, SbxHabitatConfig
 from octomate.config.models import ModelConfig
+from octomate.events import HabitatProgressEvent
 from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatError, HabitatManager
 from octomate.nerve import (
     Impulse,
     impulse_adapter,
 )
-from octomate.schemas.habitat import (
-    HabitatProgress,
-    InvocationScope,
-)
+from octomate.schemas.habitat import InvocationScope
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.agent import Agent
@@ -142,7 +140,7 @@ def test_impulse_adapter_accepts_lifecycle_and_run_events_and_rejects_extra_fiel
 ):
     messages: list[Impulse] = [
         Impulse(
-            HabitatProgress(
+            HabitatProgressEvent(
                 user_id=uuid7(),
                 habitat="local",
                 sequence=1,

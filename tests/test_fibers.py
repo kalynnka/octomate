@@ -12,7 +12,11 @@ from pydantic import TypeAdapter, ValidationError
 from pydantic_ai.messages import PartDeltaEvent, TextPartDelta
 from uuid_utils.compat import uuid7
 
-from octomate.events import RunEndedEvent, RunStartedEvent
+from octomate.events import (
+    HabitatFailedEvent,
+    RunEndedEvent,
+    RunStartedEvent,
+)
 from octomate.fibers import (
     FIBER_BUFFER,
     MAX_FRAME_BYTES,
@@ -32,7 +36,6 @@ from octomate.nerve import (
     impulse_adapter,
 )
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.habitat import HabitatFailed
 from octomate.schemas.thread import ThreadKey
 from tests.support.nerve import held
 
@@ -281,7 +284,7 @@ async def test_bad_peer_disconnects_only_its_fiber(fault: str) -> None:
     sending, incoming = anyio.create_memory_object_stream[bytes](2)
     fiber = StdioFiber(impulse_adapter, input=incoming)
     frame = Impulse(
-        HabitatFailed(
+        HabitatFailedEvent(
             user_id=topic.user_id, habitat="local", sequence=1, message="failed"
         )
     )
@@ -378,7 +381,7 @@ async def test_clean_eof_drains_events_before_detaching_publisher() -> None:
     fiber = StdioFiber(impulse_adapter, input=incoming)
     impulses = [
         Impulse(
-            HabitatFailed(
+            HabitatFailedEvent(
                 user_id=topic.user_id, habitat="local", sequence=i, message="failed"
             )
         )
