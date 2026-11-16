@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
@@ -114,6 +115,8 @@ class Residence:
     status: HabitatEvent
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     invocations: set[UUID7] = field(default_factory=set)
+    # How many of the invocations inside belong to each conversation.
+    conversations: Counter[UUID7] = field(default_factory=Counter)
     needs_cleanup: bool = False  # Preparation began and shutdown has not completed.
     idle: asyncio.TimerHandle | None = None
     stopping: asyncio.Task[None] | None = None
@@ -177,6 +180,11 @@ class HabitatManager:
                 workspace=workspace,
                 habitat=residence.habitat,
             )
+
+    def hosts(self, user_id: UUID7, conversation_id: UUID7) -> bool:
+        """Whether an invocation of the conversation is inside the user's sandbox now."""
+        residence = self.residences.get(user_id)
+        return residence is not None and conversation_id in residence.conversations
 
     def residence(self, scope: InvocationScope) -> Residence:
         """Internal lookup; callers must supply a core-authorized owner."""
@@ -260,6 +268,7 @@ class HabitatManager:
             if residence.status.phase != "ready":
                 await self.prepare(residence, scope, invocation_id)
             residence.invocations.add(invocation_id)
+            residence.conversations[scope.conversation_id] += 1
         try:
             yield residence
         finally:
@@ -267,6 +276,9 @@ class HabitatManager:
                 cleanup.enter_context(anyio.CancelScope(shield=True))
                 await cleanup.enter_async_context(residence.lock)
                 residence.invocations.discard(invocation_id)
+                residence.conversations[scope.conversation_id] -= 1
+                if not residence.conversations[scope.conversation_id]:
+                    del residence.conversations[scope.conversation_id]
                 if not residence.invocations and not self.closed:
                     residence.idle = asyncio.get_running_loop().call_later(
                         residence.habitat.idle_timeout, self.idle_out, residence

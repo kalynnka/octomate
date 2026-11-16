@@ -160,3 +160,10 @@ client_message_adapter: TypeAdapter[StreamClientMessage] = TypeAdapter(
 server_message_adapter: TypeAdapter[StreamServerMessage] = TypeAdapter(
     StreamServerMessage
 )
+
+
+class TranscriptKept(BaseModel):
+    """How much of a driven session's transcript the server holds. It answers an
+    upload: stored, or refused because the bytes did not start where these end."""
+
+    size: int = Field(ge=0, description="Bytes kept; where the next upload starts.")

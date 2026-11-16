@@ -40,7 +40,15 @@ from claude_agent_sdk import (
     ToolPermissionContext,
 )
 from claude_agent_sdk.types import Message, SystemPromptPreset
-from fastapi import APIRouter, Depends, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import JSONResponse
 from octomate_protocol.gateway import GatewayTool, gateway_tool
 from octomate_protocol.stream import (
@@ -51,6 +59,7 @@ from octomate_protocol.stream import (
     StreamHello,
     StreamLine,
     StreamWelcome,
+    TranscriptKept,
     client_message_adapter,
 )
 from pydantic import UUID7, TypeAdapter, ValidationError
@@ -350,6 +359,62 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             # Claude Code reads the JSON body as the hook's decision; an empty object
             # decides nothing, which is what an observer should do.
             return JSONResponse({})
+
+        @router.post(
+            "/hooks/claude/transcripts/{conversation_id}",
+            summary="Upload more of a driven Claude session's transcript",
+            response_model=TranscriptKept,
+            responses={409: {"model": TranscriptKept}},
+        )
+        async def upload_transcript(
+            conversation_id: UUID7,
+            offset: int,
+            request: Request,
+            sender: UserProfile = Depends(resolve_sender),  # noqa: B008
+        ) -> TranscriptKept | JSONResponse:
+            """Append the session file's bytes from `offset`, sent by the machine
+            the turn runs on, and answer how far the kept bytes reach.
+
+            Only the user whose sandbox is running the conversation's turn may
+            upload. Bytes that do not start where the kept ones end are refused
+            with that end; an empty upload asks for it.
+            """
+            owner_id = sender.user_id
+            if owner_id is None or not self.habitats.hosts(owner_id, conversation_id):
+                raise HTTPException(404, "No sandbox turn on that conversation")
+            conversation = await self.conversations.get(
+                conversation_id, with_runs=False
+            )
+            if conversation.agent_tentacle_id != self.id:
+                raise HTTPException(404, "No sandbox turn on that conversation")
+            kept = 0
+            if conversation.transcript_file_id is not None:
+                kept = (
+                    await self.files.get(
+                        conversation.transcript_file_id, owner_id=owner_id
+                    )
+                ).size
+            data = await request.body()
+            if not data:
+                return TranscriptKept(size=kept)
+            if not data.endswith(b"\n"):
+                raise HTTPException(422, "A transcript upload ends at a line break")
+            if offset != kept:
+                return JSONResponse(
+                    TranscriptKept(size=kept).model_dump(), status_code=409
+                )
+            stored = await self.conversations.store_transcript(
+                UploadFile(
+                    BytesIO(data),
+                    filename=f"{conversation.external_id or conversation.id}.jsonl",
+                    headers=Headers({"content-type": "application/jsonl"}),
+                ),
+                offset,
+                conversation=conversation,
+                files=self.files,
+                owner_id=owner_id,
+            )
+            return TranscriptKept(size=stored.size)
 
         # FastAPI resolves this custom profile dependency at the handshake.
         @router.websocket("/hooks/claude/stream")
