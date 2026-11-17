@@ -29,7 +29,8 @@ RUN --mount=type=cache,target=/root/.npm \
 
 WORKDIR /opt/octomate
 COPY --from=dependencies /opt/octomate/.venv /opt/octomate/.venv
-RUN .venv/bin/python -c 'from pathlib import Path; import claude_agent_sdk; from codex_cli_bin import bundled_codex_path; Path("/usr/local/bin/claude").symlink_to(Path(claude_agent_sdk.__file__).parent / "_bundled/claude"); Path("/usr/local/bin/codex").symlink_to(bundled_codex_path())' \
+RUN ln -s /opt/octomate/.venv/lib/python3.13/site-packages/claude_agent_sdk/_bundled/claude /usr/local/bin/claude \
+    && ln -s /opt/octomate/.venv/lib/python3.13/site-packages/codex_cli_bin/bin/codex /usr/local/bin/codex \
     && .venv/bin/python -VV > /opt/octomate/python-version.txt \
     && uv pip freeze > /opt/octomate/python-packages.txt \
     && dpkg-query -W > /opt/octomate/system-packages.txt \
