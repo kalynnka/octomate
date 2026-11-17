@@ -2,11 +2,14 @@
 
 from abc import ABC, abstractmethod
 from contextlib import AbstractAsyncContextManager
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from anyio.abc import ByteStream
 from pydantic import UUID7
+from yarl import URL
 
+from octomate.config.habitat import BaseHabitatConfig
 from octomate.schemas.volumes import Volume
 
 
@@ -14,8 +17,22 @@ class HabitatError(RuntimeError):
     """An actionable failure safe to publish without guest or credential output."""
 
 
+@dataclass(kw_only=True)
 class Habitat(ABC):
     """The execution environment core prepares for an agent invocation."""
+
+    config: BaseHabitatConfig  # This environment's settings, including core access.
+
+    @property
+    def core_url(self) -> str:
+        """Core's HTTP origin as reached from this runtime."""
+        address = URL(str(self.config.core_address)).origin()
+        match address.host:
+            case "0.0.0.0":
+                return str(address.with_host("127.0.0.1"))
+            case "::":
+                return str(address.with_host("::1"))
+        return str(address)
 
     @property
     @abstractmethod

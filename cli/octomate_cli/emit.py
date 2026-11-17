@@ -31,8 +31,6 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from octomate_protocol.hooks import NativeHookEvent
-from openai_codex import CodexError
-from openai_codex.client import CodexClient
 
 TOKEN_ENV = "OCTOMATE_CLI_TOKEN"
 OCTOMATE_URL_ENV = "OCTOMATE_CLI_URL"
@@ -95,6 +93,19 @@ def main(url: str, token: str | None) -> int:
         and payload.agent_id is None
         and payload.hook_event_name in {"SessionStart", "UserPromptSubmit", "Stop"}
     ):
+        # Other agents' hooks do not require the optional Codex SDK.
+        try:
+            from openai_codex import CodexError
+            from openai_codex.client import CodexClient
+        except ModuleNotFoundError as error:
+            if error.name != "openai_codex":
+                raise
+            print(
+                "octomate: Codex session lookup requires the Codex SDK; "
+                "install octomate-cli[codex]",
+                file=sys.stderr,
+            )
+            return 1
         try:
             with CodexClient() as client:
                 client.initialize()

@@ -147,7 +147,7 @@ class HabitatManager:
         projects = self.workspaces.projects
         if isinstance(self.config, NativeHabitatConfig):
             project = await projects.of(thread) if projects.roots else None
-            habitat = NativeHabitat()
+            habitat = NativeHabitat(config=self.config)
             await habitat.prepare()
             try:
                 async with self.workspaces.open(
@@ -181,7 +181,7 @@ class HabitatManager:
                 habitat=residence.habitat,
             )
 
-    def hosts(self, user_id: UUID7, conversation_id: UUID7) -> bool:
+    def residenced(self, user_id: UUID7, conversation_id: UUID7) -> bool:
         """Whether an invocation of the conversation is inside the user's sandbox now."""
         residence = self.residences.get(user_id)
         return residence is not None and conversation_id in residence.conversations

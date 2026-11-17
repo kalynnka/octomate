@@ -138,7 +138,7 @@ async def test_custom_harness_discovers_selects_and_reopens(
             {"default"} if catalog == "none" else {"fast", "careful"}
         )
         assert agent.default_model == (None if catalog == "none" else "fast")
-        assert not agent.routers()
+        assert not agent.hook_router.routes
         async with async_session() as session:
             assert not await session.list(Conversation)
             assert not await session.list(AgentRun)

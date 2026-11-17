@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field, replace
@@ -43,8 +44,6 @@ from claude_agent_sdk.types import Message, SystemPromptPreset
 from fastapi import (
     APIRouter,
     Depends,
-    HTTPException,
-    Request,
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
@@ -59,7 +58,6 @@ from octomate_protocol.stream import (
     StreamHello,
     StreamLine,
     StreamWelcome,
-    TranscriptKept,
     client_message_adapter,
 )
 from pydantic import UUID7, TypeAdapter, ValidationError
@@ -93,7 +91,7 @@ from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
 )
-from octomate.habitat import ManagedHabitat
+from octomate.habitat import HabitatError, ManagedHabitat
 from octomate.managers.habitat import Invocation
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
 from octomate.nerve import Impulse
@@ -310,16 +308,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             if state.open_turn is not None and state.open_turn.native is not None
         }
 
-    def routers(self) -> tuple[APIRouter]:
-        """The tentacle's HTTP surface, mounted by `Octomate.connect`: the hook router
-        native Claude clients (app / CLI / VSCode) POST their session events into, and
-        the stream endpoint every session's client-side tail feeds raw transcript
-        lines through (`octomate claude tail`) — the server never reads a transcript
-        from disk, this machine's sessions included. `octomate claude hooks install`
-        writes the client-side settings that point a session at both.
-        """
-        return (self.hook_router,)
-
     @cached_property
     def hook_router(self) -> APIRouter:
         """The routes behind `routers()`; cached so they are built once. The guard
@@ -359,62 +347,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             # Claude Code reads the JSON body as the hook's decision; an empty object
             # decides nothing, which is what an observer should do.
             return JSONResponse({})
-
-        @router.post(
-            "/hooks/claude/transcripts/{conversation_id}",
-            summary="Upload more of a driven Claude session's transcript",
-            response_model=TranscriptKept,
-            responses={409: {"model": TranscriptKept}},
-        )
-        async def upload_transcript(
-            conversation_id: UUID7,
-            offset: int,
-            request: Request,
-            sender: UserProfile = Depends(resolve_sender),  # noqa: B008
-        ) -> TranscriptKept | JSONResponse:
-            """Append the session file's bytes from `offset`, sent by the machine
-            the turn runs on, and answer how far the kept bytes reach.
-
-            Only the user whose sandbox is running the conversation's turn may
-            upload. Bytes that do not start where the kept ones end are refused
-            with that end; an empty upload asks for it.
-            """
-            owner_id = sender.user_id
-            if owner_id is None or not self.habitats.hosts(owner_id, conversation_id):
-                raise HTTPException(404, "No sandbox turn on that conversation")
-            conversation = await self.conversations.get(
-                conversation_id, with_runs=False
-            )
-            if conversation.agent_tentacle_id != self.id:
-                raise HTTPException(404, "No sandbox turn on that conversation")
-            kept = 0
-            if conversation.transcript_file_id is not None:
-                kept = (
-                    await self.files.get(
-                        conversation.transcript_file_id, owner_id=owner_id
-                    )
-                ).size
-            data = await request.body()
-            if not data:
-                return TranscriptKept(size=kept)
-            if not data.endswith(b"\n"):
-                raise HTTPException(422, "A transcript upload ends at a line break")
-            if offset != kept:
-                return JSONResponse(
-                    TranscriptKept(size=kept).model_dump(), status_code=409
-                )
-            stored = await self.conversations.store_transcript(
-                UploadFile(
-                    BytesIO(data),
-                    filename=f"{conversation.external_id or conversation.id}.jsonl",
-                    headers=Headers({"content-type": "application/jsonl"}),
-                ),
-                offset,
-                conversation=conversation,
-                files=self.files,
-                owner_id=owner_id,
-            )
-            return TranscriptKept(size=stored.size)
 
         # FastAPI resolves this custom profile dependency at the handshake.
         @router.websocket("/hooks/claude/stream")
@@ -1256,6 +1188,34 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             # them past the turn that started them.
             "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
         }
+        settings = None
+        if managed:
+            key = await self.runtime_api_key(invocation.owner_id)
+            if key is None:
+                raise HabitatError("Claude transcript upload requires authentication")
+            env.update(
+                OCTOMATE_CLI_URL=invocation.habitat.core_url,
+                OCTOMATE_CLI_TOKEN=key.token.get_secret_value(),
+            )
+            settings = json.dumps(
+                {
+                    "hooks": {
+                        event: [
+                            {
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "octomate claude upload "
+                                        f"--conversation {conversation.id}",
+                                        "timeout": 60,
+                                    }
+                                ]
+                            }
+                        ]
+                        for event in ("Stop", "SessionEnd")
+                    }
+                }
+            )
         if self.config.instrument:
             trace_environment = octomate_trace_environment()
             if trace_environment is not None:
@@ -1266,6 +1226,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                 )
         options = ClaudeAgentOptions(
             cwd=run_cwd,
+            settings=settings,
             # A project's other roots are directories this work legitimately spans —
             # a settings tree, a sibling checkout — so Claude may reach them too.
             # A sandbox mounts the owner's storage alone, so they are not there.
@@ -1293,7 +1254,10 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                 ],
             },
             mcp_servers=mcp_servers,
-            extra_args={"safe-mode": None, "thinking-display": "summarized"},
+            extra_args={
+                **({} if managed else {"safe-mode": None}),
+                "thinking-display": "summarized",
+            },
             strict_mcp_config=True,
             output_format=output_format,
             # Stream partial assistant messages so the accumulator can emit token

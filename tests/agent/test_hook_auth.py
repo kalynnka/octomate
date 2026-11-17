@@ -143,7 +143,7 @@ def test_a_hook_router_mounts_before_any_user_registers() -> None:
         bearers=host.bearers,
         mcp=host.mcp,
     )
-    assert len(tentacle.routers()) == 1
+    assert len(tentacle.routers()) == 2
 
 
 @pytest.mark.parametrize("token", ["wrong", SECRET.get_secret_value()])

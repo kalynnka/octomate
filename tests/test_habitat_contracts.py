@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+from ipaddress import IPv4Address
 from unittest.mock import Mock
 
 import pytest
-from pydantic import ValidationError
+from pydantic import HttpUrl, ValidationError
 from pydantic_ai.messages import (
     PartDeltaEvent,
     TextPartDelta,
@@ -18,6 +19,7 @@ from octomate.config.base import OctomateConfig
 from octomate.config.habitat import NativeHabitatConfig, SbxHabitatConfig
 from octomate.config.models import ModelConfig
 from octomate.events import HabitatProgressEvent
+from octomate.habitat import NativeHabitat
 from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatError, HabitatManager
 from octomate.nerve import (
@@ -30,6 +32,24 @@ from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.agent import Agent
 
 IMAGE = "octomate-sandbox@sha256:" + "a" * 64
+
+
+@pytest.mark.parametrize(
+    ("address", "expected"),
+    [
+        ("http://192.0.2.10:8123", "http://192.0.2.10:8123"),
+        ("https://core.example:8443", "https://core.example:8443"),
+        ("http://0.0.0.0:8123", "http://127.0.0.1:8123"),
+        ("http://[::]:8123", "http://[::1]:8123"),
+    ],
+)
+def test_native_habitat_translates_its_core_address(
+    address: str, expected: str
+) -> None:
+    configured = NativeHabitatConfig(core_address=HttpUrl(address))
+    habitat = NativeHabitat(config=configured)
+    assert habitat.config is configured
+    assert habitat.core_url == expected
 
 
 async def test_native_default_constructs_an_idle_habitat_manager(
@@ -71,6 +91,8 @@ async def test_native_manager_refuses_vm_acquisition() -> None:
         {"internet_access": "yes"},
         {"version": "0.47.0"},
         {"unknown": "setting"},
+        {"core_address": "ftp://core.example:8000"},
+        {"core_address": "not a URL"},
     ],
 )
 def test_invalid_sbx_settings_are_rejected(
@@ -89,7 +111,11 @@ async def test_sbx_cannot_silently_serve_native_before_dispatch_is_implemented()
 ):
     app = Octomate(
         config=OctomateConfig(
-            habitat=SbxHabitatConfig(image=IMAGE),
+            host=IPv4Address("192.0.2.10"),
+            port=8123,
+            habitat=SbxHabitatConfig(
+                image=IMAGE, core_address=HttpUrl("https://core.example:8443")
+            ),
             tentacles={
                 "inkling": InklingConfig(
                     models=[ModelConfig(name="openai:gpt-4.1-mini")]
@@ -107,6 +133,11 @@ async def test_sbx_cannot_silently_serve_native_before_dispatch_is_implemented()
         )
     )
     assert app.habitats.config is app.config.habitat
+    scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
+    assert (
+        app.habitats.residence(scope).habitat.core_url
+        == "https://host.docker.internal:8443"
+    )
     with pytest.raises(RuntimeError, match="not yet wired into React"):
         async with app.lifespan(app):
             pytest.fail("sbx must not reach native serving")

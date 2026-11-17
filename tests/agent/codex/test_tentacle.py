@@ -2880,7 +2880,7 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
         )
         key = await octomate.auth.authenticate_api_key(token, scope="mcp")
         assert key is not None
-        assert await octomate.auth.authenticate_api_key(token, scope="hooks") is None
+        assert key.scopes == ["hooks", "mcp"]
     assert await octomate.auth.authenticate_api_key(token, scope="mcp") is None
 
     config = FakeCodex.last_config

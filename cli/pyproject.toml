@@ -10,7 +10,6 @@ requires-python = ">=3.12"
 # Internal deployment maintenance runs in the installed service environment.
 dependencies = [
     "octomate-protocol>=0.0.1,<0.1",
-    "openai-codex>=0.162.1",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.14.1",
     "pyyaml>=6",
@@ -22,6 +21,10 @@ dependencies = [
     "watchfiles>=1.1.1",
     "websockets>=15",
 ]
+
+[project.optional-dependencies]
+claude = ["claude-agent-sdk>=0.2.165"]
+codex = ["openai-codex>=0.162.1"]
 
 [project.urls]
 Repository = "https://github.com/kalynnka/octomate"

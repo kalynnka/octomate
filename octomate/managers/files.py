@@ -20,6 +20,16 @@ from octomate.schemas.files import File, FileVariant, FileVariantAdapter
 from octomate.types.files import FileProviderName
 
 
+class FileOffsetConflict(ValueError):
+    """An append starts at an offset that no longer matches the stored file."""
+
+    size: int  # Retained byte count checked under the file lock.
+
+    def __init__(self, size: int) -> None:
+        super().__init__("Append offset does not match the stored file size")
+        self.size = size
+
+
 @dataclass
 class FileManager(Manager, Locks[uuid.UUID]):
     """Keep file metadata in the database and contents in the injected OpenDAL operator.
@@ -268,7 +278,7 @@ class FileManager(Manager, Locks[uuid.UUID]):
             if stored is None:
                 raise FileNotFoundError(str(file_id))
             if stored.size != offset:
-                raise ValueError("Append offset does not match the stored file size")
+                raise FileOffsetConflict(stored.size)
             metadata = await self.storage.stat(stored.key)
             if metadata.content_length != stored.size:
                 raise ValueError("Stored content size differs from file metadata")

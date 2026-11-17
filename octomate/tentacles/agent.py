@@ -16,11 +16,15 @@ from contextlib import (
 )
 from datetime import UTC, datetime
 from functools import cached_property
+from io import BytesIO
 from pathlib import Path
 from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self, TypeVar, overload
 
 import anyio
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
+from octomate_protocol.stream import TranscriptKept
 from pydantic import UUID7
 from pydantic_ai import (
     AgentCapability,
@@ -42,13 +46,15 @@ from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
+from starlette.datastructures import Headers
 
 from octomate.config.agents import AgentConfig, AgentRouteModelName
 from octomate.config.habitat import NativeHabitatConfig
 from octomate.habitat import HabitatError
+from octomate.managers.files import FileOffsetConflict
 from octomate.managers.habitat import Invocation
 from octomate.schemas.agent import AgentInfo
-from octomate.schemas.auth import IssuedApiKey
+from octomate.schemas.auth import IssuedApiKey, UserApiKey
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
     CommandCatalog,
@@ -100,7 +106,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     conversations: ConversationManager
     workspaces: WorkspaceManager
     auth: AuthManager | None
-    api_keys: dict[UUID7, IssuedApiKey]  # One MCP credential per user for this agent.
+    api_keys: dict[UUID7, IssuedApiKey]  # One credential per user for this agent.
     api_key_lock: asyncio.Lock
     habitats: HabitatManager
     # Whether a run can be hosted in a managed habitat instead of on the host.
@@ -130,8 +136,87 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         self.api_key_lock = asyncio.Lock()
         self.habitats = habitats
 
+    def routers(self) -> tuple[APIRouter, ...]:
+        return self.hook_router, self.transcript_router
+
+    @cached_property
+    def hook_router(self) -> APIRouter:
+        """Harness-specific hook routes; empty for agents without hook endpoints."""
+        return APIRouter(tags=[self.id])
+
+    @cached_property
+    def transcript_router(self) -> APIRouter:
+        """Upload routes bound to this agent's conversations and storage."""
+        # Hook dependencies import the application, which imports this base class.
+        from octomate.tentacles.hooks import verify_hook_key
+
+        router = APIRouter(tags=[self.id])
+
+        @router.post(
+            f"/hooks/{self.id}/transcripts/{{conversation_id}}",
+            response_model=TranscriptKept,
+            responses={409: {"model": TranscriptKept}},
+        )
+        async def upload_transcript(
+            conversation_id: UUID7,
+            offset: int,
+            request: Request,
+            # FastAPI injects the key; the dependency is local to this property.
+            key: UserApiKey = Depends(verify_hook_key),  # noqa: B008
+        ) -> TranscriptKept | JSONResponse:
+            """Append complete transcript lines for the owner's active habitat invocation.
+
+            An empty body asks how many bytes are kept. A nonempty body must continue
+            from that offset. The harness's transcript contents are stored unchanged.
+            """
+            owner_id = key.user_id
+            if not self.habitats.residenced(owner_id, conversation_id):
+                raise HTTPException(
+                    404, "No active habitat invocation on that conversation"
+                )
+            conversation = await self.conversations.get(
+                conversation_id, with_runs=False
+            )
+            if conversation.agent_tentacle_id != self.id:
+                raise HTTPException(404, "Conversation belongs to another agent")
+            kept = 0
+            if conversation.transcript_file_id is not None:
+                kept = (
+                    await self.files.get(
+                        conversation.transcript_file_id, owner_id=owner_id
+                    )
+                ).size
+            data = await request.body()
+            if not data:
+                return TranscriptKept(size=kept)
+            if not data.endswith(b"\n"):
+                raise HTTPException(422, "A transcript upload ends at a line break")
+            if offset != kept:
+                return JSONResponse(
+                    TranscriptKept(size=kept).model_dump(), status_code=409
+                )
+            try:
+                stored = await self.conversations.store_transcript(
+                    UploadFile(
+                        BytesIO(data),
+                        filename=f"{conversation.external_id or conversation.id}.jsonl",
+                        headers=Headers({"content-type": "application/jsonl"}),
+                    ),
+                    offset,
+                    conversation=conversation,
+                    files=self.files,
+                    owner_id=owner_id,
+                )
+            except FileOffsetConflict as error:
+                return JSONResponse(
+                    TranscriptKept(size=error.size).model_dump(), status_code=409
+                )
+            return TranscriptKept(size=stored.size)
+
+        return router
+
     async def runtime_api_key(self, user_id: UUID7 | None) -> IssuedApiKey | None:
-        """Reuse the user's MCP credential, replacing it when its lifetime expires."""
+        """Reuse the user's runtime credential, replacing it when its lifetime expires."""
         auth = self.auth
         if user_id is None or auth is None:
             return None
@@ -148,7 +233,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
                 issued = await auth.create_api_key(
                     user_id,
                     name=f"{self.id} runtime",
-                    scopes=["mcp"],
+                    scopes=["hooks", "mcp"],
                     expires_at=datetime.now(UTC) + auth.config.runtime_api_key_lifetime,
                 )
                 self.api_keys[user_id] = issued

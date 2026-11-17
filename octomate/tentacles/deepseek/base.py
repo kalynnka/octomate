@@ -289,9 +289,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             if state.open_turn is not None and state.open_turn.native is not None
         }
 
-    def routers(self) -> tuple[APIRouter]:
-        return (self.hook_router,)
-
     @cached_property
     def hook_router(self) -> APIRouter:
         """The hook pipe native dsh sessions POST their events into, and the

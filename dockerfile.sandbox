@@ -8,7 +8,11 @@ COPY cli/pyproject.toml cli/pyproject.toml
 COPY protocol/pyproject.toml protocol/pyproject.toml
 RUN --mount=type=cache,target=/root/.cache/uv \
     UV_HTTP_TIMEOUT=180 UV_CONCURRENT_DOWNLOADS=4 UV_LINK_MODE=copy \
-    uv sync --locked --only-group sandbox --no-editable
+    uv sync --locked --only-group sandbox --no-install-workspace
+COPY cli cli
+COPY protocol protocol
+RUN --mount=type=cache,target=/root/.cache/uv \
+    UV_LINK_MODE=copy uv sync --locked --only-group sandbox --no-editable
 
 FROM python
 

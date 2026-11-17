@@ -93,18 +93,18 @@ async def test_concurrent_acquisitions_share_one_vm_and_keep_peer_alive(
     execute.assert_not_called()
 
 
-async def test_a_conversation_is_hosted_while_an_invocation_of_it_is_inside(
+async def test_a_conversation_is_residenced_while_inside(
     manager: HabitatManager, scope: InvocationScope
 ) -> None:
-    assert not manager.hosts(scope.user_id, scope.conversation_id)
+    assert not manager.residenced(scope.user_id, scope.conversation_id)
     async with manager.enter(scope, uuid7()):
         async with manager.enter(scope, uuid7()):
-            assert manager.hosts(scope.user_id, scope.conversation_id)
+            assert manager.residenced(scope.user_id, scope.conversation_id)
         # One of the two has left; the conversation is still inside.
-        assert manager.hosts(scope.user_id, scope.conversation_id)
-        assert not manager.hosts(scope.user_id, uuid7())
-        assert not manager.hosts(uuid7(), scope.conversation_id)
-    assert not manager.hosts(scope.user_id, scope.conversation_id)
+        assert manager.residenced(scope.user_id, scope.conversation_id)
+        assert not manager.residenced(scope.user_id, uuid7())
+        assert not manager.residenced(uuid7(), scope.conversation_id)
+    assert not manager.residenced(scope.user_id, scope.conversation_id)
     assert not manager.residence(scope).conversations
     await manager.close()
 
@@ -229,11 +229,16 @@ async def test_manager_uses_the_habitat_base_class(
 
     class OtherHabitat(ManagedHabitat):
         def __init__(self) -> None:
+            super().__init__(config=manager.config)
             self.user_id = scope.user_id
 
         @property
         def name(self) -> str:
             return "another-runtime"
+
+        @property
+        def core_url(self) -> str:
+            return "http://core:8000"
 
         def path(self, path: Path, *, root: Path | None) -> Path:
             return path

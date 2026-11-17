@@ -113,8 +113,7 @@ select = [
 [dependency-groups]
 sandbox = [
     "agent-client-protocol",
-    "claude-agent-sdk",
-    "openai-codex",
+    "octomate-cli[claude,codex]",
     "pydantic-ai-slim[anthropic,bedrock,google,mcp,openai]",
     "pydantic-ai-harness[code-mode]",
 ]

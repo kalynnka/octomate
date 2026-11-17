@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import platform
 import re
@@ -17,6 +16,7 @@ import anyio
 import sh
 from anyio.abc import UNIXSocketStream
 from pydantic import UUID7
+from yarl import URL
 
 from octomate.config.habitat import SbxHabitatConfig
 from octomate.habitat.base import HabitatError, ManagedHabitat
@@ -65,6 +65,15 @@ class SbxHabitat(ManagedHabitat):
     @property
     def idle_timeout(self) -> float:
         return self.config.idle_timeout
+
+    @property
+    def core_url(self) -> str:
+        if not self.config.internet_access:
+            raise HabitatError(
+                "Core HTTP access is blocked by this sandbox's deny-all network policy"
+            )
+        address = URL(str(self.config.core_address)).origin()
+        return str(address.with_host("host.docker.internal"))
 
     def path(self, volume: Volume) -> PurePosixPath:
         """Local sbx shows a mounted host path at the same path in the guest."""
@@ -244,12 +253,12 @@ class SbxHabitat(ManagedHabitat):
                 if process.is_alive():
                     process.terminate()
             try:
-                async with asyncio.timeout(5):
+                with anyio.fail_after(5, shield=True):
                     await process
             except TimeoutError:
                 with suppress(ProcessLookupError):
                     process.kill()
-                with suppress(sh.ErrorReturnCode):
+                with anyio.CancelScope(shield=True), suppress(sh.ErrorReturnCode):
                     await process
             except sh.ErrorReturnCode:
                 pass

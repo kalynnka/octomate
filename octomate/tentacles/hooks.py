@@ -7,11 +7,33 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Annotated
 
 from fastapi import Depends, Header, HTTPException, status
+from pydantic import SecretStr
+
+from octomate.dependencies import auth_manager
+from octomate.managers.auth import AuthManager
+from octomate.schemas.auth import UserApiKey
 
 if TYPE_CHECKING:
     from octomate.managers.user import UserManager
     from octomate.mcp.base import KnownBearers
     from octomate.schemas.user import UserProfile
+
+
+async def verify_hook_key(
+    auth: Annotated[AuthManager, Depends(auth_manager)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> UserApiKey:
+    """Require a hooks-scoped API key before accessing the owner's resources."""
+    key = (
+        await auth.authenticate_api_key(
+            SecretStr(authorization.removeprefix("Bearer ")), scope="hooks"
+        )
+        if authorization is not None and authorization.startswith("Bearer ")
+        else None
+    )
+    if key is None:
+        raise HTTPException(401, "Invalid API key")
+    return key
 
 
 def hook_guard(

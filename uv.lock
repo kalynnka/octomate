@@ -2133,8 +2133,7 @@ docs = [
 ]
 sandbox = [
     { name = "agent-client-protocol" },
-    { name = "claude-agent-sdk" },
-    { name = "openai-codex" },
+    { name = "octomate-cli", extra = ["claude", "codex"] },
     { name = "pydantic-ai-harness", extra = ["code-mode"] },
     { name = "pydantic-ai-slim", extra = ["anthropic", "bedrock", "google", "mcp", "openai"] },
 ]
@@ -2202,8 +2201,7 @@ docs = [
 ]
 sandbox = [
     { name = "agent-client-protocol" },
-    { name = "claude-agent-sdk" },
-    { name = "openai-codex" },
+    { name = "octomate-cli", extras = ["claude", "codex"], editable = "cli" },
     { name = "pydantic-ai-harness", extras = ["code-mode"] },
     { name = "pydantic-ai-slim", extras = ["anthropic", "bedrock", "google", "mcp", "openai"] },
 ]
@@ -2214,7 +2212,6 @@ version = "0.0.7"
 source = { editable = "cli" }
 dependencies = [
     { name = "octomate-protocol" },
-    { name = "openai-codex" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyyaml" },
@@ -2227,10 +2224,19 @@ dependencies = [
     { name = "websockets" },
 ]
 
+[package.optional-dependencies]
+claude = [
+    { name = "claude-agent-sdk" },
+]
+codex = [
+    { name = "openai-codex" },
+]
+
 [package.metadata]
 requires-dist = [
+    { name = "claude-agent-sdk", marker = "extra == 'claude'", specifier = ">=0.2.165" },
     { name = "octomate-protocol", editable = "protocol" },
-    { name = "openai-codex", specifier = ">=0.162.1" },
+    { name = "openai-codex", marker = "extra == 'codex'", specifier = ">=0.162.1" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pydantic-settings", specifier = ">=2.14.1" },
     { name = "pyyaml", specifier = ">=6" },
@@ -2242,6 +2248,7 @@ requires-dist = [
     { name = "watchfiles", specifier = ">=1.1.1" },
     { name = "websockets", specifier = ">=15" },
 ]
+provides-extras = ["claude", "codex"]
 
 [[package]]
 name = "octomate-protocol"

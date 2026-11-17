@@ -1,8 +1,11 @@
 """A real SDK client drives a scripted CLI through sbx's duplex attachment."""
 
 import asyncio
+import json
 import os
 import sys
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -22,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
+from octomate.config import OctomateConfig
 from octomate.config.agents import ClaudeCodeConfig
 from octomate.config.habitat import SbxHabitatConfig
 from octomate.fibers import FiberError
@@ -40,7 +44,7 @@ from tests.support.managers import (
     a_thread,
     a_workspace_manager,
 )
-from tests.support.users import a_user
+from tests.support.users import a_user, auth_config
 from tests.test_habitat_contracts import IMAGE
 
 
@@ -225,6 +229,62 @@ async def test_end_input_allows_the_peer_to_finish_its_output() -> None:
 
 
 @pytest.mark.parametrize("cancel_task", [False, True])
+async def test_client_exit_waits_for_reader_completion_and_remains_cancellable(
+    manager: HabitatManager,
+    scope: InvocationScope,
+    options: ClaudeAgentOptions,
+    monkeypatch: pytest.MonkeyPatch,
+    cancel_task: bool,
+) -> None:
+    at_eof, finish, reader_stopped = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    cancel_scope = anyio.CancelScope()
+    read_messages = HabitatTransport.read_messages
+
+    async def read_until_released(
+        transport: HabitatTransport,
+    ) -> AsyncGenerator[JsonObject]:
+        try:
+            async for message in read_messages(transport):
+                yield message
+            at_eof.set()
+            await finish.wait()
+        finally:
+            reader_stopped.set()
+
+    monkeypatch.setattr(HabitatTransport, "read_messages", read_until_released)
+
+    async def run() -> None:
+        with cancel_scope:
+            async with (
+                manager.enter(scope, uuid7()) as residence,
+                HabitatTransport.client(residence.habitat, options) as client,
+            ):
+                assert await client.get_server_info() == {"commands": [], "models": []}
+
+    try:
+        async with asyncio.timeout(5), asyncio.TaskGroup() as tasks:
+            task = tasks.create_task(run())
+            await at_eof.wait()
+            assert not task.done()
+            assert not reader_stopped.is_set()
+            assert len(manager.residence(scope).invocations) == 1
+            if cancel_task:
+                cancel_scope.cancel()
+            else:
+                finish.set()
+            await task
+    finally:
+        await manager.close()
+    assert reader_stopped.is_set()
+    assert not manager.residence(scope).invocations
+    info = ProcessInfo.model_validate_json(
+        (await anyio.Path(options.env["CLAUDE_TEST_LOG"]).read_text()).splitlines()[0]
+    )
+    with pytest.raises(ProcessLookupError):
+        os.kill(info.pid, 0)
+
+
+@pytest.mark.parametrize("cancel_task", [False, True])
 async def test_interrupt_and_cancellation_release_process_and_lease(
     manager: HabitatManager,
     scope: InvocationScope,
@@ -290,11 +350,32 @@ async def test_a_driven_turn_runs_inside_the_owners_sandbox(
         + Path(__file__).with_name("fixtures").joinpath("stdio_cli.py").read_text()
     )
     cli.chmod(0o700)
+    execute = SbxHabitat.execute
+    executions: list[tuple[str, ...]] = []
+
+    @asynccontextmanager
+    async def capture_execution(
+        habitat: SbxHabitat,
+        *command: str,
+        workdir: str,
+        env: dict[str, str] | None = None,
+    ) -> AsyncGenerator[ByteStream]:
+        assert env is not None
+        assert env["OCTOMATE_CLI_URL"] == "http://host.docker.internal:8000"
+        assert env["OCTOMATE_CLI_TOKEN"]
+        executions.append(command)
+        async with execute(habitat, *command, workdir=workdir, env=env) as stream:
+            yield stream
+
+    monkeypatch.setattr(SbxHabitat, "execute", capture_execution)
     # The guest finds `claude` on its own path; the stand-in sbx shares the host's.
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setattr(SbxHabitat, "prepare", AsyncMock())
     monkeypatch.setattr(SbxHabitat, "stop", AsyncMock())
-    host = Octomate(conversations=FakeConversationManager())
+    host = Octomate(
+        config=OctomateConfig(auth=auth_config()),
+        conversations=FakeConversationManager(),
+    )
     host.habitats.config = SbxHabitatConfig(executable=str(executable), image=IMAGE)
     tentacle = ClaudeTentacle(
         host,
@@ -316,6 +397,7 @@ async def test_a_driven_turn_runs_inside_the_owners_sandbox(
     address = ChannelAddress(
         channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
     )
+    results: list[AgentRunResultEvent] = []
     try:
         async with (
             asyncio.timeout(10),
@@ -343,17 +425,40 @@ async def test_a_driven_turn_runs_inside_the_owners_sandbox(
             assert isinstance(invocation.habitat, SbxHabitat)
             assert host.habitats.residences[owner.id].invocations == {invocation.id}
     finally:
+        await tentacle.revoke_runtime_keys()
         await host.habitats.close()
     assert [event.result.output for event in results] == ["Approved"]
+    stored = await tentacle.conversations.get(invocation.conversation.id)
+    assert stored.external_id == "scripted-session"
+    assert len(executions) == 1
+    assert executions[0][0] == "claude"
     assert not host.habitats.residences[owner.id].invocations
     info = ProcessInfo.model_validate_json(
         (await anyio.Path(log).read_text()).splitlines()[0]
     )
     assert info.cwd == str(invocation.cwd)
     assert info.config == invocation.environment["CLAUDE_CONFIG_DIR"]
+    assert "--safe-mode" not in info.argv
     # The sandbox is the boundary: Claude's own is not configured, and no
     # host settings are loaded.
-    assert "--settings" not in info.argv
+    settings = json.loads(info.argv[info.argv.index("--settings") + 1])
+    assert settings == {
+        "hooks": {
+            event: [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "octomate claude upload "
+                            f"--conversation {invocation.conversation.id}",
+                            "timeout": 60,
+                        }
+                    ]
+                }
+            ]
+            for event in ("Stop", "SessionEnd")
+        }
+    }
     assert "--setting-sources=" in info.argv
     with pytest.raises(ProcessLookupError):
         os.kill(info.pid, 0)

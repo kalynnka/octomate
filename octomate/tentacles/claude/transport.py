@@ -72,8 +72,7 @@ class HabitatTransport(Transport):
 
     async def close(self) -> None:
         self.ready = False
-        with anyio.fail_after(5):
-            await self.stream.aclose()
+        await self.stream.aclose()
 
     @classmethod
     @asynccontextmanager
@@ -89,22 +88,22 @@ class HabitatTransport(Transport):
         )
         # Reuse the pinned SDK's flag mapping for its native control protocol.
         command = SubprocessCLITransport("", command_options)._build_command()
-        async with (
-            habitat.execute(
-                *command,
-                workdir=str(options.cwd),
-                env={
-                    "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
-                    "CLAUDE_AGENT_SDK_VERSION": SDK_VERSION,
-                    **options.env,
-                },
-            ) as stream,
-            ClaudeSDKClient(
-                options=options,
-                transport=cls(
-                    stream,
-                    max_frame_bytes=options.max_buffer_size or MAX_FRAME_BYTES,
-                ),
-            ) as client,
-        ):
-            yield client
+        async with habitat.execute(
+            *command,
+            workdir=str(options.cwd),
+            env={
+                "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
+                "CLAUDE_AGENT_SDK_VERSION": SDK_VERSION,
+                **options.env,
+            },
+        ) as stream:
+            transport = cls(
+                stream, max_frame_bytes=options.max_buffer_size or MAX_FRAME_BYTES
+            )
+            async with ClaudeSDKClient(options=options, transport=transport) as client:
+                yield client
+                # Keep the SDK reader alive until Claude finishes its exit hooks.
+                if not transport.input_ended:
+                    await transport.end_input()
+                async for _ in client.receive_messages():
+                    pass

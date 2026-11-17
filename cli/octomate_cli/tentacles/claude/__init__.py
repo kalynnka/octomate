@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Annotated
+from uuid import UUID
 
 import typer
+from octomate_protocol.hooks import NativeHookEvent
 
 from octomate_cli.config import CLISettings, cli_settings
 from octomate_cli.tentacles.claude.hooks import (
@@ -15,12 +18,26 @@ from octomate_cli.tentacles.claude.hooks import (
     stream_url_for,
 )
 from octomate_cli.tentacles.claude.mcp import mcp_typer
+from octomate_cli.transcripts import upload_file
 
 claude_typer = typer.Typer(
     help="Operate the native Claude Code integration.", no_args_is_help=True
 )
 claude_typer.add_typer(hooks_typer, name="hooks")
 claude_typer.add_typer(mcp_typer, name="mcp")
+
+
+@claude_typer.command("upload")
+def upload(
+    conversation: Annotated[
+        UUID, typer.Option(help="The conversation the session is driven for.")
+    ],
+) -> None:
+    """Upload the transcript named by Claude's hook payload on stdin."""
+    event = NativeHookEvent.model_validate_json(sys.stdin.read())
+    if not event.transcript_path:
+        raise typer.BadParameter("hook input requires transcript_path")
+    upload_file(conversation, Path(event.transcript_path), hook_path=CLAUDE_HOOK_PATH)
 
 
 @claude_typer.command("tail")

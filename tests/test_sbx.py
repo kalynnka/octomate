@@ -9,7 +9,7 @@ from pathlib import Path
 import anyio
 import pytest
 from anyio.streams.buffered import BufferedByteReceiveStream
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl
 from uuid_utils.compat import uuid7
 
 import octomate.habitat.sbx as sbx_module
@@ -56,6 +56,18 @@ def sandbox(tmp_path: Path) -> SbxHabitat:
         root=tmp_path / "root",
         config_dir=tmp_path / "root" / "config",
     )
+
+
+def test_core_address_uses_the_host_port_and_refuses_offline_policy(
+    sandbox: SbxHabitat,
+) -> None:
+    sandbox.config = sandbox.config.model_copy(
+        update={"core_address": HttpUrl("http://192.0.2.10:8123")}
+    )
+    assert sandbox.core_url == "http://host.docker.internal:8123"
+    sandbox.config = sandbox.config.model_copy(update={"internet_access": False})
+    with pytest.raises(HabitatError, match="deny-all network policy"):
+        _ = sandbox.core_url
 
 
 @pytest.mark.parametrize("internet_access", [True, False])
