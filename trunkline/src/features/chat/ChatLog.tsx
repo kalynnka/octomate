@@ -1,7 +1,6 @@
-import { Fragment, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { Fragment, useLayoutEffect, useRef, type CSSProperties } from 'react'
 import { nearChatBottom, useConsole } from '@/state/console'
-import { useThreadActivity } from '@/state/activity'
-import { useAgents, useThreadSummary } from '@/lib/api/hooks'
+import { useAgents } from '@/lib/api/hooks'
 import { botLabel } from '@/lib/api/fold'
 import { AgentLabel, LedgerRow, TraceGroupRow } from './cards'
 import { MessageContext } from './MessageReferences'
@@ -12,8 +11,6 @@ const CARD_MAX = 'var(--trk-card-max)'
 
 export function ChatLog() {
   const threadId = useConsole((s) => s.selThreadId)
-  const channel = useConsole((s) => s.selChannel)
-  const thread = useThreadSummary(threadId)
   const { data: agents } = useAgents(true, false)
   const detail = useConsole((s) => s.detail)
   const live = useConsole((s) => s.live)
@@ -21,7 +18,6 @@ export function ChatLog() {
   const notices = useConsole((s) => s.notices)
   const ledgerN = useConsole((s) => s.ledgerN)
   const ntOn = useConsole((s) => s.ntOn)
-  const activity = useThreadActivity(threadId, ntOn ? threadId : channel === 'trunkline' ? thread?.key ?? detail?.sendKey : undefined, Boolean(threadId) || ntOn)
   const ntAgent = useConsole((s) => s.ntAgent)
   const ntModel = useConsole((s) => s.ntModel)
   const sbFold = useConsole((s) => s.sbFold)
@@ -33,18 +29,66 @@ export function ChatLog() {
   const ledgerRef = useRef<HTMLDivElement>(null)
   const following = useRef(true)
   const revealing = useRef<HTMLElement | null>(null)
+  const opened = useRef<HTMLElement | null>(null)
   const dimensions = useRef({ height: 0, viewport: 0 })
 
   useLayoutEffect(() => {
     following.current = true
     revealing.current = null
+    opened.current = null
     const log = logRef.current!
+    let ledgerHeight = 0  // The ledger's height as last laid out, to tell what a swap took away.
     const observer = new ResizeObserver(() => {
-      if (following.current) log.scrollTop = log.scrollHeight
+      if (following.current) {
+        // Following never carries a card the reader just opened off the top: once it
+        // would, the card's header is held there and the tail is theirs to return to.
+        const card = opened.current?.isConnected ? opened.current : null
+        const viewport = log.getBoundingClientRect()
+        const room = card ? (card.getBoundingClientRect().top - viewport.top) * log.clientHeight / viewport.height - 8 : Infinity
+        if (log.scrollHeight - log.clientHeight - log.scrollTop > room) {
+          log.scrollTop += Math.max(0, Math.floor(room))
+          following.current = false
+        } else log.scrollTop = log.scrollHeight
+      }
       dimensions.current = { height: log.scrollHeight, viewport: log.clientHeight }
+      ledgerHeight = ledgerRef.current!.offsetHeight
     })
     observer.observe(log)
     observer.observe(ledgerRef.current!)
+    // A row that joins the tail of the ledger, or of an open group, unfolds, so what is
+    // above it slides up to make room instead of jumping. A row swapped in for a taller
+    // one, as when a lone call leaves its group, gives the difference back over the same
+    // moment. History, older pages and replays land as they are.
+    const arrivals = new MutationObserver(records => {
+      if (matchMedia('(prefers-reduced-motion: reduce)').matches) return
+      const added = new Set(records.flatMap(record => [...record.addedNodes]))
+      const tokens = getComputedStyle(log)
+      const timing = { duration: parseFloat(tokens.getPropertyValue('--motion-base')), easing: tokens.getPropertyValue('--ease-out').trim() }
+      const swapped: HTMLElement[] = []
+      for (const list of new Set(records.map(record => record.target))) {
+        if (!(list instanceof HTMLElement) || !list.matches('.trk-ledger-col, .trk-trace-items')) continue
+        const rows = [...list.children].filter(row => row instanceof HTMLElement)
+        const fresh = rows.filter(row => added.has(row))
+        const removed = records.filter(record => record.target === list).flatMap(record => [...record.removedNodes]).filter(node => node instanceof HTMLElement).length
+        // One row may have taken another's place; the rest must be new rows at the tail.
+        const joining = fresh.slice(removed)
+        const first = rows.indexOf(joining[0])
+        if (removed > 1 || removed > fresh.length || joining.length > 8 || (joining.length && (first < 1 || rows.length - first !== joining.length))) continue
+        swapped.push(...fresh.slice(0, removed))
+        const gap = parseFloat(getComputedStyle(list).rowGap)
+        for (const row of joining) {
+          // The row keeps its own height while a shrinking margin and clip reveal it,
+          // so text that streams in, or a fold that starts meanwhile, is never fought.
+          row.animate([
+            { offset: 0, marginTop: `${parseFloat(getComputedStyle(row).marginTop) - gap}px`, marginBottom: `${parseFloat(getComputedStyle(row).marginBottom) - row.offsetHeight}px`, opacity: 0, clipPath: 'inset(0 0 100% 0)' },
+            { offset: 1, clipPath: 'inset(0)' },
+          ], timing)
+        }
+      }
+      const collapsed = swapped.length === 1 ? ledgerHeight - ledgerRef.current!.offsetHeight : 0
+      if (collapsed > 2) swapped[0].animate([{ offset: 0, marginBottom: `${parseFloat(getComputedStyle(swapped[0]).marginBottom) + collapsed}px`, opacity: 0 }], timing)
+    })
+    arrivals.observe(ledgerRef.current!, { childList: true, subtree: true })
     const selectHistory = (event: MouseEvent) => {
       if (!(event.target instanceof Element) || !event.target.closest('#trk-timeline [data-uid]')) return
       following.current = false
@@ -54,6 +98,7 @@ export function ChatLog() {
     document.addEventListener('click', selectHistory, true)
     return () => {
       observer.disconnect()
+      arrivals.disconnect()
       document.removeEventListener('click', selectHistory, true)
     }
   }, [threadId])
@@ -67,7 +112,6 @@ export function ChatLog() {
   const visible = ledger.slice(-ledgerN)
   const saved = new Set(ledger.map((item) => item.uid))
   const rows = [...visible, ...live.filter((item) => !saved.has(item.uid))]
-  const dispatch = rows.findLast((item) => item.kind === 'dots')
   const items = rows.filter((item) => item.kind !== 'dots')
   const renderedRows = traceRows(items, running)
   const firstLive = live.find(item => item.kind !== 'dots' && !saved.has(item.uid))
@@ -81,11 +125,6 @@ export function ChatLog() {
     if (item.kind === 'agent' || item.kind === 'stream') lastOutput = item.uid
   }
   if (!running && lastOutput) copyable.add(lastOutput)
-  const status = activity ?? (dispatch && { text: dispatch.label, attention: false })
-  const [shown, setShown] = useState({ threadId, status })
-  if (shown.threadId !== threadId || (status && (status.text !== shown.status?.text || status.attention !== shown.status?.attention))) {
-    setShown({ threadId, status })
-  }
   const earlier = visible.length < ledger.length || detail?.earlier === true
   const blank = ntOn && live.length === 0
   let assistantLabel: string | undefined
@@ -98,10 +137,17 @@ export function ChatLog() {
       onClickCapture={(event) => {
         const toggle = event.target instanceof Element ? event.target.closest<HTMLElement>('button[aria-expanded], summary') : null
         if (!toggle) return
-        following.current = false
         revealing.current = null
         const card = toggle.closest<HTMLElement>('.trk-trace-row, details.trk-trace-group')
         const opening = toggle.tagName === 'SUMMARY' ? !card?.hasAttribute('open') : toggle.getAttribute('aria-expanded') === 'false'
+        if (following.current) {
+          // A fold or unfold is not the reader scrolling away, so the tail stays pinned
+          // through it; a card being opened is watched for as long as its unfolding lasts.
+          const watched = opening ? card ?? toggle.closest<HTMLElement>('.trk-ledger-col > *') : null
+          opened.current = watched
+          if (watched) window.setTimeout(() => { if (opened.current === watched) opened.current = null }, 600)
+          return
+        }
         if (!card || !opening) return
         const log = event.currentTarget
         revealing.current = card
@@ -212,19 +258,6 @@ export function ChatLog() {
         {notices.map((item) => (
           <LedgerRow key={item.uid} item={item} cardMax={CARD_MAX} />
         ))}
-        {shown.status && (
-          <div
-            key={`activity-${threadId}`}
-            className="trk-activity-motion"
-            data-exiting={status ? undefined : ''}
-            aria-hidden={status ? undefined : true}
-            onAnimationEnd={event => {
-              if (event.target === event.currentTarget && !status) setShown({ threadId, status: undefined })
-            }}
-          >
-            <LedgerRow item={{ kind: 'dots', uid: 'activity', label: shown.status.text, attention: shown.status.attention }} cardMax={CARD_MAX} />
-          </div>
-        )}
       </div>
     </div>
   )

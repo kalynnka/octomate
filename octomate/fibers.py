@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass, field
 
@@ -13,6 +14,7 @@ from anyio.abc import (
     ObjectReceiveStream,
     ObjectSendStream,
 )
+from anyio.lowlevel import checkpoint
 from anyio.streams.buffered import BufferedByteReceiveStream
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from pydantic import TypeAdapter, ValidationError
@@ -75,6 +77,28 @@ class MemoryFiber[ItemT](Fiber[ItemT]):
         self.failure = error
         self.closed = True
         self.close_send()
+
+
+class ReplayFiber[ItemT](MemoryFiber[ItemT]):
+    """An in-process subscription that starts with items already kept, read one
+    at a time before anything sent to it. They do not count against its buffer."""
+
+    kept: deque[ItemT]
+
+    def __init__(self, kept: list[ItemT], buffer: float = FIBER_BUFFER) -> None:
+        super().__init__(buffer)
+        self.kept = deque(kept)
+
+    async def receive(self) -> ItemT:
+        if not self.kept:
+            return await super().receive()
+        # A long replay lets the loop turn between items, as a read from the
+        # buffer does.
+        await checkpoint()
+        return self.kept.popleft()
+
+    def receive_nowait(self) -> ItemT:
+        return self.kept.popleft() if self.kept else super().receive_nowait()
 
 
 class StdioFiber[ItemT](Fiber[ItemT]):

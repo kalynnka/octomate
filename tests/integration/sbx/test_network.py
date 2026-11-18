@@ -12,6 +12,7 @@ from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
 from octomate.schemas.habitat import InvocationScope
 from octomate.types.json import JsonObject
+from tests.support.managers import a_workspace_manager
 
 
 @pytest.mark.timeout(300)
@@ -28,6 +29,7 @@ async def test_internet_access_is_applied_at_creation(internet_access: bool) -> 
             internet_access=internet_access,
         ),
         Nerve(),
+        a_workspace_manager(),
     )
     scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
     sandbox = manager.residence(scope).habitat

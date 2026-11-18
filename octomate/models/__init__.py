@@ -71,6 +71,7 @@ from octomate.models.thread import (
 )
 from octomate.models.todos import Todo
 from octomate.models.user import User, UserProfile
+from octomate.models.volumes import GitVolume, Volume
 
 __all__ = [
     "AgentRun",
@@ -91,6 +92,7 @@ __all__ = [
     "ExternalCompaction",
     "File",
     "Gif",
+    "GitVolume",
     "Handoff",
     "Html",
     "HtmlArtifact",
@@ -130,4 +132,5 @@ __all__ = [
     "UserInvitation",
     "UserProfile",
     "UserSession",
+    "Volume",
 ]

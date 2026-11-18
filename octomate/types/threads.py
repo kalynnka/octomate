@@ -18,6 +18,10 @@ ThreadKind = Literal["dm", "group", "thread", "native_thread"]
 # attributed to the verified bearer's own profile (`channel_user_id` = username).
 NATIVE_CHANNEL_USER_ID = "native"
 
+# How a whole kick ended, after its runs and gateway operations. Deferred means
+# awaiting a later continuation.
+KickOutcome = Literal["completed", "failed", "cancelled", "deferred", "handed_off"]
+
 ThreadMessageDirection = Literal["inbound", "outbound"]
 ChannelActorKind = Literal["human", "agent", "bot", "system"]
 MessageBindingKind = Literal[

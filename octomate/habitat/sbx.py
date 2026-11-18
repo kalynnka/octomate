@@ -10,15 +10,17 @@ import socket
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal, TypedDict, Unpack
 
+import anyio
 import sh
 from anyio.abc import UNIXSocketStream
 from pydantic import UUID7
 
 from octomate.config.habitat import SbxHabitatConfig
-from octomate.habitat.base import Habitat, HabitatError
+from octomate.habitat.base import HabitatError, ManagedHabitat
+from octomate.schemas.volumes import Volume
 
 COMMAND_TIMEOUT = 30.0
 PREPARE_TIMEOUT = 300.0
@@ -28,6 +30,8 @@ class SbxKitArgs(TypedDict):
     """Inputs declared by the bundled sandbox kit's args block."""
 
     user_id: UUID7
+    root: Path
+    config: Path
     image: str
     cpus: int
     memory_mib: int
@@ -47,9 +51,11 @@ class SbxOptions(TypedDict, total=False):
 
 
 @dataclass
-class SbxHabitat(Habitat):
+class SbxHabitat(ManagedHabitat):
     config: SbxHabitatConfig
     user_id: UUID7
+    root: Path  # The owner's storage on the host, mounted when the sandbox is made.
+    config_dir: Path  # The owner's agent-configuration volume, beneath the root.
     managed: bool = field(default=False, init=False)  # Name found or create tried.
 
     @property
@@ -59,6 +65,14 @@ class SbxHabitat(Habitat):
     @property
     def idle_timeout(self) -> float:
         return self.config.idle_timeout
+
+    def path(self, volume: Volume) -> PurePosixPath:
+        """Local sbx shows a mounted host path at the same path in the guest."""
+        if not volume.path.is_relative_to(self.root):
+            raise HabitatError(
+                "Only the owner's own volumes are visible in their sandbox"
+            )
+        return PurePosixPath(volume.path)
 
     def cli(self) -> sh.Command[sh.RunningCommand]:
         """Keep host credentials out of child processes and use ordinary stdio."""
@@ -152,6 +166,8 @@ class SbxHabitat(Habitat):
         names = (await self.command("ls", quiet=True)).decode().splitlines()
         kit_args: SbxKitArgs = {
             "user_id": self.user_id,
+            "root": self.root,
+            "config": self.config_dir,
             "image": self.config.image,
             "cpus": self.config.cpus,
             "memory_mib": self.config.memory_mib,
@@ -159,9 +175,15 @@ class SbxHabitat(Habitat):
         }
         self.managed = True
         if self.name not in names:
+            # sbx takes host paths only when it makes the sandbox, so the whole
+            # root is mounted now and every volume made under it later is seen.
+            # The agents' credential file is written beneath the configuration
+            # volume, where the harness is told to keep its configuration.
+            await anyio.Path(self.config_dir).mkdir(parents=True, exist_ok=True)
             await self.command(
                 "create",
                 str(Path(__file__).parent),
+                str(self.root),
                 kit_arg=[f"{key}={value}" for key, value in kit_args.items()],
                 deny_network=[] if self.config.internet_access else ["**"],
                 name=self.name,
@@ -179,7 +201,7 @@ class SbxHabitat(Habitat):
             str(value).encode() for value in kit_args.values()
         ]:
             raise HabitatError(
-                "Existing sandbox owner, image, resource or network settings differ; no automatic replacement is allowed"
+                "Existing sandbox owner, storage, image, resource or network settings differ; no automatic replacement is allowed"
             )
 
     @asynccontextmanager

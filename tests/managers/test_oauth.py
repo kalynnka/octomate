@@ -68,7 +68,7 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.mcp import OAuthMcpTentacle
 from octomate.types.oauth import HttpsUrl
 from tests.support.channels import FakeChannelTentacle, RecordingOAuthFeeler
-from tests.support.managers import fixed_session
+from tests.support.managers import FakeThreadManager, a_workspace_manager, fixed_session
 from tests.support.mcp import install_tentacle
 from tests.support.nerve import drawing
 from tests.support.users import a_user
@@ -919,6 +919,7 @@ def a_session(
     profile: UserProfile | None, channel: FakeChannelTentacle | None = None
 ) -> OctomateSession:
     """A turn by `profile`, on `channel`'s private surface when there is one."""
+    threads = FakeThreadManager()
     address = (
         ChannelAddress(
             channel_tentacle_id="im",
@@ -936,6 +937,9 @@ def a_session(
         nerve=channel.octomate.nerve if channel is not None else None,
         conversation_address=address,
         user_profile=profile,
+        users=threads.users,
+        threads=threads,
+        workspaces=a_workspace_manager(),
     )
 
 

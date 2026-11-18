@@ -5,7 +5,7 @@ from functools import cached_property
 
 from pydantic import UUID7, BaseModel, Field
 
-from octomate.schemas.commands import CommandContext, CommandInvocation
+from octomate.schemas.commands import CommandContext, CommandIntent
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import QuestionAnswer
 from octomate.schemas.events import MessageEvent
@@ -73,7 +73,7 @@ class CommandSignal:
     """Explicit command intent on an authenticated, resolved conversation surface."""
 
     context: CommandContext
-    invocation: CommandInvocation
+    intent: CommandIntent
     delivery_id: str  # Stable across retries of the same explicit request.
 
 

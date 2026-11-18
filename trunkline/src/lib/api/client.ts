@@ -212,17 +212,19 @@ export const fetchThreadBatches = (id: string) =>
 /**
  * Open the thread's live socket, which carries its wire events for as long as
  * it is open, the run's settling last. Resolves once the relay has accepted
- * it, so a request sent after that misses nothing. `closed` settles when the
- * relay closes the socket, which a run outliving the console never does.
+ * it, so a request sent after that misses nothing. With `replay` it starts with
+ * what a kick still awake has said since its last run ended, so a thread read
+ * after that has every run in the read or on the socket. `closed` settles when
+ * the relay closes the socket, which a run outliving the console never does.
  */
 export async function watchThread(
-  thread: { id: string } | { key: string },
+  thread: ({ id: string } | { key: string }) & { replay?: boolean },
   onEvent: (event: WireEvent) => void,
   signal?: AbortSignal,
 ): Promise<{ close: () => void; closed: Promise<void> }> {
-  const query = 'id' in thread
+  const query = (thread.replay ? 'replay=true&' : '') + ('id' in thread
     ? `thread_id=${encodeURIComponent(thread.id)}`
-    : `thread_key=${encodeURIComponent(thread.key)}`
+    : `thread_key=${encodeURIComponent(thread.key)}`)
   try {
     return await openThreadSocket(query, onEvent, signal)
   } catch (error) {

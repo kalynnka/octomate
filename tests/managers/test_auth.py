@@ -109,7 +109,7 @@ async def test_login_rehashes_an_outdated_password(
     assert stored is not None
     assert stored.password_hash is not None
     assert stored.password_hash != old_hash
-    assert not PasswordHasher().check_needs_rehash(
+    assert not auth.password_hasher.check_needs_rehash(
         stored.password_hash.get_secret_value()
     )
 

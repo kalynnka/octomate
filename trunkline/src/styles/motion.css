@@ -31,12 +31,15 @@
 .lt-fade-in { animation: lt-fade-in var(--motion-entry) var(--ease-out) both; animation-delay: calc(var(--i, 0) * 70ms); }
 .lt-fade-out{ animation: lt-fade-out var(--motion-base) var(--ease-out) both; pointer-events: none; }
 
-.trk-connection-motion { --entry-rise: -6px; animation: lt-fade-up var(--motion-base) var(--ease-out) both; }
-.trk-connection-motion[data-connected] { animation: lt-fade-up var(--motion-base) var(--ease-out) both, trk-connection-out var(--motion-fast) var(--ease-out) 850ms forwards; }
+/* The connection banner opens and shuts its own row, so the console under it slides
+   instead of jumping; once reconnected it lingers, then lifts away as the row closes. */
+.trk-connection-motion { display: grid; grid-template-rows: 1fr; flex-shrink: 0; --entry-rise: -6px; animation: lt-fade-up var(--motion-base) var(--ease-out) both, trk-dock-open var(--motion-base) var(--ease-out) both; }
+.trk-connection-motion > div { min-height: 0; overflow: hidden; }
+.trk-connection-motion:has([data-connected]) { animation: lt-fade-up var(--motion-base) var(--ease-out) both, trk-dock-open var(--motion-base) var(--ease-out) both, trk-connection-out var(--motion-entry) var(--ease-out) 800ms forwards, trk-dock-shut var(--motion-entry) var(--ease-in-out) 800ms forwards; }
 @keyframes trk-connection-out { to { opacity: 0; transform: translateY(-6px); } }
 @media (prefers-reduced-motion: reduce) {
   .trk-connection-motion { animation: lt-fade-in 80ms var(--ease-out) both; }
-  .trk-connection-motion[data-connected] { animation: lt-fade-in 80ms var(--ease-out) both, lt-fade-out 80ms var(--ease-out) 920ms forwards; }
+  .trk-connection-motion:has([data-connected]) { animation: lt-fade-in 80ms var(--ease-out) both, lt-fade-out 80ms var(--ease-out) 1120ms forwards; }
 }
 
 @keyframes trk-locate-text {
@@ -54,15 +57,37 @@
 .trk-activity { --trk-shimmer-base: var(--fg-3); }
 .trk-activity[data-attention] { --trk-shimmer-base: var(--color-gold); }
 .trk-activity .lt-dots i { background: var(--fg-3); }
-.trk-activity-motion { animation: lt-fade-up var(--motion-base) var(--ease-out) both; --entry-rise: 4px; }
-.trk-activity-motion[data-exiting] { animation: lt-fade-out var(--motion-fast) var(--ease-out) both; pointer-events: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .trk-kick-timer i { animation: lt-rec-pulse 1.4s var(--ease-in-out) infinite; }
+}
+/* A new phrase is the next line on the tape: both lines travel one line up, as
+   one, through the slot the label's own overflow cuts. */
+@keyframes trk-line-out { to { opacity: 0; transform: translateY(-100%); } }
+@keyframes trk-line-in { from { opacity: 0; transform: translateY(100%); } }
+@media (prefers-reduced-motion: no-preference) {
+  .trk-activity .lt-text-swap { --trk-roll-out: trk-line-out var(--motion-base) var(--ease-out) both; --trk-roll-in: trk-line-in var(--motion-base) var(--ease-out) both; }
+  .trk-activity .lt-text-swap > .lt-text-old { animation: var(--trk-roll-out); }
+  .trk-activity .lt-text-swap > .lt-text-new { animation: var(--trk-roll-in); }
+}
+/* The status line floats over the foot of the ledger, on the composer's edge. It takes
+   no room of its own, so the ledger and its scrollbar always reach the composer; a
+   plate of the page color keeps it readable over rows scrolled beneath it. */
+.trk-activity-dock { position: relative; height: 0; --entry-rise: 4px; animation: lt-fade-up var(--motion-base) var(--ease-out) both; }
+.trk-activity-dock > div { position: absolute; bottom: 6px; left: 18px; box-sizing: border-box; max-width: calc(100% - 48px); padding: 0 6px; background: var(--page-bg); }
+/* It leaves slower than it arrives, sinking toward the composer as it fades. */
+.trk-activity-dock[data-exiting] { animation: trk-dock-leave var(--motion-entry) var(--ease-out) both; pointer-events: none; }
+@keyframes trk-dock-open { from { grid-template-rows: 0fr; } }
+@keyframes trk-dock-shut { to { grid-template-rows: 0fr; } }
+@keyframes trk-dock-leave { to { opacity: 0; transform: translateY(4px); } }
 @keyframes trk-text-shimmer {
   from { background-position: 100% 0; }
   85%, to { background-position: 0% 0; }
 }
 @media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+  /* Each phrase carries its own sheen: a parent's clipped background does not
+     reach text that is moving on a layer of its own. */
   .trk-trace-label[data-running],
-  .trk-activity .lt-text-swap {
+  .trk-activity .lt-text-swap > span {
     background-image: linear-gradient(100deg, var(--trk-shimmer-base, var(--fg-2)) 38%, var(--fg-1) 50%, var(--trk-shimmer-base, var(--fg-2)) 62%);
     background-size: 300% 100%;
     -webkit-background-clip: text;
@@ -70,10 +95,12 @@
     color: transparent;
     animation: trk-text-shimmer 2.6s linear infinite;
   }
+  .trk-activity .lt-text-swap > .lt-text-old { animation: var(--trk-roll-out), trk-text-shimmer 2.6s linear infinite; }
+  .trk-activity .lt-text-swap > .lt-text-new { animation: var(--trk-roll-in), trk-text-shimmer 2.6s linear infinite; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .trk-activity-motion { animation-name: lt-fade-in; animation-duration: 80ms; }
-  .trk-activity-motion[data-exiting] { animation-duration: 80ms; }
+  .trk-activity-dock { animation: lt-fade-in 80ms var(--ease-out) both; }
+  .trk-activity-dock[data-exiting] { animation: lt-fade-out 80ms var(--ease-out) both; }
 }
 
 .lt-text-swap { display: inline-grid; min-width: 0; max-width: 100%; vertical-align: bottom; }

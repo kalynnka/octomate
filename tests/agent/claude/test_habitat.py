@@ -27,7 +27,8 @@ from octomate.schemas.habitat import InvocationScope
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.transport import HabitatTransport
 from octomate.types.json import JsonObject
-from tests.test_habitat_contracts import IMAGE
+from tests.support.managers import a_workspace_manager
+from tests.workspaces.test_habitat_contracts import IMAGE
 
 
 class ProcessInfo(BaseModel):
@@ -79,6 +80,7 @@ def manager(tmp_path: Path) -> HabitatManager:
     return HabitatManager(
         SbxHabitatConfig(executable=str(executable), image=IMAGE),
         Nerve(),
+        a_workspace_manager(),
     )
 
 

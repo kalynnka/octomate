@@ -44,7 +44,10 @@ class Summon(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         if not isinstance(decision, SummonDecision):
             raise ValueError("Summon requires a summon decision")
         await ctx.deps.impulses.send(
-            Impulse(ReflexPhaseChangedEvent(phase="moving"), source_target.address)
+            Impulse(
+                ReflexPhaseChangedEvent(phase="moving", spell="summon"),
+                source_target.address,
+            )
         )
         source_address = source_target.address
         target_address = target.address

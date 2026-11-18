@@ -18,7 +18,8 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastmcp.server.http import StarletteWithLifespan
-from pydantic import SecretStr
+from pydantic import AwareDatetime, SecretStr
+from pydantic_ai._utils import now_utc
 from rich.color import Color
 from rich.style import Style
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -35,8 +36,10 @@ from octomate.managers.habitat import HabitatManager
 from octomate.managers.mcp import McpManager
 from octomate.managers.oauth import OAuthManager
 from octomate.managers.project import ProjectManager
+from octomate.managers.storages import HostStorageManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
+from octomate.managers.volumes import VolumeManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.mcp.base import KnownBearers
 from octomate.mcp.gateway import served_session
@@ -153,7 +156,7 @@ class Octomate(FastAPI):
     commands: CommandManager = field(init=False)
     deferred_actions: DeferredActionManager = field(init=False)
     gateway: GatewayManager = field(default_factory=GatewayManager)
-    workspaces: WorkspaceManager = field(default_factory=WorkspaceManager)
+    workspaces: WorkspaceManager = field(init=False)
     nerve: Nerve = field(default_factory=Nerve)
     habitats: HabitatManager = field(init=False)
 
@@ -168,6 +171,10 @@ class Octomate(FastAPI):
     awakes: dict[ThreadKey, asyncio.Task[ReflexGraphResult]] = field(
         default_factory=dict, init=False
     )
+    # When each of those reflexes woke, for a reader that opens mid-kick.
+    awake_since: dict[ThreadKey, AwareDatetime] = field(
+        default_factory=dict, init=False
+    )
     # The next console color for a tentacle with no brand of its own.
     log_styles: Iterator[Style] = field(
         default_factory=log_styles, init=False, repr=False
@@ -180,8 +187,15 @@ class Octomate(FastAPI):
             redoc_url=None,
             lifespan=self.lifespan,
         )
+        volumes = VolumeManager(host_storage=HostStorageManager())
+        self.workspaces = WorkspaceManager(
+            projects=ProjectManager(self.config.projects),
+            volumes=volumes,
+            mirrors=MirrorManager(config=self.config.mirrors, volumes=volumes),
+            config=self.config.workspaces,
+        )
         self.threads = ThreadManager(users=self.users, nerve=self.nerve)
-        self.habitats = HabitatManager(self.config.habitat, self.nerve)
+        self.habitats = HabitatManager(self.config.habitat, self.nerve, self.workspaces)
         self.deferred_actions = DeferredActionManager(nerve=self.nerve)
         self.commands = CommandManager(
             tentacles=self.tentacles,
@@ -243,15 +257,17 @@ class Octomate(FastAPI):
 
     @property
     def projects(self) -> ProjectManager:
-        """The project registry. Kept by the workspace manager, which is the one
-        thing that cannot work without it, and reached here because most of what
-        asks — session attribution, the console, dispatch — wants the registry
-        rather than anything to do with workspaces."""
+        """The project registry owned by the workspace manager."""
         return self.workspaces.projects
 
     @property
+    def volumes(self) -> VolumeManager:
+        """The volume registry shared with workspace preparation."""
+        return self.workspaces.volumes
+
+    @property
     def mirrors(self) -> MirrorManager:
-        """Every project's mirror, kept beside the registry for the same reason."""
+        """The mirror manager shared with workspace preparation."""
         return self.workspaces.mirrors
 
     @property
@@ -363,7 +379,7 @@ class Octomate(FastAPI):
                 raise StillAwake()
 
             async def reflex() -> ReflexGraphResult:
-                async with self.nerve.publish(origin) as impulses:
+                async with self.nerve.publish(origin, retain=True) as impulses:
                     deps = ReflexDeps(
                         workspaces=self.workspaces,
                         agents=self.agents,
@@ -383,13 +399,16 @@ class Octomate(FastAPI):
                         # yields: the thread is let go before the reflex is heard
                         # falling asleep, so whoever hears it can kick there again.
                         del self.awakes[thread]
+                        del self.awake_since[thread]
 
             def release(task: asyncio.Task[ReflexGraphResult]) -> None:
                 # Cancellation before the coroutine starts never enters its finally.
                 if self.awakes.get(thread) is task:
                     del self.awakes[thread]
+                    del self.awake_since[thread]
 
             self.awakes[thread] = asyncio.create_task(reflex())
+            self.awake_since[thread] = now_utc()
             self.awakes[thread].add_done_callback(release)
             return self.awakes[thread]
 
@@ -422,10 +441,6 @@ class Octomate(FastAPI):
             # the resolution index, so a declared project resolves before
             # anything is running that could ask.
             await self.projects.reconcile()
-            # How a workspace is forked is the filesystem's answer, not a
-            # setting: probed here so the log says which mechanism this host
-            # got, once, before anything asks for a workspace.
-            await self.workspaces.detect()
             # A live request's waiter died with the last process, so a reply to
             # one still pending would be lost: it is refused as expired instead.
             await self.deferred_actions.expire_live()

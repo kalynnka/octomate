@@ -25,7 +25,6 @@ from octomate.schemas.thread import ThreadArtifact, ThreadMessage
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.discord import DiscordTentacle
 from octomate.tentacles.discord.feelers.artifacts import DiscordArtifactFeeler
-from tests.agent.test_mcp_app_ledger import app_artifact as app_artifact
 from tests.channels.discord.fakes import (
     a_dm_channel,
     a_message,
@@ -36,6 +35,7 @@ from tests.channels.discord.test_feelers import RecordingDiscordUIInk
 from tests.channels.discord.test_streaming import RecordingDiscordInk
 from tests.support.channels import RecordingStatusFeeler
 from tests.support.nerve import drawing
+from tests.tools.test_mcp_app_ledger import app_artifact as app_artifact
 
 
 @pytest.mark.parametrize("mode", ["outside", "stream", "quiet"])

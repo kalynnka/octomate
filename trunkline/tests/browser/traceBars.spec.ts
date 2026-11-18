@@ -354,6 +354,8 @@ for (const width of [1280, 390]) {
     await expect(readingGroup).toHaveAttribute('open', '')
     await expect(readingGroup.locator('strong').last()).toBeVisible()
     await expect(failedGroup).not.toHaveAttribute('open')
+    // A folded group is exactly its header, so it sits evenly between the rows around it.
+    await expect.poll(() => failedGroup.evaluate(el => (el as HTMLElement).offsetHeight - el.querySelector<HTMLElement>('summary')!.offsetHeight)).toBe(0)
     await failedGroup.locator('summary').press('Enter')
     await expect(failedTool.getByRole('button')).toHaveAttribute('aria-expanded', 'false')
     await expect(failedTool.getByRole('button')).toContainText('failed')

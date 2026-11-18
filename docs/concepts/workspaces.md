@@ -2,10 +2,9 @@
 
 [Workspaces](../usage/workspaces.md) says what a workspace does. This
 page says why it is built the way it is. The code is
-`octomate/managers/workspaces/`, three modules in the order the story runs:
-`mirrors` keeps one pristine checkout per project, `dependencies` installs into a
-tree without caring where it came from, and `base` forks a mirror into the
-workspace a thread runs in and decides what becomes of it. Each knows only the
+`octomate/managers/workspaces/`, two modules in the order the story runs:
+`mirrors` keeps one pristine checkout per project, and `base` forks a mirror into
+the workspace a thread runs in and decides what becomes of it. Each knows only the
 layer below.
 
 ## One mechanism for every project
@@ -51,31 +50,14 @@ fork does not carry other threads' snapshots in `git log --all`.
 
 ### Dependencies
 
-A copied mirror should hand its fork a working environment, not a tree that needs
-`uv sync` before the first command. Two things make that true.
+Octomate installs nothing. A mirror holds what its upstream holds and a fork is a
+clean checkout of it, so the first command that needs an environment is the one
+that creates it, with the project's own package manager. Installing is the work's
+decision, made where the work runs; preparing a directory does not start it.
 
-The package managers already share. `uv`, `pnpm` and `npm` keep a global
-content-addressed store and hardlink out of it, so an install in a fresh workspace
-fetches nothing and costs almost no disk. Octomate leaves those stores at their
-default paths on purpose.
-
-A warm mirror survives copying only if its environment is relocatable.
-`node_modules` copies cleanly. A Python `.venv` does not: an ordinary uv venv writes
-the mirror's absolute interpreter path into every console script, so a copied
-`.venv/bin/<tool>` keeps running the mirror's interpreter. Nothing errors; the
-workspace simply is not the environment in use. Octomate creates a relocatable
-environment for a uv tree once, then reuses it when dependencies change. A copied
-venv reports the fork's own prefix. An existing non-relocatable environment is
-preserved and reported for manual replacement before dependencies can be refreshed.
-The node managers need one command, and it is `npm install` rather than the
-`npm ci` their documentation recommends, because `ci` deletes the `node_modules`
-the warm mirror exists to keep.
-
-The tree records the hash of the lockfile it was last installed from in
-`.git/octomate-installed`. A copied fork brings the stamp along and does nothing; a
-cloned fork has a fresh `.git`, no stamp, and installs from the store the mirror
-warmed. An install that fails is logged and the tree handed over uninstalled: a host
-without `pnpm` should lose its dependencies, not its workspace.
+What a run installs sits in the tree's ignored directories and stays there from
+turn to turn. A snapshot never holds ignored files, so a workspace that was
+reclaimed comes back without them and the next run installs again.
 
 ## Saving
 
@@ -155,9 +137,9 @@ workspace does, with uncommitted work still uncommitted. A source on its own
 thread branch hands the landed thread a branch of its own at the same commit, so
 the two never push one branch; a branch the agent chose is kept. Ignored files,
 such as an `.env`, are copied across, since a snapshot never holds them; ignored
-directories are not, being dependencies and build output that the fork's install
-and the next build make again. The two threads then save to their own refs and
-share nothing.
+directories are not, being dependencies and build output that the landed thread's
+own runs make again. The two threads then save to their own refs and share
+nothing.
 
 ## The chat workspace
 

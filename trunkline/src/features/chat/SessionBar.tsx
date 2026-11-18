@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useConsole } from '@/state/console'
+import { useThreadActivity } from '@/state/activity'
 import { channelMeta } from '@/lib/api/live'
 import { mono } from '@/components/text'
 import { TextSwap } from '@/components/TextSwap'
@@ -21,7 +22,7 @@ function useClock() {
     const t = setInterval(() => setNow(new Date()), 1000)
     return () => clearInterval(t)
   }, [])
-  return now.toLocaleTimeString('en-GB', { hour12: false })
+  return now
 }
 
 export function SessionBar() {
@@ -31,7 +32,12 @@ export function SessionBar() {
   const thread = useThreadSummary(selThreadId)
   const ntOn = useConsole((s) => s.ntOn)
   const ntStarted = useConsole((s) => s.ntStarted)
-  const clock = useClock()
+  const activity = useThreadActivity(selThreadId, ntOn ? selThreadId : selChannel === 'trunkline' ? thread?.key ?? detail?.sendKey : undefined, Boolean(selThreadId) || ntOn)
+  // The kick timer reads the ledger clock, so the bar's two readouts turn on the same tick.
+  const now = useClock()
+  const clock = now.toLocaleTimeString('en-GB', { hour12: false })
+  const kick = activity?.startedAt === undefined ? undefined : Math.max(0, Math.floor((now.getTime() - activity.startedAt) / 1000))
+  const pad = (value: number) => String(value).padStart(2, '0')
 
   const lastSes = detail?.sessions[detail.sessions.length - 1]
   const sesChip = ntOn
@@ -105,6 +111,19 @@ export function SessionBar() {
         ))}
         {vline}
         {chip('owning route', routeChip, { color: 'var(--fg-3)' })}
+        {kick !== undefined && <>
+          {vline}
+          <span className="trk-kick-timer lt-fade-in" style={{ display: 'inline-flex' }}>
+            {chip('how long the agent has been on this kick', (
+              <>
+                <i style={{ width: 5, height: 5, borderRadius: 9999, background: 'var(--color-teal)' }} />
+                <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+                  kick {kick < 3600 ? `${Math.floor(kick / 60)}:${pad(kick % 60)}` : `${Math.floor(kick / 3600)}:${pad(Math.floor(kick / 60) % 60)}:${pad(kick % 60)}`}
+                </span>
+              </>
+            ))}
+          </span>
+        </>}
       </span>
       <span style={{ flex: '0 0 10px' }} />
       <span style={{ flex: '0 1 auto', height: 18, display: 'flex', flexFlow: 'row-reverse wrap', alignContent: 'flex-start', alignItems: 'center', overflow: 'hidden' }}>
