@@ -8,6 +8,7 @@ from pathlib import Path
 
 import anyio
 import pytest
+import sh
 from anyio.streams.buffered import BufferedByteReceiveStream
 from pydantic import BaseModel
 from uuid_utils.compat import uuid7
@@ -32,15 +33,12 @@ def sandbox(tmp_path: Path) -> SbxHabitat:
     executable.write_text(
         f"#!{sys.executable}\n"
         "import json, os, signal, sys\n"
-        "from pathlib import Path\n"
         "args = sys.argv[1:]\n"
         "if args[1] == 'fail':\n"
         "    print('synthetic-secret', file=sys.stderr)\n"
         "    print('synthetic-secret')\n"
         "    sys.exit(7)\n"
         "if args[1] == 'wait':\n"
-        "    Path(args[2]).write_text(str(os.getpid()))\n"
-        "    print('started', flush=True)\n"
         "    signal.pause()\n"
         "print(json.dumps(dict(pid=os.getpid(), argv=args, environment=dict(os.environ), "
         "tty=[os.isatty(0), os.isatty(1)])), flush=True)\n"
@@ -192,20 +190,22 @@ async def test_concurrent_commands_have_independent_lifetimes(
 
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_sh_timeout_and_cancellation_reap_child(
-    sandbox: SbxHabitat, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel: bool
+    sandbox: SbxHabitat, monkeypatch: pytest.MonkeyPatch, cancel: bool
 ) -> None:
     monkeypatch.setattr(sbx_module, "COMMAND_TIMEOUT", 5 if cancel else 0.3)
-    started = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    command = sandbox.cli().bake(
-        _out=lambda line: loop.call_soon_threadsafe(started.set)
-    )
-    monkeypatch.setattr(sandbox, "cli", lambda: command)
-    pid_file = tmp_path / "child.pid"
-    task = asyncio.create_task(sandbox.command("wait", str(pid_file)))
+    started = asyncio.Future[int]()
+    command = sandbox.cli()
+
+    def launch(*args: str, _timeout: float) -> sh.RunningCommand:
+        process = command(*args, _timeout=_timeout)
+        started.set_result(process.pid)
+        return process
+
+    monkeypatch.setattr(sandbox, "cli", lambda: launch)
+    task = asyncio.create_task(sandbox.command("wait"))
     try:
         async with asyncio.timeout(5):
-            await started.wait()
+            pid = await started
             if cancel:
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
@@ -214,7 +214,7 @@ async def test_sh_timeout_and_cancellation_reap_child(
                 with pytest.raises(HabitatError, match="timed out"):
                     await task
         with pytest.raises(ProcessLookupError):
-            os.kill(int(pid_file.read_text()), 0)
+            os.kill(pid, 0)
     finally:
         task.cancel()
         with suppress(asyncio.CancelledError, HabitatError):
