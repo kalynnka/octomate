@@ -2069,7 +2069,7 @@ wheels = [
 
 [[package]]
 name = "octomate"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },
@@ -2210,7 +2210,7 @@ sandbox = [
 
 [[package]]
 name = "octomate-cli"
-version = "0.0.7"
+version = "0.0.8"
 source = { editable = "cli" }
 dependencies = [
     { name = "octomate-protocol" },
