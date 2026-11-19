@@ -99,33 +99,23 @@ async def test_a_native_session_keeps_its_own_bytes_across_a_reconnect(
     )
     conversation = state.conversation
     assert conversation is not None
-    framed = frames(TURN_ONE + TURN_TWO)
-    kept = 0
-    for _, start, end, line in framed[: len(TURN_ONE) + 1]:
-        kept = await tentacle.keep_transcript(
-            conversation,
-            StreamLine(
-                conversation_id=conversation.id, start=start, end=end, line=line
-            ),
-            kept,
-            owner_id=sender.user_id,
-        )
+    framed = [
+        StreamLine(conversation_id=conversation.id, start=start, end=end, line=line)
+        for _, start, end, line in frames(TURN_ONE + TURN_TWO)
+    ]
+    kept = await tentacle.keep_transcript(
+        conversation, framed[: len(TURN_ONE) + 1], 0, owner_id=sender.user_id
+    )
     # The reconnect starts over from the end of the last committed turn.
-    for _, start, end, line in framed[len(TURN_ONE) :]:
-        kept = await tentacle.keep_transcript(
-            conversation,
-            StreamLine(
-                conversation_id=conversation.id, start=start, end=end, line=line
-            ),
-            kept,
-            owner_id=sender.user_id,
-        )
+    kept = await tentacle.keep_transcript(
+        conversation, framed[len(TURN_ONE) :], kept, owner_id=sender.user_id
+    )
     past_a_gap = StreamLine(
         conversation_id=conversation.id, start=kept + 5, end=kept + 7, line="{"
     )
     assert (
         await tentacle.keep_transcript(
-            conversation, past_a_gap, kept, owner_id=sender.user_id
+            conversation, [past_a_gap], kept, owner_id=sender.user_id
         )
         == kept
     )
@@ -240,9 +230,11 @@ async def test_a_native_session_forks_into_a_session_this_tentacle_drives(
         await tailer.feed_remote(state, agent_id, line, start, end)
         kept = await tentacle.keep_transcript(
             conversation,
-            StreamLine(
-                conversation_id=conversation.id, start=start, end=end, line=line
-            ),
+            [
+                StreamLine(
+                    conversation_id=conversation.id, start=start, end=end, line=line
+                )
+            ],
             kept,
             owner_id=sender.user_id,
         )
@@ -298,9 +290,11 @@ async def test_a_session_on_a_model_this_server_does_not_offer_cannot_fork(
         await tailer.feed_remote(state, agent_id, line, start, end)
         kept = await tentacle.keep_transcript(
             conversation,
-            StreamLine(
-                conversation_id=conversation.id, start=start, end=end, line=line
-            ),
+            [
+                StreamLine(
+                    conversation_id=conversation.id, start=start, end=end, line=line
+                )
+            ],
             kept,
             owner_id=sender.user_id,
         )

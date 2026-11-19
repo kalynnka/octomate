@@ -102,6 +102,7 @@ class SubagentMeta(BaseModel):
     """What Claude records beside a child's transcript, as far as the tail reads it."""
 
     tool_use_id: str | None = Field(default=None, alias="toolUseId")
+    description: str | None = None
 
 
 @dataclass
@@ -127,16 +128,16 @@ class FileCursor:
         )
 
     @staticmethod
-    def spawning_call(path: Path) -> str | None:
-        """The parent's call a Claude child answers. Claude writes it to a meta file
-        before the child's transcript; older versions and other harnesses do not."""
+    def meta(path: Path) -> SubagentMeta:
+        """What Claude says of a child: the parent's call it answers and what that
+        call named the task. Claude writes it to a meta file before the child's
+        transcript; older versions and other harnesses do not."""
         try:
-            meta = SubagentMeta.model_validate_json(
+            return SubagentMeta.model_validate_json(
                 path.with_suffix(".meta.json").read_bytes()
             )
         except (OSError, ValidationError):
-            return None
-        return meta.tool_use_id
+            return SubagentMeta()
 
     def read_lines(self) -> list[tuple[int, int, bytes]]:
         """New complete lines as (start, end, raw) — offsets in this file's own byte
@@ -233,13 +234,13 @@ class SessionTail:
                 first_line = await asyncio.to_thread(FileCursor.opening_line, path)
                 if first_line is None:
                     return
+            meta = await asyncio.to_thread(FileCursor.meta, path)
             await websocket.send(
                 StreamOpenSubagent(
                     name=name,
                     first_line=first_line,
-                    tool_call_id=await asyncio.to_thread(
-                        FileCursor.spawning_call, path
-                    ),
+                    tool_call_id=meta.tool_use_id,
+                    description=meta.description,
                 ).model_dump_json()
             )
             async with asyncio.timeout(STREAM_ACK_TIMEOUT):

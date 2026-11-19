@@ -134,6 +134,10 @@ class StreamOpenSubagent(BaseModel):
         description="The parent's call a Claude child answers, from the meta file "
         "beside its transcript. An interrupted call's result names no child.",
     )
+    description: str | None = Field(
+        default=None,
+        description="What the parent called a Claude child's task, from the same file.",
+    )
 
 
 class StreamSubagentOpened(BaseModel):

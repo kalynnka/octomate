@@ -176,6 +176,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# How long a tail that attaches to an ended session is left before it is told to
+# drain: long enough for the hook of a prompt that reopens the session to arrive.
+LATE_TAIL_GRACE = 5.0
+
+# A stream's lines are kept a burst at a time: when the socket goes quiet, or once
+# this many bytes wait. Storing each line on its own cost a backfill about 15 ms a
+# line, which fell far enough behind the client to time out its keepalive.
+KEEP_BATCH = 256 * 1024
+# Frames taken off the socket ahead of the loop that reads them.
+INBOX_FRAMES = 256
+
 
 @dataclass
 class ClaudeTentacle(AgentTentacle[str, None]):
@@ -210,8 +221,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
     # Claude Code's own names for models, such as `opus`, to the catalog entry each
     # runs now, so a pin saved under one still finds its model.
     model_aliases: dict[str, str] = field(init=False)
-    # Native sessions' subagents that started and have not settled, by session id.
-    native_subagents: dict[str, list[str]] = field(init=False, repr=False)
 
     # A Claude run stays live in-process; `pending` (from `AgentTentacle`) parks a
     # waiter per gated tool / question until `Octomate.kick` delivers the response.
@@ -286,7 +295,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         self.ink = ClaudeInk()
         self.models = {}
         self.model_aliases = {}
-        self.native_subagents = {}
         # Per-session locks shared by the hook ingest and the transcript tailer, so a
         # session's ledger writes (hooks) and run commits (tailer) serialize.
         self.session_locks = SessionLocks()
@@ -381,7 +389,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         """What a native session's hook says about its subagents: the start or
         settle it reports, and a settle for each one a stopped turn or an ended
         session left open. Claude fires no `SubagentStop` for one it interrupts."""
-        working = self.native_subagents.pop(event.session_id, [])
+        working = self.session_tailer.working_subagents.pop(event.session_id, [])
         activities: list[SubagentStartedEvent | SubagentSettledEvent] = []
         if activity := event.subagent_activity:
             activities.append(activity)
@@ -399,7 +407,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             )
             working = [agent_id for agent_id in working if agent_id in running]
         if working:
-            self.native_subagents[event.session_id] = working
+            self.session_tailer.working_subagents[event.session_id] = working
         return activities
 
     async def stream_session(self, websocket: WebSocket, sender: UserProfile) -> None:
@@ -520,6 +528,13 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         )
 
         async def relay_finalize() -> None:
+            if hello.session_id in self.session_tailer.ended:
+                # A hand-back fires the launcher mid-turn, and the tail it starts can
+                # arrive after the session is over. A prompt that reopens the session
+                # is announced by its own hook well inside this wait.
+                await asyncio.sleep(LATE_TAIL_GRACE)
+                if hello.session_id in self.session_tailer.ended:
+                    state.stop_event.set()
             await state.stop_event.wait()
             try:
                 await websocket.send_text(StreamFinalize().model_dump_json())
@@ -537,24 +552,73 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         # doubles as the tracker.
         expected_offsets = offsets
         clean = False
+        inbox: asyncio.Queue[str | Exception] = asyncio.Queue(INBOX_FRAMES)
+
+        async def read_socket() -> None:
+            """Take frames off the socket as they come, so the loop below can tell
+            a burst from a pause. What ends the reading is raised where it is read."""
+            try:
+                while True:
+                    await inbox.put(await websocket.receive_text())
+            # Raised again by the loop that reads the inbox, not swallowed.
+            except Exception as error:
+                await inbox.put(error)
+
+        batch: list[tuple[Conversation, StreamLine]] = []
+        waiting = 0
+
+        async def process_batch() -> None:
+            """Keep, then feed, the lines received so far. Kept first, so no run is
+            committed past the bytes that are stored; one write per file, so a long
+            transcript catches up."""
+            nonlocal waiting
+            if sender.user_id is not None:
+                files: dict[UUID7, list[StreamLine]] = {}
+                for target, line in batch:
+                    files.setdefault(target.id, []).append(line)
+                for key, lines in files.items():
+                    kept[key] = await self.keep_transcript(
+                        transcripts[key],
+                        lines,
+                        kept.get(key, 0),
+                        owner_id=sender.user_id,
+                    )
+            for target, line in batch:
+                await self.session_tailer.feed_remote(
+                    state, target.subagent_id or None, line.line, line.start, line.end
+                )
+            batch.clear()
+            waiting = 0
+
+        reader = asyncio.create_task(read_socket())
         try:
             while True:
-                message = client_message_adapter.validate_json(
-                    await websocket.receive_text()
-                )
+                try:
+                    raw = inbox.get_nowait()
+                except asyncio.QueueEmpty:
+                    await process_batch()
+                    raw = await inbox.get()
+                if isinstance(raw, Exception):
+                    await process_batch()
+                    raise raw
+                message = client_message_adapter.validate_json(raw)
                 if isinstance(message, StreamEof):
+                    await process_batch()
                     clean = True
                     return
                 if isinstance(message, StreamHello):
                     await websocket.close(code=1008, reason="hello already received")
                     return
                 if isinstance(message, StreamOpenSubagent):
+                    await process_batch()
                     tail = self.session_tailer.subagent_tail(state, message.name)
                     tail.call_id = message.tool_call_id
                     child = (
                         tail.conversation
                         or await self.session_tailer.prepare_subagent(state, tail)
                     )
+                    if message.description:
+                        await self.conversations.set_name(child, message.description)
                     transcripts[child.id] = child
                     await websocket.send_text(
                         StreamSubagentOpened(
@@ -584,25 +648,19 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                     )
                     return
                 expected_offsets[key] = message.end
-                await self.session_tailer.feed_remote(
-                    state,
-                    target.subagent_id or None,
-                    message.line,
-                    message.start,
-                    message.end,
-                )
-                if sender.user_id is not None:
-                    kept[key] = await self.keep_transcript(
-                        target, message, kept.get(key, 0), owner_id=sender.user_id
-                    )
+                batch.append((target, message))
+                waiting += message.end - message.start
+                if waiting >= KEEP_BATCH:
+                    await process_batch()
         except WebSocketDisconnect:
             pass
         except ValidationError:
             await websocket.close(code=1008, reason="unparseable stream message")
         finally:
-            relay.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await relay
+            for task in (relay, reader):
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
             if clean:
                 await self.session_tailer.finish_remote(state)
                 with contextlib.suppress(Exception):
@@ -613,34 +671,43 @@ class ClaudeTentacle(AgentTentacle[str, None]):
     async def keep_transcript(
         self,
         conversation: Conversation,
-        line: StreamLine,
+        lines: list[StreamLine],
         kept: int,
         *,
         owner_id: UUID7,
     ) -> int:
-        """Append one session-file line to the native conversation's stored
-        transcript, and answer how far the stored bytes now reach.
+        """Append session-file lines to the native conversation's stored transcript,
+        in one write, and answer how far the stored bytes now reach.
 
         A line already kept is skipped, as a reconnect resends the turn it was in.
-        One that does not start where the stored bytes end is not kept at all: the
-        file has to be the session's own bytes, or a fork of it would replay
-        something Claude never wrote.
+        From the first one that does not start where the stored bytes end, nothing
+        is kept: the file has to be the session's own bytes, or a fork of it would
+        replay something Claude never wrote.
         """
-        data = line.line.encode() + b"\n"
-        if line.start != kept or len(data) != line.end - line.start:
+        data = bytearray()
+        end = kept
+        for line in lines:
+            if line.end <= end:
+                continue
+            raw = line.line.encode() + b"\n"
+            if line.start != end or len(raw) != line.end - line.start:
+                break
+            data += raw
+            end = line.end
+        if not data:
             return kept
         await self.conversations.store_transcript(
             UploadFile(
-                BytesIO(data),
+                BytesIO(bytes(data)),
                 filename=f"{conversation.external_id or conversation.id}.jsonl",
                 headers=Headers({"content-type": "application/jsonl"}),
             ),
-            line.start,
+            kept,
             conversation=conversation,
             files=self.files,
             owner_id=owner_id,
         )
-        return line.end
+        return end
 
     async def read_fork_transcript(
         self, source: Conversation, *, owner_id: UUID7

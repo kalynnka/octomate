@@ -23,6 +23,8 @@ One stream, with these event families:
   accomplice's run opening and finishing around its `commission` or `whisper` call.
 - **Agent messages** (`AgentMessageEvent`) — another agent session's words
   reaching a native run as its prompt, published by the tailer.
+- **System messages** (`SystemMessageEvent`) — a line the harness wrote into a
+  native run in the person's place, published by the tailer.
 - **Habitat lifecycle** (`HabitatEvent`) — the phases a user's habitat passes
   through, published by the habitat manager.
 
@@ -118,6 +120,18 @@ class AgentMessageEvent(BaseModel):
         "the live message with."
     )
     agent: MessageAgent
+    text: str
+
+
+class SystemMessageEvent(BaseModel):
+    """A line the harness wrote into a native run in the person's place: the mark
+    Claude leaves where the person stopped a turn. Kept as a `system` row."""
+
+    event_kind: Literal["system_message"] = "system_message"
+    message_id: UUID7 = Field(
+        description="The ledger row the line is on, for a reader to reconcile the "
+        "live line with."
+    )
     text: str
 
 
@@ -629,6 +643,7 @@ type WireEvent = (
     | SubagentStartedEvent
     | SubagentSettledEvent
     | AgentMessageEvent
+    | SystemMessageEvent
     | RunResultEvent
     | ReflexAwakeEvent
     | ReflexAsleepEvent

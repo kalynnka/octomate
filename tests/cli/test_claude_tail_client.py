@@ -259,8 +259,11 @@ async def test_file_pump_interleaves_parent_backlog_and_children(
     children = tmp_path / "session" / "subagents"
     children.mkdir(parents=True)
     (children / "agent-b.jsonl").write_text("b1\nb2\n")
-    # Claude names the spawning call beside the child; an older one wrote no such file.
-    (children / "agent-b.meta.json").write_text('{"toolUseId": "toolu_b"}')
+    # Claude names the spawning call and the task beside the child; an older one
+    # wrote no such file.
+    (children / "agent-b.meta.json").write_text(
+        '{"toolUseId": "toolu_b", "description": "Count the files"}'
+    )
     (children / "agent-c.jsonl").write_text("c1\n")
     socket = AsyncMock(spec=ClientConnection)
     tail = SessionTail("session", transcript, ROOT, {ROOT: 0})
@@ -273,10 +276,10 @@ async def test_file_pump_interleaves_parent_backlog_and_children(
         for call in socket.send.await_args_list
     ]
     assert [
-        (line.name, line.tool_call_id)
+        (line.name, line.tool_call_id, line.description)
         for line in lines
         if isinstance(line, StreamOpenSubagent)
-    ] == [("b", "toolu_b"), ("c", None)]
+    ] == [("b", "toolu_b", "Count the files"), ("c", None, None)]
     assert [
         (line.conversation_id, line.line)
         for line in lines

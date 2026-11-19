@@ -21,6 +21,7 @@ from octomate.events import (
     RunEndedEvent,
     RunStartedEvent,
     StreamEvents,
+    SystemMessageEvent,
     to_wire,
 )
 from octomate.managers.conversation import ConversationManager
@@ -100,7 +101,7 @@ class NativeTurn:
         The ledger row grants access before the run is complete. Its id is also
         the enqueue id, so the console reconciles the live prompt with that row.
         A line the harness wrote in the person's place is a `system` row: it joins
-        the history and the ledger, and no reader is told a person said it.
+        the history and the ledger, and a reader is told the harness said it.
         A prompt whose annotations name an agent is that agent's message.
         """
         agent = (
@@ -145,6 +146,15 @@ class NativeTurn:
                 Impulse(
                     EnqueuedMessagesEvent(
                         enqueue_id=str(inbound.id), messages=(request,)
+                    ),
+                    self.address,
+                )
+            )
+        elif actor_kind == "system":
+            await self.impulses.send(
+                Impulse(
+                    SystemMessageEvent(
+                        message_id=inbound.id, text=inbound.message_text or ""
                     ),
                     self.address,
                 )

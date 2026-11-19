@@ -185,11 +185,21 @@ class TranscriptSystemLine(TranscriptSessionLine):
     tool_use_id: str | None = Field(default=None, alias="toolUseID")
 
 
+class TranscriptAttachment(TranscriptSchema):
+    """What Claude attaches to a turn, as far as this build reads it: a message
+    queued in while the turn ran says who wrote it. The rest stays as written."""
+
+    prompt: JsonValue = Field(
+        default=None, description="A queued message's text, or its content blocks."
+    )
+    origin: TranscriptOrigin | None = None
+
+
 class TranscriptAttachmentLine(TranscriptSessionLine):
-    """An attachment line, its payload kept raw."""
+    """An attachment line: context the harness adds, or a message queued into the turn."""
 
     type: Literal["attachment"]
-    attachment: JsonObject
+    attachment: TranscriptAttachment
 
 
 class TranscriptFileBackup(TranscriptSchema):

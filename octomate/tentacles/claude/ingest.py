@@ -98,6 +98,7 @@ class ClaudeHookIngest:
         "claude.hook UserPromptSubmit [{event.session_id}]", extract_args=["event"]
     )
     async def on_user_prompt_submit(self, event: ClaudeHookInput) -> None:
+        self.tailer.ended.discard(event.session_id)
         async with self.locks.hold(event.session_id):
             await self.start_session(event)
             await self.ensure_run(event)

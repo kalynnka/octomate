@@ -55,6 +55,7 @@ from tests.agent.claude.test_tailer import (
     agent_spawn_records,
     line_bytes,
     runs_of,
+    sub_user_record,
     subagent_runs_of,
 )
 from tests.support.managers import a_thread
@@ -392,7 +393,98 @@ async def test_a_native_subagent_left_open_settles_with_its_turn_or_session() ->
             for event in (item.event for item in held(live))
             if isinstance(event, SubagentSettledEvent)
         ] == [("interrupted", "cancelled"), ("background", "cancelled")]
-    assert tentacle.native_subagents == {}
+    assert tentacle.session_tailer.working_subagents == {}
+
+
+async def test_an_interrupted_native_subagent_settles_at_its_own_marker() -> None:
+    """Claude fires no hook for a subagent the person interrupts, but writes the
+    interrupt marker into the child's own file. The child settles there, once:
+    the session's end finds nothing left open."""
+    client, tentacle = stream_client()
+    key = ThreadKey("claude", "thread", SESSION_ID)
+    marker = sub_user_record(
+        "p1",
+        "s-u9",
+        5,
+        [{"type": "text", "text": "[Request interrupted by user for tool use]"}],
+    )
+    hook: JsonObject = {"session_id": SESSION_ID, "prompt_id": "p1"}
+    async with tentacle.octomate.nerve.subscribe(ThreadTopic(key)) as live:
+        with client:
+            started = client.post(
+                CLAUDE_HOOK_PATH,
+                headers=AUTH,
+                json={**hook, "hook_event_name": "SubagentStart", "agent_id": AGENT_ID},
+            )
+            assert started.status_code == 200
+            with client.websocket_connect(
+                CLAUDE_STREAM_PATH, headers=AUTH
+            ) as websocket:
+                websocket.send_text(hello_json())
+                websocket.receive_text()
+                websocket.send_text(StreamOpenSubagent(name=AGENT_ID).model_dump_json())
+                child = StreamSubagentOpened.model_validate_json(
+                    websocket.receive_text()
+                )
+                assert child.conversation_id is not None
+                for _, start, end, line in frames([*SUB_TURN_ONE[:2], marker]):
+                    websocket.send_text(
+                        StreamLine(
+                            conversation_id=child.conversation_id,
+                            start=start,
+                            end=end,
+                            line=line,
+                        ).model_dump_json()
+                    )
+                websocket.send_text(StreamEof().model_dump_json())
+                with pytest.raises(WebSocketDisconnect):
+                    websocket.receive_text()
+            ended = client.post(
+                CLAUDE_HOOK_PATH,
+                headers=AUTH,
+                json={**hook, "hook_event_name": "SessionEnd"},
+            )
+            assert ended.status_code == 200
+        assert [
+            (event.invocation_id, event.status)
+            for event in (item.event for item in held(live))
+            if isinstance(event, SubagentSettledEvent)
+        ] == [(AGENT_ID, "cancelled")]
+    assert tentacle.session_tailer.working_subagents == {}
+
+
+def test_a_tail_that_attaches_after_the_session_ended_is_told_to_drain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hand-back fires the launcher mid-turn, and the tail it starts can arrive
+    once the session is over. It is told to drain instead of idling out; a prompt
+    reopens the session for the tail that comes with it."""
+    monkeypatch.setattr("octomate.tentacles.claude.base.LATE_TAIL_GRACE", 0)
+    client, tentacle = stream_client()
+    hook: JsonObject = {"session_id": SESSION_ID, "prompt_id": "p1"}
+
+    with client:
+        ended = client.post(
+            CLAUDE_HOOK_PATH,
+            headers=AUTH,
+            json={**hook, "hook_event_name": "SessionEnd"},
+        )
+        assert ended.status_code == 200
+        with client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            websocket.receive_text()
+            told = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(told, StreamFinalize)
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+        prompted = client.post(
+            CLAUDE_HOOK_PATH,
+            headers=AUTH,
+            json={**hook, "prompt_id": "p2", "hook_event_name": "UserPromptSubmit"},
+        )
+        assert prompted.status_code == 200
+    assert tentacle.session_tailer.ended == set()
 
 
 def test_the_stream_authenticates_like_the_hook_routers() -> None:
@@ -468,7 +560,7 @@ def test_an_interrupted_child_is_linked_by_the_call_its_meta_file_names() -> Non
     """An interrupted Agent call's result names no child, so nothing in the
     parent's transcript ties the two. The client reports the call from the child's
     meta file when it opens the child, and the link holds across a reconnect that
-    opens nothing again."""
+    opens nothing again. The task's name in that file becomes the child's."""
     client, tentacle = stream_client()
     call = agent_spawn_records("p1", 2)[0]
     refused: JsonObject = {**agent_spawn_records("p1", 2)[1]}
@@ -481,7 +573,9 @@ def test_an_interrupted_child_is_linked_by_the_call_its_meta_file_names() -> Non
             welcome = StreamWelcome.model_validate_json(websocket.receive_text())
             websocket.send_text(
                 StreamOpenSubagent(
-                    name=AGENT_ID, tool_call_id=f"toolu-agent-{AGENT_ID}"
+                    name=AGENT_ID,
+                    tool_call_id=f"toolu-agent-{AGENT_ID}",
+                    description="Count the files",
                 ).model_dump_json()
             )
             child = StreamSubagentOpened.model_validate_json(websocket.receive_text())
@@ -521,9 +615,13 @@ def test_an_interrupted_child_is_linked_by_the_call_its_meta_file_names() -> Non
 
         assert client.portal is not None
         [run] = client.portal.call(subagent_runs_of, tentacle.octomate)
+        named = client.portal.call(
+            tentacle.octomate.conversations.get, run.conversation_id
+        )
     assert run.parent_run_id == "p1"
     assert run.parent_tool_call_id == f"toolu-agent-{AGENT_ID}"
     assert run.end_offset == sum(len(line_bytes(record)) for record in SUB_TURN_ONE)
+    assert named.name == "Count the files"
 
 
 @pytest.mark.parametrize("clean", [False, True], ids=["disconnect", "eof"])

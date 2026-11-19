@@ -23,7 +23,13 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.database import async_session
-from octomate.events import AgentMessageEvent, RunEndedEvent, SubagentSettledEvent
+from octomate.events import (
+    AgentMessageEvent,
+    RunEndedEvent,
+    SubagentSettledEvent,
+    SubagentStartedEvent,
+    SystemMessageEvent,
+)
 from octomate.managers.conversation import ConversationManager
 from octomate.nerve import Impulse, Nerve, ThreadTopic
 from octomate.schemas.annotations import MessageAgent
@@ -447,17 +453,17 @@ async def test_an_interrupted_turn_ends_cancelled_and_the_system_says_so() -> No
     ended = events[-1]
     assert isinstance(ended, RunEndedEvent)
     assert ended.outcome == "cancelled"
-    # Only the person's prompt is announced as theirs.
+    # Only the person's prompt is announced as theirs; the mark is the system's.
     assert [event.event_kind for event in events].count("enqueued_messages") == 1
+    [noted] = [event for event in events if isinstance(event, SystemMessageEvent)]
+    assert noted.text == "[Request interrupted by user for tool use]"
     thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
-    assert [
-        (message.actor_kind, message.message_text)
-        for message in thread.messages
-        if message.direction == "inbound"
-    ] == [
+    rows = [message for message in thread.messages if message.direction == "inbound"]
+    assert [(message.actor_kind, message.message_text) for message in rows] == [
         ("human", "list the files"),
         ("system", "[Request interrupted by user for tool use]"),
     ]
+    assert noted.message_id == rows[1].id
 
 
 async def test_another_agents_message_opens_a_turn_as_that_agents() -> None:
@@ -494,6 +500,53 @@ async def test_another_agents_message_opens_a_turn_as_that_agents() -> None:
         for message in rows
     ] == [("human", None, "list the files"), ("agent", "claude", "two findings")]
     assert said.message_id == rows[1].id
+
+
+async def test_a_handback_queued_into_the_turn_is_that_agents_message() -> None:
+    """A foreground subagent's hand-back reaches its parent while the turn runs:
+    Claude queues it as an attachment, not a prompt line. It is still that agent's
+    message, inside the same run."""
+    queued: JsonObject = {
+        **assistant_record("queued", 3, []),
+        "type": "attachment",
+        "attachment": {
+            "type": "queued_command",
+            "commandMode": "prompt",
+            "prompt": f'<agent-message from="{AGENT_ID}">\n…\n</agent-message>',
+            "origin": {
+                "kind": "peer",
+                "from": AGENT_ID,
+                "name": "general-purpose",
+                "body": "[Subagent hand-back] The report follows:\n  two findings",
+                "handbackReportText": "two findings",
+            },
+        },
+    }
+    del queued["message"]
+    # Context the harness attaches is not anyone's message.
+    context: JsonObject = {**queued, "uuid": "context", "attachment": {"type": "date"}}
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(
+        octomate.conversations, octomate.threads, agent_tentacle_id="claude"
+    )
+
+    async with octomate.nerve.subscribe(ThreadTopic(SESSION_KEY)) as live:
+        await stream_in(
+            tailer, octomate.nerve, [*TURN_ONE[:-1], context, queued, TURN_ONE[-1]]
+        )
+        events = [impulse.event for impulse in held(live)]
+
+    [said] = [event for event in events if isinstance(event, AgentMessageEvent)]
+    assert said.agent == MessageAgent(id=AGENT_ID, name="general-purpose")
+    assert said.text == "two findings"
+    thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
+    rows = [message for message in thread.messages if message.direction == "inbound"]
+    assert [(message.actor_kind, message.message_text) for message in rows] == [
+        ("human", "list the files"),
+        ("agent", "two findings"),
+    ]
+    assert said.message_id == rows[1].id
+    assert [run.id for run in await runs_of(octomate)] == ["p1"]
 
 
 async def test_no_consumer_still_records_every_run() -> None:
@@ -1124,6 +1177,69 @@ async def test_a_resumed_subagent_adds_a_second_run_to_one_conversation() -> Non
     # Contiguous child byte ranges: the resumed turn starts where the first ended.
     assert first.end_offset == second.start_offset
     assert second.messages, "a tool-result opener still yields a timeline"
+
+
+async def test_a_result_stays_with_its_call_when_the_parent_moved_on() -> None:
+    """A background child works on while its parent takes the next prompt, and the
+    results it writes then carry that prompt's id. A result still belongs to the
+    turn that made the call: one run, linked to the spawning call."""
+    late = sub_user_record(
+        "p2",
+        "s-u2",
+        3,
+        [{"type": "tool_result", "tool_use_id": "toolu-s1", "content": "src tests"}],
+    )
+    late["sourceToolAssistantUUID"] = "s-a1"
+    sub = [*SUB_TURN_ONE[:2], late, SUB_TURN_ONE[3]]
+    turn_one = [TURN_ONE[0], *agent_spawn_records("p1", 2), TURN_ONE[3]]
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(
+        octomate.conversations, octomate.threads, agent_tentacle_id="claude"
+    )
+
+    await stream_in(tailer, octomate.nerve, turn_one + TURN_TWO, sub=sub)
+
+    [run] = await subagent_runs_of(octomate)
+    assert run.id == f"{AGENT_ID}:p1"
+    assert run.parent_tool_call_id == f"toolu-agent-{AGENT_ID}"
+    assert run.end_offset == sum(len(line_bytes(record)) for record in sub)
+
+
+async def test_a_restreamed_turn_announces_the_subagents_it_already_knows() -> None:
+    """A reconnect re-streams the unfinished turn, and a reader redraws it from
+    those events. The hooks that announced a child fired on the first connection,
+    so the turn says it again where it reaches the spawning call."""
+    unfinished = [TURN_ONE[0], *agent_spawn_records("p1", 2)]
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(
+        octomate.conversations, octomate.threads, agent_tentacle_id="claude"
+    )
+
+    async def connect() -> list[tuple[str, str]]:
+        async with (
+            octomate.nerve.subscribe(ThreadTopic(SESSION_KEY)) as live,
+            octomate.nerve.publish(SESSION_ADDRESS) as impulses,
+        ):
+            state, _ = await tailer.attach_remote(
+                SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+            )
+            await feed_records(tailer, state, unfinished)
+            tailer.detach_remote(state)
+            return [
+                (event.event_kind, event.invocation_id)
+                for event in (impulse.event for impulse in held(live))
+                if isinstance(event, SubagentStartedEvent | SubagentSettledEvent)
+            ]
+
+    # The first connection learns of the child as it goes; its hooks announce it.
+    assert await connect() == []
+    assert await connect() == [
+        ("subagent_started", AGENT_ID),
+        ("subagent_settled", AGENT_ID),
+    ]
+    # One its hooks still report as working is not settled.
+    tailer.working_subagents[SESSION_ID] = [AGENT_ID]
+    assert await connect() == [("subagent_started", AGENT_ID)]
 
 
 async def test_restreaming_a_session_reproduces_the_same_subagent_tree() -> None:
