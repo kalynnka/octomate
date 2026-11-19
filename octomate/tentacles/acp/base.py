@@ -15,7 +15,7 @@ from acp import schema
 from acp.connection import StreamDirection, StreamEvent
 from acp.utils import notify_model, request_model
 from anyio import CancelScope
-from httpx import URL
+from httpx2 import URL
 from pydantic import UUID7, JsonValue
 from pydantic_ai import (
     AgentCapability,

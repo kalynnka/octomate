@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, ClassVar, overload
 from uuid import uuid4
 
 import anyio
-import httpx
+import httpx2
 from anyio.abc import ObjectSendStream
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -255,7 +255,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         self.ink = DeepseekInk(
             DeepseekApiClient(
                 base_url=endpoint,
-                http_client=httpx.AsyncClient(base_url=str(endpoint)),
+                http_client=httpx2.AsyncClient(base_url=str(endpoint)),
             )
         )
         self.bridge_contexts = {}

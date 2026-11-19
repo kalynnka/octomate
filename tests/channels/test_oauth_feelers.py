@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-import httpx
+import httpx2
 import pytest
 from pydantic import AnyHttpUrl, JsonValue
 
@@ -86,17 +86,17 @@ async def test_napcat_authorizations_keep_literal_urls_in_private_messages(
             agents=["agent"], ws_url="ws://napcat.test", http_url="http://napcat.test"
         ),
     )
-    requests: list[httpx.Request] = []
+    requests: list[httpx2.Request] = []
 
-    def respond(request: httpx.Request) -> httpx.Response:
+    def respond(request: httpx2.Request) -> httpx2.Response:
         requests.append(request)
-        return httpx.Response(
+        return httpx2.Response(
             200, json={"status": "ok", "retcode": 0, "data": {"message_id": "msg-1"}}
         )
 
     await channel.ink.httpx.aclose()
-    async with httpx.AsyncClient(
-        base_url="http://napcat.test", transport=httpx.MockTransport(respond)
+    async with httpx2.AsyncClient(
+        base_url="http://napcat.test", transport=httpx2.MockTransport(respond)
     ) as client:
         channel.ink.httpx = client
         assert isinstance(channel.feelers.oauth, NapcatOAuthFeeler)

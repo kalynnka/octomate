@@ -9,7 +9,7 @@ from contextlib import suppress
 from dataclasses import replace
 from typing import Self
 
-import httpx
+import httpx2
 import lark_oapi as lark
 from lark_oapi.api.cardkit.v1 import (
     ContentCardElementRequest,
@@ -75,7 +75,7 @@ multipart_data_adapter = TypeAdapter(JsonObject)
 # dispatches with — the one argument `Transport.aexecute` receives that
 # identifies the calling app (every generated service of a built client shares
 # that exact instance).
-pools: dict[Config, httpx.AsyncClient] = {}
+pools: dict[Config, httpx2.AsyncClient] = {}
 
 
 async def pooled_aexecute(
@@ -166,14 +166,14 @@ class LarkWebSocketClient(lark.ws.Client):
 
 class LarkInk(Ink[LarkOutboundMessage]):
     """Lark Open API transport, routing the SDK's requests through this ink's own
-    pooled httpx client while it is entered."""
+    pooled HTTPX2 client while it is entered."""
 
     app_id: str
     app_secret: SecretStr
     client: lark.Client
     # `client`'s own Config — the key this ink's requests route by in `pools`.
     config: Config
-    http: httpx.AsyncClient | None
+    http: httpx2.AsyncClient | None
 
     def __init__(self, app_id: str, app_secret: SecretStr) -> None:
         self.app_id = app_id
@@ -193,7 +193,7 @@ class LarkInk(Ink[LarkOutboundMessage]):
     async def __aenter__(self) -> Self:
         """Open this ink's own pooled client and route the SDK calls its
         `lark.Client` makes onto it (see `pooled_aexecute`)."""
-        self.http = httpx.AsyncClient()
+        self.http = httpx2.AsyncClient()
         pools[self.config] = self.http
         Transport.aexecute = staticmethod(pooled_aexecute)
         return self

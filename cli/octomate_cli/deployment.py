@@ -21,7 +21,7 @@ from importlib.resources import files
 from ipaddress import IPv4Address
 from pathlib import Path
 
-import httpx
+import httpx2
 import yaml
 from alembic.config import Config
 from alembic.script import ScriptDirectory
@@ -498,7 +498,7 @@ async def verify(config: OctomateConfig) -> None:
     console_status = (
         (401 if config.auth is not None else 503) if console_enabled else 404
     )
-    async with httpx.AsyncClient(base_url=url, trust_env=False) as client:
+    async with httpx2.AsyncClient(base_url=url, trust_env=False) as client:
         status = (
             await client.post(
                 OCTOMATE_MCP_PATH,

@@ -1,7 +1,7 @@
 import asyncio
 from typing import Annotated
 
-import httpx
+import httpx2
 from fastapi import Depends, FastAPI
 from uuid_utils.compat import uuid7
 
@@ -52,8 +52,8 @@ async def test_dependency_reuses_the_configured_manager_across_requests() -> Non
         assert manager.lock(key) is lock
         return id(manager)
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=octomate), base_url="http://test"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=octomate), base_url="http://test"
     ) as client:
         assert (await client.get("/manager")).json() == id(octomate.oauth)
         assert (await client.get("/manager")).json() == id(octomate.oauth)
@@ -115,8 +115,8 @@ async def test_dependencies_share_the_hosts_manager_graph() -> None:
         assert gateway is octomate.gateway
         return True
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=octomate), base_url="http://test"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=octomate), base_url="http://test"
     ) as client:
         assert (await client.get("/managers")).json() is True
 
@@ -138,8 +138,8 @@ async def test_a_dependency_override_leaves_the_app_managers_intact() -> None:
         assert threads.users is oauth.users is octomate.users
         return [id(threads), id(oauth)]
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=octomate), base_url="http://test"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=octomate), base_url="http://test"
     ) as client:
         first = (await client.get("/managers")).json()
         assert (await client.get("/managers")).json() == first

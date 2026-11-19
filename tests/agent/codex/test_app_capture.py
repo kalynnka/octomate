@@ -3,7 +3,7 @@
 from io import BytesIO
 from unittest.mock import AsyncMock
 
-import httpx
+import httpx2
 import pytest
 from fastapi import UploadFile
 from openai_codex.generated.v2_all import ItemCompletedNotification, ThreadItem
@@ -276,8 +276,8 @@ async def test_driven_app_survives_its_session_and_reuses_the_owned_viewer(
         AsyncMock(side_effect=AssertionError("Captured apps must not reconnect")),
     )
     host.dependency_overrides[current_user] = lambda: owner
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=host), base_url="https://console.example"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=host), base_url="https://console.example"
     ) as client:
         for url in (
             f"/api/artifacts/{artifact.id}",

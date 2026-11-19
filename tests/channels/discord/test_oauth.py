@@ -4,7 +4,6 @@ from base64 import urlsafe_b64encode
 from datetime import timedelta
 from urllib.parse import parse_qs, urlsplit
 
-import httpx
 import httpx2
 import pytest
 from pydantic import AnyHttpUrl, SecretStr, ValidationError
@@ -120,8 +119,8 @@ async def test_profile_page_to_callback_links_the_verified_profile(
         stored_user.password_hash = user.password_hash
         await db.commit()
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=host),
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=host),
         base_url=str(CALLBACK_ORIGIN),
         headers={"X-Octomate-Request": "1"},
     ) as browser:

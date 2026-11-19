@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import discord
-import httpx
+import httpx2
 import pytest
 
 from octomate.schemas.conversation import ChannelAddress
@@ -359,15 +359,15 @@ async def test_identity_user_lookup_dm_open_and_standalone_upload(
 async def test_download_image_returns_typed_media_and_closes_http(
     client: discord.Client,
 ) -> None:
-    async def respond(request: httpx.Request) -> httpx.Response:
+    async def respond(request: httpx2.Request) -> httpx2.Response:
         assert str(request.url) == "https://cdn.discordapp.com/signed/image.png?x=1"
-        return httpx.Response(
+        return httpx2.Response(
             200,
             content=b"image",
             headers={"content-type": "image/png"},
         )
 
-    http = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    http = httpx2.AsyncClient(transport=httpx2.MockTransport(respond))
     ink = DiscordInk(client, http=http)
     segment = ImageSegment(
         data=ImageData(

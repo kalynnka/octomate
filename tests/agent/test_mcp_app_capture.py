@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from unittest.mock import AsyncMock
 
-import httpx
+import httpx2
 import pytest
 from cachetools import LRUCache
 from fastmcp import Client, Context, FastMCP
@@ -489,8 +489,8 @@ async def test_ledger_http_replay_exposes_only_references_without_tool_calls(
             turn.scope, turn.installation.namespace, "draw", {"xml": "saved input"}
         )
     turn.host.dependency_overrides[current_user] = lambda: turn.user
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=turn.host), base_url="http://localhost"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=turn.host), base_url="http://localhost"
     ) as client:
         for _ in range(2):
             response = await client.get(

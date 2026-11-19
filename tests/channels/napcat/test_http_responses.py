@@ -1,6 +1,6 @@
 from collections.abc import AsyncIterator
 
-import httpx
+import httpx2
 import pytest
 from pydantic import JsonValue, ValidationError
 
@@ -10,17 +10,17 @@ from octomate.tentacles.napcat.schema import NapcatOutboundMessage
 
 @pytest.fixture
 async def napcat_api() -> AsyncIterator[
-    tuple[NapcatInk, list[httpx.Response], list[httpx.Request]]
+    tuple[NapcatInk, list[httpx2.Response], list[httpx2.Request]]
 ]:
-    responses: list[httpx.Response] = []
-    requests: list[httpx.Request] = []
+    responses: list[httpx2.Response] = []
+    requests: list[httpx2.Request] = []
 
-    def respond(request: httpx.Request) -> httpx.Response:
+    def respond(request: httpx2.Request) -> httpx2.Response:
         requests.append(request)
         return responses.pop(0)
 
-    async with httpx.AsyncClient(
-        base_url="http://napcat", transport=httpx.MockTransport(respond)
+    async with httpx2.AsyncClient(
+        base_url="http://napcat", transport=httpx2.MockTransport(respond)
     ) as client:
         ink = object.__new__(NapcatInk)
         ink.httpx = client
@@ -28,11 +28,11 @@ async def napcat_api() -> AsyncIterator[
 
 
 async def test_group_name_comes_from_the_platform(
-    napcat_api: tuple[NapcatInk, list[httpx.Response], list[httpx.Request]],
+    napcat_api: tuple[NapcatInk, list[httpx2.Response], list[httpx2.Request]],
 ) -> None:
     ink, responses, requests = napcat_api
     responses.append(
-        httpx.Response(
+        httpx2.Response(
             200,
             json={"status": "ok", "data": {"group_name": "Our group", "group_id": 42}},
         )
@@ -43,11 +43,11 @@ async def test_group_name_comes_from_the_platform(
 
 
 async def test_inspect_normalizes_login_identity_and_ignores_unknown_fields(
-    napcat_api: tuple[NapcatInk, list[httpx.Response], list[httpx.Request]],
+    napcat_api: tuple[NapcatInk, list[httpx2.Response], list[httpx2.Request]],
 ) -> None:
     ink, responses, requests = napcat_api
     responses.append(
-        httpx.Response(
+        httpx2.Response(
             200,
             json={
                 "status": "ok",
@@ -69,13 +69,13 @@ async def test_inspect_normalizes_login_identity_and_ignores_unknown_fields(
     [({"user_id": 123, "nickname": "Alice"}, "123"), ({"nick": "Alice"}, "42")],
 )
 async def test_profile_preserves_identity_and_name_normalization(
-    napcat_api: tuple[NapcatInk, list[httpx.Response], list[httpx.Request]],
+    napcat_api: tuple[NapcatInk, list[httpx2.Response], list[httpx2.Request]],
     data: JsonValue,
     expected_id: str,
 ) -> None:
     ink, responses, _ = napcat_api
     responses.append(
-        httpx.Response(200, json={"status": "ok", "retcode": 0, "data": data})
+        httpx2.Response(200, json={"status": "ok", "retcode": 0, "data": data})
     )
 
     profile = await ink.get_user_profile("42")
@@ -94,10 +94,10 @@ async def test_profile_preserves_identity_and_name_normalization(
     ],
 )
 async def test_invalid_profile_response_keeps_the_existing_identity_fallback(
-    napcat_api: tuple[NapcatInk, list[httpx.Response], list[httpx.Request]], body: str
+    napcat_api: tuple[NapcatInk, list[httpx2.Response], list[httpx2.Request]], body: str
 ) -> None:
     ink, responses, _ = napcat_api
-    responses.append(httpx.Response(200, text=body))
+    responses.append(httpx2.Response(200, text=body))
 
     profile = await ink.get_user_profile("42")
 
@@ -113,13 +113,13 @@ async def test_invalid_profile_response_keeps_the_existing_identity_fallback(
     ],
 )
 async def test_image_response_url_is_optional(
-    napcat_api: tuple[NapcatInk, list[httpx.Response], list[httpx.Request]],
+    napcat_api: tuple[NapcatInk, list[httpx2.Response], list[httpx2.Request]],
     data: JsonValue,
     expected: str | None,
 ) -> None:
     ink, responses, _ = napcat_api
     responses.append(
-        httpx.Response(200, json={"status": "ok", "retcode": 0, "data": data})
+        httpx2.Response(200, json={"status": "ok", "retcode": 0, "data": data})
     )
 
     assert await ink.get_image_url("image-key") == expected
@@ -127,11 +127,11 @@ async def test_image_response_url_is_optional(
 
 @pytest.mark.parametrize("body", [{"status": "ok", "data": None}, {"status": "ok"}])
 async def test_image_response_requires_data(
-    napcat_api: tuple[NapcatInk, list[httpx.Response], list[httpx.Request]],
+    napcat_api: tuple[NapcatInk, list[httpx2.Response], list[httpx2.Request]],
     body: JsonValue,
 ) -> None:
     ink, responses, _ = napcat_api
-    responses.append(httpx.Response(200, json=body))
+    responses.append(httpx2.Response(200, json=body))
 
     with pytest.raises(ValueError, match="returned no data"):
         await ink.get_image_url("image-key")
@@ -139,12 +139,12 @@ async def test_image_response_requires_data(
 
 @pytest.mark.parametrize("url", [42, [], {}])
 async def test_invalid_image_urls_fail_at_the_response_boundary(
-    napcat_api: tuple[NapcatInk, list[httpx.Response], list[httpx.Request]],
+    napcat_api: tuple[NapcatInk, list[httpx2.Response], list[httpx2.Request]],
     url: JsonValue,
 ) -> None:
     ink, responses, _ = napcat_api
     responses.append(
-        httpx.Response(200, json={"status": "ok", "retcode": 0, "data": {"url": url}})
+        httpx2.Response(200, json={"status": "ok", "retcode": 0, "data": {"url": url}})
     )
 
     with pytest.raises(ValidationError):
@@ -162,14 +162,14 @@ async def test_invalid_image_urls_fail_at_the_response_boundary(
     ],
 )
 async def test_send_rejects_missing_or_invalid_ids_before_sending_more_messages(
-    napcat_api: tuple[NapcatInk, list[httpx.Response], list[httpx.Request]],
+    napcat_api: tuple[NapcatInk, list[httpx2.Response], list[httpx2.Request]],
     first_data: JsonValue,
     error: type[Exception],
     match: str,
 ) -> None:
     ink, responses, requests = napcat_api
     responses.extend(
-        httpx.Response(200, json={"status": "ok", "retcode": 0, "data": data})
+        httpx2.Response(200, json={"status": "ok", "retcode": 0, "data": data})
         for data in [first_data, {"message_id": 123}, {"message_id": 456}]
     )
     message = NapcatOutboundMessage(segments=[{"type": "text", "data": {"text": "hi"}}])
@@ -183,11 +183,11 @@ async def test_send_rejects_missing_or_invalid_ids_before_sending_more_messages(
 
 
 async def test_send_returns_the_first_id_as_text(
-    napcat_api: tuple[NapcatInk, list[httpx.Response], list[httpx.Request]],
+    napcat_api: tuple[NapcatInk, list[httpx2.Response], list[httpx2.Request]],
 ) -> None:
     ink, responses, requests = napcat_api
     responses.extend(
-        httpx.Response(
+        httpx2.Response(
             200, json={"status": "ok", "retcode": 0, "data": {"message_id": message_id}}
         )
         for message_id in [123, 456]

@@ -9,7 +9,6 @@ from hashlib import sha256
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
 
-import httpx
 import httpx2
 import pytest
 from pydantic import AnyHttpUrl, SecretStr
@@ -456,8 +455,8 @@ async def test_slack_callback_links_to_the_account_that_started_oauth(
         session.add(user)
         await session.commit()
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=host),
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=host),
         base_url="https://octomate.example",
         headers={"X-Octomate-Request": "1"},
     ) as client:

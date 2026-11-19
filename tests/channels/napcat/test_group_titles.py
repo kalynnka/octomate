@@ -1,6 +1,6 @@
 import json
 
-import httpx
+import httpx2
 import pytest
 
 from octomate.config import NapcatChannelConfig
@@ -32,13 +32,13 @@ async def test_inbound_group_messages_save_the_platform_name(
     group_name = "Our group"
     lookups: list[bytes] = []
 
-    def respond(request: httpx.Request) -> httpx.Response:
+    def respond(request: httpx2.Request) -> httpx2.Response:
         if request.url.path == "/get_group_info":
             lookups.append(request.content)
-            return httpx.Response(
+            return httpx2.Response(
                 200, json={"status": "ok", "data": {"group_name": group_name}}
             )
-        return httpx.Response(
+        return httpx2.Response(
             200,
             json={
                 "status": "ok",
@@ -50,9 +50,9 @@ async def test_inbound_group_messages_save_the_platform_name(
         )
 
     await channel.ink.httpx.aclose()
-    async with httpx.AsyncClient(
+    async with httpx2.AsyncClient(
         base_url="http://napcat.test",
-        transport=httpx.MockTransport(respond),
+        transport=httpx2.MockTransport(respond),
     ) as client:
         channel.ink.httpx = client
         await channel.probe()

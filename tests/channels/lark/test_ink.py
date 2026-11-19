@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
 
-import httpx
+import httpx2
 import lark_oapi as lark
 import pytest
 from lark_oapi.api.im.v1 import (
@@ -260,7 +260,7 @@ async def test_pooled_transport_preserves_sdk_body_encoding(multipart: bool) -> 
     if multipart:
         request.files = {"image": ("image.png", b"image-bytes", "image/png")}
 
-    def respond(outgoing: httpx.Request) -> httpx.Response:
+    def respond(outgoing: httpx2.Request) -> httpx2.Response:
         if multipart:
             assert outgoing.headers["content-type"].startswith("multipart/form-data;")
             assert b'name="text"' in outgoing.content
@@ -272,9 +272,9 @@ async def test_pooled_transport_preserves_sdk_body_encoding(multipart: bool) -> 
             body = JSON.marshal(request.body)
             assert body is not None
             assert outgoing.content == body.encode()
-        return httpx.Response(200, content=b'{"code":0}')
+        return httpx2.Response(200, content=b'{"code":0}')
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(respond)) as client:
         pools[config] = client
         try:
             response = await pooled_aexecute(config, request)

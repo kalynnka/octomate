@@ -14,7 +14,7 @@ import socket
 from pathlib import Path
 from urllib.parse import urlsplit
 
-import httpx
+import httpx2
 import pytest
 from anyio.abc import ObjectSendStream
 from arcanus.materia.sqlalchemy import selectinload
@@ -266,7 +266,8 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
             reader_url = await reader.start()
             assert reader.launch_token is not None
             async with DeepseekApiClient(
-                reader_url, httpx.AsyncClient(base_url=str(reader_url), trust_env=False)
+                reader_url,
+                httpx2.AsyncClient(base_url=str(reader_url), trust_env=False),
             ) as reader_client:
                 await reader_client.authenticate(reader.launch_token)
                 with monkeypatch.context() as reader_env:
@@ -389,7 +390,7 @@ async def test_real_harness_browser_login_through_a_trusted_proxy(
         link = urlsplit(banners[0].removeprefix("dsh web: "))
         assert link.netloc == authority
         # Model the proxy's loopback connection while preserving browser Host/Origin.
-        async with httpx.AsyncClient(
+        async with httpx2.AsyncClient(
             base_url=str(base_url),
             headers={"Host": authority, "Origin": origin},
             trust_env=False,

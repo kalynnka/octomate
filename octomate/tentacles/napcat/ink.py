@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-import httpx
+import httpx2
 from pydantic import JsonValue, SecretStr
 
 from octomate.schemas.segments import ImageSegment
@@ -29,7 +29,7 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
 
     http_url: str
     access_token: SecretStr | None
-    httpx: httpx.AsyncClient
+    httpx: httpx2.AsyncClient
 
     def __init__(self, http_url: str, access_token: SecretStr | None = None) -> None:
         self.http_url = str(http_url).rstrip("/")
@@ -37,7 +37,7 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
         headers: dict[str, str] = {}
         if access_token:
             headers["Authorization"] = f"Bearer {access_token.get_secret_value()}"
-        self.httpx = httpx.AsyncClient(base_url=self.http_url, headers=headers)
+        self.httpx = httpx2.AsyncClient(base_url=self.http_url, headers=headers)
 
     async def call_api[DataT](
         self,
@@ -92,7 +92,7 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
         )
         return data.url
 
-    async def download(self, url: str) -> httpx.Response:
+    async def download(self, url: str) -> httpx2.Response:
         resp = await self.httpx.get(url)
         resp.raise_for_status()
         return resp

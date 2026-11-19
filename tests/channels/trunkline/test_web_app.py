@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 
-import httpx
+import httpx2
 import pytest
 from fastapi.routing import APIRoute, APIWebSocketRoute
 from pydantic_ai.messages import (
@@ -161,11 +161,11 @@ async def _post(
 
 
 async def _send(
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     octomate: Octomate,
     thread_key: str,
     body: dict[str, str | None],
-) -> httpx.Response:
+) -> httpx2.Response:
     """Post a directive over HTTP and wait for its turn to settle, as the console
     does on the thread's socket."""
     key = ThreadKey.from_address(_console_address(thread_key))
@@ -592,8 +592,8 @@ async def test_a_console_watches_a_thread_over_its_live_socket(
     agent, _ = build_scripted_agent(["all done!", "and again"])
     await _register(octomate, agent)
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=octomate),
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=octomate),
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
     ) as client:
@@ -688,8 +688,8 @@ async def test_a_directive_on_an_awake_thread_is_refused_and_leaves_no_row(
     agent, _ = build_scripted_agent(["unused"])
     await _register(octomate, agent)
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=octomate),
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=octomate),
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
     ) as client:
@@ -1016,8 +1016,8 @@ async def test_a_new_thread_posted_by_the_console_carries_its_project(
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)
 
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -1052,8 +1052,8 @@ async def test_the_permission_modes_endpoint_lists_each_agents_own_in_order(
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)
 
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -1088,8 +1088,8 @@ async def test_an_agent_that_did_not_start_leaves_the_others_listed(
         )
     )
 
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -1109,8 +1109,8 @@ async def test_the_configured_default_is_what_the_endpoint_reports(
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent, permission_mode="dontAsk")
 
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -1131,8 +1131,8 @@ async def test_a_posture_rides_the_first_directive_then_switches_on_the_row(
     await _register(octomate, agent)
     route = f"inkling{ROUTE_SEP}{RECEPTION_MODEL}"
 
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -1172,8 +1172,8 @@ async def test_a_posture_from_another_providers_vocabulary_is_refused(
     await _register(octomate, agent)
     route = f"inkling{ROUTE_SEP}{RECEPTION_MODEL}"
 
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -1225,8 +1225,8 @@ async def test_first_directive_applies_effort_to_its_first_run(
     inkling = octomate.agents["inkling"]
     inkling.claims = {RECEPTION_MODEL: Claim("Test", efforts=("high",))}
     inkling.routes = inkling.build_routes()
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=octomate),
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=octomate),
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
     ) as client:
@@ -1259,8 +1259,8 @@ async def test_an_effort_set_mid_thread_stays_on_the_row_until_cleared(
     inkling.routes = inkling.build_routes()
     route = f"inkling{ROUTE_SEP}{RECEPTION_MODEL}"
 
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -1294,8 +1294,8 @@ async def test_an_effort_the_route_does_not_claim_is_refused(
     inkling.routes = inkling.build_routes()
     route = f"inkling{ROUTE_SEP}{RECEPTION_MODEL}"
 
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -1349,8 +1349,8 @@ async def test_the_agents_endpoint_keeps_the_models_routes_drops(
     channel = await _register_routes(octomate, {"inkling": inkling, "claude": claude})
     channel.config.agents = ["claude"]
 
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -1384,8 +1384,8 @@ async def test_the_agents_endpoint_reports_each_routes_effort_vocabulary(
         {RECEPTION_MODEL: Claim("triage and reply", efforts=("low", "high"))},
     )
 
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -1413,8 +1413,8 @@ async def test_a_route_claiming_no_efforts_says_so_rather_than_all_of_them(
     inkling, _ = build_scripted_agent(["from inkling"])
     await _register_routes(octomate, {"inkling": inkling})
 
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -1452,8 +1452,8 @@ async def test_the_profile_endpoint_answers_identity_and_channels(
     assert user is not None
     octomate.dependency_overrides[current_user] = lambda: user
 
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -1477,8 +1477,8 @@ async def test_the_profile_endpoint_does_not_treat_uninstalled_connectors_as_gra
     await _register(octomate, agent)
     octomate.oauth.register(OAuthConnector(id="github", flows=[FakeDeviceFlow()]))
 
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -1538,8 +1538,8 @@ async def test_profile_oauth_status_belongs_to_each_users_installation(
             )
         await session.commit()
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=octomate),
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=octomate),
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
     ) as client:
@@ -1571,8 +1571,8 @@ async def test_the_projects_endpoint_offers_only_enabled_ones(
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)
 
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -1603,8 +1603,8 @@ async def test_threads_and_detail_endpoints(
         )
     )
 
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -1776,8 +1776,8 @@ async def test_console_reads_never_load_the_model_ledger(
         if statement.lstrip().upper().startswith("SELECT"):
             selects.append(statement)
 
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -1870,8 +1870,8 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
         native_session_id="session-1",
     )
 
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -1900,8 +1900,8 @@ async def test_a_thread_no_project_claims_reads_back_without_one(
     channel = await _register(octomate, agent)
     await _post(channel, "what changed?", thread_id="thread-8")
 
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -1952,8 +1952,8 @@ async def test_batch_resolve_resolves_and_streams(
     )
     approval_id = next(iter(batch.approvals)).id
 
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -2018,8 +2018,8 @@ async def test_custom_agent_permissions_are_listed_and_validated_on_selection(
         PermissionMode(value="default", name="Review changes"),
         PermissionMode(value="audit-only", name="Audit", description="Read only."),
     )
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -2063,8 +2063,8 @@ async def test_first_directive_refuses_a_mode_absent_from_its_agent(
     octomate = Octomate()
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)
-    transport = httpx.ASGITransport(app=octomate)
-    async with httpx.AsyncClient(
+    transport = httpx2.ASGITransport(app=octomate)
+    async with httpx2.AsyncClient(
         transport=transport,
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
@@ -2111,8 +2111,8 @@ async def test_native_history_endpoints_page_by_message_id() -> None:
             start_offset=index * 100,
             end_offset=(index + 1) * 100,
         )
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=octomate), base_url="http://testserver"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=octomate), base_url="http://testserver"
     ) as client:
         for suffix, identity in (
             ("messages", "platform_message_id"),

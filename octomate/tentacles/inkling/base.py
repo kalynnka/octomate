@@ -17,7 +17,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self, get_args, overload
 
 import anyio
-from httpx import URL
+from httpx2 import URL
 from opentelemetry.trace import get_tracer
 from pydantic import UUID7, TypeAdapter
 from pydantic_ai import (

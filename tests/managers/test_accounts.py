@@ -3,7 +3,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 
-import httpx
+import httpx2
 import pytest
 from pydantic import SecretStr
 from pydantic_ai.messages import ToolCallPart
@@ -76,9 +76,9 @@ def auth(app: Octomate) -> AuthManager:
 
 
 @pytest.fixture
-async def client(app: Octomate) -> AsyncGenerator[httpx.AsyncClient]:
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
+async def client(app: Octomate) -> AsyncGenerator[httpx2.AsyncClient]:
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app),
         base_url="https://testserver",
         headers={"X-Octomate-Request": "1"},
     ) as connected:
@@ -86,8 +86,8 @@ async def client(app: Octomate) -> AsyncGenerator[httpx.AsyncClient]:
 
 
 async def enroll(
-    client: httpx.AsyncClient, auth: AuthManager, username: str = "alice"
-) -> httpx.Response:
+    client: httpx2.AsyncClient, auth: AuthManager, username: str = "alice"
+) -> httpx2.Response:
     invitation = await auth.invite()
     return await client.post(
         "/api/auth/register",
@@ -101,7 +101,7 @@ async def enroll(
 
 
 async def test_registration_password_schema_describes_requirements(
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
 ) -> None:
     document = (await client.get("/openapi.json")).json()
     schemas = document["components"]["schemas"]
@@ -129,7 +129,7 @@ async def test_registration_password_schema_describes_requirements(
     ],
 )
 async def test_registration_rejects_weak_passwords_without_consuming_invitation(
-    client: httpx.AsyncClient, auth: AuthManager, password: str
+    client: httpx2.AsyncClient, auth: AuthManager, password: str
 ) -> None:
     token = await auth.invite()
     response = await client.post(
@@ -161,7 +161,7 @@ async def test_registration_rejects_weak_passwords_without_consuming_invitation(
     ],
 )
 async def test_registration_accepts_passwords_meeting_requirements(
-    client: httpx.AsyncClient, auth: AuthManager, password: str
+    client: httpx2.AsyncClient, auth: AuthManager, password: str
 ) -> None:
     token = await auth.invite()
     response = await client.post(
@@ -178,7 +178,7 @@ async def test_registration_accepts_passwords_meeting_requirements(
 
 
 async def test_account_response_schemas_match_the_returned_fields(
-    client: httpx.AsyncClient, auth: AuthManager
+    client: httpx2.AsyncClient, auth: AuthManager
 ) -> None:
     document = (await client.get("/openapi.json")).json()
     assert "UserInfo" not in document["components"]["schemas"]
@@ -203,7 +203,7 @@ async def test_account_response_schemas_match_the_returned_fields(
 
 
 async def test_api_key_response_schema_describes_the_disclosed_token(
-    client: httpx.AsyncClient, auth: AuthManager
+    client: httpx2.AsyncClient, auth: AuthManager
 ) -> None:
     document = (await client.get("/openapi.json")).json()
     schemas = document["components"]["schemas"]
@@ -235,7 +235,7 @@ async def test_api_key_response_schema_describes_the_disclosed_token(
 
 
 async def test_registration_login_rotation_and_logout(
-    client: httpx.AsyncClient, auth: AuthManager
+    client: httpx2.AsyncClient, auth: AuthManager
 ) -> None:
     assert (await client.get("/api/auth/me")).status_code == 401
     registered = await enroll(client, auth)
@@ -272,7 +272,7 @@ async def test_registration_login_rotation_and_logout(
 
 
 async def test_registered_identity_and_bindings_survive_restart(
-    client: httpx.AsyncClient, auth: AuthManager
+    client: httpx2.AsyncClient, auth: AuthManager
 ) -> None:
     result = await enroll(client, auth)
     assert result.status_code == 200
@@ -296,7 +296,7 @@ async def test_registered_identity_and_bindings_survive_restart(
 
 @pytest.mark.parametrize("cookies", ["refresh-only", "expired-access", "access-only"])
 async def test_logout_revokes_sessions_with_partial_or_expired_cookies(
-    client: httpx.AsyncClient, auth: AuthManager, cookies: str
+    client: httpx2.AsyncClient, auth: AuthManager, cookies: str
 ) -> None:
     await enroll(client, auth)
     access = SecretStr(client.cookies["octomate_access"])
@@ -319,7 +319,7 @@ async def test_logout_revokes_sessions_with_partial_or_expired_cookies(
 
 
 async def test_logout_clears_invalid_cookies_without_requiring_a_session(
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
 ) -> None:
     response = await client.post(
         "/api/auth/logout",
@@ -334,7 +334,7 @@ async def test_logout_clears_invalid_cookies_without_requiring_a_session(
 
 
 async def test_password_change_requires_current_password_and_ends_only_own_sessions(
-    client: httpx.AsyncClient, auth: AuthManager
+    client: httpx2.AsyncClient, auth: AuthManager
 ) -> None:
     await enroll(client, auth, "bob")
     bob = await auth.login("bob", SecretStr(PASSWORD))
@@ -370,7 +370,7 @@ async def test_password_change_requires_current_password_and_ends_only_own_sessi
     ],
 )
 async def test_rejected_password_change_preserves_credentials(
-    client: httpx.AsyncClient, auth: AuthManager, body: dict[str, str], status: int
+    client: httpx2.AsyncClient, auth: AuthManager, body: dict[str, str], status: int
 ) -> None:
     await enroll(client, auth)
     response = await client.post("/api/auth/password", json=body)
@@ -382,7 +382,7 @@ async def test_rejected_password_change_preserves_credentials(
 
 
 async def test_password_change_requires_session_and_browser_header(
-    client: httpx.AsyncClient, auth: AuthManager
+    client: httpx2.AsyncClient, auth: AuthManager
 ) -> None:
     body = {"current_password": PASSWORD, "password": "Replacement password1!"}
     assert (await client.post("/api/auth/password", json=body)).status_code == 401
@@ -414,7 +414,7 @@ async def test_anonymous_invitations_are_independent_and_single_use(
 
 @pytest.mark.parametrize("has_password", [False, True])
 async def test_invitation_cannot_claim_an_existing_username(
-    client: httpx.AsyncClient, auth: AuthManager, has_password: bool
+    client: httpx2.AsyncClient, auth: AuthManager, has_password: bool
 ) -> None:
     password_hash = (
         await auth.hash_password(SecretStr(PASSWORD)) if has_password else None
@@ -546,7 +546,7 @@ async def test_registration_does_not_mask_unexpected_database_errors(
 
 
 async def test_browser_writes_require_csrf_header_and_validation_hides_secrets(
-    client: httpx.AsyncClient, auth: AuthManager
+    client: httpx2.AsyncClient, auth: AuthManager
 ) -> None:
     token = await auth.invite()
     payload = {
@@ -575,7 +575,7 @@ async def test_browser_writes_require_csrf_header_and_validation_hides_secrets(
 
 
 async def test_expired_access_can_refresh_but_revoked_session_cannot(
-    client: httpx.AsyncClient, auth: AuthManager
+    client: httpx2.AsyncClient, auth: AuthManager
 ) -> None:
     await enroll(client, auth)
     async with async_session() as session:
@@ -588,7 +588,7 @@ async def test_expired_access_can_refresh_but_revoked_session_cannot(
 
 
 async def test_private_threads_and_mutations_are_isolated(
-    app: Octomate, auth: AuthManager, client: httpx.AsyncClient
+    app: Octomate, auth: AuthManager, client: httpx2.AsyncClient
 ) -> None:
     assert (await client.get("/api/trunkline/threads")).status_code == 401
     alice = (await enroll(client, auth)).json()
@@ -673,7 +673,7 @@ async def test_private_threads_and_mutations_are_isolated(
 
 @pytest.mark.parametrize("scopes", [["hooks", "mcp"], ["acp"]])
 async def test_api_keys_are_issued_once_and_managed_only_by_their_owner(
-    client: httpx.AsyncClient, auth: AuthManager, scopes: list[ApiKeyScope]
+    client: httpx2.AsyncClient, auth: AuthManager, scopes: list[ApiKeyScope]
 ) -> None:
     assert (await client.get("/api/auth/api-keys")).status_code == 401
     await enroll(client, auth)
@@ -713,7 +713,7 @@ async def test_api_keys_are_issued_once_and_managed_only_by_their_owner(
 
 
 async def test_api_key_creation_rejects_invalid_scope_expiry_and_cross_origin_writes(
-    client: httpx.AsyncClient, auth: AuthManager
+    client: httpx2.AsyncClient, auth: AuthManager
 ) -> None:
     await enroll(client, auth)
     for body in (

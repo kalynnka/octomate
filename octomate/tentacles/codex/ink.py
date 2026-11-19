@@ -15,7 +15,7 @@ from pathlib import Path
 
 import anyio
 from fastmcp.apps.config import UI_MIME_TYPE
-from httpx import URL
+from httpx2 import URL
 from octomate_protocol.gateway import GatewayTool, gateway_tool
 from openai_codex import AsyncThread, AsyncTurnHandle, InputItem
 from openai_codex._approval_mode import _approval_mode_settings

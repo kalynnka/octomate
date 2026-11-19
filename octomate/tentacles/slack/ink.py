@@ -9,7 +9,7 @@ from dataclasses import replace
 from typing import Self
 
 import aiohttp
-import httpx
+import httpx2
 from pydantic import SecretStr
 from slack_sdk.errors import SlackApiError
 from slack_sdk.models.messages.chunk import Chunk
@@ -236,7 +236,7 @@ class SlackInk(Ink[SlackOutboundMessage]):
         resource_id: str,
     ) -> tuple[bytes, str] | None:
         try:
-            async with httpx.AsyncClient() as http:
+            async with httpx2.AsyncClient() as http:
                 resp = await http.get(
                     resource_id,
                     headers={

@@ -35,7 +35,7 @@ import anyio
 from anyio.abc import ObjectSendStream
 from fastapi import APIRouter, Depends, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
-from httpx import URL
+from httpx2 import URL
 from octomate_protocol.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,

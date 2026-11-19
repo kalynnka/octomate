@@ -6,7 +6,7 @@ from types import TracebackType
 from typing import Self
 from unittest.mock import AsyncMock, patch
 
-import httpx
+import httpx2
 import pytest
 import uvicorn
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -40,7 +40,7 @@ async def test_hooks_and_mcp_serve_during_tentacle_entry_and_exit(
 
         class CallbackAgent(FakeAgent):
             async def __aenter__(self) -> Self:
-                async with httpx.AsyncClient(base_url=url, trust_env=False) as client:
+                async with httpx2.AsyncClient(base_url=url, trust_env=False) as client:
                     response = await client.post("/test-hook")
                     assert response.json() == {"ok": True}
                     response = await client.post(
@@ -63,7 +63,7 @@ async def test_hooks_and_mcp_serve_during_tentacle_entry_and_exit(
                 exc_value: BaseException | None = None,
                 traceback: TracebackType | None = None,
             ) -> None:
-                async with httpx.AsyncClient(base_url=url, trust_env=False) as client:
+                async with httpx2.AsyncClient(base_url=url, trust_env=False) as client:
                     response = await client.post("/test-hook")
                     assert response.json() == {"ok": True}
                 exited.append("agent")
@@ -71,7 +71,7 @@ async def test_hooks_and_mcp_serve_during_tentacle_entry_and_exit(
 
         class CallbackIntegration(Tentacle[None, None]):
             async def __aenter__(self) -> Self:
-                async with httpx.AsyncClient(base_url=url, trust_env=False) as client:
+                async with httpx2.AsyncClient(base_url=url, trust_env=False) as client:
                     response = await client.post("/test-hook")
                     assert response.json() == {"ok": True}
                 entered.append("integration")
@@ -80,7 +80,7 @@ async def test_hooks_and_mcp_serve_during_tentacle_entry_and_exit(
         class ReadyChannel(FakeChannelTentacle):
             async def probe(self) -> None:
                 assert list(app.agents["inkling"].models) == ["discovered"]
-                async with httpx.AsyncClient(base_url=url, trust_env=False) as client:
+                async with httpx2.AsyncClient(base_url=url, trust_env=False) as client:
                     response = await client.post("/test-hook")
                     assert response.json() == {"ok": True}
                 await super().probe()

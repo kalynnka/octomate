@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
-import httpx
+import httpx2
 import pytest
 from octomate_protocol.deepseek import ClientRequest, RpcError
 from pydantic import HttpUrl, TypeAdapter, ValidationError
@@ -112,7 +112,7 @@ async def test_command_execution_preserves_arguments_and_native_outcomes(
     requests: list[ClientRequest] = []
     line = '/goal \t "raw argument"\n--flag=✓  '
 
-    def respond(request: httpx.Request) -> httpx.Response:
+    def respond(request: httpx2.Request) -> httpx2.Response:
         assert request.url.path == "/api/commands/execute"
         message = ClientRequest.model_validate_json(request.content)
         requests.append(message)
@@ -123,7 +123,7 @@ async def test_command_execution_preserves_arguments_and_native_outcomes(
                 "submittedAttachments": [],
             }
         }
-        return httpx.Response(
+        return httpx2.Response(
             200,
             json={
                 "type": "server-response",
@@ -134,7 +134,7 @@ async def test_command_execution_preserves_arguments_and_native_outcomes(
 
     client = DeepseekApiClient(
         HttpUrl(BASE_URL),
-        httpx.AsyncClient(base_url=BASE_URL, transport=httpx.MockTransport(respond)),
+        httpx2.AsyncClient(base_url=BASE_URL, transport=httpx2.MockTransport(respond)),
     )
     async with DeepseekInk(client) as ink:
         if case == "remote_error":
@@ -168,16 +168,16 @@ async def test_command_execution_preserves_arguments_and_native_outcomes(
 async def test_transport_failure_is_not_an_unmatched_or_command_error_result(
     failure: str,
 ) -> None:
-    def respond(request: httpx.Request) -> httpx.Response:
+    def respond(request: httpx2.Request) -> httpx2.Response:
         if failure == "connection-refused":
-            raise httpx.ConnectError("offline", request=request)
-        return httpx.Response(401)
+            raise httpx2.ConnectError("offline", request=request)
+        return httpx2.Response(401)
 
     async with DeepseekInk(
         DeepseekApiClient(
             HttpUrl(BASE_URL),
-            httpx.AsyncClient(
-                base_url=BASE_URL, transport=httpx.MockTransport(respond)
+            httpx2.AsyncClient(
+                base_url=BASE_URL, transport=httpx2.MockTransport(respond)
             ),
         )
     ) as ink:
@@ -194,9 +194,9 @@ async def test_transport_failure_is_not_an_unmatched_or_command_error_result(
     ],
 )
 async def test_incomplete_or_unknown_outcomes_fail_validation(value: JsonValue) -> None:
-    def respond(request: httpx.Request) -> httpx.Response:
+    def respond(request: httpx2.Request) -> httpx2.Response:
         message = ClientRequest.model_validate_json(request.content)
-        return httpx.Response(
+        return httpx2.Response(
             200,
             json={
                 "type": "server-response",
@@ -208,8 +208,8 @@ async def test_incomplete_or_unknown_outcomes_fail_validation(value: JsonValue) 
     async with DeepseekInk(
         DeepseekApiClient(
             HttpUrl(BASE_URL),
-            httpx.AsyncClient(
-                base_url=BASE_URL, transport=httpx.MockTransport(respond)
+            httpx2.AsyncClient(
+                base_url=BASE_URL, transport=httpx2.MockTransport(respond)
             ),
         )
     ) as ink:

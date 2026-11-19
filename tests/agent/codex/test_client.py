@@ -9,7 +9,7 @@ from typing import NamedTuple
 from unittest.mock import AsyncMock
 
 import pytest
-from httpx import URL
+from httpx2 import URL
 from openai_codex import CodexConfig
 from openai_codex._message_router import _TurnSubscription
 from openai_codex.async_client import AsyncCodexClient

@@ -4,7 +4,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlsplit
 
-import httpx
+import httpx2
 import pytest
 from pydantic import AnyHttpUrl, SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -167,8 +167,8 @@ async def test_browser_disconnect_checks_session_ownership_and_direct_identity(
         await session.commit()
 
     path = f"/api/auth/profiles/{profile.id}"
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="https://testserver"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="https://testserver"
     ) as client:
         assert (await client.delete(path)).status_code == 403
         client.headers["X-Octomate-Request"] = "1"
@@ -330,8 +330,8 @@ async def test_browser_confirmation_uses_the_displayed_account(
     )
     ticket = ticket_from(authorization.authorization_uri)
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app),
         base_url="https://testserver",
         headers={"X-Octomate-Request": "1"},
     ) as client:

@@ -12,7 +12,7 @@ from typing import TypedDict
 from urllib.parse import urlparse
 
 import discord
-import httpx
+import httpx2
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import ImageSegment
@@ -53,10 +53,10 @@ class DiscordInk(Ink[DiscordOutboundMessage]):
         self,
         client: discord.Client,
         *,
-        http: httpx.AsyncClient | None = None,
+        http: httpx2.AsyncClient | None = None,
     ) -> None:
         self.client = client
-        self.http = http or httpx.AsyncClient(follow_redirects=True)
+        self.http = http or httpx2.AsyncClient(follow_redirects=True)
 
     async def __aexit__(self, *exc: object) -> None:
         await self.http.aclose()

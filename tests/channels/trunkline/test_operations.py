@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-import httpx
+import httpx2
 import pytest
 from pydantic import SecretStr, ValidationError
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
@@ -82,16 +82,16 @@ async def case(in_memory_engine: AsyncEngine, tmp_path: Path) -> Case:
 
 
 @pytest.fixture
-async def client(case: Case) -> AsyncGenerator[httpx.AsyncClient]:
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=case.app),
+async def client(case: Case) -> AsyncGenerator[httpx2.AsyncClient]:
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=case.app),
         base_url="http://test",
         headers={"X-Octomate-Request": "1"},
     ) as client:
         yield client
 
 
-async def test_options_and_summon_here(case: Case, client: httpx.AsyncClient) -> None:
+async def test_options_and_summon_here(case: Case, client: httpx2.AsyncClient) -> None:
     path = f"/api/trunkline/threads/{case.thread.id}"
     options = await client.get(f"{path}/operations")
     assert options.status_code == 200, options.text
@@ -130,7 +130,7 @@ async def test_options_and_summon_here(case: Case, client: httpx.AsyncClient) ->
 
 
 async def test_inherited_chat_does_not_grant_access_to_a_private_fork(
-    case: Case, client: httpx.AsyncClient
+    case: Case, client: httpx2.AsyncClient
 ) -> None:
     visitor = await a_user("bob", profiles={"trunkline": "bob", "lark": "ou_bob"})
     inherited = await case.app.threads.record_inbound(
@@ -211,7 +211,7 @@ async def test_inherited_chat_does_not_grant_access_to_a_private_fork(
 @pytest.mark.parametrize("destination_kind", ["dm", "group", "trunkline"])
 async def test_teleport_creates_independent_owned_destination(
     case: Case,
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
     destination_kind: str,
 ) -> None:
@@ -335,7 +335,7 @@ async def test_teleport_creates_independent_owned_destination(
 
 @pytest.mark.parametrize("moves", [True, False])
 async def test_a_turn_the_agent_moved_ends_where_it_landed(
-    case: Case, client: httpx.AsyncClient, moves: bool
+    case: Case, client: httpx2.AsyncClient, moves: bool
 ) -> None:
     """An agent's own teleport mid-turn ends the stream the way the console's
     operation does, naming the spell, so the console can follow it; a turn that
@@ -369,7 +369,7 @@ async def test_a_turn_the_agent_moved_ends_where_it_landed(
 
 
 async def test_a_teleport_with_a_prompt_sends_it_where_it_lands(
-    case: Case, client: httpx.AsyncClient
+    case: Case, client: httpx2.AsyncClient
 ) -> None:
     """The console's shortcut for a teleport and the message after it: the prompt
     is the user's next message in the thread the move landed in."""
@@ -432,7 +432,7 @@ async def test_a_teleport_with_a_prompt_sends_it_where_it_lands(
 
 
 async def test_a_prompt_follows_a_teleport_only_into_trunkline(
-    case: Case, client: httpx.AsyncClient
+    case: Case, client: httpx2.AsyncClient
 ) -> None:
     response = await client.post(
         f"/api/trunkline/threads/{case.thread.id}/teleport",
@@ -450,7 +450,7 @@ async def test_a_prompt_follows_a_teleport_only_into_trunkline(
 
 @pytest.mark.parametrize("operation", ["teleport", "summon"])
 async def test_actions_require_thread_ownership(
-    case: Case, client: httpx.AsyncClient, operation: str
+    case: Case, client: httpx2.AsyncClient, operation: str
 ) -> None:
     other = await a_user("other")
     case.app.dependency_overrides[current_user] = lambda: other
@@ -474,7 +474,7 @@ async def test_actions_require_thread_ownership(
 
 
 async def test_validation_precedes_side_effects(
-    case: Case, client: httpx.AsyncClient
+    case: Case, client: httpx2.AsyncClient
 ) -> None:
     path = f"/api/trunkline/threads/{case.thread.id}"
     invalid = await client.post(
@@ -504,7 +504,7 @@ async def test_validation_precedes_side_effects(
     assert not case.receiver.turns
 
 
-async def test_busy_thread_is_refused(case: Case, client: httpx.AsyncClient) -> None:
+async def test_busy_thread_is_refused(case: Case, client: httpx2.AsyncClient) -> None:
     conversation = (await case.app.conversations.for_thread(case.thread.id))[0]
     session = OctomateSession(
         channel_routes={},
@@ -532,7 +532,7 @@ async def test_busy_thread_is_refused(case: Case, client: httpx.AsyncClient) -> 
 
 
 async def test_failed_open_reports_stream_error(
-    case: Case, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    case: Case, client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(case.far.ink, "open_dm", AsyncMock(return_value=None))
     async with case.app.nerve.subscribe(ThreadTopic(case.thread.key)) as live:
@@ -580,7 +580,7 @@ async def test_trunkline_directives_require_a_thread(case: Case) -> None:
 
 
 async def test_unsupported_fork_harness_is_not_offered(
-    case: Case, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    case: Case, client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(FakeAgent, "fork_session", AgentTentacle.fork_session)
     path = f"/api/trunkline/threads/{case.thread.id}"
@@ -604,7 +604,7 @@ async def test_unsupported_fork_harness_is_not_offered(
 
 
 async def test_external_thread_unknown_privacy_does_not_export_history(
-    case: Case, client: httpx.AsyncClient
+    case: Case, client: httpx2.AsyncClient
 ) -> None:
     thread = await case.app.threads.ensure(
         ThreadKey("far", "thread", "room", uuid7().hex)
@@ -641,7 +641,7 @@ async def test_external_thread_unknown_privacy_does_not_export_history(
 
 
 async def test_external_thread_its_channel_calls_private_exports_history(
-    case: Case, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    case: Case, client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(case.far, "is_shared", lambda address: False)
     thread = await case.app.threads.ensure(
@@ -720,7 +720,7 @@ async def test_trunkline_offers_a_new_thread_without_a_dm(case: Case) -> None:
 
 
 async def test_native_teleport_requires_a_transcript_fork_agent(
-    case: Case, client: httpx.AsyncClient
+    case: Case, client: httpx2.AsyncClient
 ) -> None:
     thread = await case.app.threads.ensure(
         ThreadKey("codex", "thread", str(case.owner.id), uuid7().hex), native=True
@@ -870,7 +870,7 @@ async def test_discord_dm_threads_are_not_offered(case: Case) -> None:
 
 
 async def test_new_trunkline_destination_is_owned_and_independent(
-    case: Case, client: httpx.AsyncClient
+    case: Case, client: httpx2.AsyncClient
 ) -> None:
     body = {
         "destination": {
@@ -901,7 +901,7 @@ async def test_new_trunkline_destination_is_owned_and_independent(
 
 
 async def test_address_listing_opens_one_level_and_authorizes_nothing(
-    case: Case, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    case: Case, client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     server = DiscordAddress(
         "far", "group", "", "alice", metadata={"name": "Development", "inside": "200"}
@@ -953,7 +953,7 @@ async def test_address_listing_opens_one_level_and_authorizes_nothing(
 
 
 async def test_address_listing_says_why_it_cannot_list(
-    case: Case, client: httpx.AsyncClient
+    case: Case, client: httpx2.AsyncClient
 ) -> None:
     for channel_id in ("unlinked", "unserved"):
         channel = case.app.connect(

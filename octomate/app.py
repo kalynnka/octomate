@@ -133,12 +133,13 @@ def create_app() -> Octomate:
     # only visible as a cost and latency regression nobody attributes to a busted prefix.
     logging.captureWarnings(True)
     registry = ProviderRegistry(config.providers)
-    # httpx logs every request at INFO; keep the LLM-provider round-trips and drop
+    # Both HTTP clients log every request at INFO; keep the LLM-provider round-trips and drop
     # the rest (Lark cardkit streaming PUTs especially). Logfire still traces every
     # request regardless. Per-logger overrides from config win.
-    httpx_logger = logging.getLogger("httpx")
-    httpx_logger.setLevel(logging.INFO)
-    httpx_logger.addFilter(ProviderHttpLogFilter(registry))
+    for name in ("httpx2", "httpx"):
+        http_logger = logging.getLogger(name)
+        http_logger.setLevel(logging.INFO)
+        http_logger.addFilter(ProviderHttpLogFilter(registry))
     # watchfiles logs a line per change detected, and the Claude transcript tailer keeps
     # a watch on a directory its client rewrites through every turn — a stream of "1
     # change detected" saying only that a file moved. What came of the change is the

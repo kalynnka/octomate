@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
-import httpx
+import httpx2
 import pytest
 import uvicorn
 from click.testing import Result
@@ -59,7 +59,7 @@ async def a_driven_turn(
     *,
     image: str = IMAGE,
     agent_id: Literal["claude", "codex", "deepseek", "inkling"] = "claude",
-) -> AsyncGenerator[tuple[httpx.AsyncClient, Octomate, Conversation, User]]:
+) -> AsyncGenerator[tuple[httpx2.AsyncClient, Octomate, Conversation, User]]:
     """A served tentacle, with a turn of one conversation inside its owner's sandbox."""
     octomate = Octomate(
         config=OctomateConfig(auth=auth_config(), habitat=SbxHabitatConfig(image=image))
@@ -122,8 +122,8 @@ async def a_driven_turn(
     )
     scope = InvocationScope(user_id=user.id, conversation_id=conversation.id)
     octomate.habitats.residence(scope).conversations[conversation.id] += 1
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=octomate), base_url="http://core"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=octomate), base_url="http://core"
     ) as client:
         yield client, octomate, conversation, user
 
@@ -269,8 +269,10 @@ async def test_overlapping_uploads_keep_each_byte_once(
             octomate.conversations, "store_transcript", store_after_both_arrive
         )
         async with (
-            httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=octomate, raise_app_exceptions=False),
+            httpx2.AsyncClient(
+                transport=httpx2.ASGITransport(
+                    app=octomate, raise_app_exceptions=False
+                ),
                 base_url="http://core",
             ) as concurrent,
             asyncio.timeout(5),
@@ -388,8 +390,8 @@ async def test_upload_route_requires_its_connected_harness(agent_id: str) -> Non
     )
     scope = InvocationScope(user_id=user.id, conversation_id=conversation.id)
     octomate.habitats.residence(scope).conversations[conversation.id] += 1
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=octomate), base_url="http://core"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=octomate), base_url="http://core"
     ) as client:
         uploaded = await client.post(
             f"/hooks/{agent_id}/transcripts/{conversation.id}",

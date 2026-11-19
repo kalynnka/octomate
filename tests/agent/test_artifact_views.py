@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from unittest.mock import AsyncMock
 
-import httpx
+import httpx2
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.apps import UI_MIME_TYPE
@@ -157,8 +157,8 @@ async def test_view_reloads_html_and_preserves_invocation(
     case = saved_app
     async with (
         connected(case.host.mcp, case.upstream) as requests,
-        httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=case.host),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=case.host),
             base_url="https://console.example",
         ) as client,
     ):
@@ -269,8 +269,8 @@ async def test_unavailable_artifacts_do_not_fetch_resources(
             await session.commit()
     async with (
         connected(case.host.mcp, case.upstream) as requests,
-        httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=case.host),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=case.host),
             base_url="https://console.example",
         ) as client,
     ):
@@ -292,8 +292,8 @@ async def test_view_requires_separate_sandbox_origin(
     case.host.config.artifacts.sandbox_origin = AnyHttpUrl(origin) if origin else None
     async with (
         connected(case.host.mcp, case.upstream) as requests,
-        httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=case.host),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=case.host),
             base_url="https://console.example",
         ) as client,
     ):
@@ -349,8 +349,8 @@ async def test_thread_access_membership_and_fork_cutoff(saved_app: SavedApp) -> 
         await session.commit()
     async with (
         connected(case.host.mcp, case.upstream) as requests,
-        httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=case.host),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=case.host),
             base_url="https://console.example",
         ) as client,
     ):
@@ -385,8 +385,8 @@ async def test_owned_artifact_remains_loadable_after_thread_deletion(
         await session.commit()
     async with (
         connected(case.host.mcp, case.upstream),
-        httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=case.host),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=case.host),
             base_url="https://console.example",
         ) as client,
     ):
@@ -427,8 +427,8 @@ async def test_missing_or_revoked_oauth_grant_blocks_loading(
         await session.commit()
     async with (
         connected(case.host.mcp, case.upstream) as requests,
-        httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=case.host),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=case.host),
             base_url="https://console.example",
         ) as client,
     ):
@@ -499,8 +499,8 @@ async def test_invalid_resources_return_safe_errors(
     monkeypatch.setattr(Client, "read_resource", read)
     async with (
         connected(case.host.mcp, case.upstream) as requests,
-        httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=case.host),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=case.host),
             base_url="https://console.example",
         ) as client,
     ):
@@ -534,8 +534,8 @@ async def test_resource_policy_rejects_non_origin_sources(
     case.content.meta = {"ui": {"csp": {"resourceDomains": [domain]}}}
     async with (
         connected(case.host.mcp, case.upstream),
-        httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=case.host),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=case.host),
             base_url="https://console.example",
         ) as client,
     ):
@@ -548,8 +548,8 @@ async def test_local_separate_port_and_absent_ui_metadata(saved_app: SavedApp) -
     case.host.config.artifacts.sandbox_origin = AnyHttpUrl("http://localhost:8001")
     async with (
         connected(case.host.mcp, case.upstream),
-        httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=case.host),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=case.host),
             base_url="http://localhost:8000",
         ) as client,
     ):

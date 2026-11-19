@@ -2088,7 +2088,6 @@ dependencies = [
     { name = "fastmcp-slim", extra = ["server"] },
     { name = "google-genai" },
     { name = "httpcore2" },
-    { name = "httpx" },
     { name = "httpx2" },
     { name = "lark-oapi" },
     { name = "logfire", extra = ["httpx", "sqlalchemy"] },
@@ -2116,7 +2115,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-env" },
@@ -2156,7 +2154,6 @@ requires-dist = [
     { name = "fastmcp-slim", extras = ["server"], specifier = ">=4.0.3,<5" },
     { name = "google-genai", specifier = ">=1.55.0" },
     { name = "httpcore2", specifier = ">=2.12.0,<3" },
-    { name = "httpx", specifier = ">=0.28.1" },
     { name = "httpx2", specifier = ">=2" },
     { name = "lark-oapi", specifier = ">=1.7.5" },
     { name = "logfire", extras = ["httpx", "sqlalchemy"], specifier = ">=4.29.0" },
@@ -2184,7 +2181,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx", specifier = ">=0.28.1" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "pytest-env", specifier = ">=1.1" },

@@ -5,7 +5,7 @@ import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-import httpx
+import httpx2
 import pytest
 from pydantic import TypeAdapter
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
@@ -63,15 +63,15 @@ async def napcat_output() -> AsyncIterator[
     await channel.ink.httpx.aclose()
     posts: list[JsonObject] = []
 
-    def respond(request: httpx.Request) -> httpx.Response:
+    def respond(request: httpx2.Request) -> httpx2.Response:
         posts.append(TypeAdapter(JsonObject).validate_json(request.content))
-        return httpx.Response(
+        return httpx2.Response(
             200,
             json={"status": "ok", "retcode": 0, "data": {"message_id": "msg-1"}},
         )
 
-    async with httpx.AsyncClient(
-        base_url=channel.ink.http_url, transport=httpx.MockTransport(respond)
+    async with httpx2.AsyncClient(
+        base_url=channel.ink.http_url, transport=httpx2.MockTransport(respond)
     ) as client:
         channel.ink.httpx = client
         yield (

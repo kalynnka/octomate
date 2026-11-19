@@ -7,7 +7,7 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-import httpx
+import httpx2
 import pytest
 from fastapi import UploadFile
 from pydantic_ai import DeferredToolRequests
@@ -35,7 +35,7 @@ from tests.support.users import a_user
 
 
 @pytest.fixture
-async def client(case: ForkCase) -> AsyncGenerator[httpx.AsyncClient]:
+async def client(case: ForkCase) -> AsyncGenerator[httpx2.AsyncClient]:
     app = case.tentacle.octomate
     async with async_session() as session:
         owner = await session.get(User, case.owner_id)
@@ -58,8 +58,8 @@ async def client(case: ForkCase) -> AsyncGenerator[httpx.AsyncClient]:
             channel_user_id=owner.username, user_id=owner.id, name=owner.name
         ),
     )
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app),
         base_url="http://test",
         headers={"X-Octomate-Request": "1"},
     ) as client:
@@ -73,7 +73,7 @@ async def source_key(case: ForkCase) -> ThreadKey:
     return thread.key
 
 
-async def teleport_to_trunkline(case: ForkCase, client: httpx.AsyncClient) -> Thread:
+async def teleport_to_trunkline(case: ForkCase, client: httpx2.AsyncClient) -> Thread:
     """The console's teleport of the native thread into a new Trunkline thread, and
     the thread it landed in."""
     app = case.tentacle.octomate
@@ -111,7 +111,7 @@ async def teleport_to_trunkline(case: ForkCase, client: httpx.AsyncClient) -> Th
 )
 async def test_native_session_rejects_direct_operations(
     case: ForkCase,
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
     clear: bool,
@@ -159,7 +159,7 @@ async def test_native_session_rejects_direct_operations(
 
 
 async def test_native_session_cannot_resolve_a_deferred_batch(
-    case: ForkCase, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    case: ForkCase, client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = case.tentacle.octomate
     kick = AsyncMock()
@@ -191,7 +191,7 @@ async def test_native_session_cannot_resolve_a_deferred_batch(
 
 
 async def test_a_native_session_lands_in_an_owned_thread_its_agent_carries_on(
-    case: ForkCase, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    case: ForkCase, client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = case.tentacle.octomate
     source = await app.threads.get(case.source.thread_id)
@@ -256,7 +256,7 @@ async def test_a_native_session_lands_in_an_owned_thread_its_agent_carries_on(
 )
 async def test_a_native_session_lands_on_its_project_only_where_it_is_served(
     case: ForkCase,
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     tmp_path: Path,
     availability: str,
 ) -> None:
@@ -290,7 +290,7 @@ async def test_a_native_session_lands_on_its_project_only_where_it_is_served(
 
 
 async def test_thread_access_does_not_grant_transcript_ownership(
-    case: ForkCase, client: httpx.AsyncClient
+    case: ForkCase, client: httpx2.AsyncClient
 ) -> None:
     app = case.tentacle.octomate
     other = await a_user("participant")
@@ -333,7 +333,7 @@ async def test_thread_access_does_not_grant_transcript_ownership(
 @pytest.mark.parametrize("destination", ["trunkline", "far"])
 async def test_native_teleport_imports_completed_history_before_resuming(
     case: ForkCase,
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
     destination: str,
     asked_by: str,
@@ -419,7 +419,7 @@ async def test_native_teleport_imports_completed_history_before_resuming(
 
 
 async def test_a_native_session_that_asks_to_carry_on_runs_where_it_lands(
-    case: ForkCase, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    case: ForkCase, client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = case.tentacle.octomate
     case.tentacle.models = {"gpt-6-luna": "test"}
@@ -463,7 +463,7 @@ async def test_a_native_session_that_asks_to_carry_on_runs_where_it_lands(
 
 
 async def test_a_native_session_with_a_prompt_answers_it_where_it_lands(
-    case: ForkCase, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    case: ForkCase, client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The prompt is the user's next message there, so the turn reads it with the
     import notice still waiting, as a message typed there would."""
@@ -510,7 +510,7 @@ async def test_a_native_session_with_a_prompt_answers_it_where_it_lands(
 )
 async def test_native_teleport_validates_history_before_opening_destination(
     case: ForkCase,
-    client: httpx.AsyncClient,
+    client: httpx2.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
     invalid: str,
     message: str,

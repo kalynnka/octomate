@@ -11,7 +11,7 @@ from ipaddress import IPv4Address
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import httpx
+import httpx2
 import pytest
 import yaml
 from alembic import command
@@ -727,9 +727,9 @@ async def test_verification_checks_protected_mcp_and_console_routes(
         api.routes.append(Route("/api/trunkline/health", console))
         api.routes.append(Route("/api/trunkline/threads", console))
     monkeypatch.setattr(
-        httpx,
+        httpx2,
         "AsyncClient",
-        partial(httpx.AsyncClient, transport=httpx.ASGITransport(app=api)),
+        partial(httpx2.AsyncClient, transport=httpx2.ASGITransport(app=api)),
     )
     async with api.lifespan(api):
         if console_enabled != console_registered:

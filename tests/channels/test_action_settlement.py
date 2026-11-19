@@ -10,7 +10,7 @@ from typing import Literal
 from unittest.mock import AsyncMock
 
 import discord
-import httpx
+import httpx2
 import pytest
 from pydantic import SecretStr
 from pydantic_ai.messages import ToolCallPart
@@ -57,7 +57,7 @@ async def surface(
     channel = FakeChannelTentacle(id=request.param)
     edits = AsyncMock()
     sends = AsyncMock(side_effect=["701", "702", "703"])
-    async with httpx.AsyncClient() as http:
+    async with httpx2.AsyncClient() as http:
         if channel.id == "slack":
             ink = SlackInk(SecretStr("unused"))
             monkeypatch.setattr(ink, "send_message", sends)
