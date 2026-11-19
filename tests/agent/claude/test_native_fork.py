@@ -11,7 +11,13 @@ from types import SimpleNamespace
 import pytest
 from anyio.abc import ObjectSendStream
 from octomate_cli.tentacles.claude import CLAUDE_STREAM_PATH
-from octomate_protocol.stream import StreamEof, StreamLine
+from octomate_protocol.stream import (
+    StreamEof,
+    StreamLine,
+    StreamOpenSubagent,
+    StreamSubagentOpened,
+    StreamWelcome,
+)
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.websockets import WebSocketDisconnect
 
@@ -27,8 +33,10 @@ from octomate.tentacles.claude.transcript import transcripts_dir
 from tests.agent.claude.test_stream import AUTH, CLIENT_PATH, frames, hello_json
 from tests.agent.claude.test_stream import stream_client as a_stream_client
 from tests.agent.claude.test_tailer import (
+    AGENT_ID,
     SESSION_ID,
     SESSION_KEY,
+    SUB_TURN_ONE,
     TURN_ONE,
     TURN_TWO,
     line_bytes,
@@ -96,7 +104,9 @@ async def test_a_native_session_keeps_its_own_bytes_across_a_reconnect(
     for _, start, end, line in framed[: len(TURN_ONE) + 1]:
         kept = await tentacle.keep_transcript(
             conversation,
-            StreamLine(start=start, end=end, line=line),
+            StreamLine(
+                conversation_id=conversation.id, start=start, end=end, line=line
+            ),
             kept,
             owner_id=sender.user_id,
         )
@@ -104,11 +114,15 @@ async def test_a_native_session_keeps_its_own_bytes_across_a_reconnect(
     for _, start, end, line in framed[len(TURN_ONE) :]:
         kept = await tentacle.keep_transcript(
             conversation,
-            StreamLine(start=start, end=end, line=line),
+            StreamLine(
+                conversation_id=conversation.id, start=start, end=end, line=line
+            ),
             kept,
             owner_id=sender.user_id,
         )
-    past_a_gap = StreamLine(start=kept + 5, end=kept + 7, line="{")
+    past_a_gap = StreamLine(
+        conversation_id=conversation.id, start=kept + 5, end=kept + 7, line="{"
+    )
     assert (
         await tentacle.keep_transcript(
             conversation, past_a_gap, kept, owner_id=sender.user_id
@@ -125,29 +139,80 @@ def test_lines_over_the_socket_are_kept_for_their_owner() -> None:
     with client:
         with client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
-            websocket.receive_text()  # welcome
-            for agent_id, start, end, line in frames(TURN_ONE + TURN_TWO):
+            welcome = StreamWelcome.model_validate_json(websocket.receive_text())
+            websocket.send_text(StreamOpenSubagent(name=AGENT_ID).model_dump_json())
+            child = StreamSubagentOpened.model_validate_json(websocket.receive_text())
+            assert child.conversation_id is not None
+            assert child.conversation_id != welcome.conversation_id
+            assert child.offset == 0
+            _, start, end, line = frames(SUB_TURN_ONE)[0]
+            websocket.send_text(
+                StreamLine(
+                    conversation_id=child.conversation_id,
+                    start=start,
+                    end=end,
+                    line=line,
+                ).model_dump_json()
+            )
+            websocket.send_text(StreamOpenSubagent(name=AGENT_ID).model_dump_json())
+            seen = StreamSubagentOpened.model_validate_json(websocket.receive_text())
+            assert seen.offset == end
+            # Drop before EOF. The incomplete turn must replay on the same child UUID.
+        with client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            reattached = StreamWelcome.model_validate_json(websocket.receive_text())
+            assert reattached.conversation_id == welcome.conversation_id
+            assert reattached.subagents == {child.conversation_id: AGENT_ID}
+            assert reattached.offsets[child.conversation_id] == 0
+            for agent_id, start, end, line in [
+                *frames(TURN_ONE + TURN_TWO),
+                *frames(SUB_TURN_ONE, agent_id=AGENT_ID),
+            ]:
                 websocket.send_text(
                     StreamLine(
-                        agent_id=agent_id, start=start, end=end, line=line
+                        conversation_id=child.conversation_id
+                        if agent_id
+                        else welcome.conversation_id,
+                        start=start,
+                        end=end,
+                        line=line,
                     ).model_dump_json()
                 )
             websocket.send_text(StreamEof().model_dump_json())
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
 
-        async def kept() -> bytes:
+        with client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            resumed = StreamWelcome.model_validate_json(websocket.receive_text())
+            assert resumed.conversation_id == welcome.conversation_id
+            assert resumed.subagents == {child.conversation_id: AGENT_ID}
+            assert resumed.offsets == {
+                welcome.conversation_id: len(WHOLE),
+                child.conversation_id: sum(
+                    len(line_bytes(record)) for record in SUB_TURN_ONE
+                ),
+            }
+
+        async def kept() -> dict[str, bytes]:
             octomate = tentacle.octomate
             thread = await octomate.threads.get(SESSION_KEY, with_messages=False)
             owner = await octomate.users.native_profile("claude", "lu")
             assert thread is not None
             assert owner is not None
             assert owner.user_id is not None
-            [conversation] = await octomate.conversations.for_thread(thread.id)
-            return await kept_bytes(octomate, conversation, owner.user_id)
+            return {
+                conversation.subagent_id: await kept_bytes(
+                    octomate, conversation, owner.user_id
+                )
+                for conversation in await octomate.conversations.for_thread(thread.id)
+            }
 
         assert client.portal is not None
-        assert client.portal.call(kept) == WHOLE
+        assert client.portal.call(kept) == {
+            "": WHOLE,
+            AGENT_ID: b"".join(map(line_bytes, SUB_TURN_ONE)),
+        }
 
 
 async def test_a_native_session_forks_into_a_session_this_tentacle_drives(
@@ -175,7 +240,9 @@ async def test_a_native_session_forks_into_a_session_this_tentacle_drives(
         await tailer.feed_remote(state, agent_id, line, start, end)
         kept = await tentacle.keep_transcript(
             conversation,
-            StreamLine(start=start, end=end, line=line),
+            StreamLine(
+                conversation_id=conversation.id, start=start, end=end, line=line
+            ),
             kept,
             owner_id=sender.user_id,
         )
@@ -231,7 +298,9 @@ async def test_a_session_on_a_model_this_server_does_not_offer_cannot_fork(
         await tailer.feed_remote(state, agent_id, line, start, end)
         kept = await tentacle.keep_transcript(
             conversation,
-            StreamLine(start=start, end=end, line=line),
+            StreamLine(
+                conversation_id=conversation.id, start=start, end=end, line=line
+            ),
             kept,
             owner_id=sender.user_id,
         )

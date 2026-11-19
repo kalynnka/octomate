@@ -210,6 +210,7 @@ PHRASES: dict[str, tuple[str, ...]] = {
         "Lending an arm",
         "Calling for kelp",
     ),
+    "subagent": ("Running {name}",),
     "commission": ("Commissioning {name}",),
     "whisper": ("Whispering with {name}",),
 }

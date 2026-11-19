@@ -14,8 +14,7 @@ from pathlib import Path
 from time import monotonic
 
 from anyio.abc import ObjectSendStream
-from octomate_protocol.stream import SESSION_FILE
-from pydantic import ValidationError
+from pydantic import UUID7, ValidationError
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.messages import UserPromptPart
 
@@ -146,8 +145,8 @@ class TailState:
     compactions_pending: bool = False
     omitted_uuids: set[str] = field(default_factory=set)
     subagents: dict[str, SubagentTail] = field(default_factory=dict)
-    # A parent's file may be ahead of its child, including resumed invocations.
-    subagent_calls: dict[tuple[str, str], str] = field(default_factory=dict)
+    # Claude can repeat the same Agent tool result under a later prompt ID.
+    spawn_call_ids: set[str] = field(default_factory=set)
     # The prompt id of a turn whose `Stop` hook fired (`stop_turn`): commit it without
     # waiting for the next prompt line — but commit nothing newer, so a prompt queued
     # into the drain window is left open for the next connect to re-stream.
@@ -256,13 +255,12 @@ class ClaudeTranscriptTailer:
         sender: UserProfile,
         address: ChannelAddress,
         impulses: ObjectSendStream[Impulse],
-    ) -> tuple[TailState, dict[str, int]]:
+    ) -> tuple[TailState, dict[UUID7, int]]:
         """Register a streamed session and answer where each of its files resumes.
 
         The offsets are recomputed from the committed runs, per file: the session
-        transcript under `SESSION_FILE`, each known subagent
-        under its agent id — so the client holds no durable cursor and a reconnect is
-        just re-asking. A lingering registration (its client died without a close) is
+        and each known subagent under its own conversation UUID. The client asks
+        again on reconnect. A lingering registration (its client died without a close) is
         replaced; the dead route feeds the state object it attached, and its commits
         are idempotent.
         """
@@ -287,7 +285,7 @@ class ClaudeTranscriptTailer:
             ),
             default=0,
         )
-        offsets: dict[str, int] = {SESSION_FILE: state.offset}
+        offsets: dict[UUID7, int] = {conversation.id: state.offset}
         for child in await self.conversation_manager.subagents(conversation.id):
             if not child.subagent_id:
                 continue
@@ -302,7 +300,10 @@ class ClaudeTranscriptTailer:
                 ),
                 default=0,
             )
-            offsets[child.subagent_id] = tail.offset
+            state.spawn_call_ids.update(
+                run.parent_tool_call_id for run in child.runs if run.parent_tool_call_id
+            )
+            offsets[child.id] = tail.offset
         self.sessions[session_id] = state
         logger.info(
             "session %s: remote tail attached, resuming at %s", session_id, offsets
@@ -537,9 +538,8 @@ class ClaudeTranscriptTailer:
     async def harvest_subagent_call(
         self, state: TailState, line: TranscriptUserLine
     ) -> None:
-        """Remember which parent tool call spawned which subagent: an `Agent` call's
-        tool-result line names the child (`toolUseResult.agentId`) while its content
-        block names the call. Stamps child runs' `parent_tool_call_id` at commit."""
+        """Record the spawn as soon as the parent's result identifies the child and
+        tool call. Its transcript can arrive on a different connection."""
         result = line.tool_use_result
         if not isinstance(result, dict):
             return
@@ -560,12 +560,18 @@ class ClaudeTranscriptTailer:
         if not isinstance(tool_use_id, str):
             return
         async with self.locks.hold(state.session_id):
-            state.subagent_calls[agent_id, line.prompt_id] = tool_use_id
-            await self.conversation_manager.link_parent_run(
-                f"{agent_id}:{line.prompt_id}",
+            if tool_use_id in state.spawn_call_ids:
+                return
+            tail = self.subagent_tail(state, agent_id)
+            conversation = tail.conversation or await self.prepare_subagent(state, tail)
+            await self.conversation_manager.record_external_run(
+                conversation,
+                run_id=f"{agent_id}:{line.prompt_id}",
+                native_session_id=agent_id,
                 parent_run_id=line.prompt_id,
                 parent_tool_call_id=tool_use_id,
             )
+            state.spawn_call_ids.add(tool_use_id)
 
     async def fold(
         self,
@@ -798,7 +804,9 @@ class ClaudeTranscriptTailer:
             return False
         return turn.accumulator.result_text.strip() == final_answer.strip()
 
-    async def prepare_subagent(self, state: TailState, tail: SubagentTail) -> None:
+    async def prepare_subagent(
+        self, state: TailState, tail: SubagentTail
+    ) -> Conversation:
         """Resolve the child's conversation under the session's thread and seed its
         committed-turn guard — the first time this child's lines are fed."""
         parent = state.conversation
@@ -822,6 +830,7 @@ class ClaudeTranscriptTailer:
             default=None,
         )
         tail.last_item_id = previous.last_line_uuid if previous is not None else None
+        return tail.conversation
 
     async def process_subagent_line(
         self,
@@ -946,9 +955,6 @@ class ClaudeTranscriptTailer:
                     end_offset=turn.end_offset,
                     last_line_uuid=turn.last_line_uuid,
                     parent_run_id=turn.prompt_id,
-                    parent_tool_call_id=state.subagent_calls.get(
-                        (tail.agent_id, turn.prompt_id)
-                    ),
                 )
                 span.set_attribute("committed", run is not None)
                 if run is None:

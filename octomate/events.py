@@ -81,7 +81,7 @@ from octomate.schemas.user import UserProfile
 from octomate.types.deferred import DeferredResponseMode
 from octomate.types.threads import KickOutcome
 
-SubagentActivityKind = Literal["commission", "whisper"]
+SubagentActivityKind = Literal["commission", "whisper", "subagent"]
 SubagentActivityStatus = Literal["completed", "failed", "timed_out", "cancelled"]
 
 

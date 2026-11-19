@@ -2207,6 +2207,7 @@ name = "octomate-cli"
 version = "0.0.7"
 source = { editable = "cli" }
 dependencies = [
+    { name = "httpx2" },
     { name = "octomate-protocol" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -2231,6 +2232,7 @@ codex = [
 [package.metadata]
 requires-dist = [
     { name = "claude-agent-sdk", marker = "extra == 'claude'", specifier = ">=0.2.165" },
+    { name = "httpx2", specifier = ">=2" },
     { name = "octomate-protocol", editable = "protocol" },
     { name = "openai-codex", marker = "extra == 'codex'", specifier = ">=0.162.1" },
     { name = "pydantic", specifier = ">=2.12.5" },

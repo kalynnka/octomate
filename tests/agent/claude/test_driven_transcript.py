@@ -16,13 +16,14 @@ import httpx2
 import pytest
 import uvicorn
 from click.testing import Result
-from fastapi import UploadFile
+from fastapi import Request, Response, UploadFile
 from octomate_cli.config import CLISettings, cli_settings
 from octomate_cli.main import app
 from octomate_protocol.stream import TranscriptKept
 from pydantic import UUID7, SecretStr
 from pydantic_ai.models.test import TestModel
 from sqlalchemy.ext.asyncio import AsyncEngine
+from starlette.middleware.base import RequestResponseEndpoint
 from typer.testing import CliRunner
 from uuid_utils.compat import uuid7
 
@@ -147,7 +148,13 @@ async def served(octomate: Octomate) -> AsyncGenerator[str]:
 
 
 async def cli_upload(
-    base: str, conversation: Conversation, path: Path, token: str
+    base: str,
+    conversation: Conversation,
+    path: Path,
+    token: str,
+    *,
+    hook_event: Literal["Stop", "SessionEnd", "SubagentStop"] = "Stop",
+    child: Path | None = None,
 ) -> Result:
     """The harness's upload command, run on the machine holding its transcript."""
     cli_settings.cache_clear()
@@ -161,9 +168,17 @@ async def cli_upload(
     if conversation.agent_tentacle_id == "claude":
         payload = json.dumps(
             {
-                "hook_event_name": "Stop",
+                "hook_event_name": hook_event,
                 "session_id": str(uuid7()),
                 "transcript_path": str(path),
+                **(
+                    {
+                        "agent_id": child.stem.removeprefix("agent-"),
+                        "agent_transcript_path": str(child),
+                    }
+                    if child
+                    else {}
+                ),
             }
         )
     else:
@@ -197,39 +212,75 @@ async def test_uploads_append_where_the_kept_bytes_end(
     ):
         url = f"/hooks/{agent_id}/transcripts/{conversation.id}"
 
-        asked = await client.post(url, params={"offset": 0}, headers=AUTH)
+        asked = await client.post(f"{url}/offsets", json=[], headers=AUTH)
         assert asked.status_code == 200
-        assert TranscriptKept.model_validate(asked.json()).size == 0
+        assert asked.json() == {"offsets": {str(conversation.id): 0}, "subagents": {}}
 
         first = await client.post(
-            url, params={"offset": 0}, content=FIRST, headers=AUTH
+            url,
+            params={"offset": 0, "transcript_id": str(conversation.id)},
+            content=FIRST,
+            headers=AUTH,
         )
         assert first.status_code == 200
         assert TranscriptKept.model_validate(first.json()).size == len(FIRST)
 
         second = await client.post(
-            url, params={"offset": len(FIRST)}, content=SECOND, headers=AUTH
+            url,
+            params={"offset": len(FIRST), "transcript_id": str(conversation.id)},
+            content=SECOND,
+            headers=AUTH,
         )
         assert TranscriptKept.model_validate(second.json()).size == len(FIRST + SECOND)
+        offsets = await client.post(f"{url}/offsets", json=[], headers=AUTH)
+        assert offsets.json() == {
+            "offsets": {str(conversation.id): len(FIRST + SECOND)},
+            "subagents": {},
+        }
         assert await kept_bytes(octomate, conversation, user) == FIRST + SECOND
 
 
-async def test_bytes_that_do_not_continue_the_kept_ones_are_refused() -> None:
+@pytest.mark.parametrize("subagent_id", ["", "child"])
+async def test_bytes_that_do_not_continue_the_kept_ones_are_refused(
+    subagent_id: str,
+) -> None:
     async with a_driven_turn() as (client, octomate, conversation, user):
         url = f"/hooks/claude/transcripts/{conversation.id}"
-        await client.post(url, params={"offset": 0}, content=FIRST, headers=AUTH)
-
-        resent = await client.post(
-            url, params={"offset": 0}, content=FIRST, headers=AUTH
+        binding = await client.post(
+            f"{url}/offsets", json=[subagent_id] if subagent_id else [], headers=AUTH
         )
-        assert resent.status_code == 409
-        # The refusal says where to resume.
-        assert TranscriptKept.model_validate(resent.json()).size == len(FIRST)
+        target = (
+            next(iter(binding.json()["subagents"]))
+            if subagent_id
+            else str(conversation.id)
+        )
+        await client.post(
+            url,
+            params={"offset": 0, "transcript_id": target},
+            content=FIRST,
+            headers=AUTH,
+        )
+
+        for offset in (0, len(FIRST) + 1):
+            refused = await client.post(
+                url,
+                params={"offset": offset, "transcript_id": target},
+                content=SECOND,
+                headers=AUTH,
+            )
+            assert refused.status_code == 409
+            # The refusal says where to resume.
+            assert TranscriptKept.model_validate(refused.json()).size == len(FIRST)
 
         partial = await client.post(
-            url, params={"offset": len(FIRST)}, content=b'{"type":"assis', headers=AUTH
+            url,
+            params={"offset": len(FIRST), "transcript_id": target},
+            content=b'{"type":"assis',
+            headers=AUTH,
         )
         assert partial.status_code == 422
+        if subagent_id:
+            [conversation] = await octomate.conversations.subagents(conversation.id)
         assert await kept_bytes(octomate, conversation, user) == FIRST
 
 
@@ -239,10 +290,11 @@ async def test_overlapping_uploads_keep_each_byte_once(
 ) -> None:
     async with a_driven_turn() as (client, octomate, conversation, user):
         url = f"/hooks/claude/transcripts/{conversation.id}"
+        target = {"transcript_id": str(conversation.id)}
         prefix, data = (FIRST, SECOND) if existing else (b"", FIRST)
         if prefix:
             response = await client.post(
-                url, params={"offset": 0}, content=prefix, headers=AUTH
+                url, params={"offset": 0, **target}, content=prefix, headers=AUTH
             )
             assert response.status_code == 200
         barrier = asyncio.Barrier(2)
@@ -280,7 +332,10 @@ async def test_overlapping_uploads_keep_each_byte_once(
             responses = await asyncio.gather(
                 *(
                     concurrent.post(
-                        url, params={"offset": len(prefix)}, content=data, headers=AUTH
+                        url,
+                        params={"offset": len(prefix), **target},
+                        content=data,
+                        headers=AUTH,
                     )
                     for _ in range(2)
                 )
@@ -293,27 +348,91 @@ async def test_overlapping_uploads_keep_each_byte_once(
             )
 
 
-async def test_only_the_owner_uploads_and_only_while_the_turn_runs() -> None:
+@pytest.mark.parametrize("subagent_id", ["", "child"])
+async def test_only_the_owner_uploads_and_only_while_the_turn_runs(
+    subagent_id: str,
+) -> None:
     async with a_driven_turn() as (client, octomate, conversation, user):
         url = f"/hooks/claude/transcripts/{conversation.id}"
+        target = str(uuid7() if subagent_id else conversation.id)
         stranger = await a_user("mo")
         await a_api_key(stranger, "another-hook-secret")
 
-        unsigned = await client.post(url, params={"offset": 0}, content=FIRST)
+        params = {"offset": 0, "transcript_id": target}
+        unsigned = await client.post(url, params=params, content=FIRST)
         assert unsigned.status_code == 401
         foreign = await client.post(
             url,
-            params={"offset": 0},
+            params=params,
             content=FIRST,
             headers={"Authorization": "Bearer another-hook-secret"},
         )
         assert foreign.status_code == 404
 
         octomate.habitats.residences[user.id].conversations.clear()
-        late = await client.post(url, params={"offset": 0}, content=FIRST, headers=AUTH)
+        late = await client.post(url, params=params, content=FIRST, headers=AUTH)
         assert late.status_code == 404
+        offsets = await client.post(f"{url}/offsets", json=[], headers=AUTH)
+        assert offsets.status_code == 404
         stored = await octomate.conversations.get(conversation.id)
         assert stored.transcript_file_id is None
+        assert await octomate.conversations.subagents(conversation.id) == []
+
+
+async def test_a_subagent_upload_cannot_target_another_parents_child() -> None:
+    async with a_driven_turn() as (client, octomate, conversation, user):
+        other = await octomate.conversations.ensure(
+            conversation.thread_id,
+            agent_tentacle_id="claude",
+            subagent_id="commission",
+            parent_conversation_id=conversation.id,
+        )
+        child = await octomate.conversations.ensure(
+            conversation.thread_id,
+            agent_tentacle_id="claude",
+            subagent_id="child",
+            parent_conversation_id=other.id,
+        )
+        octomate.habitats.residences[user.id].conversations[other.id] += 1
+        accepted = await client.post(
+            f"/hooks/claude/transcripts/{other.id}",
+            params={"offset": 0, "transcript_id": str(child.id)},
+            content=FIRST,
+            headers=AUTH,
+        )
+        assert accepted.status_code == 200
+        offsets = await client.post(
+            f"/hooks/claude/transcripts/{other.id}/offsets", json=[], headers=AUTH
+        )
+        assert offsets.json() == {
+            "offsets": {str(other.id): 0, str(child.id): len(FIRST)},
+            "subagents": {str(child.id): "child"},
+        }
+        parent_offsets = await client.post(
+            f"/hooks/claude/transcripts/{conversation.id}/offsets",
+            json=[],
+            headers=AUTH,
+        )
+        assert parent_offsets.json() == {
+            "offsets": {str(conversation.id): 0, str(other.id): 0},
+            "subagents": {str(other.id): "commission"},
+        }
+        refused = await client.post(
+            f"/hooks/claude/transcripts/{conversation.id}",
+            params={"offset": len(FIRST), "transcript_id": str(child.id)},
+            content=SECOND,
+            headers=AUTH,
+        )
+        assert refused.status_code == 404
+        for key, status in (("", 422), ("child", 422), (str(uuid7()), 404)):
+            invalid = await client.post(
+                f"/hooks/claude/transcripts/{conversation.id}",
+                params={"offset": 0, "transcript_id": key},
+                content=SECOND,
+                headers=AUTH,
+            )
+            assert invalid.status_code == status
+        assert await kept_bytes(octomate, child, user) == FIRST
 
 
 async def test_upload_requires_configured_auth() -> None:
@@ -321,7 +440,7 @@ async def test_upload_requires_configured_auth() -> None:
         octomate.auth = None
         response = await client.post(
             f"/hooks/claude/transcripts/{conversation.id}",
-            params={"offset": 0},
+            params={"offset": 0, "transcript_id": str(conversation.id)},
             content=FIRST,
             headers=AUTH,
         )
@@ -339,7 +458,7 @@ async def test_the_runtime_key_uploads() -> None:
 
         runtime = await client.post(
             url,
-            params={"offset": 0},
+            params={"offset": 0, "transcript_id": str(conversation.id)},
             content=FIRST,
             headers={"Authorization": f"Bearer {issued.token.get_secret_value()}"},
         )
@@ -361,7 +480,7 @@ async def test_upload_requires_hooks_scope(
         await a_api_key(user, "a-hook-only-secret", scopes=["hooks"])
         hook = await client.post(
             url,
-            params={"offset": 0},
+            params={"offset": 0, "transcript_id": str(conversation.id)},
             content=FIRST,
             headers={"Authorization": "Bearer a-hook-only-secret"},
         )
@@ -370,7 +489,7 @@ async def test_upload_requires_hooks_scope(
         await a_api_key(user, "an-mcp-only-secret", scopes=["mcp"])
         mcp = await client.post(
             url,
-            params={"offset": len(FIRST)},
+            params={"offset": len(FIRST), "transcript_id": str(conversation.id)},
             content=SECOND,
             headers={"Authorization": "Bearer an-mcp-only-secret"},
         )
@@ -395,7 +514,7 @@ async def test_upload_route_requires_its_connected_harness(agent_id: str) -> Non
     ) as client:
         uploaded = await client.post(
             f"/hooks/{agent_id}/transcripts/{conversation.id}",
-            params={"offset": 0},
+            params={"offset": 0, "transcript_id": str(conversation.id)},
             content=FIRST,
             headers=AUTH,
         )
@@ -413,7 +532,7 @@ async def test_a_tentacle_refuses_another_harness_conversation() -> None:
         octomate.habitats.residence(scope).conversations[other.id] += 1
         refused = await client.post(
             f"/hooks/claude/transcripts/{other.id}",
-            params={"offset": 0},
+            params={"offset": 0, "transcript_id": str(conversation.id)},
             content=FIRST,
             headers=AUTH,
         )
@@ -486,6 +605,142 @@ async def test_claude_hook_passes_its_runtime_path_to_the_uploader(
         assert await kept_bytes(octomate, conversation, user) == FIRST
 
 
+@pytest.mark.parametrize("hook_event", ["Stop", "SessionEnd"])
+async def test_claude_hooks_keep_subagent_files_separately(
+    tmp_path: Path, hook_event: Literal["Stop", "SessionEnd"]
+) -> None:
+    transcript = tmp_path / "runtime-transcript.jsonl"
+    transcript.write_bytes(FIRST)
+    children = transcript.with_suffix("") / "subagents"
+    children.mkdir(parents=True)
+    first = children / "agent-first.jsonl"
+    second = children / "agent-second.jsonl"
+    final_line = b'{"type":"assistant","uuid":"late-answer"}\n'
+    first.write_bytes(FIRST + final_line[:-2])
+    second.write_bytes(SECOND)
+    async with (
+        a_driven_turn() as (_, octomate, conversation, user),
+        served(octomate) as base,
+    ):
+        stopped = await cli_upload(
+            base,
+            conversation,
+            transcript,
+            SECRET.get_secret_value(),
+            hook_event="SubagentStop",
+            child=first,
+        )
+        assert stopped.exit_code == 0, stopped.output
+        [early] = await octomate.conversations.subagents(conversation.id)
+        assert early.subagent_id == "first"
+        assert await kept_bytes(octomate, early, user) == FIRST
+        assert (
+            await octomate.conversations.get(conversation.id)
+        ).transcript_file_id is None
+
+        uploaded = await cli_upload(
+            base,
+            conversation,
+            transcript,
+            SECRET.get_secret_value(),
+            hook_event=hook_event,
+        )
+        assert uploaded.exit_code == 0, uploaded.output
+        assert uploaded.stdout == ""
+        child_conversations = {
+            child.subagent_id: child
+            for child in await octomate.conversations.subagents(conversation.id)
+        }
+        assert set(child_conversations) == {"first", "second"}
+        assert await kept_bytes(octomate, conversation, user) == FIRST
+        assert await kept_bytes(octomate, child_conversations["first"], user) == FIRST
+        assert await kept_bytes(octomate, child_conversations["second"], user) == SECOND
+        parent = await octomate.conversations.get(conversation.id)
+        file_ids = {child.transcript_file_id for child in child_conversations.values()}
+        assert len({parent.transcript_file_id, *file_ids}) == 3
+
+        # A later hook picks up the child's completed line and the parent's new turn.
+        first.write_bytes(FIRST + final_line)
+        transcript.write_bytes(FIRST + SECOND)
+        for _ in range(2):
+            uploaded = await cli_upload(
+                base,
+                conversation,
+                transcript,
+                SECRET.get_secret_value(),
+                hook_event=hook_event,
+            )
+            assert uploaded.exit_code == 0, uploaded.output
+            assert uploaded.stdout == ""
+        assert await kept_bytes(octomate, conversation, user) == FIRST + SECOND
+        assert (
+            await kept_bytes(octomate, child_conversations["first"], user)
+            == FIRST + final_line
+        )
+        assert await kept_bytes(octomate, child_conversations["second"], user) == SECOND
+        retained = await octomate.conversations.subagents(conversation.id)
+        assert {child.id for child in retained} == {
+            child.id for child in child_conversations.values()
+        }
+        assert {child.transcript_file_id for child in retained} == file_ids
+
+
+async def test_cli_uploads_independent_files_concurrently(tmp_path: Path) -> None:
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_bytes(FIRST)
+    children = transcript.with_suffix("") / "subagents"
+    children.mkdir(parents=True)
+    (children / "agent-child.jsonl").write_bytes(SECOND)
+    handshakes = 0
+    uploads: list[tuple[str, int, bytes]] = []
+    together = asyncio.Barrier(2)
+    async with a_driven_turn() as (_, octomate, conversation, user):
+
+        @octomate.middleware("http")
+        async def barrier(
+            request: Request, call_next: RequestResponseEndpoint
+        ) -> Response:
+            nonlocal handshakes
+            assert request.method == "POST"
+            if request.url.path.endswith("/offsets"):
+                handshakes += 1
+            else:
+                uploads.append(
+                    (
+                        request.query_params["transcript_id"],
+                        int(request.query_params["offset"]),
+                        await request.body(),
+                    )
+                )
+                if handshakes == 1:
+                    await asyncio.wait_for(together.wait(), 3)
+            return await call_next(request)
+
+        async with served(octomate) as base:
+            result = await cli_upload(
+                base, conversation, transcript, SECRET.get_secret_value()
+            )
+            assert result.exit_code == 0, result.output
+            assert handshakes == 1
+            [child] = await octomate.conversations.subagents(conversation.id)
+            assert set(uploads) == {
+                (str(conversation.id), 0, FIRST),
+                (str(child.id), 0, SECOND),
+            }
+            uploads.clear()
+            transcript.write_bytes(FIRST + SECOND + b"partial")
+            for _ in range(2):
+                result = await cli_upload(
+                    base, conversation, transcript, SECRET.get_secret_value()
+                )
+                assert result.exit_code == 0, result.output
+            assert handshakes == 3
+            assert uploads == [(str(conversation.id), len(FIRST), SECOND)]
+        [child] = await octomate.conversations.subagents(conversation.id)
+        assert await kept_bytes(octomate, child, user) == SECOND
+        assert await kept_bytes(octomate, conversation, user) == FIRST + SECOND
+
+
 def test_hook_upload_requires_the_runtime_path() -> None:
     result = CliRunner().invoke(
         app,
@@ -511,6 +766,7 @@ async def test_the_cli_fails_when_the_upload_is_refused(tmp_path: Path) -> None:
         )
         assert foreign.exit_code == 1
         assert "404" in foreign.output
+        assert "No active habitat invocation" in foreign.output
         stored = await octomate.conversations.get(conversation.id)
         assert stored.transcript_file_id is None
 

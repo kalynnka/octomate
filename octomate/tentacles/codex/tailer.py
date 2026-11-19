@@ -17,9 +17,8 @@ from pathlib import Path
 
 from anyio.abc import ObjectSendStream
 from fastapi import UploadFile
-from octomate_protocol.stream import SESSION_FILE
 from octomate_protocol.visualizations import HtmlSnapshot
-from pydantic import ValidationError
+from pydantic import UUID7, ValidationError
 from pydantic_ai.messages import (
     AgentStreamEvent,
     FunctionToolCallEvent,
@@ -320,7 +319,7 @@ class CodexTranscriptTailer:
         sender: UserProfile,
         address: ChannelAddress,
         impulses: ObjectSendStream[Impulse],
-    ) -> tuple[TailState, dict[str, int]]:
+    ) -> tuple[TailState, dict[UUID7, int]]:
         """Register a streamed session — its rollout lives on the client machine
         that streams it (`octomate codex tail`) — and answer where its files resume.
 
@@ -329,8 +328,8 @@ class CodexTranscriptTailer:
         parent's `sub_agent_activity` lines are what link child runs to their spawning
         calls), so a reconnect re-streams whole files and the committed-turn guard
         skips what is already durable. Child files are not named here either: the
-        client keys each by its own label, and `remote_subagent` classifies it from
-        its opening `session_meta`.
+        client registers each file by its opening `session_meta` and receives
+        its conversation UUID.
 
         A lingering registration (its client died without a close) is replaced; the
         dead route feeds the state object it attached, and its commits are
@@ -343,7 +342,7 @@ class CodexTranscriptTailer:
         state.recorded = state.conversation.native_run_ids
         self.sessions[session_id] = state
         logger.info("session %s: remote tail attached", session_id)
-        return state, {SESSION_FILE: 0}
+        return state, {state.conversation.id: 0}
 
     async def feed_remote(
         self,

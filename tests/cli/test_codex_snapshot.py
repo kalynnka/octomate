@@ -32,26 +32,28 @@ from watchfiles import Change
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
+ROOT = uuid7()
+
 
 def test_snapshot_preserves_raw_bytes_and_excludes_later_lines(tmp_path: Path) -> None:
     prefix = b'{"text":"' + b"x" * SNAPSHOT_CHUNK_SIZE + b'\xff"}\r\n'
     transcript = tmp_path / "rollout.jsonl"
     transcript.write_bytes(prefix + b'{"next_turn":true}\n')
-    tail = SessionTail("source", transcript, offsets={"": len(prefix)})
+    tail = SessionTail("source", transcript, ROOT, offsets={ROOT: len(prefix)})
 
     chunks = list(tail.snapshot(len(prefix)))
 
     assert b"".join(chunks) == prefix
     assert len(chunks) == 2
     assert max(map(len, chunks)) <= SNAPSHOT_CHUNK_SIZE
-    assert tail.cursor("").offset == len(prefix)
+    assert tail.files[ROOT].offset == len(prefix)
 
 
 @pytest.mark.parametrize("end", [0, -1, 3, 10])
 def test_snapshot_refuses_invalid_boundaries(tmp_path: Path, end: int) -> None:
     transcript = tmp_path / "rollout.jsonl"
     transcript.write_bytes(b"one\ntwo\n")
-    tail = SessionTail("source", transcript, offsets={"": 8})
+    tail = SessionTail("source", transcript, ROOT, offsets={ROOT: 8})
 
     with pytest.raises(ValueError, match="Snapshot boundary"):
         list(tail.snapshot(end))
@@ -60,7 +62,7 @@ def test_snapshot_refuses_invalid_boundaries(tmp_path: Path, end: int) -> None:
 def test_snapshot_refuses_a_truncated_transcript(tmp_path: Path) -> None:
     transcript = tmp_path / "rollout.jsonl"
     transcript.write_bytes(b"one\n")
-    tail = SessionTail("source", transcript, offsets={"": 8})
+    tail = SessionTail("source", transcript, ROOT, offsets={ROOT: 8})
 
     with pytest.raises(ValueError, match="complete transcript line"):
         list(tail.snapshot(8))
@@ -71,7 +73,7 @@ def test_incremental_snapshot_preserves_raw_suffix(tmp_path: Path) -> None:
     suffix = b"x" * SNAPSHOT_CHUNK_SIZE + b"\xff\r\n"
     transcript = tmp_path / "rollout.jsonl"
     transcript.write_bytes(prefix + suffix + b"later\n")
-    tail = SessionTail("source", transcript, offsets={"": len(prefix + suffix)})
+    tail = SessionTail("source", transcript, ROOT, offsets={ROOT: len(prefix + suffix)})
 
     chunks = list(tail.snapshot(len(prefix + suffix), start=len(prefix)))
 
@@ -93,7 +95,8 @@ async def test_stored_prefix_is_verified_before_sending_any_lines(
             await websocket.recv()
             await websocket.send(
                 StreamWelcome(
-                    offsets={"": len(prefix)},
+                    conversation_id=ROOT,
+                    offsets={ROOT: len(prefix)},
                     transcript=StreamSnapshotCursor(
                         offset=len(prefix), sha256=hashlib.sha256(prefix).hexdigest()
                     ),
@@ -155,7 +158,8 @@ async def test_finalize_waits_for_snapshot_receipt_before_eof(
             assert websocket.request.headers["Authorization"] == "Bearer test-token"
             await websocket.send(
                 StreamWelcome(
-                    offsets={"": len(previous)},
+                    conversation_id=ROOT,
+                    offsets={ROOT: len(previous)},
                     transcript=StreamSnapshotCursor(
                         offset=len(previous),
                         sha256=hashlib.sha256(previous).hexdigest(),
@@ -171,6 +175,7 @@ async def test_finalize_waits_for_snapshot_receipt_before_eof(
             if upload_transcript:
                 request = client_message_adapter.validate_json(await websocket.recv())
                 assert isinstance(request, StreamSnapshotStart)
+                assert request.conversation_id == ROOT
                 assert request.start == len(previous)
                 assert request.end == len(previous + prefix)
                 assert await websocket.recv() == prefix
@@ -252,7 +257,8 @@ async def test_file_growth_uploads_before_finalize_and_holds_partial_lines(
             await websocket.recv()
             await websocket.send(
                 StreamWelcome(
-                    offsets={},
+                    conversation_id=ROOT,
+                    offsets={ROOT: 0},
                     transcript=StreamSnapshotCursor(
                         offset=0, sha256=hashlib.sha256(b"").hexdigest()
                     ),
@@ -307,7 +313,7 @@ async def test_unacknowledged_snapshot_does_not_send_eof(
 ) -> None:
     transcript = tmp_path / "rollout.jsonl"
     transcript.write_bytes(b"{}\n")
-    monkeypatch.setattr(tail_mod, "SNAPSHOT_ACK_TIMEOUT", 0.1)
+    monkeypatch.setattr(tail_mod, "STREAM_ACK_TIMEOUT", 0.1)
     finished: asyncio.Future[None] = asyncio.get_running_loop().create_future()
 
     async def server(websocket: ServerConnection) -> None:
@@ -315,7 +321,8 @@ async def test_unacknowledged_snapshot_does_not_send_eof(
             await websocket.recv()  # hello
             await websocket.send(
                 StreamWelcome(
-                    offsets={},
+                    conversation_id=ROOT,
+                    offsets={ROOT: 0},
                     transcript=StreamSnapshotCursor(
                         offset=0, sha256=hashlib.sha256(b"").hexdigest()
                     ),
@@ -332,7 +339,11 @@ async def test_unacknowledged_snapshot_does_not_send_eof(
                     StreamSnapshotStored(transfer_id=uuid7()).model_dump_json()
                 )
             elif receipt == "wrong_message":
-                await websocket.send(StreamWelcome(offsets={}).model_dump_json())
+                await websocket.send(
+                    StreamWelcome(
+                        conversation_id=ROOT, offsets={ROOT: 0}
+                    ).model_dump_json()
+                )
             with pytest.raises(ConnectionClosed):
                 await websocket.recv()
             finished.set_result(None)

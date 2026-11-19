@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, ClassVar, Self, TypeVar, overload
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
-from octomate_protocol.stream import TranscriptKept
+from octomate_protocol.stream import TranscriptKept, TranscriptOffsets
 from pydantic import UUID7
 from pydantic_ai import (
     AgentCapability,
@@ -150,27 +150,14 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         # Hook dependencies import the application, which imports this base class.
         from octomate.tentacles.hooks import verify_hook_key
 
-        router = APIRouter(tags=[self.id])
+        router = APIRouter(prefix=f"/hooks/{self.id}/transcripts", tags=[self.id])
 
-        @router.post(
-            f"/hooks/{self.id}/transcripts/{{conversation_id}}",
-            response_model=TranscriptKept,
-            responses={409: {"model": TranscriptKept}},
-        )
-        async def upload_transcript(
+        async def active_conversation(
             conversation_id: UUID7,
-            offset: int,
-            request: Request,
-            # FastAPI injects the key; the dependency is local to this property.
+            # FastAPI binds these router-local dependencies when registering the routes.
             key: UserApiKey = Depends(verify_hook_key),  # noqa: B008
-        ) -> TranscriptKept | JSONResponse:
-            """Append complete transcript lines for the owner's active habitat invocation.
-
-            An empty body asks how many bytes are kept. A nonempty body must continue
-            from that offset. The harness's transcript contents are stored unchanged.
-            """
-            owner_id = key.user_id
-            if not self.habitats.residenced(owner_id, conversation_id):
+        ) -> Conversation:
+            if not self.habitats.residenced(key.user_id, conversation_id):
                 raise HTTPException(
                     404, "No active habitat invocation on that conversation"
                 )
@@ -179,22 +166,72 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             )
             if conversation.agent_tentacle_id != self.id:
                 raise HTTPException(404, "Conversation belongs to another agent")
-            kept = 0
-            if conversation.transcript_file_id is not None:
-                kept = (
-                    await self.files.get(
-                        conversation.transcript_file_id, owner_id=owner_id
+            return conversation
+
+        @router.post("/{conversation_id}/offsets")
+        async def transcript_offsets(
+            subagent_ids: list[str],
+            conversation: Conversation = Depends(active_conversation),  # noqa: B008
+            key: UserApiKey = Depends(verify_hook_key),  # noqa: B008
+        ) -> TranscriptOffsets:
+            """Where each of the conversation's transcripts resumes. A subagent named
+            for the first time gets its conversation here, and starts at zero."""
+            offsets = await self.conversations.transcript_offsets(
+                conversation, owner_id=key.user_id, provider=self.files.provider
+            )
+            async with asyncio.TaskGroup() as tasks:
+                children = {
+                    name: tasks.create_task(
+                        self.conversations.ensure(
+                            conversation.thread_id,
+                            agent_tentacle_id=self.id,
+                            subagent_id=name,
+                            parent_conversation_id=conversation.id,
+                            with_runs=False,
+                        )
                     )
-                ).size
+                    for name in set(subagent_ids).difference(offsets.subagents.values())
+                }
+            for name, child in children.items():
+                offsets.subagents[child.result().id] = name
+                offsets.offsets[child.result().id] = 0
+            return offsets
+
+        @router.post(
+            "/{conversation_id}",
+            response_model=TranscriptKept,
+            responses={409: {"model": TranscriptKept}},
+        )
+        async def upload_transcript(
+            offset: int,
+            transcript_id: UUID7,
+            request: Request,
+            conversation: Conversation = Depends(active_conversation),  # noqa: B008
+            key: UserApiKey = Depends(verify_hook_key),  # noqa: B008
+        ) -> TranscriptKept | JSONResponse:
+            """Append complete transcript lines for the owner's active habitat invocation.
+
+            `transcript_id` names the conversation whose file this is: the invocation's
+            own, or one of its subagents'. The bytes must continue from `offset`, and
+            the harness's transcript contents are stored unchanged.
+            """
+            if transcript_id != conversation.id:
+                children = await self.conversations.subagents(conversation.id)
+                child = next(
+                    (
+                        child
+                        for child in children
+                        if child.id == transcript_id
+                        and child.agent_tentacle_id == self.id
+                    ),
+                    None,
+                )
+                if child is None:
+                    raise HTTPException(404, "No such subagent transcript")
+                conversation = child
             data = await request.body()
-            if not data:
-                return TranscriptKept(size=kept)
             if not data.endswith(b"\n"):
                 raise HTTPException(422, "A transcript upload ends at a line break")
-            if offset != kept:
-                return JSONResponse(
-                    TranscriptKept(size=kept).model_dump(), status_code=409
-                )
             try:
                 stored = await self.conversations.store_transcript(
                     UploadFile(
@@ -205,7 +242,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
                     offset,
                     conversation=conversation,
                     files=self.files,
-                    owner_id=owner_id,
+                    owner_id=key.user_id,
                 )
             except FileOffsetConflict as error:
                 return JSONResponse(

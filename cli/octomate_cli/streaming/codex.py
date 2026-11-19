@@ -7,8 +7,9 @@ from the session workspace; raw rollout lines and byte offsets stay unchanged.
 import asyncio
 from pathlib import Path
 
-from octomate_protocol.stream import SESSION_FILE, StreamLine
+from octomate_protocol.stream import StreamLine
 from octomate_protocol.visualizations import HtmlSnapshot, codex_html_references
+from pydantic import UUID7
 
 from octomate_cli.streaming.files import SessionTail
 
@@ -16,9 +17,11 @@ from octomate_cli.streaming.files import SessionTail
 class CodexSessionTail(SessionTail):
     """Attach bounded HTML snapshots to the root Codex rollout's frames."""
 
-    async def frame(self, key: str, start: int, end: int, raw: bytes) -> StreamLine:
-        frame = await super().frame(key, start, end, raw)
-        if key != SESSION_FILE or not self.cwd:
+    async def frame(
+        self, conversation_id: UUID7, start: int, end: int, raw: bytes
+    ) -> StreamLine:
+        frame = await super().frame(conversation_id, start, end, raw)
+        if conversation_id != self.conversation_id or not self.cwd:
             return frame
         workspace = Path(self.cwd)
         frame.visualizations = [

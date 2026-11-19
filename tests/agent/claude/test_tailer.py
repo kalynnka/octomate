@@ -294,8 +294,9 @@ async def test_the_posture_a_session_runs_under_is_read_off_its_transcript(
     state, offsets = await tailer.attach_remote(
         SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses=tail_impulses
     )
+    assert state.conversation is not None
     await feed_records(
-        tailer, state, [switched, unmodelled], start=offsets[tailer_mod.SESSION_FILE]
+        tailer, state, [switched, unmodelled], start=offsets[state.conversation.id]
     )
     await tailer.finish_remote(state)
     assert await posture() == "acceptEdits"
@@ -513,7 +514,8 @@ async def test_a_turn_commits_on_its_stop_summary_without_the_hook(
     _, offsets = await tailer.attach_remote(
         SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses=tail_impulses
     )
-    assert offsets[tailer_mod.SESSION_FILE] == total_bytes(TURN_ONE)
+    assert state.conversation is not None
+    assert offsets[state.conversation.id] == total_bytes(TURN_ONE)
 
 
 def wired(octomate: Octomate) -> tuple[ClaudeHookIngest, ClaudeTranscriptTailer]:
@@ -1106,6 +1108,37 @@ async def test_subagent_stop_commits_the_child_run_without_waiting(
     # The parent session is still attached and its own turn has not been committed.
     assert tailer.sessions[SESSION_ID] is state
     assert [run.id for run in await runs_of(octomate)] == []
+    tailer.detach_remote(state)
+
+
+async def test_parent_stop_keeps_streaming_a_background_child(
+    tail_impulses: ObjectSendStream[Impulse],
+) -> None:
+    octomate = Octomate()
+    ingest, tailer = wired(octomate)
+    state, _ = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, tail_impulses
+    )
+    await feed_records(tailer, state, [TURN_ONE[0], *agent_spawn_records("p1", 2)])
+    await ingest.handle(
+        ClaudeHookInput.model_validate(
+            {
+                "hook_event_name": "Stop",
+                "session_id": SESSION_ID,
+                "prompt_id": "p1",
+                "background_tasks": [
+                    {"id": AGENT_ID, "type": "subagent", "status": "running"}
+                ],
+            }
+        )
+    )
+    assert not state.stop_event.is_set()
+    await feed_records(tailer, state, SUB_TURN_ONE, agent_id=AGENT_ID)
+    await ingest.handle(
+        subagent_hook("SubagentStop", last_assistant_message="two findings")
+    )
+    [child] = await subagent_runs_of(octomate)
+    assert child.end_offset == total_bytes(SUB_TURN_ONE)
     tailer.detach_remote(state)
 
 

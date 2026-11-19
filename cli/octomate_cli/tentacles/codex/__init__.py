@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
@@ -16,7 +17,7 @@ from octomate_cli.tentacles.codex.hooks import (
     stream_url_for,
 )
 from octomate_cli.tentacles.codex.mcp import mcp_typer
-from octomate_cli.transcripts import upload_file
+from octomate_cli.transcripts import upload_transcripts
 
 codex_typer = typer.Typer(
     help="Operate the native Codex integration.", no_args_is_help=True
@@ -33,7 +34,7 @@ def upload(
     path: Annotated[Path, typer.Option(help="The session's JSONL rollout path.")],
 ) -> None:
     """Upload new bytes from a Codex session's rollout."""
-    upload_file(conversation, path, hook_path=CODEX_HOOK_PATH)
+    asyncio.run(upload_transcripts(conversation, path, hook_path=CODEX_HOOK_PATH))
 
 
 @codex_typer.command("tail")

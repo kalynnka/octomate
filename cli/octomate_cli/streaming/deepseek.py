@@ -53,7 +53,6 @@ from octomate_protocol.deepseek import (
     remote_message_adapter,
 )
 from octomate_protocol.stream import (
-    SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
     StreamFinalize,
@@ -317,7 +316,7 @@ async def stream_session(
         welcome = server_message_adapter.validate_json(await websocket.recv())
         if not isinstance(welcome, StreamWelcome):
             raise RuntimeError(f"expected a welcome message, got {welcome.type!r}")
-        cursor = welcome.offsets.get(SESSION_FILE, 0)
+        cursor = welcome.offsets[welcome.conversation_id]
 
         stop = asyncio.Event()
         finalizing = False
@@ -354,7 +353,7 @@ async def stream_session(
                     )
                 await websocket.send(
                     StreamLine(
-                        agent_id=None,
+                        conversation_id=welcome.conversation_id,
                         start=seq,
                         end=seq + 1,
                         line=json_object_adapter.dump_json(entry).decode(),

@@ -30,7 +30,6 @@ from octomate_protocol.deepseek import (
     RpcResult,
 )
 from octomate_protocol.stream import (
-    SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
     StreamFinalize,
@@ -394,7 +393,14 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             hello.session_id,
             hello.client_version or "unversioned",
         )
-        await websocket.send_text(StreamWelcome(offsets=offsets).model_dump_json())
+        if state.conversation is None:
+            raise RuntimeError("Attached DeepSeek session has no conversation")
+        conversation_id = state.conversation.id
+        await websocket.send_text(
+            StreamWelcome(
+                conversation_id=conversation_id, offsets=offsets
+            ).model_dump_json()
+        )
 
         async def relay_finalize() -> None:
             await state.stop_event.wait()
@@ -424,21 +430,21 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                         code=1008, reason="expected a transcript line"
                     )
                     return
-                if message.agent_id is not None:
+                if message.conversation_id != conversation_id:
                     # A dsh session streams as one event sequence; there are no
                     # sibling files to label.
                     await websocket.close(
                         code=1008, reason="deepseek streams a single sequence"
                     )
                     return
-                want = expected.get(SESSION_FILE, 0)
+                want = expected[conversation_id]
                 if message.start != want:
                     await websocket.close(
                         code=4000,
                         reason=f"seq gap: expected {want}, got {message.start}",
                     )
                     return
-                expected[SESSION_FILE] = message.end
+                expected[conversation_id] = message.end
                 await self.session_tailer.feed_remote(state, message.line)
         except WebSocketDisconnect:
             pass

@@ -51,12 +51,13 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from octomate_protocol.gateway import GatewayTool, gateway_tool
 from octomate_protocol.stream import (
-    SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
     StreamFinalize,
     StreamHello,
     StreamLine,
+    StreamOpenSubagent,
+    StreamSubagentOpened,
     StreamWelcome,
     client_message_adapter,
 )
@@ -90,6 +91,8 @@ from octomate.config.channels import TrunklineChannelConfig
 from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
+    SubagentSettledEvent,
+    SubagentStartedEvent,
 )
 from octomate.habitat import HabitatError, ManagedHabitat
 from octomate.managers.habitat import Invocation
@@ -137,6 +140,7 @@ from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.claude.ink import ClaudeInk
 from octomate.tentacles.claude.mcp import octomate_mcp_server
+from octomate.tentacles.claude.subagents import DrivenSubagents
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
 from octomate.tentacles.claude.transcript import (
     CompactBoundary,
@@ -206,6 +210,8 @@ class ClaudeTentacle(AgentTentacle[str, None]):
     # Claude Code's own names for models, such as `opus`, to the catalog entry each
     # runs now, so a pin saved under one still finds its model.
     model_aliases: dict[str, str] = field(init=False)
+    # Native sessions' subagents that started and have not settled, by session id.
+    native_subagents: dict[str, list[str]] = field(init=False, repr=False)
 
     # A Claude run stays live in-process; `pending` (from `AgentTentacle`) parks a
     # waiter per gated tool / question until `Octomate.kick` delivers the response.
@@ -280,6 +286,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         self.ink = ClaudeInk()
         self.models = {}
         self.model_aliases = {}
+        self.native_subagents = {}
         # Per-session locks shared by the hook ingest and the transcript tailer, so a
         # session's ledger writes (hooks) and run commits (tailer) serialize.
         self.session_locks = SessionLocks()
@@ -321,11 +328,21 @@ class ClaudeTentacle(AgentTentacle[str, None]):
 
         @router.post(
             "/hooks/claude",
-            dependencies=[Depends(resolve_sender)],
             summary="Claude Code native-session hook pipe",
         )
-        async def receive_hook(event: ClaudeHookInput) -> JSONResponse:
+        async def receive_hook(
+            event: ClaudeHookInput,
+            # FastAPI resolves this custom profile dependency per request.
+            sender: UserProfile = Depends(resolve_sender),  # noqa: B008
+        ) -> JSONResponse:
             await self.session_ingest.handle(event)
+            if activities := self.subagent_activities(event):
+                address = ThreadKey(self.id, "thread", event.session_id).address(
+                    sender.channel_user_id
+                )
+                async with self.nerve.publish(address) as impulses:
+                    for activity in activities:
+                        await impulses.send(Impulse(activity, address))
             teleport = gateway_tool(GatewayTool.TELEPORT)
             if (
                 event.hook_event_name == "PreToolUse"
@@ -357,6 +374,33 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             await self.stream_session(websocket, sender)
 
         return router
+
+    def subagent_activities(
+        self, event: ClaudeHookInput
+    ) -> list[SubagentStartedEvent | SubagentSettledEvent]:
+        """What a native session's hook says about its subagents: the start or
+        settle it reports, and a settle for each one a stopped turn or an ended
+        session left open. Claude fires no `SubagentStop` for one it interrupts."""
+        working = self.native_subagents.pop(event.session_id, [])
+        activities: list[SubagentStartedEvent | SubagentSettledEvent] = []
+        if activity := event.subagent_activity:
+            activities.append(activity)
+            if isinstance(activity, SubagentStartedEvent):
+                working.append(activity.invocation_id)
+            elif activity.invocation_id in working:
+                working.remove(activity.invocation_id)
+        if event.hook_event_name in {"Stop", "SessionEnd"}:
+            # A background subagent outlives the turn that started it.
+            running = {task.id for task in event.background_tasks}
+            activities.extend(
+                SubagentSettledEvent(invocation_id=agent_id, status="cancelled")
+                for agent_id in working
+                if agent_id not in running
+            )
+            working = [agent_id for agent_id in working if agent_id in running]
+        if working:
+            self.native_subagents[event.session_id] = working
+        return activities
 
     async def stream_session(self, websocket: WebSocket, sender: UserProfile) -> None:
         """Validate the remote tail's protocol and attach it as an external session.
@@ -437,26 +481,43 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         conversation = state.conversation
         if conversation is None:
             raise RuntimeError(f"session {hello.session_id} attached without a home")
-        # How much of the session file is kept, so the session can be forked onto
-        # another surface; only its owner's bytes, and only a registered owner's.
-        # Read before the welcome, so a client leaving at once cancels no read.
+        # The transcripts this stream carries, by conversation: the session's own
+        # and one per subagent file the client has opened.
+        transcripts = {conversation.id: conversation} | {
+            tail.conversation.id: tail.conversation
+            for tail in state.subagents.values()
+            if tail.conversation is not None
+        }
+        # How much of each file is kept, so the session can be forked onto another
+        # surface; only its owner's bytes, and only a registered owner's. Read
+        # before the welcome, so a client leaving at once cancels no read.
         kept = (
             (
-                await self.files.get(
-                    conversation.transcript_file_id,
+                await self.conversations.transcript_offsets(
+                    conversation,
                     owner_id=sender.user_id,
+                    provider=self.files.provider,
                 )
-            ).size
-            if conversation.transcript_file_id is not None
-            and sender.user_id is not None
-            else 0
+            ).offsets
+            if sender.user_id is not None
+            else {}
         )
         logger.info(
             "session %s: remote tail connected (octomate %s)",
             hello.session_id,
             hello.client_version or "unversioned",
         )
-        await websocket.send_text(StreamWelcome(offsets=offsets).model_dump_json())
+        await websocket.send_text(
+            StreamWelcome(
+                conversation_id=conversation.id,
+                offsets=offsets,
+                subagents={
+                    child.id: child.subagent_id
+                    for child in transcripts.values()
+                    if child.subagent_id
+                },
+            ).model_dump_json()
+        )
 
         async def relay_finalize() -> None:
             await state.stop_event.wait()
@@ -487,27 +548,51 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                 if isinstance(message, StreamHello):
                     await websocket.close(code=1008, reason="hello already received")
                     return
+                if isinstance(message, StreamOpenSubagent):
+                    tail = self.session_tailer.subagent_tail(state, message.name)
+                    child = (
+                        tail.conversation
+                        or await self.session_tailer.prepare_subagent(state, tail)
+                    )
+                    transcripts[child.id] = child
+                    await websocket.send_text(
+                        StreamSubagentOpened(
+                            conversation_id=child.id,
+                            offset=expected_offsets.setdefault(child.id, tail.offset),
+                        ).model_dump_json()
+                    )
+                    continue
                 if not isinstance(message, StreamLine):
                     await websocket.close(
                         code=1008, reason="expected a transcript line"
                     )
                     return
-                key = message.agent_id or SESSION_FILE
-                want = expected_offsets.get(key, 0)
+                key = message.conversation_id
+                target = transcripts.get(key)
+                if target is None:
+                    await websocket.close(
+                        code=1008, reason="unopened transcript conversation"
+                    )
+                    return
+                want = expected_offsets[key]
                 if message.start != want:
                     await websocket.close(
                         code=4000,
-                        reason=f"offset gap for {key or 'session'}: expected {want}, "
+                        reason=f"offset gap for {key}: expected {want}, "
                         f"got {message.start}",
                     )
                     return
                 expected_offsets[key] = message.end
                 await self.session_tailer.feed_remote(
-                    state, message.agent_id, message.line, message.start, message.end
+                    state,
+                    target.subagent_id or None,
+                    message.line,
+                    message.start,
+                    message.end,
                 )
-                if message.agent_id is None and sender.user_id is not None:
-                    kept = await self.keep_transcript(
-                        conversation, message, kept, owner_id=sender.user_id
+                if sender.user_id is not None:
+                    kept[key] = await self.keep_transcript(
+                        target, message, kept.get(key, 0), owner_id=sender.user_id
                     )
         except WebSocketDisconnect:
             pass
@@ -639,7 +724,9 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         requests: DeferredToolRequests,
         *,
         suspender: DeferredSuspender | None,
-        interjections: Interjections[Message],
+        interjections: Interjections[
+            Message | SubagentStartedEvent | SubagentSettledEvent
+        ],
     ) -> tuple[ActionBatchEvent, DeferredActionBatchResponse | None]:
         """Pause the run on a human through the graph's suspender, putting the
         batch on this run's stream. The reply waiter
@@ -1001,9 +1088,16 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             # A resumed run. The CLI takes no tool result back, so the graph's
             # resolution of the deferral is this turn's prompt, ledgered as one.
             user_prompt = self.resumed_prompt(deferred_tool_results)
+        children = DrivenSubagents(
+            conversations=self.conversations,
+            parent=conversation,
+            cwd=Path(invocation.cwd),
+        )
         accumulator = ClaudeRunAccumulator()
         accumulator.begin(user_prompt)
-        interjections = Interjections[Message]()
+        interjections = Interjections[
+            Message | SubagentStartedEvent | SubagentSettledEvent
+        ]()
         # Tools the user already granted "allow for session" on this conversation
         # auto-approve without a card; new grants extend the set and persist.
         session_allowed: set[str] = set(conversation.allowed_tools)
@@ -1155,6 +1249,13 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             prompt_id = event.prompt_id
             return {}
 
+        async def subagent_activity(
+            hook_input: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> HookJSONOutput:
+            if activity := ClaudeHookInput.model_validate(hook_input).subagent_activity:
+                interjections.interject(activity)
+            return {}
+
         project = invocation.project
         managed = isinstance(invocation.habitat, ManagedHabitat)
         run_cwd = str(invocation.cwd)
@@ -1212,7 +1313,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                                 ]
                             }
                         ]
-                        for event in ("Stop", "SessionEnd")
+                        for event in ("SubagentStop", "Stop", "SessionEnd")
                     }
                 }
             )
@@ -1249,6 +1350,8 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             can_use_tool=can_use_tool,
             hooks={
                 "UserPromptSubmit": [HookMatcher(hooks=[remember_prompt])],
+                "SubagentStart": [HookMatcher(hooks=[subagent_activity])],
+                "SubagentStop": [HookMatcher(hooks=[subagent_activity])],
                 "PreToolUse": [
                     HookMatcher(matcher="AskUserQuestion", hooks=[ask_user_question])
                 ],
@@ -1319,7 +1422,8 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                         command=command,
                     )
                 ) as native_messages,
-                contextlib.aclosing(interjections.around(native_messages)) as messages,
+                contextlib.aclosing(interjections.around(native_messages)) as merged,
+                contextlib.aclosing(children.watch(merged)) as messages,
             ):
                 self.commands.invalidate(
                     agent_id=self.id, conversation_id=conversation.id
@@ -1327,7 +1431,13 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                 command_result: ResultMessage | None = None
                 compacted = False
                 async for message in messages:
-                    if isinstance(message, ActionBatchEvent | ActionBatchAnsweredEvent):
+                    if isinstance(
+                        message,
+                        ActionBatchEvent
+                        | ActionBatchAnsweredEvent
+                        | SubagentStartedEvent
+                        | SubagentSettledEvent,
+                    ):
                         yield message
                         continue
                     if command is not None and isinstance(message, ResultMessage):

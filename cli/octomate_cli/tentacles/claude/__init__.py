@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -18,7 +19,7 @@ from octomate_cli.tentacles.claude.hooks import (
     stream_url_for,
 )
 from octomate_cli.tentacles.claude.mcp import mcp_typer
-from octomate_cli.transcripts import upload_file
+from octomate_cli.transcripts import upload_transcripts
 
 claude_typer = typer.Typer(
     help="Operate the native Claude Code integration.", no_args_is_help=True
@@ -33,11 +34,30 @@ def upload(
         UUID, typer.Option(help="The conversation the session is driven for.")
     ],
 ) -> None:
-    """Upload the transcript named by Claude's hook payload on stdin."""
+    """Upload the transcript named by Claude's hook payload and its subagent files."""
     event = NativeHookEvent.model_validate_json(sys.stdin.read())
-    if not event.transcript_path:
-        raise typer.BadParameter("hook input requires transcript_path")
-    upload_file(conversation, Path(event.transcript_path), hook_path=CLAUDE_HOOK_PATH)
+    if event.hook_event_name == "SubagentStop":
+        if not event.agent_id or not event.agent_transcript_path:
+            raise typer.BadParameter(
+                "SubagentStop requires agent_id and agent_transcript_path"
+            )
+        path = None
+        subagents = {event.agent_id: Path(event.agent_transcript_path)}
+    else:
+        if not event.transcript_path:
+            raise typer.BadParameter("hook input requires transcript_path")
+        path = Path(event.transcript_path)
+        # A child's final line can land after its SubagentStop hook.
+        children = path.with_suffix("") / "subagents"
+        subagents = {
+            child.stem.removeprefix("agent-"): child
+            for child in children.glob("agent-*.jsonl")
+        }
+    asyncio.run(
+        upload_transcripts(
+            conversation, path, subagents=subagents, hook_path=CLAUDE_HOOK_PATH
+        )
+    )
 
 
 @claude_typer.command("tail")

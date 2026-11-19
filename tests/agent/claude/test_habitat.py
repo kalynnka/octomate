@@ -456,7 +456,7 @@ async def test_a_driven_turn_runs_inside_the_owners_sandbox(
                     ]
                 }
             ]
-            for event in ("Stop", "SessionEnd")
+            for event in ("SubagentStop", "Stop", "SessionEnd")
         }
     }
     assert "--setting-sources=" in info.argv

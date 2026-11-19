@@ -9,6 +9,7 @@ requires-python = ">=3.12"
 # Deliberately light: ordinary client commands do not import the server package.
 # Internal deployment maintenance runs in the installed service environment.
 dependencies = [
+    "httpx2>=2",
     "octomate-protocol>=0.0.1,<0.1",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.14.1",

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from anyio.abc import ObjectSendStream
-from octomate_protocol.stream import SESSION_FILE
+from pydantic import UUID7
 from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -129,7 +129,7 @@ async def stream_events(
     events: list[JsonObject],
     *,
     cwd: str = "/work/repo",
-) -> dict[str, int]:
+) -> dict[UUID7, int]:
     """One connection's life as the route drives it: attach, feed, detach —
     returning the welcome offsets the attach answered."""
     async with nerve.publish(SESSION_ADDRESS) as impulses:
@@ -185,8 +185,8 @@ async def test_streamed_events_assemble_the_turn_and_its_ledger() -> None:
         tailer, octomate.nerve, turn_events(1, 0, "inspect it", "done")
     )
 
-    assert offsets == {SESSION_FILE: 0}
     conversation = await native_conversation(octomate)
+    assert offsets == {conversation.id: 0}
     [run] = conversation.runs
     assert isinstance(run, ExternalAgentRun)
     assert run.id == f"{SESSION_ID}:1"
@@ -334,7 +334,8 @@ async def test_a_reconnect_resumes_past_the_committed_floor(
         SESSION_ADDRESS,
         impulses=tail_impulses,
     )
-    assert offsets == {SESSION_FILE: 4}
+    assert state.conversation is not None
+    assert offsets == {state.conversation.id: 4}
     await feed_events(
         tailer,
         state,

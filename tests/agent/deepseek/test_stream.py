@@ -16,7 +16,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from octomate_cli.tentacles.deepseek import DEEPSEEK_HOOK_PATH, DEEPSEEK_STREAM_PATH
 from octomate_protocol.stream import (
-    SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
     StreamFinalize,
@@ -25,11 +24,12 @@ from octomate_protocol.stream import (
     StreamWelcome,
     server_message_adapter,
 )
-from pydantic import SecretStr
+from pydantic import UUID7, SecretStr
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import OctomateConfig
@@ -89,11 +89,14 @@ def hello_json(session_id: str = SESSION_ID, protocol: int = STREAM_PROTOCOL) ->
     ).model_dump_json()
 
 
-def line_json(event: JsonObject) -> str:
+def line_json(conversation_id: UUID7, event: JsonObject) -> str:
     seq = event["seq"]
     assert isinstance(seq, int)
     return StreamLine(
-        start=seq, end=seq + 1, line=json.dumps({"event": event})
+        conversation_id=conversation_id,
+        start=seq,
+        end=seq + 1,
+        line=json.dumps({"event": event}),
     ).model_dump_json()
 
 
@@ -121,8 +124,12 @@ def test_stream_failure_closes_socket_and_releases_session(
     ):
         websocket.send_text(hello_json())
         if failure != "attach_remote":
-            websocket.receive_text()
-            websocket.send_text(StreamLine(start=0, end=1, line="{}").model_dump_json())
+            welcome = StreamWelcome.model_validate_json(websocket.receive_text())
+            websocket.send_text(
+                StreamLine(
+                    conversation_id=welcome.conversation_id, start=0, end=1, line="{}"
+                ).model_dump_json()
+            )
         with pytest.raises(WebSocketDisconnect) as disconnect:
             websocket.receive_text()
         assert disconnect.value.code == 1011
@@ -151,9 +158,9 @@ def test_entries_flow_over_the_socket_and_the_next_connect_resumes() -> None:
             websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(welcome, StreamWelcome)
-            assert welcome.offsets == {SESSION_FILE: 0}
+            assert welcome.offsets == {welcome.conversation_id: 0}
             for event in turn_events(1, 0, "streamed ask", "streamed answer"):
-                websocket.send_text(line_json(event))
+                websocket.send_text(line_json(welcome.conversation_id, event))
             websocket.send_text(StreamEof().model_dump_json())
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
@@ -171,7 +178,7 @@ def test_entries_flow_over_the_socket_and_the_next_connect_resumes() -> None:
             websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(welcome, StreamWelcome)
-            assert welcome.offsets == {SESSION_FILE: 4}
+            assert welcome.offsets == {welcome.conversation_id: 4}
 
 
 def test_a_stop_over_the_hook_pipe_drains_the_socket() -> None:
@@ -183,10 +190,10 @@ def test_a_stop_over_the_hook_pipe_drains_the_socket() -> None:
     with client:
         with client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
-            websocket.receive_text()  # welcome
+            welcome = StreamWelcome.model_validate_json(websocket.receive_text())
             events = turn_events(1, 0, "stopping ask", "stopped answer")
             for event in events[:-1]:
-                websocket.send_text(line_json(event))
+                websocket.send_text(line_json(welcome.conversation_id, event))
             posted = client.post(
                 DEEPSEEK_HOOK_PATH,
                 json={"hook_event_name": "Stop", "session_id": SESSION_ID},
@@ -194,7 +201,7 @@ def test_a_stop_over_the_hook_pipe_drains_the_socket() -> None:
             )
             assert posted.status_code == 200
             # The seam released and dsh flushed the close; the stream ships it.
-            websocket.send_text(line_json(events[-1]))
+            websocket.send_text(line_json(welcome.conversation_id, events[-1]))
             relayed = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(relayed, StreamFinalize)
             websocket.send_text(StreamEof().model_dump_json())
@@ -300,12 +307,12 @@ async def test_driven_sessions_are_accepted_by_both_ingest_endpoints() -> None:
 
 
 @pytest.mark.parametrize(
-    "next_message",
-    [StreamEof(), StreamLine(start=0, end=1, line="{}")],
+    "eof",
+    [True, False],
     ids=["eof", "line"],
 )
 async def test_an_accepted_stream_continues_when_the_session_becomes_driven(
-    next_message: StreamEof | StreamLine, monkeypatch: pytest.MonkeyPatch
+    eof: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, tentacle = stream_client()
     fed = AsyncMock()
@@ -318,16 +325,23 @@ async def test_an_accepted_stream_continues_when_the_session_becomes_driven(
             assert isinstance(welcome, StreamWelcome)
             assert tentacle.native_sessions == {SESSION_ID: 1}
             async with tentacle.driving(SESSION_ID):
-                websocket.send_text(next_message.model_dump_json())
-                if isinstance(next_message, StreamLine):
-                    websocket.send_text(StreamEof().model_dump_json())
+                if not eof:
+                    websocket.send_text(
+                        StreamLine(
+                            conversation_id=welcome.conversation_id,
+                            start=0,
+                            end=1,
+                            line="{}",
+                        ).model_dump_json()
+                    )
+                websocket.send_text(StreamEof().model_dump_json())
                 with pytest.raises(WebSocketDisconnect) as disconnect:
                     websocket.receive_text()
                 assert disconnect.value.code == 1000
         assert tentacle.session_tailer.sessions == {}
         assert tentacle.native_sessions == {}
 
-    assert fed.await_count == int(isinstance(next_message, StreamLine))
+    assert fed.await_count == int(not eof)
 
 
 def test_native_session_counts_overlap_and_release_on_eof_and_disconnect() -> None:
@@ -360,8 +374,12 @@ def test_a_seq_gap_closes_for_resync() -> None:
         client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket,
     ):
         websocket.send_text(hello_json())
-        websocket.receive_text()  # welcome
-        websocket.send_text(StreamLine(start=5, end=6, line="{}").model_dump_json())
+        welcome = StreamWelcome.model_validate_json(websocket.receive_text())
+        websocket.send_text(
+            StreamLine(
+                conversation_id=welcome.conversation_id, start=5, end=6, line="{}"
+            ).model_dump_json()
+        )
         with pytest.raises(WebSocketDisconnect) as disconnect:
             websocket.receive_text()
     assert disconnect.value.code == 4000
@@ -379,7 +397,9 @@ def test_a_labeled_line_is_refused() -> None:
         websocket.send_text(hello_json())
         websocket.receive_text()  # welcome
         websocket.send_text(
-            StreamLine(agent_id="agent-1", start=0, end=1, line="{}").model_dump_json()
+            StreamLine(
+                conversation_id=uuid7(), start=0, end=1, line="{}"
+            ).model_dump_json()
         )
         with pytest.raises(WebSocketDisconnect) as disconnect:
             websocket.receive_text()

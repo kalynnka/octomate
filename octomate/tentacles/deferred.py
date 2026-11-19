@@ -79,10 +79,10 @@ class Interjections[T]:
     while the runtime is still waiting for its answer."""
 
     def __init__(self) -> None:
-        self.queue: asyncio.Queue[Read[T] | Interjection | Ended] = asyncio.Queue()
+        self.queue: asyncio.Queue[Read[T | Interjection] | Ended] = asyncio.Queue()
 
-    def interject(self, event: Interjection) -> None:
-        self.queue.put_nowait(event)
+    def interject(self, event: T | Interjection) -> None:
+        self.queue.put_nowait(Read(event))
 
     async def around(
         self, source: AsyncIterable[T]
@@ -91,7 +91,7 @@ class Interjections[T]:
         reading = asyncio.create_task(self.read(source))
         try:
             while not isinstance(entry := await self.queue.get(), Ended):
-                yield entry.item if isinstance(entry, Read) else entry
+                yield entry.item
             if entry.error is not None:
                 raise entry.error
         finally:
@@ -102,7 +102,7 @@ class Interjections[T]:
     async def read(self, source: AsyncIterable[T]) -> None:
         try:
             async for item in source:
-                self.queue.put_nowait(Read(item))
+                self.interject(item)
         except Exception as error:
             self.queue.put_nowait(Ended(error))
         else:

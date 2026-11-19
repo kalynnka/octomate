@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Annotated
@@ -17,7 +18,7 @@ from octomate_cli.tentacles.deepseek.hooks import (
     stream_url_for,
 )
 from octomate_cli.tentacles.deepseek.mcp import mcp_typer
-from octomate_cli.transcripts import upload_file
+from octomate_cli.transcripts import upload_transcripts
 
 # Where this machine's dsh gateway answers, resolved at fire time: the
 # environment names it when the operator moved the port, else dsh's default
@@ -46,7 +47,7 @@ def upload(
     ],
 ) -> None:
     """Upload an exported DeepSeek JSONL transcript, not a compressed dsh log."""
-    upload_file(conversation, path, hook_path=DEEPSEEK_HOOK_PATH)
+    asyncio.run(upload_transcripts(conversation, path, hook_path=DEEPSEEK_HOOK_PATH))
 
 
 @deepseek_typer.command("tail")

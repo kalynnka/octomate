@@ -12,6 +12,7 @@ from typing import ClassVar, Literal, TypeVar, cast
 from arcanus import Cursor, Page, RelationCollection
 from arcanus.materia.sqlalchemy import lazyload, noload, selectinload, undefer
 from fastapi import UploadFile
+from octomate_protocol.stream import TranscriptOffsets
 from pydantic import UUID7, AwareDatetime, NonNegativeInt, TypeAdapter, validate_call
 from pydantic_ai import Conversation as PydanticConversation
 
@@ -49,7 +50,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
-from octomate.managers.files import FileManager
+from octomate.managers.files import FileManager, FileOffsetConflict
 from octomate.schemas.compactions import (
     Compaction,
     CompactionMembership,
@@ -62,7 +63,7 @@ from octomate.schemas.conversation import (
     ConversationKey,
     ConversationRun,
 )
-from octomate.schemas.files import FileVariant, Jsonl
+from octomate.schemas.files import File, FileVariant, Jsonl
 from octomate.schemas.messages import ModelMessage, ModelRequest, ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
 from octomate.schemas.thread import (
@@ -77,6 +78,7 @@ from octomate.types.compactions import (
     CompactionStage,
     CompactionTrigger,
 )
+from octomate.types.files import FileProviderName
 from octomate.types.permissions import AgentPermissionMode
 
 RunT = TypeVar("RunT", bound=AgentRun)
@@ -1351,7 +1353,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
     ) -> ExternalAgentRun | None:
         """Reserve or complete a native turn without duplicating a driven run.
 
-        Empty input reserves its identity without changing an existing run.
+        Empty input reserves its identity and can identify its spawning call.
         A stored end_offset marks a completed transcript; replay returns None.
         Completing an unfinished run replaces provisional messages atomically.
 
@@ -1369,6 +1371,12 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 return None
             if stored is not None:
                 if not messages and end_offset is None:
+                    if (
+                        parent_tool_call_id is not None
+                        and stored.parent_tool_call_id != parent_tool_call_id
+                    ):
+                        stored.parent_tool_call_id = parent_tool_call_id
+                        await session.commit()
                     return stored
                 if stored.end_offset is not None:
                     return None
@@ -1380,7 +1388,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                     native_session_id=native_session_id,
                     native_turn_id=run_id,
                     parent_run_id=parent_run_id,
-                    parent_tool_call_id=parent_tool_call_id,
+                    parent_tool_call_id=parent_tool_call_id or run.parent_tool_call_id,
                     name=name,
                     model_name=model_name,
                     context_window=context_window,
@@ -1748,6 +1756,37 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         forked = [run.id for run in origin.runs if run.id not in dropped]
         return forked[-1] if forked else None
 
+    async def transcript_offsets(
+        self, conversation: Conversation, *, owner_id: UUID7, provider: FileProviderName
+    ) -> TranscriptOffsets:
+        """Read retained sizes for this invocation and its direct subagents."""
+        async with async_session() as session:
+            rows = await session.execute(
+                select(Conversation["id"], Conversation["subagent_id"], File["size"])
+                .outerjoin(
+                    File,
+                    and_(
+                        File["id"] == Conversation["transcript_file_id"],
+                        File["owner_id"] == owner_id,
+                        File["provider"] == provider,
+                    ),
+                )
+                .where(
+                    or_(
+                        Conversation["id"] == conversation.id,
+                        Conversation["parent_conversation_id"] == conversation.id,
+                    ),
+                    Conversation["agent_tentacle_id"] == conversation.agent_tentacle_id,
+                )
+            )
+            offsets: dict[UUID7, int] = {}
+            subagents: dict[UUID7, str] = {}
+            for id_, subagent_id, size in rows:
+                offsets[id_] = size or 0
+                if id_ != conversation.id:
+                    subagents[id_] = subagent_id
+            return TranscriptOffsets(offsets=offsets, subagents=subagents)
+
     async def store_transcript(
         self,
         uploaded: UploadFile,
@@ -1770,7 +1809,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                     previous_id, uploaded.file, offset=start, owner_id=owner_id
                 )
             if start != 0:
-                raise ValueError("The first transcript upload must start at zero")
+                raise FileOffsetConflict(0)
             async with (
                 files.upload(uploaded, owner_id=owner_id) as transcript,
                 async_session() as session,

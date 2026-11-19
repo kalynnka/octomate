@@ -27,18 +27,20 @@ from fastapi.testclient import TestClient
 from octomate_cli.streaming.codex import CodexSessionTail
 from octomate_cli.tentacles.codex import CODEX_HOOK_PATH, CODEX_STREAM_PATH
 from octomate_protocol.stream import (
-    SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
     StreamFinalize,
     StreamHello,
     StreamLine,
+    StreamOpenSubagent,
     StreamSnapshotStart,
     StreamSnapshotStored,
+    StreamSubagentOpened,
     StreamWelcome,
     server_message_adapter,
 )
-from pydantic import AnyHttpUrl, SecretStr
+from octomate_protocol.visualizations import HtmlReference, HtmlSnapshot
+from pydantic import UUID7, AnyHttpUrl, SecretStr
 from pydantic_ai.messages import ModelRequest, PartEndEvent, TextPart, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.testclient import WebSocketDenialResponse, WebSocketTestSession
@@ -170,7 +172,8 @@ async def test_remote_feed_assembles_the_same_runs_as_a_local_pump(
     state, offsets = await tailer.attach_remote(
         SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
     )
-    assert offsets == {SESSION_FILE: 0}
+    assert state.conversation is not None
+    assert offsets == {state.conversation.id: 0}
     assert tailer.sessions[SESSION_ID] is state  # so hooks see the session as covered
     await feed(tailer, state, frames([parent_metadata(), *TURN_A, *TURN_B]))
     tailer.detach_remote(state)
@@ -205,7 +208,8 @@ async def test_a_reconnect_restreams_from_zero_and_committed_turns_dedup(
     state, offsets = await tailer.attach_remote(
         SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
     )
-    assert offsets == {SESSION_FILE: 0}
+    assert state.conversation is not None
+    assert offsets == {state.conversation.id: 0}
     await feed(tailer, state, frames([*head, *TURN_B]))
     tailer.detach_remote(state)
 
@@ -336,7 +340,8 @@ async def test_a_new_attach_replaces_a_lingering_registration(
     fresh, offsets = await tailer.attach_remote(
         SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
     )
-    assert offsets == {SESSION_FILE: 0}
+    assert fresh.conversation is not None
+    assert offsets == {fresh.conversation.id: 0}
     assert tailer.sessions[SESSION_ID] is fresh
     tailer.detach_remote(stale)
     assert tailer.sessions[SESSION_ID] is fresh
@@ -465,8 +470,12 @@ def test_stream_failure_closes_socket_and_releases_session(
     with client, client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
         websocket.send_text(hello_json())
         if failure != "attach_remote":
-            websocket.receive_text()
-            websocket.send_text(StreamLine(start=0, end=1, line="{}").model_dump_json())
+            welcome = StreamWelcome.model_validate_json(websocket.receive_text())
+            websocket.send_text(
+                StreamLine(
+                    conversation_id=welcome.conversation_id, start=0, end=1, line="{}"
+                ).model_dump_json()
+            )
         with pytest.raises(WebSocketDisconnect) as disconnect:
             websocket.receive_text()
         assert disconnect.value.code == 1011
@@ -478,10 +487,17 @@ def test_stream_failure_closes_socket_and_releases_session(
 
 
 def upload_transcript(
-    websocket: WebSocketTestSession, data: bytes, *, start: int = 0
+    websocket: WebSocketTestSession,
+    conversation_id: UUID7,
+    data: bytes,
+    *,
+    start: int = 0,
 ) -> None:
     request = StreamSnapshotStart(
-        transfer_id=uuid7(), start=start, end=start + len(data)
+        conversation_id=conversation_id,
+        transfer_id=uuid7(),
+        start=start,
+        end=start + len(data),
     )
     websocket.send_text(request.model_dump_json())
     websocket.send_bytes(data)
@@ -519,12 +535,6 @@ def test_native_html_crosses_the_client_stream_and_reuses_the_owned_viewer(
     data = b"".join(map(line_bytes, records))
     transcript = tmp_path / "rollout.jsonl"
     transcript.write_bytes(data)
-    tail = CodexSessionTail(SESSION_ID, transcript, cwd=str(tmp_path))
-    outgoing = [
-        asyncio.run(tail.frame(agent_id or SESSION_FILE, start, end, line.encode()))
-        for agent_id, start, end, line in frames(records)
-    ]
-    source.unlink()  # The server cannot open the client's file, even on this machine.
     client, tentacle = stream_client(storage=tmp_path / "storage")
     host = tentacle.octomate
     host.config.artifacts.sandbox_origin = AnyHttpUrl("https://sandbox.example")
@@ -563,10 +573,24 @@ def test_native_html_crosses_the_client_stream_and_reuses_the_owned_viewer(
         )
         with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
-            websocket.receive_text()
+            welcome = StreamWelcome.model_validate_json(websocket.receive_text())
+            tail = CodexSessionTail(
+                SESSION_ID,
+                transcript,
+                welcome.conversation_id,
+                welcome.offsets,
+                cwd=str(tmp_path),
+            )
+            outgoing = [
+                asyncio.run(
+                    tail.frame(welcome.conversation_id, start, end, line.encode())
+                )
+                for _, start, end, line in frames(records)
+            ]
+            source.unlink()  # The server cannot open the client's file, even on this machine.
             for message in outgoing:
                 websocket.send_text(message.model_dump_json())
-            upload_transcript(websocket, data)
+            upload_transcript(websocket, welcome.conversation_id, data)
             websocket.send_text(StreamEof().model_dump_json())
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
@@ -595,7 +619,7 @@ def test_native_html_crosses_the_client_stream_and_reuses_the_owned_viewer(
             websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(welcome, StreamWelcome)
-            assert welcome.offsets[SESSION_FILE] == len(data)
+            assert welcome.offsets[welcome.conversation_id] == len(data)
             websocket.send_text(StreamEof().model_dump_json())
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
@@ -645,16 +669,21 @@ def test_transcript_is_persisted_during_a_turn_and_appended_on_the_same_socket(
 
     with client, client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
         websocket.send_text(hello_json())
-        websocket.receive_text()
+        welcome = StreamWelcome.model_validate_json(websocket.receive_text())
         for batch in batches:
-            for agent_id, start, end, line in frames(batch, start=len(content)):
+            for _, start, end, line in frames(batch, start=len(content)):
                 websocket.send_text(
                     StreamLine(
-                        agent_id=agent_id, start=start, end=end, line=line
+                        conversation_id=welcome.conversation_id,
+                        start=start,
+                        end=end,
+                        line=line,
                     ).model_dump_json()
                 )
             delta = b"".join(map(line_bytes, batch))
-            upload_transcript(websocket, delta, start=len(content))
+            upload_transcript(
+                websocket, welcome.conversation_id, delta, start=len(content)
+            )
             content += delta
             assert [path.read_bytes() for path in tmp_path.glob("users/*/*")] == [
                 content
@@ -677,18 +706,23 @@ def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly(tmp_path: Path) ->
             websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(welcome, StreamWelcome)
-            assert welcome.offsets == {SESSION_FILE: 0}
+            assert welcome.offsets == {welcome.conversation_id: 0}
             assert welcome.transcript is not None
             assert welcome.transcript.offset == 0
             assert tentacle.native_sessions == {SESSION_ID: 1}
-            for agent_id, start, end, line in frames([parent_metadata(), *TURN_A]):
+            for _, start, end, line in frames([parent_metadata(), *TURN_A]):
                 websocket.send_text(
                     StreamLine(
-                        agent_id=agent_id, start=start, end=end, line=line
+                        conversation_id=welcome.conversation_id,
+                        start=start,
+                        end=end,
+                        line=line,
                     ).model_dump_json()
                 )
             upload_transcript(
-                websocket, b"".join(map(line_bytes, [parent_metadata(), *TURN_A]))
+                websocket,
+                welcome.conversation_id,
+                b"".join(map(line_bytes, [parent_metadata(), *TURN_A])),
             )
             websocket.send_text(StreamEof().model_dump_json())
             with pytest.raises(WebSocketDisconnect):
@@ -697,11 +731,14 @@ def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly(tmp_path: Path) ->
         assert tentacle.native_sessions == {}
         with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
-            websocket.receive_text()
-            for agent_id, start, end, line in frames(TURN_B, start=len(prefix)):
+            welcome = StreamWelcome.model_validate_json(websocket.receive_text())
+            for _, start, end, line in frames(TURN_B, start=len(prefix)):
                 websocket.send_text(
                     StreamLine(
-                        agent_id=agent_id, start=start, end=end, line=line
+                        conversation_id=welcome.conversation_id,
+                        start=start,
+                        end=end,
+                        line=line,
                     ).model_dump_json()
                 )
             posted = client.post(
@@ -720,7 +757,10 @@ def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly(tmp_path: Path) ->
             )
             websocket.send_text(
                 StreamSnapshotStart(
-                    transfer_id=uuid7(), start=len(prefix), end=len(prefix + suffix)
+                    conversation_id=welcome.conversation_id,
+                    transfer_id=uuid7(),
+                    start=len(prefix),
+                    end=len(prefix + suffix),
                 ).model_dump_json()
             )
             websocket.send_bytes(suffix[: len(suffix) // 2])
@@ -729,17 +769,22 @@ def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly(tmp_path: Path) ->
             websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(welcome, StreamWelcome)
-            assert welcome.offsets == {SESSION_FILE: len(prefix)}
+            assert welcome.offsets == {welcome.conversation_id: len(prefix)}
             assert welcome.transcript is not None
             assert welcome.transcript.sha256 == hashlib.sha256(prefix).hexdigest()
             assert tentacle.native_sessions == {SESSION_ID: 1}
-            for agent_id, start, end, line in frames(TURN_B, start=len(prefix)):
+            for _, start, end, line in frames(TURN_B, start=len(prefix)):
                 websocket.send_text(
                     StreamLine(
-                        agent_id=agent_id, start=start, end=end, line=line
+                        conversation_id=welcome.conversation_id,
+                        start=start,
+                        end=end,
+                        line=line,
                     ).model_dump_json()
                 )
-            upload_transcript(websocket, suffix, start=len(prefix))
+            upload_transcript(
+                websocket, welcome.conversation_id, suffix, start=len(prefix)
+            )
             websocket.send_text(StreamEof().model_dump_json())
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
@@ -752,7 +797,7 @@ def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly(tmp_path: Path) ->
             websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(welcome, StreamWelcome)
-            assert welcome.offsets == {SESSION_FILE: len(prefix + suffix)}
+            assert welcome.offsets == {welcome.conversation_id: len(prefix + suffix)}
             websocket.send_text(StreamEof().model_dump_json())
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
@@ -770,11 +815,14 @@ def test_a_stop_over_the_hook_pipe_drains_the_socket(tmp_path: Path) -> None:
     with client:
         with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
-            websocket.receive_text()  # welcome
-            for agent_id, start, end, line in frames([parent_metadata(), *TURN_A]):
+            welcome = StreamWelcome.model_validate_json(websocket.receive_text())
+            for _, start, end, line in frames([parent_metadata(), *TURN_A]):
                 websocket.send_text(
                     StreamLine(
-                        agent_id=agent_id, start=start, end=end, line=line
+                        conversation_id=welcome.conversation_id,
+                        start=start,
+                        end=end,
+                        line=line,
                     ).model_dump_json()
                 )
             posted = client.post(
@@ -790,7 +838,9 @@ def test_a_stop_over_the_hook_pipe_drains_the_socket(tmp_path: Path) -> None:
             relayed = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(relayed, StreamFinalize)
             upload_transcript(
-                websocket, b"".join(map(line_bytes, [parent_metadata(), *TURN_A]))
+                websocket,
+                welcome.conversation_id,
+                b"".join(map(line_bytes, [parent_metadata(), *TURN_A])),
             )
             websocket.send_text(StreamEof().model_dump_json())
             with pytest.raises(WebSocketDisconnect):
@@ -801,10 +851,68 @@ def test_a_stop_over_the_hook_pipe_drains_the_socket(tmp_path: Path) -> None:
             welcome = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(welcome, StreamWelcome)
             assert welcome.offsets == {
-                SESSION_FILE: sum(
+                welcome.conversation_id: sum(
                     map(len, map(line_bytes, [parent_metadata(), *TURN_A]))
                 )
             }
+
+
+def test_a_spooled_child_gets_its_conversation_uuid_and_cannot_publish_root_html() -> (
+    None
+):
+    client, tentacle = stream_client()
+    with client, client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+        websocket.send_text(hello_json())
+        welcome = StreamWelcome.model_validate_json(websocket.receive_text())
+        _, start, end, raw = frames([parent_metadata()])[0]
+        websocket.send_text(
+            StreamLine(
+                conversation_id=welcome.conversation_id, start=start, end=end, line=raw
+            ).model_dump_json()
+        )
+        websocket.send_text(
+            StreamOpenSubagent(
+                name="foreign.jsonl",
+                first_line=json.dumps(child_metadata(source="fork")),
+            ).model_dump_json()
+        )
+        foreign = StreamSubagentOpened.model_validate_json(websocket.receive_text())
+        assert foreign.conversation_id is None
+        websocket.send_text(
+            StreamOpenSubagent(
+                name=CHILD_KEY, first_line=json.dumps(child_metadata())
+            ).model_dump_json()
+        )
+        child = StreamSubagentOpened.model_validate_json(websocket.receive_text())
+        stored = (
+            tentacle.session_tailer.sessions[SESSION_ID]
+            .subagents[CHILD_THREAD_ID]
+            .conversation
+        )
+        assert stored is not None
+        assert child.conversation_id == stored.id
+        assert stored.parent_conversation_id == welcome.conversation_id
+        _, start, end, raw = frames([child_metadata()])[0]
+        websocket.send_text(
+            StreamLine(
+                conversation_id=stored.id, start=start, end=end, line=raw
+            ).model_dump_json()
+        )
+        ref = HtmlReference(path=Path("/client/counter.html"))
+        marker = "visualize" + ref.model_dump_json(exclude_none=True) + ""
+        _, start, end, raw = frames([answer_item(4, marker)], start=end)[0]
+        websocket.send_text(
+            StreamLine(
+                conversation_id=stored.id,
+                start=start,
+                end=end,
+                line=raw,
+                visualizations=[HtmlSnapshot(reference=ref, html="<p>Test</p>")],
+            ).model_dump_json()
+        )
+        with pytest.raises(WebSocketDisconnect) as disconnect:
+            websocket.receive_text()
+        assert disconnect.value.code == 1008
 
 
 def test_a_stale_protocol_is_refused_loudly() -> None:
@@ -919,9 +1027,14 @@ async def test_an_accepted_stream_continues_when_octomate_starts_driving(
             async with tentacle.driving(SESSION_ID):
                 if not eof:
                     websocket.send_text(
-                        StreamLine(start=0, end=3, line="{}").model_dump_json()
+                        StreamLine(
+                            conversation_id=welcome.conversation_id,
+                            start=0,
+                            end=3,
+                            line="{}",
+                        ).model_dump_json()
                     )
-                    upload_transcript(websocket, b"{}\n")
+                    upload_transcript(websocket, welcome.conversation_id, b"{}\n")
                 websocket.send_text(StreamEof().model_dump_json())
                 with pytest.raises(WebSocketDisconnect) as disconnect:
                     websocket.receive_text()
@@ -959,8 +1072,12 @@ def test_an_offset_gap_closes_for_resync() -> None:
     client, tentacle = stream_client()
     with client, client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
         websocket.send_text(hello_json())
-        websocket.receive_text()  # welcome
-        websocket.send_text(StreamLine(start=5, end=20, line="{}").model_dump_json())
+        welcome = StreamWelcome.model_validate_json(websocket.receive_text())
+        websocket.send_text(
+            StreamLine(
+                conversation_id=welcome.conversation_id, start=5, end=20, line="{}"
+            ).model_dump_json()
+        )
         with pytest.raises(WebSocketDisconnect) as disconnect:
             websocket.receive_text()
     assert disconnect.value.code == 4000

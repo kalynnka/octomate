@@ -37,11 +37,12 @@ from fastapi import APIRouter, Depends, UploadFile, WebSocket, WebSocketDisconne
 from fastapi.responses import JSONResponse
 from httpx2 import URL
 from octomate_protocol.stream import (
-    SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
     StreamHello,
+    StreamOpenSubagent,
     StreamSnapshotCursor,
+    StreamSubagentOpened,
     StreamWelcome,
     client_message_adapter,
 )
@@ -530,6 +531,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         assert conversation is not None
         slot = FileTransferSlot(
             websocket=websocket,
+            conversation_id=conversation.id,
             persist=(
                 partial(
                     self.conversations.store_transcript,
@@ -542,7 +544,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             ),
             filename=Path(hello.transcript_path).name,
             content_type="application/jsonl",
-            offset=offsets.get(SESSION_FILE, 0),
+            offset=offsets[conversation.id],
         )
 
         async def relay_finalize() -> None:
@@ -572,9 +574,10 @@ class CodexTentacle(AgentTentacle[str, None]):
                 )
                 slot.offset = end
             slot.stored_offset = len(slot.prefix)
-            offsets[SESSION_FILE] = slot.offset
+            offsets[conversation.id] = slot.offset
             await websocket.send_text(
                 StreamWelcome(
+                    conversation_id=conversation.id,
                     offsets=offsets,
                     transcript=StreamSnapshotCursor(
                         offset=len(slot.prefix),
@@ -587,6 +590,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             relay = asyncio.create_task(relay_finalize())
             # Each line must begin where the preceding line ended.
             expected_offsets = dict(offsets)
+            subagents: dict[UUID7, str] = {}
             while True:
                 message = await slot.receive()
                 if isinstance(message, StreamEof):
@@ -595,19 +599,37 @@ class CodexTentacle(AgentTentacle[str, None]):
                 if isinstance(message, StreamHello):
                     await websocket.close(code=1008, reason="hello already received")
                     return
-                key = message.agent_id or SESSION_FILE
-                want = expected_offsets.get(key, 0)
+                if isinstance(message, StreamOpenSubagent):
+                    tail = await self.session_tailer.remote_subagent(
+                        state, message.name, message.first_line or ""
+                    )
+                    child = tail.conversation if tail else None
+                    if child is not None:
+                        subagents[child.id] = message.name
+                        expected_offsets[child.id] = 0
+                    await websocket.send_text(
+                        StreamSubagentOpened(
+                            conversation_id=child.id if child else None, offset=0
+                        ).model_dump_json()
+                    )
+                    continue
+                key = message.conversation_id
+                if key not in expected_offsets or (
+                    message.visualizations and key != conversation.id
+                ):
+                    raise FileTransferError("Invalid transcript conversation")
+                want = expected_offsets[key]
                 if message.start != want:
                     await websocket.close(
                         code=4000,
-                        reason=f"offset gap for {key or 'session'}: expected {want}, "
+                        reason=f"offset gap for {key}: expected {want}, "
                         f"got {message.start}",
                     )
                     return
                 expected_offsets[key] = message.end
                 await self.session_tailer.feed_remote(
                     state,
-                    message.agent_id,
+                    None if key == conversation.id else subagents[key],
                     message.line,
                     message.start,
                     message.end,

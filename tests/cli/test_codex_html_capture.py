@@ -10,7 +10,10 @@ from octomate_cli.streaming.files import SessionTail
 from octomate_protocol.stream import StreamLine
 from octomate_protocol.visualizations import HtmlSnapshot
 from pydantic import ValidationError
+from uuid_utils.compat import uuid7
 from websockets.asyncio.client import ClientConnection
+
+ROOT = uuid7()
 
 
 @pytest.mark.parametrize("tail_type", [SessionTail, CodexSessionTail])
@@ -33,7 +36,7 @@ async def test_native_frames_keep_raw_lines_and_attach_unique_snapshots(
     )
     transcript = tmp_path / "rollout.jsonl"
     transcript.write_bytes(raw.encode() + b"\n")
-    tail = tail_type("native", transcript, cwd=str(tmp_path))
+    tail = tail_type("native", transcript, ROOT, {ROOT: 0}, cwd=str(tmp_path))
     socket = AsyncMock(spec=ClientConnection)
 
     assert await tail.pump(socket)
@@ -49,9 +52,9 @@ async def test_native_frames_keep_raw_lines_and_attach_unique_snapshots(
         assert snapshot.html == "<button>上海 ✓</button>"
 
 
-@pytest.mark.parametrize("key", ["", "rollout-child.jsonl"])
+@pytest.mark.parametrize("child", [False, True])
 async def test_capture_needs_the_root_rollout_and_a_workspace(
-    tmp_path: Path, key: str
+    tmp_path: Path, child: bool
 ) -> None:
     raw = json.dumps(
         {
@@ -64,10 +67,15 @@ async def test_capture_needs_the_root_rollout_and_a_workspace(
         }
     ).encode()
     tail = CodexSessionTail(
-        "native", tmp_path / "rollout.jsonl", cwd=str(tmp_path) if key else ""
+        "native",
+        tmp_path / "rollout.jsonl",
+        ROOT,
+        {ROOT: 0},
+        cwd=str(tmp_path) if child else "",
     )
-    frame = await tail.frame(key, 0, len(raw) + 1, raw)
-    assert frame.agent_id == (key or None)
+    id_ = uuid7() if child else ROOT
+    frame = await tail.frame(id_, 0, len(raw) + 1, raw)
+    assert frame.conversation_id == id_
     assert frame.line == raw.decode()
     assert frame.visualizations == []
 
@@ -93,8 +101,10 @@ async def test_prompts_and_tool_output_cannot_trigger_file_reads(
             },
         }
     )
-    tail = CodexSessionTail("native", tmp_path / "rollout.jsonl", cwd=str(tmp_path))
-    frame = await tail.frame("", 0, len(raw.encode()) + 1, raw.encode())
+    tail = CodexSessionTail(
+        "native", tmp_path / "rollout.jsonl", ROOT, {ROOT: 0}, cwd=str(tmp_path)
+    )
+    frame = await tail.frame(ROOT, 0, len(raw.encode()) + 1, raw.encode())
     assert frame.visualizations == []
 
 
@@ -124,9 +134,11 @@ async def test_native_capture_uses_the_same_bounded_file_checks(
             },
         }
     )
-    tail = CodexSessionTail("native", tmp_path / "rollout.jsonl", cwd=str(workspace))
+    tail = CodexSessionTail(
+        "native", tmp_path / "rollout.jsonl", ROOT, {ROOT: 0}, cwd=str(workspace)
+    )
     with pytest.raises((ValueError, OSError)):
-        await tail.frame("", 0, len(raw.encode()) + 1, raw.encode())
+        await tail.frame(ROOT, 0, len(raw.encode()) + 1, raw.encode())
 
 
 @pytest.mark.parametrize("html", [" \n", "界" * 333_334])
@@ -140,7 +152,7 @@ def test_snapshot_validation_checks_utf8_bytes_on_the_server(html: str) -> None:
         )
 
 
-@pytest.mark.parametrize("wrong", ["path", "title", "user", "subagent"])
+@pytest.mark.parametrize("wrong", ["path", "title", "user"])
 def test_stream_rejects_snapshots_not_advertised_by_the_root_assistant(
     wrong: str,
 ) -> None:
@@ -167,7 +179,7 @@ def test_stream_rejects_snapshots_not_advertised_by_the_root_assistant(
                 "start": 0,
                 "end": len(raw.encode()) + 1,
                 "line": raw,
-                "agent_id": "child" if wrong == "subagent" else None,
+                "conversation_id": ROOT,
                 "visualizations": [
                     {"reference": snapshot_reference, "html": "<p>Test</p>"}
                 ],

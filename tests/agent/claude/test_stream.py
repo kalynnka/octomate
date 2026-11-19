@@ -17,7 +17,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from octomate_cli.tentacles.claude import CLAUDE_HOOK_PATH, CLAUDE_STREAM_PATH
 from octomate_protocol.stream import (
-    SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
     StreamFinalize,
@@ -35,6 +34,7 @@ from starlette.websockets import WebSocketDisconnect
 from octomate import Octomate
 from octomate.config import ClaudeCodeConfig, OctomateConfig
 from octomate.database import async_session
+from octomate.events import SubagentSettledEvent
 from octomate.nerve import Impulse, ThreadTopic
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.thread import Thread, ThreadKey
@@ -47,6 +47,7 @@ from tests.agent.claude.test_tailer import (
     SESSION_ADDRESS,
     SESSION_ID,
     SUB_TURN_ONE,
+    SUB_TURN_TWO,
     TURN_ONE,
     TURN_TWO,
     agent_spawn_records,
@@ -109,7 +110,8 @@ async def test_remote_feed_assembles_the_same_runs_as_a_local_tail(
     state, offsets = await tailer.attach_remote(
         SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses=tail_impulses
     )
-    assert offsets == {SESSION_FILE: 0}
+    assert state.conversation is not None
+    assert offsets == {state.conversation.id: 0}
     assert SESSION_ID in tailer.sessions  # so hooks route the drains here
     await feed(tailer, state, frames(TURN_ONE + TURN_TWO))
     await tailer.finish_remote(state)
@@ -140,7 +142,8 @@ async def test_a_reconnect_is_told_to_resume_from_the_committed_runs(
     state, offsets = await tailer.attach_remote(
         SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses=tail_impulses
     )
-    assert offsets[SESSION_FILE] == p1.end_offset
+    assert state.conversation is not None
+    assert offsets[state.conversation.id] == p1.end_offset
     await feed(tailer, state, frames(TURN_TWO, start=p1.end_offset or 0))
     await tailer.finish_remote(state)
 
@@ -167,7 +170,10 @@ async def test_a_drop_without_eof_leaves_open_turns_for_the_next_connect(
     state, offsets = await tailer.attach_remote(
         SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses=tail_impulses
     )
-    assert offsets == {SESSION_FILE: 0}  # nothing committed: re-stream from the top
+    assert state.conversation is not None
+    assert offsets == {
+        state.conversation.id: 0
+    }  # nothing committed: re-stream from the top
     await feed(tailer, state, frames(TURN_ONE + TURN_TWO))
     await tailer.finish_remote(state)
     assert [run.id for run in await runs_of(octomate)] == ["p1", "p2"]
@@ -240,7 +246,8 @@ async def test_a_prompt_queued_into_the_drain_stays_open_for_the_next_connect(
     state, offsets = await tailer.attach_remote(
         SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses=tail_impulses
     )
-    assert offsets[SESSION_FILE] == p1.end_offset  # p2's line re-streams whole
+    assert state.conversation is not None
+    assert offsets[state.conversation.id] == p1.end_offset  # p2's line re-streams whole
     tailer.detach_remote(state)
 
 
@@ -267,7 +274,7 @@ async def test_subagent_lines_stream_into_child_runs(
     state, offsets = await tailer.attach_remote(
         SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses=tail_impulses
     )
-    assert offsets[AGENT_ID] == child.end_offset
+    assert offsets[child.conversation_id] == child.end_offset
     tailer.detach_remote(state)
 
 
@@ -332,6 +339,60 @@ def hello_json(session_id: str = SESSION_ID, protocol: int = STREAM_PROTOCOL) ->
     ).model_dump_json()
 
 
+async def test_native_subagent_hooks_reach_the_thread_before_the_parent_ends() -> None:
+    client, tentacle = stream_client()
+    key = ThreadKey("claude", "thread", SESSION_ID)
+    async with tentacle.octomate.nerve.subscribe(ThreadTopic(key)) as live:
+        with client:
+            for event in ("SubagentStart", "SubagentStop"):
+                posted = client.post(
+                    CLAUDE_HOOK_PATH,
+                    headers=AUTH,
+                    json={
+                        "hook_event_name": event,
+                        "agent_id": AGENT_ID,
+                        "agent_type": "Explore",
+                        "session_id": SESSION_ID,
+                        "prompt_id": "p1",
+                    },
+                )
+                assert posted.status_code == 200
+        assert [(item.event.event_kind, item.origin) for item in held(live)] == [
+            ("subagent_started", key),
+            ("subagent_settled", key),
+        ]
+
+
+async def test_a_native_subagent_left_open_settles_with_its_turn_or_session() -> None:
+    client, tentacle = stream_client()
+    key = ThreadKey("claude", "thread", SESSION_ID)
+    hooks: list[JsonObject] = [
+        {"hook_event_name": "SubagentStart", "agent_id": "interrupted"},
+        {"hook_event_name": "SubagentStart", "agent_id": "background"},
+        # Claude fired no SubagentStop: one was interrupted, one runs on.
+        {
+            "hook_event_name": "Stop",
+            "background_tasks": [{"id": "background", "type": "subagent"}],
+        },
+        {"hook_event_name": "SessionEnd"},
+    ]
+    async with tentacle.octomate.nerve.subscribe(ThreadTopic(key)) as live:
+        with client:
+            for hook in hooks:
+                posted = client.post(
+                    CLAUDE_HOOK_PATH,
+                    headers=AUTH,
+                    json={**hook, "session_id": SESSION_ID, "prompt_id": "p1"},
+                )
+                assert posted.status_code == 200
+        assert [
+            (event.invocation_id, event.status)
+            for event in (item.event for item in held(live))
+            if isinstance(event, SubagentSettledEvent)
+        ] == [("interrupted", "cancelled"), ("background", "cancelled")]
+    assert tentacle.native_subagents == {}
+
+
 def test_the_stream_authenticates_like_the_hook_routers() -> None:
     """Reachability is not a credential on the socket either: the router's
     `hook_guard` dependency runs at the handshake, so no bearer means the same 401
@@ -364,12 +425,15 @@ def test_lines_over_the_socket_commit_and_the_next_welcome_resumes() -> None:
             websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(welcome, StreamWelcome)
-            assert welcome.offsets == {SESSION_FILE: 0}
+            assert welcome.offsets == {welcome.conversation_id: 0}
             assert tentacle.native_sessions == {SESSION_ID: 1}
-            for agent_id, start, end, line in frames(TURN_ONE + TURN_TWO):
+            for _, start, end, line in frames(TURN_ONE + TURN_TWO):
                 websocket.send_text(
                     StreamLine(
-                        agent_id=agent_id, start=start, end=end, line=line
+                        conversation_id=welcome.conversation_id,
+                        start=start,
+                        end=end,
+                        line=line,
                     ).model_dump_json()
                 )
             websocket.send_text(StreamEof().model_dump_json())
@@ -392,7 +456,7 @@ def test_lines_over_the_socket_commit_and_the_next_welcome_resumes() -> None:
             websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(welcome, StreamWelcome)
-            assert welcome.offsets[SESSION_FILE] == total
+            assert welcome.offsets[welcome.conversation_id] == total
             assert tentacle.native_sessions == {SESSION_ID: 1}
 
         assert tentacle.native_sessions == {}
@@ -430,11 +494,14 @@ def test_a_stop_over_the_hook_pipe_drains_the_socket() -> None:
     with client:
         with client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
-            websocket.receive_text()  # welcome
-            for agent_id, start, end, line in frames(TURN_ONE):
+            welcome = StreamWelcome.model_validate_json(websocket.receive_text())
+            for _, start, end, line in frames(TURN_ONE):
                 websocket.send_text(
                     StreamLine(
-                        agent_id=agent_id, start=start, end=end, line=line
+                        conversation_id=welcome.conversation_id,
+                        start=start,
+                        end=end,
+                        line=line,
                     ).model_dump_json()
                 )
             posted = client.post(
@@ -457,7 +524,7 @@ def test_a_stop_over_the_hook_pipe_drains_the_socket() -> None:
             websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(welcome, StreamWelcome)
-            assert welcome.offsets[SESSION_FILE] == total
+            assert welcome.offsets[welcome.conversation_id] == total
 
 
 def test_a_stale_protocol_is_refused_loudly() -> None:
@@ -569,12 +636,12 @@ async def test_driven_sessions_are_accepted_by_both_ingest_endpoints() -> None:
 
 
 @pytest.mark.parametrize(
-    "next_message",
-    [StreamEof(), StreamLine(start=0, end=1, line="{}")],
+    "eof",
+    [True, False],
     ids=["eof", "line"],
 )
 async def test_an_attached_stream_keeps_its_native_ownership(
-    next_message: StreamEof | StreamLine, monkeypatch: pytest.MonkeyPatch
+    eof: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, tentacle = stream_client()
     fed = AsyncMock()
@@ -589,16 +656,23 @@ async def test_an_attached_stream_keeps_its_native_ownership(
             assert isinstance(welcome, StreamWelcome)
             assert tentacle.native_sessions == {SESSION_ID: 1}
             async with tentacle.driving(SESSION_ID):
-                websocket.send_text(next_message.model_dump_json())
-                if isinstance(next_message, StreamLine):
-                    websocket.send_text(StreamEof().model_dump_json())
+                if not eof:
+                    websocket.send_text(
+                        StreamLine(
+                            conversation_id=welcome.conversation_id,
+                            start=0,
+                            end=1,
+                            line="{}",
+                        ).model_dump_json()
+                    )
+                websocket.send_text(StreamEof().model_dump_json())
                 with pytest.raises(WebSocketDisconnect) as disconnect:
                     websocket.receive_text()
                 assert disconnect.value.code == 1000
         assert tentacle.session_tailer.sessions == {}
         assert tentacle.native_sessions == {}
 
-    if isinstance(next_message, StreamLine):
+    if not eof:
         fed.assert_awaited_once()
     else:
         fed.assert_not_awaited()
@@ -621,9 +695,11 @@ def test_stream_failure_closes_socket_and_releases_session(
     ):
         websocket.send_text(hello_json())
         if failure != "attach_remote":
-            websocket.receive_text()
+            welcome = StreamWelcome.model_validate_json(websocket.receive_text())
             message = (
-                StreamLine(start=0, end=1, line="{}")
+                StreamLine(
+                    conversation_id=welcome.conversation_id, start=0, end=1, line="{}"
+                )
                 if failure == "feed_remote"
                 else StreamEof()
             )
@@ -638,6 +714,26 @@ def test_stream_failure_closes_socket_and_releases_session(
     assert "storage failed" in caplog.text
 
 
+def test_a_stream_refuses_another_sessions_conversation_uuid() -> None:
+    client, _ = stream_client()
+    with client:
+        with client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as first:
+            first.send_text(hello_json())
+            other = StreamWelcome.model_validate_json(first.receive_text())
+        with client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as second:
+            second.send_text(hello_json(session_id="second-session"))
+            welcome = StreamWelcome.model_validate_json(second.receive_text())
+            assert welcome.conversation_id != other.conversation_id
+            second.send_text(
+                StreamLine(
+                    conversation_id=other.conversation_id, start=0, end=3, line="{}"
+                ).model_dump_json()
+            )
+            with pytest.raises(WebSocketDisconnect) as disconnect:
+                second.receive_text()
+            assert disconnect.value.code == 1008
+
+
 def test_an_offset_gap_closes_for_resync() -> None:
     """A gap means frames were lost; the close makes the client reconnect and re-ask
     where to resume, instead of the server assembling a mis-framed turn."""
@@ -647,8 +743,12 @@ def test_an_offset_gap_closes_for_resync() -> None:
         client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as websocket,
     ):
         websocket.send_text(hello_json())
-        websocket.receive_text()  # welcome
-        websocket.send_text(StreamLine(start=5, end=20, line="{}").model_dump_json())
+        welcome = StreamWelcome.model_validate_json(websocket.receive_text())
+        websocket.send_text(
+            StreamLine(
+                conversation_id=welcome.conversation_id, start=5, end=20, line="{}"
+            ).model_dump_json()
+        )
         with pytest.raises(WebSocketDisconnect) as disconnect:
             websocket.receive_text()
     assert disconnect.value.code == 4000
@@ -673,6 +773,36 @@ async def test_child_finishing_before_parent_metadata_keeps_its_hierarchy(
     tailer.detach_remote(state)
 
 
+async def test_native_spawn_link_survives_a_reconnect_before_the_child_finishes(
+    tail_impulses: ObjectSendStream[Impulse],
+) -> None:
+    octomate, tailer = remote_tailer()
+    state, _ = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, tail_impulses
+    )
+    await feed(tailer, state, frames([TURN_ONE[0], *agent_spawn_records("p1", 2)]))
+    await tailer.stop_turn(SESSION_ID, "p1")
+    await tailer.finish_remote(state)
+    [reserved] = await subagent_runs_of(octomate)
+    assert reserved.parent_tool_call_id == f"toolu-agent-{AGENT_ID}"
+    assert reserved.end_offset is None
+
+    state, offsets = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, tail_impulses
+    )
+    assert state.conversation is not None
+    assert offsets[reserved.conversation_id] == 0
+    # Claude can repeat the same launch result with a different promptId.
+    repeated = agent_spawn_records("later-prompt", 5)[1]
+    await feed(tailer, state, frames([repeated], start=offsets[state.conversation.id]))
+    await feed(tailer, state, frames(SUB_TURN_ONE, agent_id=AGENT_ID))
+    await tailer.finish_remote(state)
+    [child] = await subagent_runs_of(octomate)
+    assert child.id == reserved.id
+    assert child.parent_tool_call_id == reserved.parent_tool_call_id
+    assert child.end_offset == sum(len(line_bytes(record)) for record in SUB_TURN_ONE)
+
+
 async def test_resumed_child_uses_the_spawning_call_of_its_own_parent_turn(
     tail_impulses: ObjectSendStream[Impulse],
 ) -> None:
@@ -695,10 +825,23 @@ async def test_resumed_child_uses_the_spawning_call_of_its_own_parent_turn(
             offset = end
     await feed(tailer, state, frames(SUB_TURN_ONE, agent_id=AGENT_ID))
     await tailer.close_subagent_turn(state, state.subagents[AGENT_ID])
-    [child] = await subagent_runs_of(octomate)
-    assert child.parent_run_id == "p1"
-    assert child.parent_tool_call_id == "call-p1"
-    tailer.detach_remote(state)
+    runs = {run.parent_run_id: run for run in await subagent_runs_of(octomate)}
+    assert runs["p1"].parent_tool_call_id == "call-p1"
+    assert runs["p1"].end_offset is not None
+    assert runs["p2"].parent_tool_call_id == "call-p2"
+    assert runs["p2"].end_offset is None
+    await feed(
+        tailer,
+        state,
+        frames(SUB_TURN_TWO, agent_id=AGENT_ID, start=runs["p1"].end_offset),
+    )
+    await tailer.finish_remote(state)
+    first, second = await subagent_runs_of(octomate)
+    assert (first.parent_tool_call_id, second.parent_tool_call_id) == (
+        "call-p1",
+        "call-p2",
+    )
+    assert second.start_offset == first.end_offset
 
 
 async def test_transcript_ledger_uses_the_authenticated_stream_sender(
@@ -745,7 +888,8 @@ async def test_opening_transcript_prompt_grants_access_and_replays_once(
             key.address(sender.channel_user_id),
             tail_impulses,
         )
-        assert offsets == {SESSION_FILE: 0}
+        assert state.conversation is not None
+        assert offsets == {state.conversation.id: 0}
         await feed(tailer, state, frames(TURN_ONE[:1]))
         thread = await octomate.threads.get(key, user_id=user.id)
         assert thread is not None

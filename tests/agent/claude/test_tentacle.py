@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gc
 import json
 from collections.abc import AsyncIterator, Callable
@@ -42,6 +43,7 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config.agents import Claim, ClaudeCodeConfig
+from octomate.events import SubagentSettledEvent, SubagentStartedEvent
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision, TeleportDecision
@@ -53,6 +55,7 @@ from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.transcript import transcripts_dir
 from octomate.types.json import JsonObject
+from tests.agent.claude.test_native_fork import a_native_session
 from tests.support.invocations import invocation_for
 from tests.support.managers import (
     FakeConversation,
@@ -324,6 +327,179 @@ async def test_prompt_hook_identity_is_retained_on_the_driven_run(
     assert fake.agent_tentacle_id == "claude"
     assert run.native_session_id == "sess-xyz"
     assert run.native_turn_id == "native-prompt-id"
+
+
+async def test_driven_children_keep_their_own_messages_and_spawn_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    in_memory_engine: AsyncEngine,
+) -> None:
+    class WithChildren(FakeClaudeClient):
+        async def receive_response(self) -> AsyncIterator[Message]:
+            options = self.last_options
+            assert isinstance(options, ClaudeAgentOptions)
+            assert options.hooks is not None
+            ids = ("first", "second")
+            yield AssistantMessage(
+                model="parent-model",
+                content=[
+                    ToolUseBlock(id=key, name="Agent", input={"prompt": f"check {key}"})
+                    for key in ids
+                ],
+            )
+            for key in ids:
+                await options.hooks["SubagentStart"][0].hooks[0](
+                    {
+                        "hook_event_name": "SubagentStart",
+                        "cwd": "/repo",
+                        "transcript_path": "main",
+                        "session_id": "session",
+                        "agent_id": f"child-{key}",
+                        "agent_type": "Explore",
+                    },
+                    None,
+                    HookContext(signal=None),
+                )
+            for key in reversed(ids):
+                yield AssistantMessage(
+                    model="child-model",
+                    parent_tool_use_id=key,
+                    content=[TextBlock(text=f"private {key}")],
+                )
+                await options.hooks["SubagentStop"][0].hooks[0](
+                    {
+                        "hook_event_name": "SubagentStop",
+                        "cwd": "/repo",
+                        "transcript_path": "main",
+                        "session_id": "session",
+                        "agent_id": f"child-{key}",
+                        "agent_type": "Explore",
+                        "agent_transcript_path": f"{key}.jsonl",
+                        "stop_hook_active": False,
+                    },
+                    None,
+                    HookContext(signal=None),
+                )
+                yield UserMessage(
+                    content=[ToolResultBlock(tool_use_id=key, content="checked")],
+                    tool_use_result={"agentId": f"child-{key}"},
+                )
+            yield ResultMessage(
+                subtype="success",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=False,
+                num_turns=1,
+                session_id="session",
+                result="done",
+            )
+
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", WithChildren)
+    octomate, tentacle, _ = await a_native_session()
+    thread_id = await a_thread()
+    async with invocation_for(
+        tentacle, conversation_address=KEY, thread_id=thread_id
+    ) as invocation:
+        async with tentacle.run_stream_events(
+            "go", conversation_address=KEY, invocation=invocation
+        ) as stream:
+            events = [event async for event in stream]
+    assert [
+        event.invocation_id
+        for event in events
+        if isinstance(event, SubagentStartedEvent)
+    ] == ["child-first", "child-second"]
+    assert [
+        event.invocation_id
+        for event in events
+        if isinstance(event, SubagentSettledEvent)
+    ] == ["child-second", "child-first"]
+    parent = await octomate.conversations.get(invocation.conversation.id)
+    [parent_run] = parent.runs
+    assert "private" not in str(parent_run.messages)
+    children = await octomate.conversations.subagents(parent.id)
+    assert {child.subagent_id for child in children} == {"child-first", "child-second"}
+    for child in children:
+        [run] = child.runs
+        key = child.subagent_id.removeprefix("child-")
+        assert (run.parent_run_id, run.parent_tool_call_id, run.model_name) == (
+            parent_run.id,
+            key,
+            "child-model",
+        )
+        assert [message.message_text for message in run.messages] == [
+            f"check {key}",
+            f"private {key}",
+        ]
+
+
+@pytest.mark.parametrize(
+    ("crashed", "status"), [(False, "cancelled"), (True, "failed")]
+)
+async def test_a_driven_subagent_left_open_settles_with_its_run(
+    monkeypatch: pytest.MonkeyPatch,
+    in_memory_engine: AsyncEngine,
+    crashed: bool,
+    status: str,
+) -> None:
+    class LeftOpen(FakeClaudeClient):
+        async def receive_response(self) -> AsyncIterator[Message]:
+            options = self.last_options
+            assert isinstance(options, ClaudeAgentOptions)
+            assert options.hooks is not None
+            yield AssistantMessage(
+                model="parent-model",
+                content=[
+                    ToolUseBlock(id="call", name="Agent", input={"prompt": "check"})
+                ],
+            )
+            await options.hooks["SubagentStart"][0].hooks[0](
+                {
+                    "hook_event_name": "SubagentStart",
+                    "cwd": "/repo",
+                    "transcript_path": "main",
+                    "session_id": "session",
+                    "agent_id": "child",
+                    "agent_type": "Explore",
+                },
+                None,
+                HookContext(signal=None),
+            )
+            if crashed:
+                raise RuntimeError("the CLI died")
+            # An interrupt refuses the call in plain text and ends the turn with
+            # no SubagentStop.
+            yield UserMessage(
+                content=[ToolResultBlock(tool_use_id="call", content="refused")],
+                # The CLI sends text here; that mismatch is the input under test.
+                tool_use_result="User rejected tool use",  # pyright: ignore[reportArgumentType]
+            )
+            yield ResultMessage(
+                subtype="error_during_execution",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=True,
+                num_turns=1,
+                session_id="session",
+            )
+
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", LeftOpen)
+    _, tentacle, _ = await a_native_session()
+    thread_id = await a_thread()
+    events: list[object] = []
+    async with invocation_for(
+        tentacle, conversation_address=KEY, thread_id=thread_id
+    ) as invocation:
+        with pytest.raises(RuntimeError) if crashed else contextlib.nullcontext():
+            async with tentacle.run_stream_events(
+                "go", conversation_address=KEY, invocation=invocation
+            ) as stream:
+                async for event in stream:
+                    events.append(event)
+    assert [
+        (event.invocation_id, event.status)
+        for event in events
+        if isinstance(event, SubagentSettledEvent)
+    ] == [("child", status)]
 
 
 async def test_a_run_addressed_by_conversation_id_lands_there(
