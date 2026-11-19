@@ -22,6 +22,8 @@ from octomate_protocol.stream import (
     StreamFinalize,
     StreamHello,
     StreamLine,
+    StreamOpenSubagent,
+    StreamSubagentOpened,
     StreamWelcome,
     server_message_adapter,
 )
@@ -460,6 +462,68 @@ def test_lines_over_the_socket_commit_and_the_next_welcome_resumes() -> None:
             assert tentacle.native_sessions == {SESSION_ID: 1}
 
         assert tentacle.native_sessions == {}
+
+
+def test_an_interrupted_child_is_linked_by_the_call_its_meta_file_names() -> None:
+    """An interrupted Agent call's result names no child, so nothing in the
+    parent's transcript ties the two. The client reports the call from the child's
+    meta file when it opens the child, and the link holds across a reconnect that
+    opens nothing again."""
+    client, tentacle = stream_client()
+    call = agent_spawn_records("p1", 2)[0]
+    refused: JsonObject = {**agent_spawn_records("p1", 2)[1]}
+    refused["toolUseResult"] = "User rejected tool use"
+    parent = [TURN_ONE[0], call, refused]
+
+    with client:
+        with client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            welcome = StreamWelcome.model_validate_json(websocket.receive_text())
+            websocket.send_text(
+                StreamOpenSubagent(
+                    name=AGENT_ID, tool_call_id=f"toolu-agent-{AGENT_ID}"
+                ).model_dump_json()
+            )
+            child = StreamSubagentOpened.model_validate_json(websocket.receive_text())
+            assert child.conversation_id is not None
+            _, start, end, line = frames(SUB_TURN_ONE)[0]
+            websocket.send_text(
+                StreamLine(
+                    conversation_id=child.conversation_id,
+                    start=start,
+                    end=end,
+                    line=line,
+                ).model_dump_json()
+            )
+            # Read the next reply, so the line above is processed before the drop.
+            websocket.send_text(StreamOpenSubagent(name=AGENT_ID).model_dump_json())
+            websocket.receive_text()
+        with client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            websocket.receive_text()
+            for agent_id, start, end, line in [
+                *frames(parent),
+                *frames(SUB_TURN_ONE, agent_id=AGENT_ID),
+            ]:
+                websocket.send_text(
+                    StreamLine(
+                        conversation_id=child.conversation_id
+                        if agent_id
+                        else welcome.conversation_id,
+                        start=start,
+                        end=end,
+                        line=line,
+                    ).model_dump_json()
+                )
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+
+        assert client.portal is not None
+        [run] = client.portal.call(subagent_runs_of, tentacle.octomate)
+    assert run.parent_run_id == "p1"
+    assert run.parent_tool_call_id == f"toolu-agent-{AGENT_ID}"
+    assert run.end_offset == sum(len(line_bytes(record)) for record in SUB_TURN_ONE)
 
 
 @pytest.mark.parametrize("clean", [False, True], ids=["disconnect", "eof"])

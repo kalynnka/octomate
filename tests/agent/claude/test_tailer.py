@@ -23,9 +23,10 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.database import async_session
-from octomate.events import RunEndedEvent
+from octomate.events import AgentMessageEvent, RunEndedEvent, SubagentSettledEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.nerve import Impulse, Nerve, ThreadTopic
+from octomate.schemas.annotations import MessageAgent
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
@@ -412,6 +413,87 @@ async def test_streams_live_events_to_a_consumer() -> None:
         assert not octomate.awakes
         await stream_in(tailer, octomate.nerve, TURN_ONE)
         assert held(live) == []
+
+
+async def test_an_interrupted_turn_ends_cancelled_and_the_system_says_so() -> None:
+    """Claude writes an interruption as a user line and fires no `Stop`. The line
+    ends the turn where it stands, cancelled, and its ledger row is the system's:
+    nobody typed it."""
+    interrupted = tool_result_record("p1", "interrupt", 4)
+    interrupted["message"] = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "[Request interrupted by user for tool use]"}
+        ],
+    }
+    records = [*TURN_ONE[:3], interrupted]
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(
+        octomate.conversations, octomate.threads, agent_tentacle_id="claude"
+    )
+
+    async with octomate.nerve.subscribe(ThreadTopic(SESSION_KEY)) as live:
+        async with octomate.nerve.publish(SESSION_ADDRESS) as impulses:
+            state, _ = await tailer.attach_remote(
+                SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
+            )
+            await feed_records(tailer, state, records)
+            tailer.detach_remote(state)
+        events = [impulse.event for impulse in held(live)]
+
+    # Committed by the line itself: no next prompt, no drain.
+    [run] = await runs_of(octomate)
+    assert run.end_offset == total_bytes(records)
+    ended = events[-1]
+    assert isinstance(ended, RunEndedEvent)
+    assert ended.outcome == "cancelled"
+    # Only the person's prompt is announced as theirs.
+    assert [event.event_kind for event in events].count("enqueued_messages") == 1
+    thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
+    assert [
+        (message.actor_kind, message.message_text)
+        for message in thread.messages
+        if message.direction == "inbound"
+    ] == [
+        ("human", "list the files"),
+        ("system", "[Request interrupted by user for tool use]"),
+    ]
+
+
+async def test_another_agents_message_opens_a_turn_as_that_agents() -> None:
+    """A subagent's hand-back reaches the session as a prompt line nobody typed:
+    it is published as that agent's message and kept as an agent's row."""
+    handback = prompt_record("p2", "Another Claude session sent a message: …", 6)
+    handback["promptSource"] = "system"
+    handback["origin"] = {
+        "kind": "peer",
+        "from": AGENT_ID,
+        "name": "general-purpose",
+        "body": "[Subagent hand-back] The report follows:\n  two findings",
+        "handbackReportText": "two findings",
+    }
+    answer = assistant_record("a3", 7, [{"type": "text", "text": "Noted."}])
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(
+        octomate.conversations, octomate.threads, agent_tentacle_id="claude"
+    )
+
+    async with octomate.nerve.subscribe(ThreadTopic(SESSION_KEY)) as live:
+        await stream_in(tailer, octomate.nerve, [*TURN_ONE, handback, answer])
+        events = [impulse.event for impulse in held(live)]
+
+    [said] = [event for event in events if isinstance(event, AgentMessageEvent)]
+    assert said.agent == MessageAgent(id=AGENT_ID, name="general-purpose")
+    assert said.text == "two findings"
+    # Only the person's prompt is announced as theirs.
+    assert [event.event_kind for event in events].count("enqueued_messages") == 1
+    thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
+    rows = [message for message in thread.messages if message.direction == "inbound"]
+    assert [
+        (message.actor_kind, message.agent_tentacle_id, message.message_text)
+        for message in rows
+    ] == [("human", None, "list the files"), ("agent", "claude", "two findings")]
+    assert said.message_id == rows[1].id
 
 
 async def test_no_consumer_still_records_every_run() -> None:
@@ -1108,6 +1190,50 @@ async def test_subagent_stop_commits_the_child_run_without_waiting(
     # The parent session is still attached and its own turn has not been committed.
     assert tailer.sessions[SESSION_ID] is state
     assert [run.id for run in await runs_of(octomate)] == []
+    tailer.detach_remote(state)
+
+
+async def test_subagent_stop_names_the_answer_a_child_handed_back(
+    tail_impulses: ObjectSendStream[Impulse],
+) -> None:
+    """A child can hand its answer back through a tool call instead of ending on
+    text. Claude's stop event then names no answer, so the one the child's
+    transcript carries is what the settle reports."""
+    handed_back = [
+        SUB_TURN_ONE[0],
+        sub_assistant_record(
+            "s-h1",
+            2,
+            [
+                {
+                    "type": "tool_use",
+                    "id": "toolu-h1",
+                    "name": "SubagentHandback",
+                    "input": {"message": "two findings"},
+                }
+            ],
+        ),
+        sub_user_record(
+            "p1",
+            "s-h2",
+            3,
+            [{"type": "tool_result", "tool_use_id": "toolu-h1", "content": "sent"}],
+        ),
+    ]
+    octomate = Octomate()
+    ingest, tailer = wired(octomate)
+    state, _ = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses=tail_impulses
+    )
+    await feed_records(tailer, state, [TURN_ONE[0], *agent_spawn_records("p1", 2)])
+    await feed_records(tailer, state, handed_back, agent_id=AGENT_ID)
+
+    stop = subagent_hook("SubagentStop")
+    await ingest.handle(stop)
+
+    settled = stop.subagent_activity
+    assert isinstance(settled, SubagentSettledEvent)
+    assert settled.response == "two findings"
     tailer.detach_remote(state)
 
 

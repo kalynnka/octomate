@@ -129,6 +129,11 @@ class StreamOpenSubagent(BaseModel):
     first_line: str | None = Field(
         default=None, description="Codex rollout metadata for parent verification."
     )
+    tool_call_id: str | None = Field(
+        default=None,
+        description="The parent's call a Claude child answers, from the meta file "
+        "beside its transcript. An interrupted call's result names no child.",
+    )
 
 
 class StreamSubagentOpened(BaseModel):

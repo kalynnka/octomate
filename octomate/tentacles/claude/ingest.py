@@ -155,11 +155,14 @@ class ClaudeHookIngest:
         # fires — and a Claude child's own file never closes its last turn — so wait
         # for the streamed answer and commit the open turn now. A session no stream
         # covers has nothing to settle.
-        await self.tailer.finish_subagent(
+        answer = await self.tailer.finish_subagent(
             event.session_id,
             event.agent_id,
             final_answer=event.last_assistant_message,
         )
+        # Claude names no answer for a child that handed it back through a tool call.
+        if not event.last_assistant_message:
+            event.last_assistant_message = answer
         logger.info("session %s: subagent %s stopped", event.session_id, event.agent_id)
 
     async def ensure_subagent_run(self, event: ClaudeHookInput) -> None:

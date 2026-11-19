@@ -22,11 +22,23 @@ class MessageContext(BaseModel):
     rollout_ids: list[str] = Field(default_factory=list)
 
 
+class MessageAgent(BaseModel):
+    """The agent session that wrote a prompt in the person's place."""
+
+    id: str = Field(
+        description="The session as its harness names it; a subagent's invocation id."
+    )
+    name: str = Field(description="What the harness calls it; a subagent's type.")
+
+
 class MessageAnnotations(BaseModel):
     raw: str = Field(
         description="Original harness text before separating injected context or citations."
     )
     source: Literal["codex", "claude"]
+    agent: MessageAgent | None = Field(
+        default=None, description="Who wrote the prompt when no person did."
+    )
     contexts: list[MessageContext] = Field(default_factory=list)
     references: list[FileReference] = Field(default_factory=list)
 

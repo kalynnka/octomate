@@ -259,6 +259,8 @@ async def test_file_pump_interleaves_parent_backlog_and_children(
     children = tmp_path / "session" / "subagents"
     children.mkdir(parents=True)
     (children / "agent-b.jsonl").write_text("b1\nb2\n")
+    # Claude names the spawning call beside the child; an older one wrote no such file.
+    (children / "agent-b.meta.json").write_text('{"toolUseId": "toolu_b"}')
     (children / "agent-c.jsonl").write_text("c1\n")
     socket = AsyncMock(spec=ClientConnection)
     tail = SessionTail("session", transcript, ROOT, {ROOT: 0})
@@ -270,10 +272,11 @@ async def test_file_pump_interleaves_parent_backlog_and_children(
         client_message_adapter.validate_json(call.args[0])
         for call in socket.send.await_args_list
     ]
-    assert [line.name for line in lines if isinstance(line, StreamOpenSubagent)] == [
-        "b",
-        "c",
-    ]
+    assert [
+        (line.name, line.tool_call_id)
+        for line in lines
+        if isinstance(line, StreamOpenSubagent)
+    ] == [("b", "toolu_b"), ("c", None)]
     assert [
         (line.conversation_id, line.line)
         for line in lines

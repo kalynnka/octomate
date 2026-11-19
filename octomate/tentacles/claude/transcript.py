@@ -116,6 +116,23 @@ class TranscriptUserMessage(TranscriptSchema):
     content: str | list[JsonObject]
 
 
+class TranscriptOrigin(TranscriptSchema):
+    """Who wrote a user line when the person did not. Nothing is required, so an
+    origin this build does not model never costs the line."""
+
+    kind: str | None = Field(
+        default=None, description='"peer" when another agent session wrote the line.'
+    )
+    sender: str | None = Field(default=None, alias="from")
+    name: str | None = None
+    body: str | None = None
+    handback_report_text: str | None = Field(
+        default=None,
+        alias="handbackReportText",
+        description="A subagent's report, apart from the framing Claude wraps it in.",
+    )
+
+
 class TranscriptUserLine(TranscriptSessionLine):
     """A user line: the prompt opening a turn, or a tool-result line within one."""
 
@@ -125,7 +142,7 @@ class TranscriptUserLine(TranscriptSessionLine):
     prompt_source: str | None = Field(default=None, alias="promptSource")
     permission_mode: str | None = Field(default=None, alias="permissionMode")
     is_compact_summary: bool = Field(default=False, alias="isCompactSummary")
-    origin: JsonObject | None = None
+    origin: TranscriptOrigin | None = None
     source_tool_assistant_uuid: str | None = Field(
         default=None, alias="sourceToolAssistantUUID"
     )

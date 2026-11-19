@@ -6,12 +6,36 @@ import re
 
 from pydantic_ai.messages import TextContent
 
-from octomate.schemas.annotations import MessageAnnotations, MessageContext
+from octomate.schemas.annotations import (
+    MessageAgent,
+    MessageAnnotations,
+    MessageContext,
+)
+from octomate.tentacles.claude.transcript import TranscriptOrigin
 
 
-def prompt_content(text: str) -> str | TextContent:
+def prompt_content(
+    text: str, origin: TranscriptOrigin | None = None
+) -> str | TextContent:
+    if origin is not None and origin.kind == "peer" and origin.sender and origin.body:
+        # Another agent session wrote this prompt: keep what it said, name who.
+        return TextContent(
+            origin.handback_report_text or origin.body,
+            metadata={
+                "annotations": MessageAnnotations(
+                    raw=text,
+                    source="claude",
+                    agent=MessageAgent(id=origin.sender, name=origin.name or "Claude"),
+                ).model_dump(mode="json")
+            },
+        )
     if not text.startswith(
-        ("<ide_opened_file>", "<ide_selection>", "<browser_instruction>")
+        (
+            "<ide_opened_file>",
+            "<ide_selection>",
+            "<browser_instruction>",
+            "<task-notification>",
+        )
     ):
         return text
     result = MessageAnnotations(raw=text, source="claude")
@@ -20,9 +44,11 @@ def prompt_content(text: str) -> str | TextContent:
         "ide_opened_file": "Opened file",
         "ide_selection": "Selection",
         "browser_instruction": "Browser instructions",
+        "task-notification": "Task notification",
     }
     while match := re.match(
-        r"<(ide_opened_file|ide_selection|browser_instruction)>([\s\S]*?)</\1>(?:\r?\n)?",
+        r"<(ide_opened_file|ide_selection|browser_instruction|task-notification)>"
+        r"([\s\S]*?)</\1>(?:\r?\n)?",
         body,
     ):
         tag, content = match.groups()
@@ -37,6 +63,8 @@ def prompt_content(text: str) -> str | TextContent:
         if tag == "browser_instruction" and not content.startswith(
             ("# Claude in Chrome browser automation", "[Browser disconnected:")
         ):
+            break
+        if tag == "task-notification" and not content.startswith("\n<task-id>"):
             break
         result.contexts.append(MessageContext(title=titles[tag], text=content))
         body = body[match.end() :]

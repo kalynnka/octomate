@@ -550,6 +550,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                     return
                 if isinstance(message, StreamOpenSubagent):
                     tail = self.session_tailer.subagent_tail(state, message.name)
+                    tail.call_id = message.tool_call_id
                     child = (
                         tail.conversation
                         or await self.session_tailer.prepare_subagent(state, tail)

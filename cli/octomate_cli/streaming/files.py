@@ -54,7 +54,7 @@ from octomate_protocol.stream import (
     StreamWelcome,
     server_message_adapter,
 )
-from pydantic import UUID7
+from pydantic import UUID7, BaseModel, Field, ValidationError
 from uuid_utils.compat import uuid7
 from watchfiles import awatch
 from websockets.asyncio.client import ClientConnection, connect
@@ -98,6 +98,12 @@ except PackageNotFoundError:
     CLIENT_VERSION = "unknown"
 
 
+class SubagentMeta(BaseModel):
+    """What Claude records beside a child's transcript, as far as the tail reads it."""
+
+    tool_use_id: str | None = Field(default=None, alias="toolUseId")
+
+
 @dataclass
 class FileCursor:
     """One file's read state. Complete lines only leave through `read_lines`; a
@@ -119,6 +125,18 @@ class FileCursor:
             if line.endswith(b"\n")
             else None
         )
+
+    @staticmethod
+    def spawning_call(path: Path) -> str | None:
+        """The parent's call a Claude child answers. Claude writes it to a meta file
+        before the child's transcript; older versions and other harnesses do not."""
+        try:
+            meta = SubagentMeta.model_validate_json(
+                path.with_suffix(".meta.json").read_bytes()
+            )
+        except (OSError, ValidationError):
+            return None
+        return meta.tool_use_id
 
     def read_lines(self) -> list[tuple[int, int, bytes]]:
         """New complete lines as (start, end, raw) — offsets in this file's own byte
@@ -216,7 +234,13 @@ class SessionTail:
                 if first_line is None:
                     return
             await websocket.send(
-                StreamOpenSubagent(name=name, first_line=first_line).model_dump_json()
+                StreamOpenSubagent(
+                    name=name,
+                    first_line=first_line,
+                    tool_call_id=await asyncio.to_thread(
+                        FileCursor.spawning_call, path
+                    ),
+                ).model_dump_json()
             )
             async with asyncio.timeout(STREAM_ACK_TIMEOUT):
                 opened = await self.receipts.get()

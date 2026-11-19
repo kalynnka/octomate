@@ -557,6 +557,10 @@ class ClaudeRunAccumulator:
                 )
                 parts.append(call)
                 self.tool_names[block.id] = block.name
+                # A subagent can hand its answer back through this call, not as text.
+                report = block.input.get("message")
+                if block.name == "SubagentHandback" and isinstance(report, str):
+                    self.result_text = report
                 yield FunctionToolCallEvent(part=call)
             elif isinstance(block, ServerToolUseBlock):
                 # Server-side tools (advisor, web_search, …) are run by the API, so

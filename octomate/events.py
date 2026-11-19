@@ -21,6 +21,8 @@ One stream, with these event families:
   handoffs, ledger entries and command outcomes published by the thread manager.
 - **Subagent lifecycle** (`SubagentStartedEvent`/`SubagentSettledEvent`) — an
   accomplice's run opening and finishing around its `commission` or `whisper` call.
+- **Agent messages** (`AgentMessageEvent`) — another agent session's words
+  reaching a native run as its prompt, published by the tailer.
 - **Habitat lifecycle** (`HabitatEvent`) — the phases a user's habitat passes
   through, published by the habitat manager.
 
@@ -63,6 +65,7 @@ from pydantic_ai.result import FinalResult
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.usage import RunUsage
 
+from octomate.schemas.annotations import MessageAgent
 from octomate.schemas.auth import LinkProfileAuthorization
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import CommandOutcome
@@ -103,6 +106,19 @@ class SubagentSettledEvent(BaseModel):
     status: SubagentActivityStatus
     detail: str | None = None
     response: str = ""
+
+
+class AgentMessageEvent(BaseModel):
+    """Another agent session's words reached a native run as its prompt: a
+    subagent handing its report back, or a peer writing in. No person said them."""
+
+    event_kind: Literal["agent_message"] = "agent_message"
+    message_id: UUID7 = Field(
+        description="The ledger row the message is on, for a reader to reconcile "
+        "the live message with."
+    )
+    agent: MessageAgent
+    text: str
 
 
 class ReflexAwakeEvent(BaseModel):
@@ -612,6 +628,7 @@ type WireEvent = (
     | ActionBatchUpdatedEvent
     | SubagentStartedEvent
     | SubagentSettledEvent
+    | AgentMessageEvent
     | RunResultEvent
     | ReflexAwakeEvent
     | ReflexAsleepEvent
