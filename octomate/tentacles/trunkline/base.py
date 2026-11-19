@@ -193,8 +193,9 @@ class TrunklineSiphon(Siphon):
         the console sends once the socket is open misses nothing. A console
         `CONSOLE_BACKLOG` events behind is closed with 1013 to read its state
         again; one that is gone ends the same way, once its close is read."""
-        nerve = self.channel.octomate.nerve
-        async with nerve.subscribe(topic, backlog=CONSOLE_BACKLOG) as impulses:
+        async with self.channel.nerve.subscribe(
+            topic, backlog=CONSOLE_BACKLOG
+        ) as impulses:
             await websocket.accept()
 
             async def send() -> None:

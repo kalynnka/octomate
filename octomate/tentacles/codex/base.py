@@ -468,7 +468,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         try:
             async with (
                 self.driving(hello.session_id, native=True),
-                self.octomate.nerve.publish(address) as impulses,
+                self.nerve.publish(address) as impulses,
             ):
                 await self.stream_attached(websocket, hello, sender, address, impulses)
         except WebSocketDisconnect:

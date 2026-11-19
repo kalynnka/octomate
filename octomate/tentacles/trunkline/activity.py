@@ -28,6 +28,7 @@ from octomate.tentacles.feelers.status import StatusNarrator
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
+    from octomate.nerve import Nerve
 
 
 class ActivityWatch(BaseModel):
@@ -82,6 +83,7 @@ class ActivityUpdate(BaseModel):
 async def watch_activity(
     websocket: WebSocket,
     octomate: Octomate,
+    nerve: Nerve,
     threads: ThreadManager,
     user_id: UUID7,
     channel_id: str,
@@ -99,7 +101,7 @@ async def watch_activity(
     async def send_activity(
         identity: str, key: ThreadKey, ready: asyncio.Event
     ) -> None:
-        async with octomate.nerve.subscribe(ThreadTopic(key), backlog=4096) as impulses:
+        async with nerve.subscribe(ThreadTopic(key), backlog=4096) as impulses:
             task = octomate.awakes.get(key)
             agent = octomate.agents.get(key.channel_tentacle_id)
             running = (task is not None and not task.done()) or (

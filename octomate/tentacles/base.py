@@ -14,6 +14,7 @@ from rich.text import Text
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
+    from octomate.nerve import Nerve
 
 
 @dataclass
@@ -37,6 +38,11 @@ class Tentacle[TentaclePrimaryT, TentacleSecondaryT]:
     # A tentacle fronting something with a color of its own claims it here, and the
     # host dispatches that instead of generating a hue from the connection order.
     brand_color: ClassVar[Style | None] = None
+
+    @property
+    def nerve(self) -> Nerve:
+        """The outbound nerve of the host this tentacle belongs to."""
+        return self.octomate.nerve
 
     @property
     def log_names(self) -> tuple[str, ...]:
