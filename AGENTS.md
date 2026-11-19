@@ -39,6 +39,7 @@
 6. When undoing a commit for review, preserve its changes in the working tree unless the user explicitly asks to discard them.
 7. A branch is named `<kind>/<slug>`, taking `kind` from the same set the commit subjects use — `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `perf`. Never put a person in a branch name: git already records the author, and the name should say what the work is. Include the issue identifier when there is one, so Linear links the branch to it — `feat/octo-29-project-registry`. A tool that suggests a branch name, Linear included, does not override this.
 8. Pull request titles must follow Conventional Commits: `<kind>: <description>` or `<kind>(<scope>): <description>`, using the same kinds as branch names. Add `!` immediately before `:` for a breaking change. Describe the final change and start the description with a lowercase letter. Check `.github/workflows/pr-title.yml` before creating or editing a PR title, and verify the PR title check passes before reporting completion.
+9. To save time, run only the tests a change can affect: those of the modules it touches and of the callers that depend on them. Do not run the full suite after each change, even a small one; `.github/workflows/checks.yml` runs it on every pull request. Run the full suite once, before opening a pull request. In each report, say which tests ran and that the full suite did not.
 
 ## Typing
 
