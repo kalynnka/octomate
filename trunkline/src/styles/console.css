@@ -774,6 +774,9 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
 .trk-thread-nest-toggle { position: absolute; right: 8px; bottom: 5px; display: inline-flex; align-items: center; gap: 3px; height: 14px; padding: 0 4px; color: var(--fg-3); font: 400 8px/1 var(--font-mono); }
 .trk-thread-nest-toggle:hover { color: var(--fg-1); }
 .trk-thread-nest { position: relative; padding-bottom: 5px; }
+.trk-thread-placeholder { padding-left: 46px; cursor: default; }
+.trk-thread-placeholder > span { display: block; width: 55%; height: 1lh; font-size: 12px; }
+.trk-thread-placeholder > span + span { width: 30%; margin-top: 3px; font: 700 8.5px/normal var(--font-mono); }
 .trk-thread-branch { position: relative; }
 .trk-thread-connector { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--line-divider); pointer-events: none; }
 .trk-thread-connector[data-last] { bottom: 50%; }

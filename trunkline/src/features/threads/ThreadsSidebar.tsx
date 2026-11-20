@@ -25,6 +25,7 @@ const NESTED_PAGE = 6
 interface ThreadRow {
   /** the row's own id — unique, and what React keys on */
   id: string
+  nestedCount?: number
   threadKey?: string
   /** the short chip shown under the title */
   tag: string
@@ -57,12 +58,12 @@ function ThreadCard({ row, brand, enabled, depth }: { row: ThreadRow; brand: str
 }
 
 /**
- * A thread's row and the sessions nested under it: the other agents in the
- * thread and the subagents they spawned. The nest is open while its thread is
+ * A thread's row and the subagents its sessions spawned. The nest is open while its thread is
  * open or running, and the count on the row's tag line folds it either way.
  */
-function ThreadNest({ threadId, enabled, on, running, pick, children, brand, selectedId }: {
+function ThreadNest({ threadId, nestedCount, enabled, on, running, pick, children, brand, selectedId }: {
   threadId: string
+  nestedCount: number
   enabled: boolean
   on: boolean
   running: boolean
@@ -74,20 +75,21 @@ function ThreadNest({ threadId, enabled, on, running, pick, children, brand, sel
   const [chosen, setChosen] = useState<boolean>()
   const [all, setAll] = useState(false)
   const open = chosen ?? (on || running)
-  const { data: sessions } = useNestedSessions(threadId, enabled, running, open)
-  const earlier = all ? 0 : Math.max(0, sessions.length - NESTED_PAGE)
+  const { data: sessions, hasData, loading } = useNestedSessions(threadId, enabled && open, running, open)
+  const count = hasData ? sessions.length : nestedCount
+  const earlier = all ? 0 : Math.max(0, count - NESTED_PAGE)
   return (
     <>
-      <div className="trk-thread-row" data-nested={sessions.length ? '' : undefined}>
+      <div className="trk-thread-row" data-nested={count ? '' : undefined}>
         {children}
-        {sessions.length > 0 && (
+        {count > 0 && (
           <button type="button" className="trk-nav-button trk-thread-nest-toggle" aria-expanded={open}
             aria-controls={`trk-nest-${threadId}`}
-            aria-label={`${sessions.length} nested ${sessions.length === 1 ? 'session' : 'sessions'}`}
+            aria-label={`${count} nested ${count === 1 ? 'session' : 'sessions'}`}
             title={open ? 'Fold nested sessions' : 'Show nested sessions'}
             onClick={() => setChosen(!open)}
           >
-            <TextSwap>{sessions.length}</TextSwap>
+            <TextSwap>{count}</TextSwap>
             <svg className="lt-disclose" data-open={open ? '' : undefined} aria-hidden="true"
               width="8" height="8" viewBox="0 0 10 10" fill="currentColor">
               <path d="m3 2 4 3-4 3Z" />
@@ -95,16 +97,21 @@ function ThreadNest({ threadId, enabled, on, running, pick, children, brand, sel
           </button>
         )}
       </div>
-      {sessions.length > 0 && (
+      {count > 0 && (
         <div id={`trk-nest-${threadId}`} aria-hidden={!open || undefined} inert={!open}>
           <Fold open={open}>
-            <div className="trk-thread-nest">
+            <div className="trk-thread-nest" aria-busy={loading || undefined}>
               {earlier > 0 && (
                 <button type="button" className="hov-wash trk-nav-button trk-thread-nested" onClick={() => setAll(true)}
                   style={{ ...label(7.5, '.14em'), color: 'var(--fg-3)' }}>
                   {`↑ ${earlier} earlier`}
                 </button>
               )}
+              {loading && Array.from({ length: count - earlier }, (_, index) => (
+                <div key={index} className="trk-thread-pick trk-thread-placeholder" aria-hidden="true">
+                  <span className="lt-skeleton" /><span className="lt-skeleton" />
+                </div>
+              ))}
               {sessions.slice(earlier).map((session, index) => (
                 <div key={session.id} className="trk-thread-branch">
                   <ThreadCard brand={brand} enabled={false} depth={session.depth}
@@ -423,6 +430,7 @@ export function ThreadsSidebar() {
                 threadKey: c.id === 'trunkline' ? t.key : undefined,
                 tag: t.tag ?? t.id,
                 title: t.title,
+                nestedCount: t.nestedCount,
                 agent: t.agentLabel,
                 on: selected(t),
                 running: isRunning(t),
@@ -582,7 +590,7 @@ export function ThreadsSidebar() {
                     {rows.slice(0, visibleCount).map((t) => (
                       <div key={t.id} className={t.id === 'THR-NEW' ? 'trk-thread-enter' : undefined}>
                       <div style={{ overflow: 'hidden' }}>
-                      <ThreadNest threadId={t.id} enabled={!folded && t.pick !== undefined} on={t.on} running={t.running}
+                      <ThreadNest threadId={t.id} nestedCount={t.nestedCount ?? 0} enabled={!folded && t.pick !== undefined} on={t.on} running={t.running}
                         brand={c.brand} selectedId={selConversationId}
                         pick={(session) => selectThread(c.id, t.id, 'down', session.id)}>
                         <ThreadCard row={{ ...t, on: t.on && !selConversationId }} brand={c.brand} enabled={!folded} />

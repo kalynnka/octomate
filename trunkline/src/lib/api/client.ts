@@ -7,6 +7,7 @@
  * Every request goes through `apiFetch`: the reads are private to the signed-in
  * account, and the writes must carry the same-origin header (see lib/api/auth).
  */
+import { queryClient } from '../queryClient'
 import { apiFetch, fetchMe, refuse } from './auth'
 import type {
   ApiAgentInfo,
@@ -202,8 +203,15 @@ export const fetchThreadUsage = (id: string, conversationId?: string) => threadR
 )
 
 /** The thread's conversations, each carrying its runs. */
-export const fetchThreadConversations = (id: string) =>
-  threadRead<ApiConversation[]>(id, '/conversations')
+export const threadConversations = (id: string) => ({
+  queryKey: ['thread-conversations', id],
+  queryFn: async () => await threadRead<ApiConversation[]>(id, '/conversations') ?? [],
+  staleTime: 60_000,
+})
+
+export function invalidateThreadConversations(id: string, refetchType: 'none' | 'active' = 'none') {
+  return queryClient.invalidateQueries({ queryKey: threadConversations(id).queryKey, refetchType })
+}
 
 /** Null both when the thread is unknown and when no project claims it — the
  *  console renders the same "unattributed" strip either way. */

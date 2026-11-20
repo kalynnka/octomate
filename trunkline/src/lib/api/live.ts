@@ -139,6 +139,7 @@ export function liveThreadSummary(t: ApiThread): ThreadSummary {
     channelId: t.channel_tentacle_id,
     key: t.channel_thread_id ?? '',
     title: threadLabel(t),
+    nestedCount: t.nested_session_count ?? 0,
     tone: t.kind === 'native_thread' ? 'native' : t.status === 'active' ? 'active' : 'idle',
     // Nothing routed a native session — the runtime it ran in is its agent, and
     // "unrouted" would read as a routing decision that never happened.
@@ -197,11 +198,7 @@ export function resolveSpawnNames(messages: ApiModelMessage[], pending: UnnamedS
   return pending
 }
 
-/**
- * What nests under a thread's row: every agent session after the thread's first,
- * and the subagents each session spawned, a parent always above its children.
- * The first session is the thread's own row, so its subagents hang off the thread.
- */
+/** Each top-level session contributes its spawned subagents to the thread's tree. */
 export function nestedSessions(conversations: ApiConversation[], names?: Record<string, string>): NestedSession[] {
   const ordered = [...conversations].sort((a, b) => a.id.localeCompare(b.id))
   const rows: NestedSession[] = []
@@ -210,7 +207,6 @@ export function nestedSessions(conversations: ApiConversation[], names?: Record<
       if (child.parent_conversation_id !== parent) continue
       rows.push({
         id: child.id,
-        kind: 'subagent',
         agent: child.agent_tentacle_id,
         depth,
         title: child.name || names?.[child.id] || 'subagent',
@@ -221,20 +217,9 @@ export function nestedSessions(conversations: ApiConversation[], names?: Record<
       spawnedBy(child.id, depth + 1)
     }
   }
-  ordered.filter((conversation) => !conversation.subagent_id).forEach((conversation, index) => {
-    if (index > 0) {
-      rows.push({
-        id: conversation.id,
-        kind: 'agent',
-        agent: conversation.agent_tentacle_id,
-        depth: 0,
-        title: routeLabel(conversation.agent_tentacle_id, conversation.runs.at(-1)?.model_name ?? null),
-        tag: sessionTag(conversation.id),
-        running: false,
-      })
-    }
-    spawnedBy(conversation.id, index > 0 ? 1 : 0)
-  })
+  for (const conversation of ordered) {
+    if (conversation.parent_conversation_id === null) spawnedBy(conversation.id, 0)
+  }
   return rows
 }
 

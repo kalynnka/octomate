@@ -65,10 +65,14 @@ export function ChatHeader() {
   const selected = operations[operation]
   const disabledReason = busyReason ?? unavailable[operation]
   const isDark = theme === 'dark' || (theme === 'auto' && sysDark)
-  const { data: nested } = useNestedSessions(selThreadId, Boolean(conversationId), running, Boolean(conversationId))
+  const selectedConversation = detail?.reads?.conversations.find(conversation => conversation.id === conversationId)
+  const { data: nested } = useNestedSessions(selThreadId, Boolean(selectedConversation?.subagent_id && !selectedConversation.name), false, true)
+  const sessionTitle = selectedConversation?.parent_conversation_id === null
+    ? detail?.sessions.find(session => session.conversationId === conversationId)?.route
+    : nested.find(session => session.id === conversationId)?.title
   const title = ntOn
     ? ntTitle || 'untitled — new thread'
-    : (conversationId ? detail?.reads?.conversations.find(conversation => conversation.id === conversationId)?.name || nested.find(session => session.id === conversationId)?.title || 'Subagent' : thread?.title) ?? ''
+    : (conversationId ? selectedConversation?.name || sessionTitle || 'Subagent' : thread?.title) ?? ''
 
   const iconBtn = (onClick: () => void, title2: string, active: boolean, children: React.ReactNode, expanded?: boolean) => (
     <button

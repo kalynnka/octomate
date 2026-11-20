@@ -17,7 +17,8 @@ import {
   fetchRoutes,
   fetchThread,
   fetchThreadBatches,
-  fetchThreadConversations,
+  threadConversations,
+  invalidateThreadConversations,
   modelMessagePage,
   fetchThreadProject,
   fetchThreadUnbound,
@@ -81,20 +82,24 @@ export const api = {
   mcpTentacles: fetchMcpTentacles,
 
   /** Switch one conversation's posture; the answer is the row as it now stands. */
-  setPermissionMode(conversationId: string, mode: string | null): Promise<ApiConversation> {
-    return patchPermissionMode(conversationId, mode)
+  async setPermissionMode(conversationId: string, mode: string | null): Promise<ApiConversation> {
+    const stored = await patchPermissionMode(conversationId, mode)
+    await invalidateThreadConversations(stored.thread_id)
+    return stored
   },
 
   /** Set the level one conversation's runs ask for; null hands it back to the runtime. */
-  setEffort(conversationId: string, effort: EffortStep | null): Promise<ApiConversation> {
-    return patchEffort(conversationId, effort)
+  async setEffort(conversationId: string, effort: EffortStep | null): Promise<ApiConversation> {
+    const stored = await patchEffort(conversationId, effort)
+    await invalidateThreadConversations(stored.thread_id)
+    return stored
   },
 
   listThreads: fetchThreads,
 
   async getThreadMetrics(id: string): Promise<Pick<ThreadDetail, 'usage' | 'ctxK' | 'contextWindow'>> {
-    const [conversations, usage] = await Promise.all([fetchThreadConversations(id), fetchThreadUsage(id)])
-    return threadMetrics(conversations ?? [], usage ?? {})
+    const [conversations, usage] = await Promise.all([queryClient.fetchQuery({ ...threadConversations(id), staleTime: 0 }), fetchThreadUsage(id)])
+    return threadMetrics(conversations, usage ?? {})
   },
 
   /**
@@ -109,7 +114,7 @@ export const api = {
       fetchThread(id),
       queryClient.fetchQuery(modelMessagePage(id, undefined, conversationId)),
       conversationId ? Promise.resolve({ items: [], total: 0, has_more: false, next_cursor: null }) : fetchThreadUnbound(id),
-      fetchThreadConversations(id),
+      queryClient.fetchQuery(threadConversations(id)),
       fetchThreadProject(id),
       conversationId ? Promise.resolve([]) : fetchThreadBatches(id),
       fetchThreadUsage(id, conversationId),
@@ -127,7 +132,7 @@ export const api = {
         unbound: unbound.has_more ? unbound.next_cursor : null,
       },
       totals: { model: model.total, unbound: unbound.total },
-      conversations: conversations ?? [],
+      conversations,
       project: project ?? null,
       batches: batches ?? [],
       usage: usage ?? {},

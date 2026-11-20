@@ -1791,6 +1791,15 @@ async def test_console_reads_never_load_the_model_ledger(
     await _post(channel, "triage the failing checks", thread_id="thread-9")
     thread = await octomate.threads.ensure(_console_address("thread-9"))
 
+    parent = await octomate.conversations.ensure(thread.id, agent_tentacle_id="inkling")
+    await octomate.conversations.ensure(thread.id, agent_tentacle_id="other")
+    await octomate.conversations.ensure(
+        thread.id,
+        agent_tentacle_id="inkling",
+        subagent_id="child",
+        parent_conversation_id=parent.id,
+    )
+
     selects: list[str] = []
 
     @sqlalchemy_event.listens_for(in_memory_engine.sync_engine, "before_cursor_execute")
@@ -1840,7 +1849,8 @@ async def test_console_reads_never_load_the_model_ledger(
 
         # Routing reads conversation metadata in one batch, without histories.
         selects.clear()
-        await client.get("/api/trunkline/threads")
+        [listed] = (await client.get("/api/trunkline/threads")).json()
+        assert listed["nested_session_count"] == 1
         assert not any(
             select.lstrip().startswith("SELECT thread_messages.") for select in selects
         )

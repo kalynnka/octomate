@@ -710,7 +710,7 @@ function SubRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'sub' }>;
   const channel = useConsole(s => s.selChannel)
   const { selectThread } = useConsole(s => s.actions)
   const status = item.status ?? 'completed'
-  const sessions = useNestedSessions(threadId, Boolean(threadId), status === 'running')
+  const sessions = useNestedSessions(threadId, Boolean(threadId), false)
   const child = sessions.data?.find(session => session.invocationId === item.invocationId)
   const [opening, setOpening] = useState(false)
   const [error, setError] = useState<string>()

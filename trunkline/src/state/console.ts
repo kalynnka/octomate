@@ -18,7 +18,7 @@ import type {
   ThreadDetail,
 } from '@/lib/api/types'
 import { api, resolveBatch, sendDirective } from '@/lib/api'
-import { castGateway, executeCommand, fetchThreadProject, fetchThreads, watchThread } from '@/lib/api/client'
+import { castGateway, executeCommand, invalidateThreadConversations, fetchThreadProject, fetchThreads, watchThread } from '@/lib/api/client'
 import type {
   ActionBatchAnsweredEvent,
   ActionBatchUpdatedEvent,
@@ -730,6 +730,11 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     }, get().detail?.sessions.at(-1)?.agent ?? (event.event_kind === 'run_started' ? event.address.channel_tentacle_id : undefined), [...(get().detail?.ledger ?? []), ...get().live])
     const onEvent = (event: WireEvent) => {
       if (!shown()) return
+      if (event.event_kind === 'subagent_started' || event.event_kind === 'subagent_settled') {
+        void invalidateThreadConversations(thId, 'active')
+      } else if (event.event_kind === 'run_ended' || event.event_kind === 'reflex_asleep') {
+        void invalidateThreadConversations(thId)
+      }
       if (conversationId) {
         if (event.event_kind === 'subagent_settled' || event.event_kind === 'run_ended' || event.event_kind === 'reflex_asleep') {
           void reloadSettled(thId, () => true, conversationId)
@@ -856,6 +861,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     let fold = turnFold()
     const feed = (event: CommandStreamEvent) => {
       received++
+      if (event.event_kind === 'subagent_started' || event.event_kind === 'subagent_settled') void invalidateThreadConversations(selId, 'active')
       if (event.event_kind === 'run_activity_changed' || event.event_kind === 'reflex_phase_changed') clearDots()
       if (event.event_kind === 'artifact_available') {
         clearDots()
@@ -872,6 +878,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     const held: CommandStreamEvent[] = []
     const openSummon = async () => {
       terminal = false
+      await invalidateThreadConversations(selId)
       const detail = await api.getThreadDetail(selId)
       if (here()) {
         const opening = detail.ledger.findLast((item) => item.kind === 'session-open')

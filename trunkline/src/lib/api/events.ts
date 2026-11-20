@@ -692,6 +692,7 @@ export interface ApiHandoff {
 }
 
 export interface ApiThread {
+  nested_session_count?: number
   /** Derived from an explicit handoff or the thread’s own conversation. */
   active_agent_tentacle_id?: string | null
   /** thread row id (uuid) — the read key for every /threads/{id} read */

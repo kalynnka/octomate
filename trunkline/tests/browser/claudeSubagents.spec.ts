@@ -185,7 +185,7 @@ for (const legacy of [false, true]) test(`sidebar titles load from ${legacy ? 'l
     chat_id: 'active', channel_thread_id: null, title: 'Active review', status: 'active', project_id: null,
     handoffs: [], created_at: timestamp, updated_at: timestamp,
   }
-  const unopened = { ...active, id: 'unopened', chat_id: 'unopened', title: 'Unopened review' }
+  const unopened = { ...active, id: 'unopened', chat_id: 'unopened', title: 'Unopened review', nested_session_count: 2 }
   const other = { ...active, id: 'other', chat_id: 'other', title: 'Another review' }
   const parent: ApiConversation = {
     id: 'parent', external_id: 'unopened', thread_id: unopened.id, agent_tentacle_id: 'claude', subagent_id: '',
@@ -193,17 +193,22 @@ for (const legacy of [false, true]) test(`sidebar titles load from ${legacy ? 'l
   }
   const run = { id: 'child-turn', kind: 'octomate', conversation_id: 'child', name: null, model_name: null,
     permission_mode: null, cwd: null, parent_run_id: 'turn', parent_tool_call_id: 'spawn', started_at: null } as const
-  const child = { ...parent, id: 'child', subagent_id: 'child-abc123', parent_conversation_id: parent.id,
+  const summoned = { ...parent, id: 'summoned', agent_tentacle_id: 'codex' }
+  const child = { ...summoned, id: 'child', subagent_id: 'child-abc123', parent_conversation_id: summoned.id,
     name: legacy ? null : 'Background sleep test', runs: [run] }
   const sibling = { ...child, id: 'sibling', subagent_id: 'child-def456', name: legacy ? null : 'review_task',
     runs: [{ ...run, id: 'sibling-turn', conversation_id: 'sibling', parent_tool_call_id: 'spawn-review' }] }
   const modelPath = '/api/trunkline/threads/unopened/conversations/messages'
+  const metadataReads: string[] = []
+  let showChildren!: () => void
+  const opening = new Promise<void>(resolve => { showChildren = resolve })
   const parentReads: string[] = []
   const usageReads: string[] = []
   const historyReads: string[] = []
   await page.routeWebSocket(/\/api\/trunkline\/live/, () => {})
-  await page.route(url => url.pathname.startsWith('/api/'), route => {
+  await page.route(url => url.pathname.startsWith('/api/'), async route => {
     const path = new URL(route.request().url()).pathname
+    if (path.endsWith('/conversations')) metadataReads.push(path)
     if (path.includes('/threads/unopened/')) parentReads.push(path)
     if (path.endsWith('/usage')) usageReads.push(path)
     if (path.endsWith('/messages')) historyReads.push(path)
@@ -211,7 +216,10 @@ for (const legacy of [false, true]) test(`sidebar titles load from ${legacy ? 'l
     if (path.endsWith('/threads')) return route.fulfill({ json: [active, unopened, other] })
     if (path.endsWith('/threads/active')) return route.fulfill({ json: active })
     if (path.endsWith('/threads/unopened')) return route.fulfill({ json: unopened })
-    if (path.endsWith('/unopened/conversations')) return route.fulfill({ json: [parent, child, sibling] })
+    if (path.endsWith('/unopened/conversations')) {
+      await opening
+      return route.fulfill({ json: [parent, summoned, child, sibling] })
+    }
     if (legacy && path === modelPath) {
       const older = Boolean(new URL(route.request().url()).searchParams.get('cursor'))
       const items: ApiModelMessage[] = [{ id: older ? '1' : '2', run_id: older ? 'turn' : 'unrelated', kind: 'response', timestamp,
@@ -232,10 +240,26 @@ for (const legacy of [false, true]) test(`sidebar titles load from ${legacy ? 'l
   const parentRow = page.locator('.trk-thread-row').filter({ has: page.locator('[data-thread-id="unopened"]') })
   const expand = parentRow.getByRole('button', { name: '2 nested sessions', exact: true })
   await expect(expand).toBeVisible()
-  expect(parentReads).toEqual(['/api/trunkline/threads/unopened/conversations'])
+  await expect(page.locator('#trk-chathead')).toContainText('Active review')
+  expect(metadataReads).toEqual(['/api/trunkline/threads/active/conversations'])
+  expect(parentReads).toEqual([])
+  metadataReads.length = usageReads.length = historyReads.length = 0
+  await page.reload()
+  await expect(expand).toBeVisible()
+  await expect(page.locator('#trk-chathead')).toContainText('Active review')
+  expect(metadataReads).toEqual(['/api/trunkline/threads/active/conversations'])
+  expect(parentReads).toEqual([])
   await expand.click()
+  const placeholders = page.locator('#trk-nest-unopened .trk-thread-placeholder')
+  await expect(placeholders).toHaveCount(2)
+  const reserved = (await placeholders.first().boundingBox())!.height
+  showChildren()
   await expect(page.locator('[data-thread-id="child"]')).toContainText('Background sleep test')
   await expect(page.locator('[data-thread-id="sibling"]')).toContainText('review_task')
+  await expect(page.locator('[data-thread-id="summoned"]')).toHaveCount(0)
+  expect(Math.abs((await page.locator('[data-thread-id="child"]').boundingBox())!.height - reserved)).toBeLessThanOrEqual(1)
+  await expand.click()
+  await expand.click()
   await expect(page).toHaveURL(/\/threads\/active$/)
   const legacyReads = legacy ? [modelPath, modelPath] : []
   expect(parentReads).toEqual(['/api/trunkline/threads/unopened/conversations', ...legacyReads])
@@ -247,6 +271,7 @@ for (const legacy of [false, true]) test(`sidebar titles load from ${legacy ? 'l
   await page.locator('[data-thread-id="unopened"]').click()
   await expect(page).toHaveURL(/\/threads\/unopened$/)
   await expect(page.locator('#trk-chathead')).toContainText('Unopened review')
+  expect(metadataReads).toEqual(['/api/trunkline/threads/active/conversations', '/api/trunkline/threads/unopened/conversations'])
   expect(usageReads).toEqual(['/api/trunkline/threads/active/usage', '/api/trunkline/threads/unopened/usage'])
   expect(historyReads.sort()).toEqual([
     '/api/trunkline/threads/active/conversations/messages', '/api/trunkline/threads/active/messages',

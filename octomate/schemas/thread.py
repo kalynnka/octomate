@@ -384,6 +384,14 @@ class Thread(BaseTransmuter):
     def latest_handoff(self) -> Handoff | None:
         return self.handoffs[-1] if self.handoffs else None
 
+    @computed_field(description="Number of subagent conversations in this thread.")
+    @property
+    def nested_session_count(self) -> int:
+        return sum(
+            conversation.parent_conversation_id is not None
+            for conversation in self.conversations
+        )
+
     @computed_field
     @property
     def active_agent_tentacle_id(self) -> str | None:

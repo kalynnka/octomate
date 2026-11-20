@@ -25,6 +25,7 @@ export interface ChannelMeta {
 export type ThreadTone = 'active' | 'idle' | 'native'
 
 export interface ThreadSummary {
+  nestedCount: number
   id: string
   channelId: ChannelId
   /** the platform's own thread id — what a directive is addressed to, and the only
@@ -41,12 +42,10 @@ export interface ThreadSummary {
   tag?: string
 }
 
-/** A session nested under a thread's row in the sidebar: another agent's own
- *  line through the thread, or a subagent one of its sessions spawned. */
+/** A subagent conversation nested under its thread in the sidebar. */
 export interface NestedSession {
   /** the conversation it is */
   id: string
-  kind: 'agent' | 'subagent'
   agent: string
   /** 0 hangs off the thread; each level deeper hangs off the row above */
   depth: number
@@ -55,7 +54,7 @@ export interface NestedSession {
   /** it has a run still open; only a native subagent's run says so */
   running: boolean
   /** the runtime's identifier, shared with its ledger card */
-  invocationId?: string
+  invocationId: string
 }
 
 export type SessionKind = 'entry' | 'summon' | 'teleport' | 'ingest'

@@ -18,14 +18,13 @@ let withOlderPage: typeof import('../src/lib/api/live.ts').withOlderPage
 let holdingBack: typeof import('../src/lib/api/live.ts').holdingBack
 let threadMetrics: typeof import('../src/lib/api/live.ts').threadMetrics
 let nestedSessions: typeof import('../src/lib/api/live.ts').nestedSessions
-let routeLabel: typeof import('../src/lib/api/live.ts').routeLabel
 
 before(async () => {
   server = await createServer({
     root: fileURLToPath(new URL('../', import.meta.url)),
     server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom',
   })
-  ;({ liveThreadDetail, withOlderPage, holdingBack, threadMetrics, nestedSessions, routeLabel } = await server.ssrLoadModule('/src/lib/api/live.ts'))
+  ;({ liveThreadDetail, withOlderPage, holdingBack, threadMetrics, nestedSessions } = await server.ssrLoadModule('/src/lib/api/live.ts'))
 })
 after(async () => { await server?.close() })
 
@@ -337,7 +336,7 @@ test("a subagent's card reads its report from the message the subagent handed ba
   assert.equal(pointed?.kind === 'sub' && pointed.report, "This agent's report was delivered to you as a message.")
 })
 
-test("a thread nests its later agent sessions and each session's subagents under its row", () => {
+test('summons continue the thread timeline and only spawned conversations nest', () => {
   const run = conversation.runs[0]
   const subagent = (id: string, parent: string, extra: Partial<ApiConversation>): ApiConversation => ({
     ...conversation, id, subagent_id: `agent-${id}`, parent_conversation_id: parent, runs: [], ...extra,
@@ -350,14 +349,22 @@ test("a thread nests its later agent sessions and each session's subagents under
     subagent('d-first', 'conversation', { name: 'Count the files', runs: [{ ...run, id: 'r3', kind: 'external', end_offset: null }] }),
     conversation,
   ])
-  assert.deepEqual(sessions.map((session) => [session.id, session.kind, session.depth, session.title, session.running]), [
-    ['d-first', 'subagent', 0, 'Count the files', true],
-    ['e-nested', 'subagent', 1, 'subagent', false],
-    ['summoned', 'agent', 0, routeLabel('codex', 'gpt-5.3'), false],
-    ['t-later', 'subagent', 1, 'subagent', false],
+  assert.deepEqual(sessions.map((session) => [session.id, session.depth, session.title, session.running]), [
+    ['d-first', 0, 'Count the files', true],
+    ['e-nested', 1, 'subagent', false],
+    ['t-later', 0, 'subagent', false],
   ])
   assert.equal(sessions[0].invocationId, 'agent-d-first')
-  assert.deepEqual(nestedSessions([conversation]), [])
+  assert.deepEqual(nestedSessions([conversation, summoned]), [])
+  const detail = liveThreadDetail({
+    ...reads([], [], { model: null, unbound: null }),
+    thread: { ...thread, handoffs: [handoff, { ...handoff, id: '011', to_agent_tentacle_id: 'codex',
+      source_conversation_id: conversation.id, target_conversation_id: summoned.id, created_at: '2026-10-09T10:01:00Z' }] },
+    conversations: [conversation, summoned, subagent('t-later', summoned.id, {})],
+  })
+  assert.deepEqual(detail.sessions.map(session => [session.conversationId, session.kind]), [
+    [conversation.id, 'entry'], [summoned.id, 'summon'],
+  ])
 })
 
 test('a reply segment retains its quote even without a reply_id or a loaded original', () => {

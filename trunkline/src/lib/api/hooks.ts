@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchApiKeys, fetchProfileAuthorizations } from './auth'
-import { fetchAddresses, fetchCommandCatalog, fetchThreadConversations, fetchThreadOperations, modelMessagePage } from './client'
+import { fetchAddresses, fetchCommandCatalog, threadConversations, fetchThreadOperations, modelMessagePage } from './client'
 import type { CommandContextBody } from './events'
 import { api } from './index'
 import { groupLiveThreads, nestedSessions, resolveSpawnNames, type UnnamedSpawn } from './live'
@@ -17,11 +17,9 @@ export const useThreads = () =>
 export function useNestedSessions(threadId: string, enabled: boolean, running: boolean, showNames = false) {
   const client = useQueryClient()
   const metadata = useQuery({
-    queryKey: ['thread-nested', threadId],
-    queryFn: async () => await fetchThreadConversations(threadId) ?? [],
+    ...threadConversations(threadId),
     enabled,
     retry: false,
-    staleTime: 60_000,
     refetchInterval: running ? 5_000 : false,
   })
   const targets = useMemo(() => {
@@ -64,7 +62,7 @@ export function useNestedSessions(threadId: string, enabled: boolean, running: b
     },
   })
   const data = useMemo(() => nestedSessions(metadata.data ?? [], names.data), [metadata.data, names.data])
-  return { data, refetch: metadata.refetch }
+  return { data, hasData: metadata.data !== undefined, loading: metadata.isLoading, refetch: metadata.refetch }
 }
 
 export function useThreadSummary(threadId: string) {
