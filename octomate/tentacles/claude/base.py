@@ -134,6 +134,7 @@ from octomate.tentacles.claude.catalog import (
     CONTROL_COMMANDS,
     HOST_COMMANDS,
     ClaudeCommandDescriptor,
+    ClaudeServerInfo,
     claude_effort_adapter,
 )
 from octomate.tentacles.claude.hooks import ClaudeHookInput
@@ -212,6 +213,8 @@ class ClaudeTentacle(AgentTentacle[str, None]):
     id: ClassVar[str] = type
     config: ClaudeCodeConfig = field(init=False)
     ink: ClaudeInk = field(init=False, repr=False)
+    server_info: ClaudeServerInfo | None = field(default=None, init=False, repr=False)
+    inspection_lock: asyncio.Lock = field(init=False, repr=False)
     conversations: ConversationManager = field(init=False, repr=False)
     deferred_actions: DeferredActionManager = field(init=False, repr=False)
     workspaces: WorkspaceManager = field(init=False, repr=False)
@@ -294,6 +297,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         self.claims = dict(config.claims)
         self.gateway = config.gateway
         self.ink = ClaudeInk()
+        self.inspection_lock = asyncio.Lock()
         self.models = {}
         self.model_aliases = {}
         # Per-session locks shared by the hook ingest and the transcript tailer, so a
@@ -837,47 +841,35 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         interjections.interject(ActionBatchAnsweredEvent.of(response))
         return batch, response
 
-    async def probe_commands(self, context: CommandContext) -> CommandCatalog:
-        """Initialize a non-persisting SDK client in the resolved workspace.
+    async def host_catalog(self, *, refresh: bool = False) -> ClaudeServerInfo:
+        """Read the host CLI's models and built-in commands once for all conversations."""
+        async with self.inspection_lock:
+            if self.server_info is not None and not refresh:
+                return self.server_info
+            session_id = str(uuid7())
+            async with (
+                anyio.TemporaryDirectory(prefix="octomate-claude-") as cwd,
+                self.driving(session_id),
+            ):
+                info = await self.ink.inspect(
+                    ClaudeAgentOptions(
+                        cwd=cwd,
+                        session_id=session_id,
+                        extra_args={"safe-mode": None, "no-session-persistence": None},
+                        strict_mcp_config=True,
+                    )
+                )
+            self.server_info = info
+            if refresh:
+                self.commands.invalidate(agent_id=self.id)
+            return info
 
-        The SDK caches initialize metadata, so an explicit refresh needs a new
-        client. Match driven settings and resume identity without sending a query
-        or preparing the workspace. Octomate's SDK MCP server exposes tools only;
-        there are no MCP prompts to add to this catalog.
-        """
+    async def probe_commands(self, context: CommandContext) -> CommandCatalog:
+        """Expose the host command list in this caller's authorized context."""
+        info = await self.host_catalog()
         catalog = CommandCatalog(
             context=context, status="ready", descriptors=set(CONTROL_COMMANDS.values())
         )
-        if context.cwd is None or not await anyio.Path(context.cwd).is_dir():
-            catalog.limitations.append(
-                "Claude native command discovery requires an existing workspace."
-            )
-            return catalog
-        conversation = context.conversation
-        project = (
-            await self.run_project(conversation.thread_id)
-            if conversation is not None
-            else None
-        )
-        external_id = conversation.external_id if conversation is not None else None
-        session_id = external_id or str(uuid7())
-        async with self.driving(session_id):
-            info = await self.ink.inspect(
-                ClaudeAgentOptions(
-                    cwd=str(context.cwd),
-                    add_dirs=[str(root) for root in project.extra_roots]
-                    if project
-                    else [],
-                    model=context.model,
-                    permission_mode=context.permission_mode
-                    if is_claude_mode(context.permission_mode)
-                    else self.config.permission_mode,
-                    resume=external_id,
-                    session_id=None if external_id else session_id,
-                    extra_args={"safe-mode": None, "no-session-persistence": None},
-                    strict_mcp_config=True,
-                )
-            )
         if info.commands is None:
             catalog.limitations.append(
                 "This Claude runtime does not expose native command metadata."
@@ -1052,15 +1044,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         )
 
     async def discover_models(self) -> None:
-        session_id = str(uuid7())
-        async with self.driving(session_id):
-            info = await self.ink.inspect(
-                ClaudeAgentOptions(
-                    session_id=session_id,
-                    extra_args={"safe-mode": None},
-                    strict_mcp_config=True,
-                )
-            )
+        info = await self.host_catalog(refresh=True)
         provider = info.account.api_provider
         if provider is None or provider == "firstParty":
             provider = "anthropic"
@@ -1113,7 +1097,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         return max(windows, key=lambda key: "[" in key, default=None)
 
     async def __aenter__(self) -> ClaudeTentacle:
-        self.commands.invalidate(agent_id=self.id)
         await self.discover_models()
         return await super().__aenter__()
 
@@ -1126,6 +1109,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         """Cancel any approvals/questions still awaiting a human so their parked
         runs unblock instead of hanging shutdown. The pending tools are denied as
         the cancellation unwinds; the live sessions are not durable across this."""
+        self.server_info = None
         self.commands.invalidate(agent_id=self.id)
         await super().__aexit__(exc_type, exc_value, traceback)
         for future in list(self.pendings.values()):

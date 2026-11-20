@@ -110,7 +110,7 @@ def test_captured_commands_keep_native_metadata_and_are_hashable(
 
 
 @pytest.mark.parametrize("resumed", [False, True])
-async def test_probe_uses_context_and_preserves_driven_settings_without_a_query(
+async def test_host_inspection_uses_a_fresh_session_in_a_temporary_directory(
     agent: ClaudeTentacle,
     context: CommandContext,
     client: AsyncMock,
@@ -120,18 +120,26 @@ async def test_probe_uses_context_and_preserves_driven_settings_without_a_query(
     conversation = context.conversation
     assert conversation is not None
     conversation.external_id = str(uuid7()) if resumed else None
+    directories: list[Path] = []
 
     def create(*, options: ClaudeAgentOptions) -> AsyncMock:
-        assert options.cwd == str(context.cwd)
-        assert options.model == context.model
-        assert options.permission_mode == "plan"
+        assert options.cwd is not None
+        cwd = Path(options.cwd)
+        assert cwd != context.cwd
+        assert cwd.is_dir()
+        assert not any(cwd.iterdir())
+        directories.append(cwd)
+        assert options.model is None
+        assert options.permission_mode is None
+        assert not options.add_dirs
         assert options.strict_mcp_config
         assert options.mcp_servers == {}
         assert options.plugins == []
         assert options.setting_sources is None
         assert options.extra_args == {"safe-mode": None, "no-session-persistence": None}
-        assert options.resume == conversation.external_id
-        assert bool(options.session_id) is not resumed
+        assert options.resume is None
+        assert options.session_id
+        assert options.session_id != conversation.external_id
         return client
 
     factory = MagicMock(side_effect=create)
@@ -155,6 +163,7 @@ async def test_probe_uses_context_and_preserves_driven_settings_without_a_query(
     client.receive_response.assert_not_called()
     assert agent.ink.live_clients == {}
     assert len(factory.call_args_list) == 1
+    assert not directories[0].exists()
 
 
 async def test_host_settings_are_disabled_only_when_advertised(
@@ -211,18 +220,24 @@ async def test_probe_never_prepares_a_missing_workspace(
     agent: ClaudeTentacle,
     context: CommandContext,
     client: AsyncMock,
+    payload: JsonObject,
     has_path: bool,
 ) -> None:
     assert context.cwd is not None
+    assert context.conversation is not None
+    context.conversation.external_id = str(uuid7())
+    payload["commands"] = [
+        {"name": "compact", "description": "Summarize the conversation"}
+    ]
     missing = context.cwd / "not-created"
     catalog = await agent.discover_commands(
         replace(context, cwd=missing if has_path else None)
     )
     assert catalog.status == "ready"
-    assert {entry.id for entry in catalog.descriptors} == {"plan", "fork"}
+    assert {entry.id for entry in catalog.descriptors} == {"compact", "plan", "fork"}
     assert catalog.limitations
     assert not missing.exists()
-    client.__aenter__.assert_not_called()
+    client.get_server_info.assert_awaited_once()
 
 
 @pytest.mark.parametrize("commands", [None, [], [{"name": "broken"}]])
@@ -247,32 +262,38 @@ async def test_absent_empty_and_malformed_catalogs_are_distinct(
     client.__aexit__.assert_awaited_once()
 
 
-async def test_refresh_and_workspace_change_initialize_again(
+async def test_conversations_share_commands_until_the_host_runtime_is_reinspected(
     agent: ClaudeTentacle,
     context: CommandContext,
     client: AsyncMock,
     payload: JsonObject,
     tmp_path: Path,
 ) -> None:
-    await agent.discover_commands(context)
+    other = replace(
+        context, user_id=uuid7(), cwd=tmp_path / "other", conversation=None, model=None
+    )
+    first, second = await asyncio.gather(
+        agent.discover_commands(context), agent.discover_commands(other)
+    )
+    assert len(first.descriptors) == 5
+    assert second.context.matches(other)
+    assert first.descriptors == second.descriptors
     payload["commands"] = [
         {"name": "changed", "description": "Changed", "argumentHint": "raw"}
     ]
-    assert len((await agent.discover_commands(context)).descriptors) == 5
     refreshed = await agent.discover_commands(context, refresh=True)
-    assert {command.name for command in refreshed.descriptors} == {
+    assert refreshed.descriptors == first.descriptors
+    client.get_server_info.assert_awaited_once()
+
+    await agent.discover_models()
+    catalog = await agent.discover_commands(other)
+    assert {command.name for command in catalog.descriptors} == {
         "changed",
         "plan",
         "fork",
     }
-    other = tmp_path / "other"
-    other.mkdir()
-    payload["commands"] = []
-    catalog = await agent.discover_commands(replace(context, cwd=other))
-    assert catalog.status == "ready"
-    assert {entry.id for entry in catalog.descriptors} == {"plan", "fork"}
-    assert client.__aenter__.await_count == 3
-    assert client.__aexit__.await_count == 3
+    assert client.get_server_info.await_count == 2
+    assert client.__aexit__.await_count == 2
     client.query.assert_not_called()
 
 
@@ -287,6 +308,7 @@ async def test_runtime_lifecycle_invalidates_cached_commands(
         await agent.discover_commands(context)
         assert agent.octomate.commands.catalogs
     assert not agent.octomate.commands.catalogs
+    assert agent.server_info is None
 
 
 async def test_probe_cancellation_closes_client_and_releases_native_claim(

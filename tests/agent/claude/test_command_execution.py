@@ -648,7 +648,7 @@ async def test_model_command_preserves_arguments_context_stream_and_history(
         "safe-mode": None,
         "thinking-display": "summarized",
     }
-    assert client.get_server_info.await_count == 2
+    client.get_server_info.assert_awaited_once_with()
     stored = await agent.conversations.get(conversation.id)
     [run] = await stored.runs
     assert run.native_session_id == streams["skill"][-1]["session_id"]
@@ -688,6 +688,7 @@ async def test_unknown_or_changed_commands_never_reach_query(
     command_id = "context"
     if change == "removed_before_discovery":
         client.get_server_info.return_value = changed
+        await agent.discover_models()
     elif change == "terminal_only":
         command_id = "theme"
     else:
@@ -695,7 +696,7 @@ async def test_unknown_or_changed_commands_never_reach_query(
             changed["commands"] = [
                 {"name": "context", "description": "Changed meaning"}
             ]
-        client.get_server_info.side_effect = [initial, changed]
+        client.get_server_info.return_value = changed
     intent = CommandIntent(command_id=command_id)
     async with AsyncExitStack() as stack:
         validated = await stack.enter_async_context(
