@@ -1145,6 +1145,7 @@ async def test_a_subagent_transcript_becomes_a_child_run() -> None:
         parent_conversation_id=parent.id,
     )
     assert child.parent_conversation_id == parent.id
+    assert child.name == "audit"
     assert all(
         message.platform_message_id != child_run.id for message in thread.messages
     )

@@ -51,6 +51,48 @@ async def _thread() -> UUID7:
     return await a_thread()
 
 
+async def test_listing_returns_only_the_stored_subagent_name(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    manager = ConversationManager()
+    thread = await a_thread()
+    parent = await manager.ensure(thread, agent_tentacle_id="claude")
+    child = await manager.ensure(
+        thread,
+        agent_tentacle_id="claude",
+        subagent_id="child",
+        parent_conversation_id=parent.id,
+    )
+    await manager.record_agent_run(
+        parent,
+        "parent-run",
+        [
+            RawModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "Agent", {"description": "Old title"}, tool_call_id="spawn"
+                    )
+                ]
+            )
+        ],
+    )
+    await manager.record_agent_run(
+        child,
+        "child-run",
+        [RawModelResponse(parts=[TextPart("Done")])],
+        parent_run_id="parent-run",
+        parent_tool_call_id="spawn",
+    )
+    queries = Mock()
+    event.listen(in_memory_engine.sync_engine, "before_cursor_execute", queries)
+    try:
+        listed = await manager.for_thread(thread)
+    finally:
+        event.remove(in_memory_engine.sync_engine, "before_cursor_execute", queries)
+    assert next(row for row in listed if row.id == child.id).name is None
+    assert all("model_messages" not in call.args[2] for call in queries.call_args_list)
+
+
 @pytest.mark.parametrize("agent_tentacle_id", ["codex", "claude", "deepseek"])
 async def test_native_ownership_preserves_uploaded_thread_and_history(
     agent_tentacle_id: str,
@@ -1159,6 +1201,23 @@ async def test_a_threads_model_messages_page_newest_first_across_its_conversatio
     ]
     assert (newest.total, newest.has_more, rest.has_more) == (4, True, False)
     assert [row.id for row in newest[0].thread_messages] == [said.id]
+    child_page = await service.messages_page(
+        thread_id, limit=1, conversation_id=child.id
+    )
+    child_rest = await service.messages_page(
+        thread_id, child_page.next_cursor, limit=1, conversation_id=child.id
+    )
+    assert [m.message_text for m in (*child_page, *child_rest)] == [
+        "answer run-2",
+        "ask run-2",
+    ]
+    assert (child_page.total, child_page.has_more, child_rest.has_more) == (
+        2,
+        True,
+        False,
+    )
+    unrelated = await service.messages_page(thread_id, limit=1, conversation_id=uuid7())
+    assert unrelated.total == 0
 
 
 async def test_a_threads_usage_is_its_own_responses_summed() -> None:
@@ -1197,6 +1256,8 @@ async def test_a_threads_usage_is_its_own_responses_summed() -> None:
     usage = await service.usage(await _thread())
 
     assert (usage.input_tokens, usage.cache_read_tokens) == (15, 2)
+    child_usage = await service.usage(await _thread(), conversation_id=child.id)
+    assert child_usage.input_tokens == 99
 
 
 async def test_a_subagent_names_its_parent_or_neither() -> None:

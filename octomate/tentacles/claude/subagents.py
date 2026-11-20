@@ -21,7 +21,7 @@ from octomate.events import (
 )
 from octomate.managers.conversation import ConversationManager
 from octomate.schemas.conversation import Conversation
-from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
+from octomate.tentacles.claude.adapter import ClaudeRunAccumulator, subagent_name
 
 
 @dataclass
@@ -32,7 +32,9 @@ class DrivenSubagents:
     parent: Conversation
     cwd: Path
     # Open children, by the Agent call that spawned each.
-    calls: dict[str, ClaudeRunAccumulator] = field(default_factory=dict)
+    calls: dict[str, tuple[ClaudeRunAccumulator, str | None]] = field(
+        default_factory=dict
+    )
     # Agent ids that started and have not settled.
     working: list[str] = field(default_factory=list)
 
@@ -75,16 +77,21 @@ class DrivenSubagents:
         """True for a message private to a child. Its spawn and return stay on the parent."""
         if message.parent_tool_use_id:
             if child := self.calls.get(message.parent_tool_use_id):
-                for _ in child.consume(message):
+                accumulator, _name = child
+                for _ in accumulator.consume(message):
                     pass
             return True
         if isinstance(message, AssistantMessage):
             for block in message.content:
-                if isinstance(block, ToolUseBlock) and block.name == "Agent":
+                if isinstance(block, ToolUseBlock) and block.name in {
+                    "Agent",
+                    "Task",
+                    "Skill",
+                }:
                     prompt = block.input.get("prompt")
                     child = ClaudeRunAccumulator()
                     child.begin(prompt if isinstance(prompt, str) else None)
-                    self.calls[block.id] = child
+                    self.calls[block.id] = child, subagent_name(block)
         elif isinstance(message, UserMessage) and isinstance(message.content, list):
             # The Agent call's result names the child Claude ran for it. A refused
             # call's is plain text, whatever the SDK's type says.
@@ -99,13 +106,14 @@ class DrivenSubagents:
         return False
 
     async def record(self, call_id: str, agent_id: str | None) -> None:
-        child = self.calls.pop(call_id)
+        child, name = self.calls.pop(call_id)
         if agent_id is None:
             return  # A refused Agent call ran no child.
         conversation = await self.conversations.ensure(
             self.parent.thread_id,
             agent_tentacle_id=self.parent.agent_tentacle_id,
             subagent_id=agent_id,
+            name=name,
             parent_conversation_id=self.parent.id,
             with_runs=False,
         )

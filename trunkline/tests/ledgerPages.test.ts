@@ -17,13 +17,15 @@ let liveThreadDetail: typeof import('../src/lib/api/live.ts').liveThreadDetail
 let withOlderPage: typeof import('../src/lib/api/live.ts').withOlderPage
 let holdingBack: typeof import('../src/lib/api/live.ts').holdingBack
 let threadMetrics: typeof import('../src/lib/api/live.ts').threadMetrics
+let nestedSessions: typeof import('../src/lib/api/live.ts').nestedSessions
+let routeLabel: typeof import('../src/lib/api/live.ts').routeLabel
 
 before(async () => {
   server = await createServer({
     root: fileURLToPath(new URL('../', import.meta.url)),
     server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom',
   })
-  ;({ liveThreadDetail, withOlderPage, holdingBack, threadMetrics } = await server.ssrLoadModule('/src/lib/api/live.ts'))
+  ;({ liveThreadDetail, withOlderPage, holdingBack, threadMetrics, nestedSessions, routeLabel } = await server.ssrLoadModule('/src/lib/api/live.ts'))
 })
 after(async () => { await server?.close() })
 
@@ -289,6 +291,75 @@ test('channel bot replies use Octomate and the agent id instead of the channel p
   assert.equal(item?.kind === 'agent' && item.label, 'Octomate(Inkling)')
 })
 
+test("another agent's message reads back under that agent's name", () => {
+  const handback: ApiThreadMessage = {
+    ...said('045', 'two findings', 'human'), actor_kind: 'agent', agent_tentacle_id: 'claude',
+    segments: [{ type: 'text', data: { text: 'two findings', annotations: {
+      raw: '<agent-message from="a1">…</agent-message>', source: 'claude', agent: { id: 'a1', name: 'general-purpose' }, contexts: [], references: [],
+    } } }],
+  }
+  const detail = liveThreadDetail(reads([], [handback], { model: null, unbound: null }))
+  assert.deepEqual(detail.ledger.filter((item) => item.kind === 'agent' || item.kind === 'user'), [
+    { kind: 'agent', uid: '045', subagentId: 'a1', label: 'general-purpose', blocks: [{ type: 'p', text: 'two findings' }] },
+  ])
+})
+
+test("a subagent's card reads its report from the message the subagent handed back", () => {
+  const child: ApiConversation = {
+    ...conversation, id: 'child', subagent_id: 'a1', parent_conversation_id: 'conversation',
+    runs: [{ ...conversation.runs[0], id: 'child-run', conversation_id: 'child', parent_run_id: 'run', parent_tool_call_id: 'spawn' }],
+  }
+  const spawn: ApiModelMessage = {
+    id: '020', run_id: 'run', kind: 'response', timestamp: at, thread_messages: [],
+    parts: [{ part_kind: 'tool-call', tool_name: 'Agent', tool_call_id: 'spawn', args: { subagent_type: 'general-purpose', description: 'Count the files', prompt: 'Count them.' } }],
+  }
+  const pointer: ApiModelMessage = {
+    id: '030', run_id: 'run', kind: 'request', timestamp: at, thread_messages: [],
+    parts: [{ part_kind: 'tool-return', tool_name: 'Agent', tool_call_id: 'spawn', content: ["This agent's report was delivered to you as a message."] }],
+  }
+  const handback: ApiThreadMessage = {
+    ...said('045', 'two findings', 'human'), actor_kind: 'agent', agent_tentacle_id: 'claude',
+    segments: [{ type: 'text', data: { text: 'two findings', annotations: {
+      raw: '<agent-message from="a1">…</agent-message>', source: 'claude', agent: { id: 'a1', name: 'general-purpose' }, contexts: [], references: [],
+    } } }],
+  }
+  const card = (unbound: ApiThreadMessage[]) => liveThreadDetail({ ...reads([pointer, spawn], unbound, { model: null, unbound: null }), conversations: [conversation, child] })
+    .ledger.find((item) => item.kind === 'sub')
+  const handed = card([handback])
+  assert.ok(handed?.kind === 'sub')
+  assert.equal(handed.agentId, 'claude')
+  assert.deepEqual(
+    [handed.route, handed.status, handed.brief, handed.prompt, handed.report],
+    ['general-purpose', 'completed', 'Count the files', 'Count them.', 'two findings'],
+  )
+  // Without that message, the call's own result is what there is, read as prose.
+  const pointed = card([])
+  assert.equal(pointed?.kind === 'sub' && pointed.report, "This agent's report was delivered to you as a message.")
+})
+
+test("a thread nests its later agent sessions and each session's subagents under its row", () => {
+  const run = conversation.runs[0]
+  const subagent = (id: string, parent: string, extra: Partial<ApiConversation>): ApiConversation => ({
+    ...conversation, id, subagent_id: `agent-${id}`, parent_conversation_id: parent, runs: [], ...extra,
+  })
+  const summoned: ApiConversation = { ...conversation, id: 'summoned', agent_tentacle_id: 'codex', runs: [{ ...run, id: 'r2', model_name: 'gpt-5.3' }] }
+  const sessions = nestedSessions([
+    subagent('t-later', 'summoned', {}),
+    summoned,
+    subagent('e-nested', 'd-first', { runs: [{ ...run, id: 'r4', kind: 'external', end_offset: 40 }] }),
+    subagent('d-first', 'conversation', { name: 'Count the files', runs: [{ ...run, id: 'r3', kind: 'external', end_offset: null }] }),
+    conversation,
+  ])
+  assert.deepEqual(sessions.map((session) => [session.id, session.kind, session.depth, session.title, session.running]), [
+    ['d-first', 'subagent', 0, 'Count the files', true],
+    ['e-nested', 'subagent', 1, 'subagent', false],
+    ['summoned', 'agent', 0, routeLabel('codex', 'gpt-5.3'), false],
+    ['t-later', 'subagent', 1, 'subagent', false],
+  ])
+  assert.equal(sessions[0].invocationId, 'agent-d-first')
+  assert.deepEqual(nestedSessions([conversation]), [])
+})
+
 test('a reply segment retains its quote even without a reply_id or a loaded original', () => {
   const message = { ...said('060', 'answer', 'human'), segments: [
     { type: 'reply', data: { id: 'q', user_id: 'ada', content: '<b>Earlier question</b>' } },
@@ -387,3 +458,20 @@ for (const runtime of ['claude', 'codex', 'deepseek']) {
     assert.deepEqual(whole.ledger.map((item) => item.uid), ['010.0', '020.0', '090.0'])
   })
 }
+
+
+test('a selected child renders its own timeline, paged history, and context', () => {
+  const child: ApiConversation = { ...conversation, id: 'child', name: 'Review', subagent_id: 'a1', parent_conversation_id: conversation.id,
+    runs: [{ ...conversation.runs[0], id: 'child-run', conversation_id: 'child', context_used: 9000, context_window: 200000 }] }
+  const selected: ThreadReads = { ...reads([{ ...answer, run_id: 'child-run' }], [], { model: 'older', unbound: null }),
+    conversationId: child.id, conversations: [conversation, child] }
+  const detail = liveThreadDetail(selected)
+  assert.deepEqual(detail.sessions.map(session => session.conversationId), ['child'])
+  assert.equal(detail.ctxK, 9)
+  assert.equal(detail.sendKey, undefined)
+  assert.ok(!detail.ledger.some(item => item.kind === 'session-open' && item.uid === handoff.id))
+  const older = withOlderPage(detail, selected, { read: 'model', page: page([{ ...prompt, run_id: 'child-run' }]) })
+  assert.equal(older.reads?.conversationId, child.id)
+  assert.ok(older.ledger.some(item => item.kind === 'user' && item.text === 'fix the build'))
+  assert.deepEqual(older.sessions.map(session => session.conversationId), ['child'])
+})

@@ -31,7 +31,7 @@ from octomate.schemas.thread import (
 )
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import claude_logfire
-from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
+from octomate.tentacles.claude.adapter import ClaudeRunAccumulator, subagent_name
 from octomate.tentacles.claude.content import prompt_content
 from octomate.tentacles.claude.transcript import (
     CompactMetadata,
@@ -159,7 +159,9 @@ class TailState:
     omitted_uuids: set[str] = field(default_factory=set)
     subagents: dict[str, SubagentTail] = field(default_factory=dict)
     # Claude can repeat the same Agent tool result under a later prompt ID.
-    spawn_call_ids: set[str] = field(default_factory=set)
+    spawn_agents: dict[str, str] = field(default_factory=dict)
+    # Task names waiting for the result or child metadata to identify the conversation.
+    spawn_names: dict[str, str] = field(default_factory=dict)
     # The children already recorded when this connection attached, by spawning
     # call: their hooks fired on an earlier one, so a re-streamed turn says so.
     known_spawns: dict[str, str] = field(default_factory=dict)
@@ -329,7 +331,7 @@ class ClaudeTranscriptTailer:
                 if run.parent_tool_call_id
             )
             offsets[child.id] = tail.offset
-        state.spawn_call_ids.update(state.known_spawns)
+        state.spawn_agents.update(state.known_spawns)
         self.sessions[session_id] = state
         logger.info(
             "session %s: remote tail attached, resuming at %s", session_id, offsets
@@ -599,9 +601,12 @@ class ClaudeTranscriptTailer:
         """Reserve the child's run under the parent's turn, linked to the call it
         answers. Once per call: two sources can name the same one."""
         async with self.locks.hold(state.session_id):
-            if call_id in state.spawn_call_ids:
+            if call_id in state.spawn_agents:
                 return
             conversation = tail.conversation or await self.prepare_subagent(state, tail)
+            name = state.spawn_names.pop(call_id, None)
+            if name and not conversation.name:
+                await self.conversation_manager.set_name(conversation, name)
             await self.conversation_manager.record_external_run(
                 conversation,
                 run_id=f"{tail.agent_id}:{prompt_id}",
@@ -609,7 +614,7 @@ class ClaudeTranscriptTailer:
                 parent_run_id=prompt_id,
                 parent_tool_call_id=call_id,
             )
-            state.spawn_call_ids.add(call_id)
+            state.spawn_agents[call_id] = tail.agent_id
 
     async def fold(
         self,
@@ -639,21 +644,26 @@ class ClaudeTranscriptTailer:
         turn.end_offset = end
         turn.last_line_uuid = line.uuid
         if isinstance(line, TranscriptAssistantLine):
-            await self.announce_known_spawns(state, line)
+            await self.observe_subagent_calls(state, line)
 
-    async def announce_known_spawns(
+    async def observe_subagent_calls(
         self, state: TailState, line: TranscriptAssistantLine
     ) -> None:
-        """Say again that a child started, where a re-streamed turn reaches the call
-        that spawned it. A reader redraws the turn from these events, and the hooks
-        that first announced the child fired on an earlier connection. One that is
-        no longer working is settled in the same breath."""
+        """Keep the task title until the child is identified, and announce a
+        previously recorded child again when its spawning call is re-streamed."""
         working = self.working_subagents.get(state.session_id, [])
         for block in line.message.content:
-            if (
-                not isinstance(block, ToolUseBlock)
-                or block.id not in state.known_spawns
-            ):
+            if not isinstance(block, ToolUseBlock):
+                continue
+            if name := subagent_name(block):
+                agent_id = state.spawn_agents.get(block.id)
+                if agent_id is None:
+                    state.spawn_names[block.id] = name
+                    continue
+                child = state.subagents[agent_id].conversation
+                if child is not None and not child.name:
+                    await self.conversation_manager.set_name(child, name)
+            if block.id not in state.known_spawns:
                 continue
             agent_id = state.known_spawns[block.id]
             kind = block.input.get("subagent_type")

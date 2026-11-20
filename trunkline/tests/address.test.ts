@@ -128,3 +128,20 @@ test('each place opened is a step in history, and Back reopens the last one', as
   assert.equal(window.location.pathname, '/control/agents')
   stop()
 })
+
+
+test('child conversations have their own address and browser history selection', async () => {
+  window.location.pathname = '/threads/on-slack/conversations/child'
+  const stop = followAddress()
+  await settle()
+  assert.equal(useConsole.getState().selConversationId, 'child')
+  await useConsole.getState().actions.selectThread('slack', 'on-slack')
+  assert.equal(useConsole.getState().selConversationId, undefined)
+  assert.deepEqual(moves, ['push /threads/on-slack'])
+  window.location.pathname = '/threads/on-slack/conversations/child'
+  popstate?.()
+  await settle()
+  assert.equal(useConsole.getState().selConversationId, 'child')
+  assert.equal(moves.length, 1)
+  stop()
+})

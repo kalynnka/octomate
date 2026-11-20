@@ -1082,6 +1082,7 @@ class OctomateSession:
             thread_id,
             agent_tentacle_id=agent_id,
             subagent_id=name,
+            name=name,
             parent_conversation_id=parent_id,
         )
         if child.parent_conversation_id != parent_id or child.runs:

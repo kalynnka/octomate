@@ -241,6 +241,15 @@ class StreamingBlock:
     part: TextPart | ThinkingPart
 
 
+def subagent_name(block: ToolUseBlock | AnthropicToolUseBlock) -> str | None:
+    if block.name not in {"Agent", "Task", "Skill"}:
+        return None
+    name = block.input.get("skill" if block.name == "Skill" else "description")
+    if isinstance(name, str):
+        return name.strip() or None
+    return None
+
+
 @dataclass
 class ClaudeRunAccumulator:
     """Translates a Claude Agent SDK message stream into Octomate's two

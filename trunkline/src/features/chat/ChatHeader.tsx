@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { useConsole } from '@/state/console'
-import { useThreadOperations, useThreadSummary } from '@/lib/api/hooks'
+import { useNestedSessions, useThreadOperations, useThreadSummary } from '@/lib/api/hooks'
 import { channelMeta } from '@/lib/api/live'
 import { Icon } from '@/components/Icon'
 import { TextSwap } from '@/components/TextSwap'
@@ -14,6 +14,7 @@ type Operation = keyof typeof operations
 const operationOrder: Operation[] = ['teleport', 'summon']
 
 export function ChatHeader() {
+  const conversationId = useConsole(s => s.selConversationId)
   const selThreadId = useConsole((s) => s.selThreadId)
   const selChannel = useConsole((s) => s.selChannel)
   const detail = useConsole((s) => s.detail)
@@ -26,7 +27,7 @@ export function ChatHeader() {
   const sysDark = useConsole((s) => s.sysDark)
   const gatewayMode = useConsole((s) => s.gatewayMode)
   const { toggleTheme, toggleTrace, setGatewayMode } = useConsole((s) => s.actions)
-  const eligibility = useThreadOperations(selThreadId, Boolean(selThreadId && detail && !ntOn && !running && !pending))
+  const eligibility = useThreadOperations(selThreadId, Boolean(selThreadId && detail && !ntOn && !running && !pending && !conversationId))
   // The op the composer is expanded for, when it was opened on this thread.
   const expanded = !ntOn && gatewayMode?.threadId === selThreadId ? gatewayMode.action : null
   const expand = (action: Operation) => {
@@ -37,7 +38,9 @@ export function ChatHeader() {
   const threadKey = detail?.key ?? (thread?.key || thread?.tag) ?? '—'
   const [choice, setChoice] = useState<Operation | null>(null)
   const [copied, setCopied] = useState<{ id: string; version: number } | null>(null)
-  const showingCopied = !ntOn && copied?.id === selThreadId
+  const selectedId = conversationId ?? selThreadId
+  const copyLabel = conversationId ? 'Copy conversation ID' : 'Copy thread ID'
+  const showingCopied = !ntOn && copied?.id === selectedId
   useEffect(() => {
     if (!copied) return
     const timer = window.setTimeout(() => setCopied(null), 1400)
@@ -48,7 +51,7 @@ export function ChatHeader() {
   const menuId = useId()
   const openMenu = menu?.threadId === selThreadId ? menu.kind : null
   const busyReason = pending ? `Wait for ${pending.action} to finish.` : running ? 'Wait for the current run to finish.' : undefined
-  const threadReason = ntOn || !detail ? 'Open an existing thread first.' : undefined
+  const threadReason = conversationId ? 'Open the parent thread to use thread operations.' : ntOn || !detail ? 'Open an existing thread first.' : undefined
   const loadingReason = eligibility.isError ? eligibility.error.message : !eligibility.data ? 'Checking available destinations…' : undefined
   const unavailable: Record<Operation, string | undefined> = {
     // The relay's reason is the whole answer: an empty suggestion list leaves
@@ -62,9 +65,10 @@ export function ChatHeader() {
   const selected = operations[operation]
   const disabledReason = busyReason ?? unavailable[operation]
   const isDark = theme === 'dark' || (theme === 'auto' && sysDark)
+  const { data: nested } = useNestedSessions(selThreadId, Boolean(conversationId), running, Boolean(conversationId))
   const title = ntOn
     ? ntTitle || 'untitled — new thread'
-    : thread?.title ?? ''
+    : (conversationId ? detail?.reads?.conversations.find(conversation => conversation.id === conversationId)?.name || nested.find(session => session.id === conversationId)?.title || 'Subagent' : thread?.title) ?? ''
 
   const iconBtn = (onClick: () => void, title2: string, active: boolean, children: React.ReactNode, expanded?: boolean) => (
     <button
@@ -109,16 +113,23 @@ export function ChatHeader() {
         zIndex: 80,
       }}
     >
+      {conversationId && <button type="button" className="hov-ink-wash trk-head-icon trk-head-back" aria-label="Back to parent thread"
+        onClick={() => void useConsole.getState().actions.selectThread(selChannel, selThreadId)}>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M19 12H5m7-7-7 7 7 7" />
+        </svg>
+      </button>}
       <span className="trk-head-title">
         <TextSwap style={{ ...label(10, '.14em'), color: 'var(--fg-1)', minWidth: 0, maxWidth: '100%', ...ellipsis }}>{title}</TextSwap>
         <button
           type="button"
           disabled={ntOn || !detail}
-          aria-label="Copy thread ID"
-          title={showingCopied ? 'Copied' : 'Copy thread ID'}
+          className="trk-head-key"
+          aria-label={copyLabel}
+          title={showingCopied ? 'Copied' : copyLabel}
           onClick={async () => {
-            await navigator.clipboard.writeText(selThreadId)
-            setCopied((previous) => ({ id: selThreadId, version: (previous?.version ?? 0) + 1 }))
+            await navigator.clipboard.writeText(selectedId)
+            setCopied((previous) => ({ id: selectedId, version: (previous?.version ?? 0) + 1 }))
           }}
           style={{ ...mono(8.5, 700), color: 'var(--color-accent)', flexShrink: 0, border: 0, padding: 0, background: 'transparent', position: 'relative', minWidth: '8ch', cursor: ntOn || !detail ? 'default' : 'pointer' }}
         >
@@ -195,7 +206,7 @@ export function ChatHeader() {
             if (!running && !ntOn && detail) void eligibility.refetch()
             setMenu(openMenu === 'operations' ? null : { threadId: selThreadId, kind: 'operations' })
           }}
-          className="hov-teal-ghost"
+          className="hov-teal-ghost trk-head-operation-toggle"
           style={{
             ...label(8, '.1em'), color: 'var(--trk-on-fill)',
             background: 'var(--color-teal)', border: '1px solid var(--color-teal)',
@@ -204,7 +215,7 @@ export function ChatHeader() {
             position: 'relative', zIndex: 60,
           }}
         >
-          ▾
+          <svg width="8" height="8" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true"><path d="m2 4 4 5 4-5Z" /></svg>
         </button>
         {openMenu === 'operations' && (
           <div

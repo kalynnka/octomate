@@ -136,6 +136,12 @@ const PATHS: Record<string, ReactNode> = {
     </>
   ),
   check: <path d="M20 6 9 17l-5-5" />,
+  cornerDownRight: (
+    <>
+      <path d="m15 10 5 5-5 5" />
+      <path d="M4 4v7a4 4 0 0 0 4 4h12" />
+    </>
+  ),
   close: <path d="m18 6-12 12M6 6l12 12" />,
   copy: (
     <>

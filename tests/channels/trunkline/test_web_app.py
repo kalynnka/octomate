@@ -1711,6 +1711,21 @@ async def test_threads_and_detail_endpoints(
             await client.get(f"/api/trunkline/threads/{foreign_id}/conversations")
         ).json() == []
 
+        for suffix, expected in (("/messages", page), ("/usage", usage.json())):
+            selected = await client.get(
+                f"{base}/conversations/{conversation['id']}{suffix}"
+            )
+            assert selected.status_code == 200
+            assert selected.json() == expected
+            for denied_base, conversation_id in (
+                (base, str(uuid7())),
+                (f"/api/trunkline/threads/{foreign_id}", conversation["id"]),
+            ):
+                denied = await client.get(
+                    f"{denied_base}/conversations/{conversation_id}{suffix}",
+                )
+                assert denied.status_code == 404
+
         # Every read hangs off a thread, so a stray id is a 404 on all of them
         # rather than an empty list that reads as "nothing here yet".
         stray = uuid.UUID("00000000-0000-7000-8000-000000000007")
@@ -1719,6 +1734,8 @@ async def test_threads_and_detail_endpoints(
             "/messages",
             "/conversations/messages",
             "/usage",
+            f"/conversations/{conversation['id']}/messages",
+            f"/conversations/{conversation['id']}/usage",
             "/conversations",
             "/project",
             "/batches",
@@ -1730,6 +1747,18 @@ async def test_threads_and_detail_endpoints(
             f"{base}/conversations/messages", params={"cursor": "not-a-cursor"}
         )
         assert forged.status_code == 422
+        scoped_messages = f"{base}/conversations/{conversation['id']}/messages"
+        scoped_first = (await client.get(scoped_messages, params={"limit": 1})).json()
+        scoped_rest = (
+            await client.get(
+                scoped_messages, params={"cursor": scoped_first["next_cursor"]}
+            )
+        ).json()
+        assert scoped_first == first
+        assert scoped_rest == rest
+        assert (
+            await client.get(scoped_messages, params={"cursor": "not-a-cursor"})
+        ).status_code == 422
 
         connected = await client.get("/api/trunkline/channels")
         assert connected.status_code == 200

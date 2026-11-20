@@ -3,15 +3,15 @@
  * the channel/thread tree, and the index footer. Ported from the comp's
  * "SIDEBAR: THREADS × CHANNELS" aside.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { Fold } from '@/components/Fold'
 import { Icon } from '@/components/Icon'
 import { ThreadActivity } from '@/components/ThreadActivity'
 import { TextSwap } from '@/components/TextSwap'
 import { display, ellipsis, label, mono } from '@/components/text'
-import { useChannels, useThreads } from '@/lib/api/hooks'
-import type { ThreadSummary } from '@/lib/api/types'
+import { useChannels, useNestedSessions, useThreads } from '@/lib/api/hooks'
+import type { NestedSession, ThreadSummary } from '@/lib/api/types'
 import { channelMeta } from '@/lib/api/live'
 import { useRailDrag } from '@/lib/useRailDrag'
 import { useConsole } from '@/state/console'
@@ -19,6 +19,8 @@ import { useActivity } from '@/state/activity'
 
 // How many of a channel's threads are rendered before the rail asks for more.
 const THREAD_PAGE = 12
+// How many of a thread's nested sessions show before it asks for the earlier ones.
+const NESTED_PAGE = 6
 
 interface ThreadRow {
   /** the row's own id — unique, and what React keys on */
@@ -30,7 +32,101 @@ interface ThreadRow {
   agent: string
   on: boolean
   running: boolean
-  pick?: () => void
+  pick?: () => Promise<void>
+}
+
+function ThreadCard({ row, brand, enabled, depth }: { row: ThreadRow; brand: string; enabled: boolean; depth?: number }) {
+  return (
+    <button type="button" aria-current={row.on ? 'page' : undefined} disabled={!row.pick}
+      data-thread-id={row.id} data-running={row.running ? '' : undefined}
+      onClick={row.pick} title={row.title}
+      className="hov-wash trk-nav-button trk-thread-pick"
+      style={{ '--trk-thread-brand': brand, paddingLeft: depth === undefined ? undefined : `${14 + (depth + 1) * 20}px` } as CSSProperties}>
+      <div className="trk-thread-heading">
+        <i className="trk-thread-dot" style={{ visibility: row.running ? 'visible' : 'hidden' }} />
+        <span className="trk-thread-title" style={{ fontSize: 12, ...ellipsis, flex: 1 }}>
+          <TextSwap style={ellipsis}>{row.title}</TextSwap>
+        </span>
+      </div>
+      <div className="trk-thread-tagline">
+        <span style={{ ...mono(8.5, 700), color: brand, whiteSpace: 'nowrap', flexShrink: 0 }}><TextSwap>{row.tag}</TextSwap></span>
+        <ThreadActivity id={row.id} threadKey={row.threadKey} enabled={enabled} fallback={row.agent} />
+      </div>
+    </button>
+  )
+}
+
+/**
+ * A thread's row and the sessions nested under it: the other agents in the
+ * thread and the subagents they spawned. The nest is open while its thread is
+ * open or running, and the count on the row's tag line folds it either way.
+ */
+function ThreadNest({ threadId, enabled, on, running, pick, children, brand, selectedId }: {
+  threadId: string
+  enabled: boolean
+  on: boolean
+  running: boolean
+  brand: string
+  selectedId?: string
+  pick: (session: NestedSession) => Promise<void>
+  children: ReactNode
+}) {
+  const [chosen, setChosen] = useState<boolean>()
+  const [all, setAll] = useState(false)
+  const open = chosen ?? (on || running)
+  const { data: sessions } = useNestedSessions(threadId, enabled, running, open)
+  const earlier = all ? 0 : Math.max(0, sessions.length - NESTED_PAGE)
+  return (
+    <>
+      <div className="trk-thread-row" data-nested={sessions.length ? '' : undefined}>
+        {children}
+        {sessions.length > 0 && (
+          <button type="button" className="trk-nav-button trk-thread-nest-toggle" aria-expanded={open}
+            aria-controls={`trk-nest-${threadId}`}
+            aria-label={`${sessions.length} nested ${sessions.length === 1 ? 'session' : 'sessions'}`}
+            title={open ? 'Fold nested sessions' : 'Show nested sessions'}
+            onClick={() => setChosen(!open)}
+          >
+            <TextSwap>{sessions.length}</TextSwap>
+            <svg className="lt-disclose" data-open={open ? '' : undefined} aria-hidden="true"
+              width="8" height="8" viewBox="0 0 10 10" fill="currentColor">
+              <path d="m3 2 4 3-4 3Z" />
+            </svg>
+          </button>
+        )}
+      </div>
+      {sessions.length > 0 && (
+        <div id={`trk-nest-${threadId}`} aria-hidden={!open || undefined} inert={!open}>
+          <Fold open={open}>
+            <div className="trk-thread-nest">
+              {earlier > 0 && (
+                <button type="button" className="hov-wash trk-nav-button trk-thread-nested" onClick={() => setAll(true)}
+                  style={{ ...label(7.5, '.14em'), color: 'var(--fg-3)' }}>
+                  {`↑ ${earlier} earlier`}
+                </button>
+              )}
+              {sessions.slice(earlier).map((session, index) => (
+                <div key={session.id} className="trk-thread-branch">
+                  <ThreadCard brand={brand} enabled={false} depth={session.depth}
+                    row={{ id: session.id, title: session.title, tag: session.tag, agent: session.agent,
+                      on: on && selectedId === session.id, running: session.running && running,
+                      pick: () => pick(session) }} />
+                  {Array.from({ length: session.depth + 1 }, (_, level) => {
+                    const next = sessions.find((item, at) => at > earlier + index && item.depth <= level)
+                    const continues = next?.depth === level
+                    if (level < session.depth && !continues) return null
+                    return <i key={level} className="trk-thread-connector" aria-hidden="true"
+                      data-branch={level === session.depth ? '' : undefined}
+                      data-last={!continues ? '' : undefined} style={{ left: 30 + level * 20 }} />
+                  })}
+                </div>
+              ))}
+            </div>
+          </Fold>
+        </div>
+      )}
+    </>
+  )
 }
 
 export function ThreadsSidebar() {
@@ -53,6 +149,7 @@ export function ThreadsSidebar() {
   const focusId = useConsole((s) => s.channelFocusHistory.at(-1))
   const chPins = useConsole((s) => s.chPins)
   const selThreadId = useConsole((s) => s.selThreadId)
+  const selConversationId = useConsole((s) => s.selConversationId)
   const currentRunning = useConsole((s) => s.running)
   const activeKeys = new Set(useActivity(useShallow(state => Object.keys(state).filter(key => state[key] !== undefined))))
   const ntOn = useConsole((s) => s.ntOn)
@@ -485,68 +582,11 @@ export function ThreadsSidebar() {
                     {rows.slice(0, visibleCount).map((t) => (
                       <div key={t.id} className={t.id === 'THR-NEW' ? 'trk-thread-enter' : undefined}>
                       <div style={{ overflow: 'hidden' }}>
-                      <button type="button" aria-current={t.on ? 'page' : undefined} disabled={!t.pick}
-                        data-thread-id={t.id} data-running={t.running ? '' : undefined}
-                        onClick={t.pick}
-                        className="hov-wash trk-nav-button trk-thread-pick"
-                        style={{ position: 'relative', padding: 'var(--trk-th-pad, 7px 14px)', cursor: 'pointer' }}
-                      >
-                        {t.on && (
-                          <>
-                            <span
-                              style={{
-                                position: 'absolute',
-                                inset: 0,
-                                background: 'var(--hover)',
-                                pointerEvents: 'none',
-                              }}
-                            />
-                            <span
-                              style={{
-                                position: 'absolute',
-                                left: 0,
-                                top: 0,
-                                bottom: 0,
-                                width: 3,
-                                background: c.brand,
-                              }}
-                            />
-                          </>
-                        )}
-                        <div
-                          style={{ display: 'flex', alignItems: 'center', gap: 7, position: 'relative' }}
-                        >
-                          <i
-                            className="trk-thread-dot"
-                            style={{
-                              width: 5,
-                              height: 5,
-                              borderRadius: 9999,
-                              background: 'var(--trk-thread-running)',
-                              visibility: t.running ? 'visible' : 'hidden',
-                              flexShrink: 0,
-                            }}
-                          />
-                          <span className="trk-thread-title" style={{ fontSize: 12, ...ellipsis, flex: 1 }}>
-                            <TextSwap style={{ ...ellipsis }}>{t.title}</TextSwap>
-                          </span>
-                        </div>
-                        <div
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 7,
-                            marginTop: 3,
-                            paddingLeft: 12,
-                            position: 'relative',
-                          }}
-                        >
-                          <span style={{ ...mono(8.5, 700), color: c.brand, whiteSpace: 'nowrap', flexShrink: 0 }}>
-                            <TextSwap>{t.tag}</TextSwap>
-                          </span>
-                          <ThreadActivity id={t.id} threadKey={t.threadKey} enabled={!folded} fallback={t.agent} />
-                        </div>
-                      </button>
+                      <ThreadNest threadId={t.id} enabled={!folded && t.pick !== undefined} on={t.on} running={t.running}
+                        brand={c.brand} selectedId={selConversationId}
+                        pick={(session) => selectThread(c.id, t.id, 'down', session.id)}>
+                        <ThreadCard row={{ ...t, on: t.on && !selConversationId }} brand={c.brand} enabled={!folded} />
+                      </ThreadNest>
                       </div>
                       </div>
                     ))}

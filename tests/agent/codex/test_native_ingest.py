@@ -882,6 +882,7 @@ async def test_thread_spawn_rollout_tree_records_resumed_child_runs(
     )
 
     assert child.parent_conversation_id == parent.id
+    assert child.name == "audit"
     assert child.external_id == CHILD_THREAD_ID
     assert [run.id for run in child.runs] == [CHILD_TURN_ONE, CHILD_TURN_TWO]
     assert [run.parent_run_id for run in child.runs] == [

@@ -41,6 +41,23 @@ export interface ThreadSummary {
   tag?: string
 }
 
+/** A session nested under a thread's row in the sidebar: another agent's own
+ *  line through the thread, or a subagent one of its sessions spawned. */
+export interface NestedSession {
+  /** the conversation it is */
+  id: string
+  kind: 'agent' | 'subagent'
+  agent: string
+  /** 0 hangs off the thread; each level deeper hangs off the row above */
+  depth: number
+  title: string
+  tag: string
+  /** it has a run still open; only a native subagent's run says so */
+  running: boolean
+  /** the runtime's identifier, shared with its ledger card */
+  invocationId?: string
+}
+
 export type SessionKind = 'entry' | 'summon' | 'teleport' | 'ingest'
 export type SessionTone = 'accent' | 'gold' | 'sage' | 'teal' | 'ghost'
 
@@ -164,7 +181,7 @@ export type LedgerItem =
       tone: 'plain' | 'summon'
     }
   | { kind: 'user'; uid: string; t: string; who: string; userId?: string | null; text: string; annotations?: MessageAnnotations | null; workspace?: string; reply?: MessageReply; chips?: QueueChip[] }
-  | { kind: 'agent'; uid: string; agentId?: string; label: string; blocks: AgentBlock[]; workspace?: string; reply?: MessageReply }
+  | { kind: 'agent'; uid: string; agentId?: string; subagentId?: string; label: string; blocks: AgentBlock[]; workspace?: string; reply?: MessageReply }
   | { kind: 'code'; uid: string; lang: string; lines: string[] }
   /** `thinking` is false once the part closed — the card folds itself then,
    *  the way `stream.streaming` marks a reply as settled.
@@ -192,7 +209,22 @@ export type LedgerItem =
       defaultOpen?: boolean
     }
   | { kind: 'file'; uid: string; name: string; rev: string; note: string }
-  | { kind: 'sub'; uid: string; id: string; route: string; note: string }
+  | {
+      kind: 'sub'
+      uid: string
+      agentId?: string
+      invocationId?: string
+      id: string
+      route: string
+      /** one line for the timeline: its state, or what it handed back */
+      note: string
+      status?: 'running' | 'completed' | 'failed' | 'cancelled'
+      /** what the parent called the task, and the prompt it gave */
+      brief?: string
+      prompt?: string
+      /** what the subagent handed back */
+      report?: string
+    }
   | {
       kind: 'approval'
       uid: string

@@ -86,15 +86,21 @@ RunT = TypeVar("RunT", bound=AgentRun)
 request_usage_adapter: TypeAdapter[RequestUsage] = TypeAdapter(RequestUsage)
 
 
-def own_runs(thread_id: UUID7) -> Select[tuple[str]]:
+def own_runs(
+    thread_id: UUID7, conversation_id: UUID7 | None = None
+) -> Select[tuple[str]]:
     """The runs in the history of the thread's own conversations — its agents', not
     the subagents' those agents spawned. A fork's history holds the runs it was
-    forked with, so those are its own too."""
+    forked with, so those are its own too. A selected conversation scopes the
+    read to that conversation, including a subagent."""
     return (
         select(ConversationRun["run_id"])
         .join(Conversation, Conversation["id"] == ConversationRun["conversation_id"])
         .where(
-            Conversation["thread_id"] == thread_id, Conversation["subagent_id"] == ""
+            Conversation["thread_id"] == thread_id,
+            Conversation["id"] == conversation_id
+            if conversation_id is not None
+            else Conversation["subagent_id"] == "",
         )
     )
 
@@ -999,6 +1005,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         *,
         agent_tentacle_id: str,
         subagent_id: str = "",
+        name: str | None = None,
         parent_conversation_id: UUID7 | None = None,
         with_runs: bool = True,
         native: bool = False,
@@ -1065,6 +1072,8 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                         parent_conversation_id=parent_conversation_id,
                     )
                     session.add(conversation)
+                if name and not conversation.name:
+                    conversation.name = name.strip() or None
                 await session.flush()
                 await session.commit()
             if with_runs:
@@ -1128,7 +1137,12 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         return list(rows)
 
     async def messages_page(
-        self, thread_id: UUID7, cursor: str | None = None, *, limit: int
+        self,
+        thread_id: UUID7,
+        cursor: str | None = None,
+        *,
+        limit: int,
+        conversation_id: UUID7 | None = None,
     ) -> Page[ModelRequest | ModelResponse]:
         """The model messages of the thread's own conversations, newest first, a
         page at a time and continued from an Arcanus `cursor`. Ids are uuid7 and a
@@ -1137,10 +1151,10 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
 
         Each carries the chat rows bound to it — the ones a request was built from,
         the ones a response was delivered as — so a reader has who said what
-        without the prompt's dressing. A subagent's messages stay out: they are its
-        own conversation's, and the spawn call in its parent's run stands for them.
+        without the prompt's dressing. Without `conversation_id`, subagents stay
+        out; selecting a conversation reads only its own messages.
         """
-        scope = ModelMessage["run_id"].in_(own_runs(thread_id))
+        scope = ModelMessage["run_id"].in_(own_runs(thread_id, conversation_id))
         bookmark = None if cursor is None else Cursor[ModelMessage](cursor).bookmark
         after = (
             []
@@ -1181,14 +1195,16 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
             has_more=len(rows) > limit,
         )
 
-    async def usage(self, thread_id: UUID7) -> RequestUsage:
+    async def usage(
+        self, thread_id: UUID7, *, conversation_id: UUID7 | None = None
+    ) -> RequestUsage:
         """The tokens the thread's own conversations spent, every response's usage
-        summed. A subagent's are left to its own conversation, as its messages are.
+        summed, or just the selected conversation's, including a subagent's.
         Only the usage column is read: summing a thread must not load its parts."""
         async with async_session() as session:
             usages = await session.scalars(
                 select(ModelResponse["usage"]).where(
-                    ModelResponse["run_id"].in_(own_runs(thread_id)),
+                    ModelResponse["run_id"].in_(own_runs(thread_id, conversation_id)),
                     ModelResponse["usage"].is_not(None),
                 )
             )
@@ -1199,7 +1215,9 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
 
     async def thread_id(self, conversation_id: UUID7) -> UUID7 | None:
         async with async_session() as session:
-            conversation = await session.get(Conversation, conversation_id)
+            conversation = await session.get(
+                Conversation, conversation_id, options=[lazyload(Conversation["runs"])]
+            )
         if conversation is None:
             return None
         return conversation.thread_id

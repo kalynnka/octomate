@@ -342,7 +342,14 @@ async def test_driven_children_keep_their_own_messages_and_spawn_calls(
             yield AssistantMessage(
                 model="parent-model",
                 content=[
-                    ToolUseBlock(id=key, name="Agent", input={"prompt": f"check {key}"})
+                    ToolUseBlock(
+                        id=key,
+                        name="Agent",
+                        input={
+                            "prompt": f"check {key}",
+                            "description": f"Review {key}",
+                        },
+                    )
                     for key in ids
                 ],
             )
@@ -421,6 +428,7 @@ async def test_driven_children_keep_their_own_messages_and_spawn_calls(
     for child in children:
         [run] = child.runs
         key = child.subagent_id.removeprefix("child-")
+        assert child.name == f"Review {key}"
         assert (run.parent_run_id, run.parent_tool_call_id, run.model_name) == (
             parent_run.id,
             key,

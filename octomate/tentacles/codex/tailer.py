@@ -200,6 +200,7 @@ class SubagentTail:
 
     thread_id: str
     path: Path
+    name: str = ""  # Final component of the runtime's agent path.
     cwd: str = ""  # from the child rollout's own session metadata
     offset: int = 0
     conversation: Conversation | None = None
@@ -590,6 +591,7 @@ class CodexTranscriptTailer:
             thread_id=metadata.id,
             path=path,
             cwd=metadata.cwd,
+            name=spawn.agent_path.rsplit("/", 1)[-1],
         )
         state.subagents[tail.thread_id] = tail
         return tail
@@ -604,6 +606,7 @@ class CodexTranscriptTailer:
             agent_tentacle_id=self.agent_tentacle_id,
             native=True,
             subagent_id=tail.thread_id,
+            name=tail.name,
             parent_conversation_id=parent.id,
         )
         tail.recorded = tail.conversation.native_run_ids

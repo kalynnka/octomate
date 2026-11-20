@@ -246,6 +246,7 @@ class FakeConversationManager(ConversationManager):
         *,
         agent_tentacle_id: str | None = None,
         subagent_id: str = "",
+        name: str | None = None,
         parent_conversation_id: UUID7 | None = None,
         with_runs: bool = True,
         native: bool = False,
@@ -261,6 +262,8 @@ class FakeConversationManager(ConversationManager):
                 agent_tentacle_id=agent_tentacle_id or "",
             )
             self.store[store_key] = conversation
+        if name and not conversation.name:
+            conversation.name = name.strip() or None
         if not conversation.agent_tentacle_id:
             conversation.agent_tentacle_id = agent_tentacle_id or ""
         if conversation.thread_id is None:

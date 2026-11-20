@@ -45,7 +45,8 @@ export function traceRows(items: LedgerItem[], running: boolean): (LedgerItem | 
       const after = contexts.filter(row => row.context.title === 'Memory sources')
       const message: LedgerItem | AnnotatedMessage = after.length && (item.kind === 'user' || item.kind === 'agent' || item.kind === 'stream')
         ? { kind: 'annotated', uid: item.uid, item, after } : item
-      if (item.kind === 'user') rows.push(message, ...before)
+      // A prompt that was all harness context (a task notification) has nothing to say itself.
+      if (item.kind === 'user') rows.push(...(item.text || !before.length ? [message] : []), ...before)
       else rows.push(...before, message)
       continue
     }

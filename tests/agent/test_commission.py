@@ -152,6 +152,7 @@ async def test_commission_runs_the_accomplice_and_returns_its_report() -> None:
     assert turn.model == "fake-model"
     parent = conversations.store[(THREAD, "inkling", "")]
     child = conversations.store[(THREAD, "claude", "repo-audit")]
+    assert child.name == "repo-audit"
     assert child.parent_conversation_id == parent.id
     # The hand was only addressed at the pre-ensured child conversation…
     assert turn.conversation_id == child.id

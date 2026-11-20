@@ -18,7 +18,7 @@ import {
   fetchThread,
   fetchThreadBatches,
   fetchThreadConversations,
-  fetchThreadModelMessages,
+  modelMessagePage,
   fetchThreadProject,
   fetchThreadUnbound,
   fetchThreadUsage,
@@ -26,6 +26,7 @@ import {
   patchEffort,
   patchPermissionMode,
 } from './client'
+import { queryClient } from '../queryClient'
 import type { HealthState } from './client'
 import type {
   ApiConversation,
@@ -103,21 +104,22 @@ export const api = {
    * rather than one fat payload — the two pages are the only large ones, and they
    * come a page at a time.
    */
-  async getThreadDetail(id: string): Promise<ThreadDetail> {
+  async getThreadDetail(id: string, conversationId?: string): Promise<ThreadDetail> {
     const [thread, model, unbound, conversations, project, batches, usage] = await Promise.all([
       fetchThread(id),
-      fetchThreadModelMessages(id),
-      fetchThreadUnbound(id),
+      queryClient.fetchQuery(modelMessagePage(id, undefined, conversationId)),
+      conversationId ? Promise.resolve({ items: [], total: 0, has_more: false, next_cursor: null }) : fetchThreadUnbound(id),
       fetchThreadConversations(id),
       fetchThreadProject(id),
-      fetchThreadBatches(id),
-      fetchThreadUsage(id),
+      conversationId ? Promise.resolve([]) : fetchThreadBatches(id),
+      fetchThreadUsage(id, conversationId),
     ])
     if (thread === null || model === null || unbound === null) {
       throw new Error(`thread ${id} not found on the relay`)
     }
     return liveThreadDetail({
       thread,
+      conversationId,
       modelMessages: [...model.items].reverse(),
       unbound: [...unbound.items].reverse(),
       cursors: {
@@ -133,9 +135,9 @@ export const api = {
   },
 
   /** The next page of one of a thread's reads; `withOlderPage` folds it on. */
-  async olderPage(id: string, read: ThreadRead, cursor: string): Promise<OlderPage> {
+  async olderPage(id: string, read: ThreadRead, cursor: string, conversationId?: string): Promise<OlderPage> {
     if (read === 'model') {
-      const page = await fetchThreadModelMessages(id, cursor)
+      const page = await queryClient.fetchQuery(modelMessagePage(id, cursor, conversationId))
       if (page !== null) return { read, page }
     } else {
       const page = await fetchThreadUnbound(id, cursor)
