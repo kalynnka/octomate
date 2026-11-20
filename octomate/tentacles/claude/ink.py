@@ -18,7 +18,6 @@ from claude_agent_sdk import (
     get_session_messages,
 )
 from claude_agent_sdk.types import Message
-from pydantic_ai.messages import UserPromptPart
 
 from octomate.habitat import Habitat, ManagedHabitat
 from octomate.schemas.messages import ModelRequest, ModelResponse
@@ -26,7 +25,6 @@ from octomate.tentacles.claude.catalog import ClaudeCommandDescriptor, ClaudeSer
 from octomate.tentacles.claude.transcript import (
     CompactBoundary,
     TranscriptUserMessage,
-    prompt_text,
     relocate_session,
 )
 from octomate.tentacles.claude.transport import HabitatTransport
@@ -76,18 +74,8 @@ class ClaudeInk:
     async def compaction_messages(
         self, boundary: CompactBoundary, *, cwd: Path
     ) -> list[ModelRequest | ModelResponse]:
-        """Read the exact summary UUID from this driven session's SDK history."""
-        summary_id = next(
-            (
-                anchor.anchor_uuid
-                for anchor in (
-                    boundary.metadata.preserved_messages,
-                    boundary.metadata.preserved_segment,
-                )
-                if anchor is not None and anchor.anchor_uuid is not None
-            ),
-            None,
-        )
+        """Read the exact summary UUID from a local driven session's SDK history."""
+        summary_id = boundary.summary_uuid
         if summary_id is None:
             return []
         messages = await asyncio.to_thread(
@@ -105,17 +93,8 @@ class ClaudeInk:
         )
         if summary is None:
             return []
-        content = prompt_text(TranscriptUserMessage.model_validate(summary.message))
-        part = UserPromptPart(content)
-        if boundary.timestamp is not None:
-            part.timestamp = boundary.timestamp
-        return [
-            ModelRequest(
-                parts=[part],
-                timestamp=boundary.timestamp,
-                metadata={"native_item_ids": [summary.uuid]},
-            )
-        ]
+        message = TranscriptUserMessage.model_validate(summary.message)
+        return [message.compaction_message(summary.uuid, boundary.timestamp)]
 
     async def stream(
         self,

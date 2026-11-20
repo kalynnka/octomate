@@ -1,5 +1,6 @@
 """Opt-in model calls: the Claude tentacle drives a guest CLI in the owner's sandbox."""
 
+import json
 import os
 
 import pytest
@@ -125,6 +126,26 @@ async def test_a_driven_turn_writes_into_the_owners_tree_and_resumes(
                 "Reply with only that token; do not use tools."
             )
             assert token in answer
+            await turn("/compact")
+            conversation = await host.conversations.ensure(
+                thread_id, agent_tentacle_id=tentacle.id, with_runs=False
+            )
+            assert conversation.external_id is not None
+            [boundary] = await host.conversations.native_compactions(
+                conversation, conversation.external_id
+            )
+            [message] = boundary.messages
+            transcript = await kept_bytes(host, conversation, owner)
+            [summary] = [
+                row
+                for row in map(json.loads, transcript.splitlines())
+                if row.get("isCompactSummary")
+                and row["parentUuid"] == boundary.native_compaction_id
+            ]
+            assert summary["sessionId"] == conversation.external_id
+            assert message.metadata == {"native_item_ids": [summary["uuid"]]}
+            assert message.message_text == summary["message"]["content"]
+            assert message.run_id is None
     finally:
         try:
             await tentacle.revoke_runtime_keys()

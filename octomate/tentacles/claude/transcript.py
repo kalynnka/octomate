@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import shutil
+from io import BytesIO
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -18,9 +19,12 @@ from pydantic import (
     Field,
     JsonValue,
     TypeAdapter,
+    ValidationError,
 )
+from pydantic_ai.messages import UserPromptPart
 
 from octomate.schemas.compactions import NativeContext
+from octomate.schemas.messages import ModelRequest
 from octomate.types.compactions import CompactionTrigger
 from octomate.types.json import JsonObject
 
@@ -105,6 +109,16 @@ class CompactBoundary(TranscriptSchema):
     )
     timestamp: AwareDatetime | None = None
 
+    @property
+    def summary_uuid(self) -> str | None:
+        for anchor in (
+            self.metadata.preserved_messages,
+            self.metadata.preserved_segment,
+        ):
+            if anchor is not None and anchor.anchor_uuid is not None:
+                return anchor.anchor_uuid
+        return None
+
 
 class TranscriptUserMessage(TranscriptSchema):
     """The `message` of a user line: a plain prompt, or its raw content blocks."""
@@ -114,6 +128,16 @@ class TranscriptUserMessage(TranscriptSchema):
     # validation lazily wraps a tool-result's inner string content in a char-by-char
     # `ValidatorIterator`, corrupting it. Plain dicts round-trip faithfully.
     content: str | list[JsonObject]
+
+    def compaction_message(
+        self, uuid: str, timestamp: AwareDatetime | None
+    ) -> ModelRequest:
+        part = UserPromptPart(prompt_text(self))
+        if timestamp is not None:
+            part.timestamp = timestamp
+        return ModelRequest(
+            parts=[part], timestamp=timestamp, metadata={"native_item_ids": [uuid]}
+        )
 
 
 class TranscriptOrigin(TranscriptSchema):
@@ -312,6 +336,35 @@ def prompt_text(message: TranscriptUserMessage) -> str:
             if isinstance(text, str):
                 texts.append(text)
     return "\n".join(texts)
+
+
+def retained_compaction_summaries(
+    transcript: bytes, boundaries: list[CompactBoundary]
+) -> list[tuple[CompactBoundary, ModelRequest]]:
+    """Match a turn's SDK boundaries to their summary records in one JSONL pass."""
+    pending = {
+        (boundary.session_id, boundary.uuid): boundary for boundary in boundaries
+    }
+    summaries: list[tuple[CompactBoundary, ModelRequest]] = []
+    for raw in BytesIO(transcript):
+        if b'"isCompactSummary"' not in raw:
+            continue
+        try:
+            line = TranscriptUserLine.model_validate_json(raw)
+        except ValidationError:
+            continue
+        if not line.is_compact_summary or line.is_sidechain or line.parent_uuid is None:
+            continue
+        key = (line.session_id, line.parent_uuid)
+        boundary = pending.get(key)
+        if boundary is not None and boundary.summary_uuid in (None, line.uuid):
+            summaries.append(
+                (boundary, line.message.compaction_message(line.uuid, line.timestamp))
+            )
+            del pending[key]
+        if not pending:
+            break
+    return summaries
 
 
 def transcripts_dir(cwd: Path) -> Path:

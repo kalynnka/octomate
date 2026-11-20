@@ -49,6 +49,8 @@ class DrivenSubagents:
                 if isinstance(item, SubagentStartedEvent):
                     self.working.append(item.invocation_id)
                 elif isinstance(item, SubagentSettledEvent):
+                    if item.invocation_id not in self.working:
+                        continue
                     self.working.remove(item.invocation_id)
                 elif isinstance(
                     item, AssistantMessage | UserMessage | StreamEvent

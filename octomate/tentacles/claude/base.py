@@ -116,7 +116,7 @@ from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
     QuestionRequest,
 )
-from octomate.schemas.messages import ModelRequest
+from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadKey
@@ -145,6 +145,7 @@ from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
 from octomate.tentacles.claude.transcript import (
     CompactBoundary,
     relocate_session,
+    retained_compaction_summaries,
     transcripts_dir,
 )
 from octomate.tentacles.deferred import DeferredSuspender, Interjections
@@ -906,32 +907,38 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         )
 
     async def record_compaction(
-        self, conversation: Conversation, message: Message, *, cwd: Path
+        self,
+        conversation: Conversation,
+        boundary: CompactBoundary,
+        messages: list[ModelRequest | ModelResponse] | None = None,
     ) -> None:
-        """Persist the SDK's completed boundary before yielding its presentation."""
-        if (
-            not isinstance(message, SystemMessage)
-            or message.subtype != "compact_boundary"
-        ):
-            return
-        boundary = CompactBoundary.model_validate(message.data)
         await self.conversations.record_driven_compaction(
             conversation,
             native_session_id=boundary.session_id,
             native_compaction_id=boundary.uuid,
             trigger=boundary.metadata.trigger,
             happened_at=boundary.timestamp,
+            messages=messages,
         )
-        messages = await self.ink.compaction_messages(boundary, cwd=cwd)
-        if messages:
-            await self.conversations.record_driven_compaction(
-                conversation,
-                native_session_id=boundary.session_id,
-                native_compaction_id=boundary.uuid,
-                trigger=boundary.metadata.trigger,
-                happened_at=boundary.timestamp,
-                messages=messages,
-            )
+
+    async def record_retained_summaries(
+        self, invocation: Invocation, boundaries: list[CompactBoundary]
+    ) -> None:
+        """Read the owner's retained transcript after the guest finishes its upload hooks."""
+        if not boundaries:
+            return
+        conversation = await self.conversations.get(
+            invocation.conversation.id, with_runs=False
+        )
+        if conversation.transcript_file_id is None:
+            return
+        transcript = await self.files.read(
+            conversation.transcript_file_id, owner_id=invocation.owner_id
+        )
+        for boundary, summary in await asyncio.to_thread(
+            retained_compaction_summaries, transcript, boundaries
+        ):
+            await self.record_compaction(conversation, boundary, [summary])
 
     async def execute_command(
         self,
@@ -1477,6 +1484,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             # client inside each run's span also reparents resumed sessions.
             async with (
                 self.driving(session_id),
+                contextlib.AsyncExitStack() as after_stream,
                 contextlib.aclosing(
                     self.ink.stream(
                         prompt_text,
@@ -1497,7 +1505,11 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                     agent_id=self.id, conversation_id=conversation.id
                 )
                 command_result: ResultMessage | None = None
-                compacted = False
+                boundaries: list[CompactBoundary] = []
+                if managed:
+                    after_stream.push_async_callback(
+                        self.record_retained_summaries, invocation, boundaries
+                    )
                 async for message in messages:
                     if isinstance(
                         message,
@@ -1510,15 +1522,21 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                         continue
                     if command is not None and isinstance(message, ResultMessage):
                         command_result = message
-                    compacted |= (
+                    if (
                         isinstance(message, SystemMessage)
                         and message.subtype == "compact_boundary"
-                    )
-                    await self.record_compaction(
-                        conversation,
-                        message,
-                        cwd=invocation.workspace.path,
-                    )
+                    ):
+                        boundary = CompactBoundary.model_validate(message.data)
+                        boundaries.append(boundary)
+                        await self.record_compaction(conversation, boundary)
+                        if not managed and (
+                            summaries := await self.ink.compaction_messages(
+                                boundary, cwd=invocation.workspace.path
+                            )
+                        ):
+                            await self.record_compaction(
+                                conversation, boundary, summaries
+                            )
                     for event in accumulator.consume(
                         message, command=command is not None
                     ):
@@ -1546,7 +1564,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                     external_id=accumulator.session_id,
                     native_turn_id=prompt_id,
                 )
-            if compacted and accumulator.session_id:
+            if boundaries and accumulator.session_id:
                 await self.conversations.record_native_memberships(
                     conversation, accumulator.session_id
                 )
