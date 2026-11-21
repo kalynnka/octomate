@@ -210,7 +210,6 @@ async def test_host_settings_are_disabled_only_when_advertised(
         for entry in descriptors.values()
         if entry.unavailable_reason
     )
-    assert descriptors["plan"].argument_hint == "[on|off]"
     assert descriptors["clear"].description == "Native clear"
     client.query.assert_not_called()
 

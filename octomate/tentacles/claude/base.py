@@ -11,7 +11,7 @@ import contextlib
 import json
 import logging
 from collections.abc import AsyncGenerator, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from functools import cached_property
 from io import BytesIO
 from pathlib import Path
@@ -89,7 +89,6 @@ from starlette.datastructures import Headers
 from uuid_utils.compat import uuid7
 
 from octomate.config.agents import Claim, ClaudeCodeConfig
-from octomate.config.channels import TrunklineChannelConfig
 from octomate.config.habitat import NativeHabitatConfig
 from octomate.events import (
     ActionBatchAnsweredEvent,
@@ -131,7 +130,6 @@ from octomate.telemetry import (
     octomate_trace_environment,
 )
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
-from octomate.tentacles.channel import ChannelTentacle
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.catalog import (
     CONTROL_COMMANDS,
@@ -963,10 +961,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         return catalog
 
     def needs_invocation(self, descriptor: CommandDescriptor) -> bool:
-        return (
-            isinstance(descriptor, ClaudeCommandDescriptor)
-            and descriptor.id not in CONTROL_COMMANDS
-        )
+        return isinstance(descriptor, ClaudeCommandDescriptor)
 
     async def record_compaction(
         self,
@@ -1027,9 +1022,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                 status="stale", message="This command changed; refresh commands."
             )
             return
-        if descriptor.id in CONTROL_COMMANDS:
-            yield await self.command_control(context, intent)
-            return
         prompt = f"/{descriptor.name}"
         if intent.arguments:
             prompt += f" {intent.arguments}"
@@ -1052,66 +1044,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                     yield event
             except LookupError as error:
                 yield CommandError(status="stale", message=str(error))
-
-    async def command_control(
-        self, context: CommandContext, intent: CommandIntent
-    ) -> CommandOutcome:
-        """Apply persistent planning permissions or fork without submitting a turn."""
-        conversation = context.conversation
-        assert conversation is not None
-        argument = intent.arguments.strip()
-        if intent.command_id == "plan":
-            if argument not in {"", "on", "off"}:
-                return CommandError(status="unsupported", message="Use /plan [on|off].")
-            mode = "default" if argument == "off" else "plan"
-            await self.set_permission_mode(conversation, mode)
-            return CommandResult(
-                segments=[TextSegment(data={"text": f"Permission mode: {mode}."})]
-            )
-        if argument:
-            return CommandError(
-                status="unsupported", message="/fork takes no arguments."
-            )
-        if conversation.external_id is None:
-            return CommandError(
-                status="unavailable", message="Run this conversation before forking it."
-            )
-        profile = await self.users.profile(
-            context.address.channel_tentacle_id, context.address.user_id
-        )
-        channel = self.octomate.tentacles[context.address.channel_tentacle_id]
-        if profile is None or profile.user_id != context.user_id:
-            raise ValueError("The source conversation is no longer available.")
-        if not isinstance(channel, ChannelTentacle):
-            raise ValueError("Forking requires a channel that can open a thread.")
-        source_thread = await self.threads.get(
-            conversation.thread_id, with_messages=False
-        )
-        if source_thread is None:
-            raise FileNotFoundError("No conversation")
-        parent = replace(context.address, channel_thread_id=None)
-        if parent.chat_type == "thread" and not isinstance(
-            channel.config, TrunklineChannelConfig
-        ):
-            parent = replace(parent, chat_type="group")
-        destination = await channel.start_thread(
-            parent, self.threads.fork_title(conversation, source_thread) or "Fork"
-        )
-        target = await self.fork(
-            conversation,
-            ThreadKey.from_address(destination),
-            sender=profile,
-            model=context.model,
-        )
-        return CommandResult(
-            segments=[
-                TextSegment(
-                    data={
-                        "text": f"Forked into a new thread ({target.id}). Select it to continue; this conversation is unchanged."
-                    }
-                )
-            ]
-        )
 
     async def discover_models(self) -> None:
         info = await self.host_catalog(refresh=True)
