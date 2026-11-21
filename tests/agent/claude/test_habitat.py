@@ -6,7 +6,8 @@ import os
 import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from pathlib import Path
+from io import BytesIO
+from pathlib import Path, PurePosixPath
 from unittest.mock import AsyncMock
 
 import anyio
@@ -17,7 +18,9 @@ from claude_agent_sdk import (
     PermissionResultAllow,
     ResultMessage,
     ToolPermissionContext,
+    project_key_for_directory,
 )
+from fastapi import UploadFile
 from pydantic import BaseModel
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import PartDeltaEvent
@@ -33,11 +36,16 @@ from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.habitat import InvocationScope
+from octomate.schemas.thread import ThreadKey
+from octomate.schemas.volumes import Volume
 from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.transport import HabitatTransport
 from octomate.types.json import JsonObject
+from tests.agent.claude.test_driven_transcript import served
+from tests.agent.claude.test_native_fork import a_native_session
 from tests.support.invocations import invocation_for
 from tests.support.managers import (
     FakeConversationManager,
@@ -98,6 +106,100 @@ def executable(tmp_path: Path) -> Path:
     )
     executable.chmod(0o700)
     return executable
+
+
+async def test_native_fork_downloads_the_completed_turn_into_the_guest(
+    in_memory_engine: AsyncEngine,
+    executable: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, agent, sender = await a_native_session()
+    assert sender.user_id is not None
+    core.habitats.config = SbxHabitatConfig(image=IMAGE, executable=str(executable))
+    monkeypatch.setattr(SbxHabitat, "prepare", AsyncMock())
+    guest = tmp_path / "guest"
+    (guest / "tree").mkdir(parents=True)
+
+    def guest_path(_habitat: SbxHabitat, volume: Volume) -> PurePosixPath:
+        assert volume.usage is not None
+        return PurePosixPath(guest / volume.usage)
+
+    monkeypatch.setattr(SbxHabitat, "path", guest_path)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "core-claude"))
+    thread = await core.threads.ensure(
+        ThreadKey("claude", "thread", "lu", "source"), native=True
+    )
+    await core.threads.record_inbound(
+        MessageEvent(
+            tentacle_id="claude",
+            chat_type="thread",
+            chat_id="lu",
+            channel_thread_id="source",
+            user_id=sender.channel_user_id,
+            sender=sender,
+        )
+    )
+    source = await core.conversations.ensure(thread.id, agent_tentacle_id=agent.id)
+    session = str(uuid7())
+    await core.conversations.set_external_id(source, session)
+    first = {
+        "type": "user",
+        "uuid": str(uuid7()),
+        "sessionId": session,
+        "parentUuid": None,
+        "message": {"role": "user", "content": "complete"},
+    }
+    last = {
+        **first,
+        "uuid": str(uuid7()),
+        "parentUuid": first["uuid"],
+        "message": {"role": "user", "content": "pending"},
+    }
+    complete = (json.dumps(first) + "\n").encode()
+    await core.conversations.record_external_run(
+        source, str(uuid7()), [], native_session_id=session, end_offset=len(complete)
+    )
+    await core.conversations.store_transcript(
+        UploadFile(
+            BytesIO(complete + (json.dumps(last) + "\n").encode()),
+            filename=f"{session}.jsonl",
+        ),
+        0,
+        conversation=source,
+        files=core.files,
+        owner_id=sender.user_id,
+    )
+    async with served(core) as url:
+        monkeypatch.setattr(SbxHabitat, "core_url", property(lambda _: url))
+        try:
+            landed = await agent.fork(
+                source, ThreadKey("trunkline", "thread", "lu", "landing"), sender=sender
+            )
+        finally:
+            await agent.revoke_runtime_keys()
+            await core.habitats.close()
+
+    [target] = await core.conversations.for_thread(landed.id)
+    assert target.external_id is not None
+    assert target.external_id != session
+    project = (
+        guest
+        / "config"
+        / ".claude"
+        / "projects"
+        / project_key_for_directory(guest / "tree")
+    )
+    [forked] = project.glob("*.jsonl")
+    assert forked.stem == target.external_id
+    messages = [
+        row
+        for row in map(json.loads, forked.read_bytes().splitlines())
+        if row["type"] == "user"
+    ]
+    assert [row["message"] for row in messages] == [first["message"]]
+    assert messages[0]["uuid"] != first["uuid"]
+    assert not (tmp_path / "core-claude").exists()
 
 
 @pytest.fixture

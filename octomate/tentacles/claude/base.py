@@ -23,9 +23,11 @@ from typing import (
     get_args,
     overload,
 )
+from uuid import UUID
 
 import anyio
 from anyio.abc import ObjectSendStream
+from anyio.streams.buffered import BufferedByteReceiveStream
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     HookContext,
@@ -88,6 +90,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.config.channels import TrunklineChannelConfig
+from octomate.config.habitat import NativeHabitatConfig
 from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
@@ -714,10 +717,10 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         )
         return end
 
-    async def read_fork_transcript(
+    async def native_fork_point(
         self, source: Conversation, *, owner_id: UUID7
-    ) -> tuple[bytes, ExternalAgentRun]:
-        """The stored history up to the latest turn kept whole, and that turn."""
+    ) -> tuple[UUID7, int, ExternalAgentRun]:
+        """The retained transcript and the latest turn it contains in full."""
         if source.agent_tentacle_id != self.id or source.subagent_id:
             raise ValueError("Only root native Claude Code sessions can be forked here")
         thread = await self.threads.get(source.thread_id, with_messages=False)
@@ -725,7 +728,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             raise ValueError("Transcript imports require a tailed thread")
         if source.transcript_file_id is None or source.external_id is None:
             raise ValueError("Native Claude Code history has not been uploaded")
-        data = await self.files.read(source.transcript_file_id, owner_id=owner_id)
+        file = await self.files.get(source.transcript_file_id, owner_id=owner_id)
         completed = max(
             (
                 run
@@ -733,14 +736,24 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                 if isinstance(run, ExternalAgentRun)
                 and run.native_session_id == source.external_id
                 and run.end_offset is not None
-                and run.end_offset <= len(data)
+                and run.end_offset <= file.size
             ),
             key=lambda run: run.end_offset or 0,
             default=None,
         )
         if completed is None or completed.end_offset is None:
             raise ValueError("Native Claude Code history has no completed turn yet")
-        return data[: completed.end_offset], completed
+        return file.id, completed.end_offset, completed
+
+    async def read_fork_transcript(
+        self, source: Conversation, *, owner_id: UUID7
+    ) -> tuple[bytes, ExternalAgentRun]:
+        """The stored history up to the latest turn kept whole, and that turn."""
+        file_id, end, completed = await self.native_fork_point(
+            source, owner_id=owner_id
+        )
+        data = await self.files.read(file_id, owner_id=owner_id)
+        return data[:end], completed
 
     async def fork_transcript(
         self,
@@ -759,16 +772,26 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                 raise ValueError("Transcript imports require an empty target")
             if source.external_id is None:
                 raise ValueError("Native Claude Code history has not been uploaded")
-            data, completed = await self.read_fork_transcript(source, owner_id=owner_id)
-            staged = transcripts_dir(cwd) / f"{source.external_id}.jsonl"
-            staged.parent.mkdir(parents=True, exist_ok=True)
-            staged.write_bytes(data)
-            try:
-                external_id = await self.ink.fork_session(
-                    source.external_id, cwd=cwd, source_cwd=cwd
+            if isinstance(self.habitats.config, NativeHabitatConfig):
+                data, completed = await self.read_fork_transcript(
+                    source, owner_id=owner_id
                 )
-            finally:
-                staged.unlink()
+                staged = transcripts_dir(cwd) / f"{source.external_id}.jsonl"
+                staged.parent.mkdir(parents=True, exist_ok=True)
+                staged.write_bytes(data)
+                try:
+                    external_id = await self.ink.fork_session(
+                        source.external_id, cwd=cwd, source_cwd=cwd
+                    )
+                finally:
+                    staged.unlink()
+            else:
+                _, end, completed = await self.native_fork_point(
+                    source, owner_id=owner_id
+                )
+                external_id = await self.relocate_transcript(
+                    source.id, source.external_id, target, owner_id=owner_id, end=end
+                )
             await conversations.fork(
                 source,
                 target,
@@ -777,6 +800,53 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                 permission_mode=completed.permission_mode,
             )
             return await conversations.get(target.id)
+
+    async def relocate_transcript(
+        self,
+        source_id: UUID7,
+        session_id: str,
+        target: Conversation,
+        *,
+        owner_id: UUID7,
+        end: int,
+    ) -> str:
+        """Have the destination habitat fetch the native history and fork it with its SDK."""
+        thread = await self.threads.get(target.thread_id, with_messages=False)
+        if thread is None:
+            raise FileNotFoundError("No destination thread")
+        key = await self.runtime_api_key(owner_id)
+        if key is None:
+            raise HabitatError("Claude transcript download requires authentication")
+        async with self.inhabit(
+            thread=thread, conversation=target, owner_id=owner_id
+        ) as invocation:
+            habitat = invocation.habitat
+            if not isinstance(habitat, ManagedHabitat):
+                raise HabitatError("A transcript download requires a managed habitat")
+            async with habitat.execute(
+                "octomate",
+                "claude",
+                "habitat",
+                "relocate",
+                session_id,
+                str(source_id),
+                str(end),
+                workdir=str(invocation.cwd),
+                env={
+                    **invocation.environment,
+                    "OCTOMATE_CLI_URL": habitat.core_url,
+                    "OCTOMATE_CLI_TOKEN": key.token.get_secret_value(),
+                },
+            ) as stream:
+                try:
+                    line = await BufferedByteReceiveStream(stream).receive_until(
+                        b"\n", 37
+                    )
+                    return str(UUID(line.decode("ascii")))
+                except (ValueError, anyio.IncompleteRead, anyio.DelimiterNotFound):
+                    raise HabitatError(
+                        "Claude did not return a forked session ID"
+                    ) from None
 
     async def fork_session(self, conversation: Conversation, *, cwd: Path) -> str:
         """Fork Claude's transcript without changing the source session."""

@@ -466,6 +466,34 @@ async def test_the_runtime_key_uploads() -> None:
         assert await kept_bytes(octomate, conversation, user) == FIRST
 
 
+async def test_download_serves_the_owners_transcript_after_the_turn() -> None:
+    async with a_driven_turn() as (client, core, conversation, _):
+        url = f"/hooks/claude/transcripts/{conversation.id}"
+        assert (await client.get(url, headers=AUTH)).status_code == 404
+        posted = await client.post(
+            url,
+            params={"offset": 0, "transcript_id": str(conversation.id)},
+            content=FIRST,
+            headers=AUTH,
+        )
+        assert posted.status_code == 200
+        core.habitats.residences.clear()
+
+        for _ in range(2):
+            response = await client.get(url, headers=AUTH)
+            assert response.status_code == 200
+            assert response.headers["content-type"] == "application/jsonl"
+            assert response.content == FIRST
+        await a_api_key(await a_user("other"), "other-hook")
+        assert (
+            await client.get(url, headers={"Authorization": "Bearer other-hook"})
+        ).status_code == 404
+        assert (await client.get(url)).status_code == 401
+        assert (
+            await client.get(f"/hooks/claude/transcripts/{uuid7()}", headers=AUTH)
+        ).status_code == 404
+
+
 @pytest.mark.parametrize("agent_id", ["claude", "codex", "deepseek"])
 async def test_upload_requires_hooks_scope(
     agent_id: Literal["claude", "codex", "deepseek"],

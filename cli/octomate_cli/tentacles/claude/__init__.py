@@ -19,6 +19,7 @@ from octomate_cli.tentacles.claude.hooks import (
     stream_url_for,
 )
 from octomate_cli.tentacles.claude.mcp import mcp_typer
+from octomate_cli.tentacles.claude.sessions import habitat_typer
 from octomate_cli.transcripts import upload_transcripts
 
 claude_typer = typer.Typer(
@@ -26,6 +27,7 @@ claude_typer = typer.Typer(
 )
 claude_typer.add_typer(hooks_typer, name="hooks")
 claude_typer.add_typer(mcp_typer, name="mcp")
+claude_typer.add_typer(habitat_typer, name="habitat")
 
 
 @claude_typer.command("upload")

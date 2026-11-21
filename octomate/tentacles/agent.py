@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, ClassVar, Self, TypeVar, overload
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from octomate_protocol.stream import TranscriptKept, TranscriptOffsets
 from pydantic import UUID7
 from pydantic_ai import (
@@ -51,6 +51,7 @@ from starlette.datastructures import Headers
 from octomate.config.agents import AgentConfig, AgentRouteModelName
 from octomate.config.habitat import NativeHabitatConfig
 from octomate.habitat import HabitatError
+from octomate.managers.conversation import ConversationNotFound
 from octomate.managers.files import FileOffsetConflict
 from octomate.managers.habitat import Invocation
 from octomate.schemas.agent import AgentInfo
@@ -146,7 +147,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
 
     @cached_property
     def transcript_router(self) -> APIRouter:
-        """Upload routes bound to this agent's conversations and storage."""
+        """Transcript transfers bound to this agent's conversations and storage."""
         # Hook dependencies import the application, which imports this base class.
         from octomate.tentacles.hooks import verify_hook_key
 
@@ -167,6 +168,28 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             if conversation.agent_tentacle_id != self.id:
                 raise HTTPException(404, "Conversation belongs to another agent")
             return conversation
+
+        @router.get("/{conversation_id}", response_class=Response)
+        async def download_transcript(
+            conversation_id: UUID7,
+            key: UserApiKey = Depends(verify_hook_key),  # noqa: B008
+        ) -> Response:
+            """Serve the authenticated owner's retained JSONL for this conversation."""
+            try:
+                conversation = await self.conversations.get(
+                    conversation_id, with_runs=False
+                )
+                if (
+                    conversation.agent_tentacle_id != self.id
+                    or conversation.transcript_file_id is None
+                ):
+                    raise HTTPException(404, "No such transcript")
+                data = await self.files.read(
+                    conversation.transcript_file_id, owner_id=key.user_id
+                )
+            except (ConversationNotFound, FileNotFoundError):
+                raise HTTPException(404, "No such transcript") from None
+            return Response(data, media_type="application/jsonl")
 
         @router.post("/{conversation_id}/offsets")
         async def transcript_offsets(
