@@ -45,16 +45,15 @@ for line in sys.stdin:
             signal.pause()
         if mode == "exit":
             sys.exit(7)
-        if mode in {"invalid", "partial", "oversize"}:
+        if mode in {"invalid", "partial"}:
             frame = {
                 "invalid": '"private-payload"\n',
                 "partial": '{"private-payload":',
-                "oversize": "x" * (1024 * 1024 + 1),
             }[mode]
             sys.stdout.write(frame)
             sys.stdout.flush()
             sys.exit(0)
-        send({"id": request["id"], "result": {"userAgent": "codex/0.162.1"}})
+        send({"id": request["id"], "result": {"userAgent": "codex/0.171.0"}})
         continue
     if method == "probe":
         if request.get("params", {}).get("ask"):
@@ -64,6 +63,9 @@ for line in sys.stdin:
         continue
     if method == "hang":
         send({"method": "skills/changed", "params": {}})
+        continue
+    if method == "echo":
+        send({"id": request["id"], "result": request["params"]})
         continue
     if request.get("id") == "approval":
         send({"method": "skills/changed", "params": {}})

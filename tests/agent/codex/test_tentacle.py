@@ -250,7 +250,7 @@ class FakeThread:
                     "updatedAt": 0,
                     "cwd": "/workspace",
                     "ephemeral": False,
-                    "modelProvider": "openai",
+                    "modelProvider": FakeCodex.thread_providers.get(self.id, "openai"),
                     "model": FakeCodex.thread_models.get(self.id, FakeCodex.model_name),
                     "preview": "the opening line",
                     "source": "appServer",
@@ -325,6 +325,7 @@ def native_thread_handles(monkeypatch: pytest.MonkeyPatch) -> None:
 class FakeCodex:
     loaded_threads: ClassVar[set[str]] = set()
     thread_models: ClassVar[dict[str, str]] = {}
+    thread_providers: ClassVar[dict[str, str]] = {}
     script: ClassVar[list[Notification]] = []
     thread_name: ClassVar[str | None] = None
     model_name: ClassVar[str] = "runtime-model"
@@ -575,6 +576,7 @@ def reset_fake_codex(script: list[Notification]) -> None:
     FakeCodex.thread_name = None
     FakeCodex.model_name = "runtime-model"
     FakeCodex.thread_models = {}
+    FakeCodex.thread_providers = {}
     FakeCodex.read_calls = []
     FakeCodex.last_config = None
     FakeCodex.thread_calls = []
@@ -2142,6 +2144,63 @@ async def test_a_warm_thread_retains_the_reported_model(
         "requested-model",
         "requested-model",
     ]
+
+
+@pytest.mark.parametrize("loaded", [False, True])
+@pytest.mark.parametrize("failed", [False, True])
+async def test_provider_change_forks_history_and_only_persists_a_successful_fork(
+    monkeypatch: pytest.MonkeyPatch, loaded: bool, failed: bool
+) -> None:
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    reset_fake_codex(text_script("done", thread_id="thread-fork"))
+    FakeCodex.thread_providers["source"] = "other-provider"
+    if loaded:
+        FakeCodex.loaded_threads.add("source")
+    fork = AsyncMock(
+        return_value=SimpleNamespace(thread=FakeThread("thread-fork"), model="gpt-5.5"),
+        side_effect=RuntimeError("fork failed") if failed else None,
+    )
+    monkeypatch.setattr(FakeCodex, "thread_fork", fork)
+    conversations = FakeConversationManager()
+    conversation = FakeConversation(
+        agent_tentacle_id="codex", thread_id=_THREAD, external_id="source"
+    )
+    conversations.store[(_THREAD, "codex", "")] = conversation
+    tentacle = _tentacle(conversations)
+    binding = (conversation.id, None)
+    async with (
+        tentacle,
+        invocation_for(
+            tentacle, conversation_address=KEY, thread_id=_THREAD
+        ) as invocation,
+    ):
+        tentacle.ink.thread_bindings["source"] = binding
+        if failed:
+            with pytest.raises(RuntimeError, match="fork failed"):
+                await tentacle.run(
+                    "go",
+                    conversation_address=KEY,
+                    invocation=invocation,
+                    model="gpt-5.5",
+                )
+        else:
+            result = await tentacle.run(
+                "go", conversation_address=KEY, invocation=invocation, model="gpt-5.5"
+            )
+            assert result.output == "done"
+            assert tentacle.ink.thread_bindings["thread-fork"] == binding
+        assert tentacle.ink.thread_bindings["source"] == binding
+    assert conversations.store[(_THREAD, "codex", "")].external_id == (
+        "source" if failed else "thread-fork"
+    )
+    assert not FakeCodex.thread_calls
+    fork.assert_awaited_once()
+    source, params = fork.call_args.args
+    assert source == "source"
+    assert isinstance(params, codex_ink.ThreadForkParams)
+    assert params.model_provider == "openai"
+    assert params.permissions == "octomate-workspace"
+    assert params.exclude_turns is True
 
 
 async def test_a_warm_thread_reapplies_the_selected_preset(

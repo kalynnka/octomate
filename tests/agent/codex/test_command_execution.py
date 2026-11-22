@@ -936,6 +936,44 @@ async def test_native_controls_are_disabled_without_a_saved_runtime_thread(
     assert not FakeCodex.turn_calls
 
 
+async def test_control_uses_and_persists_the_replacement_thread(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    await agent.conversations.set_external_id(conversation, "source")
+    conversation = await agent.conversations.get(conversation.id)
+    context = replace(
+        context, conversation=conversation, model=next(iter(agent.models))
+    )
+    monkeypatch.setattr(
+        agent.ink,
+        "open_thread",
+        AsyncMock(return_value=(FakeThread("forked"), "test-model")),
+    )
+    plan = AsyncMock()
+    monkeypatch.setattr(agent.ink, "set_plan_mode", plan)
+    async with invocation_for(
+        agent,
+        conversation_address=context.address,
+        thread_id=conversation.thread_id,
+        conversation_id=conversation.id,
+    ) as prepared:
+        [result] = [
+            event
+            async for event in agent.execute_command(
+                context, CommandIntent(command_id="builtin:plan"), invocation=prepared
+            )
+        ]
+    assert isinstance(result, CommandResult)
+    plan.assert_awaited_once()
+    assert plan.call_args.args[0] == "forked"
+    stored = await agent.conversations.get(conversation.id)
+    assert stored.external_id == "forked"
+
+
 @pytest.mark.parametrize("command", ["plan", "mcp", "compact"])
 @pytest.mark.parametrize("binding", ["missing", "foreign", "unloaded"])
 async def test_native_controls_resume_saved_threads_without_an_agent_run(

@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from base64 import b64decode
 from contextlib import AsyncExitStack
 from dataclasses import replace
 from unittest.mock import AsyncMock
@@ -9,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 from openai_codex import CodexConfig
 from openai_codex.errors import TransportClosedError
-from openai_codex.generated.v2_all import ThreadStartParams
+from openai_codex.generated.v2_all import FsReadFileResponse, ThreadStartParams
 from uuid_utils.compat import uuid7
 
 from octomate.config.habitat import SbxHabitatConfig
@@ -51,7 +52,8 @@ async def test_guest_codex_rpc_notifications_stderr_and_cleanup(
     async with manager.enter(scope, uuid7()):
         await sandbox.command("exec", sandbox.name, "mkdir", "-p", "/home/agent/.codex")
         await client.start()
-        assert client.metadata.userAgent
+        assert client.metadata.userAgent is not None
+        assert "0.171.0" in client.metadata.userAgent
         started = await client._client.thread_start(
             ThreadStartParams(cwd=config.cwd, ephemeral=True)
         )
@@ -68,6 +70,19 @@ async def test_guest_codex_rpc_notifications_stderr_and_cleanup(
     peer = scope.model_copy(update={"conversation_id": uuid7()})
     async with manager.enter(peer, uuid7()):
         await asyncio.gather(*(client.start() for _ in range(4)))
+        path = "/home/agent/workspace/large-transcript.txt"
+        await sandbox.command(
+            "exec",
+            sandbox.name,
+            "python",
+            "-c",
+            "from pathlib import Path; import sys; Path(sys.argv[1]).write_bytes(b'transcript line\\n' * 150000)",
+            path,
+        )
+        content = await client._client.request(
+            "fs/readFile", {"path": path}, response_model=FsReadFileResponse
+        )
+        assert b64decode(content.data_base64) == b"transcript line\n" * 150000
         reads = await asyncio.gather(
             *(client._client.thread_read(started.thread.id) for _ in range(4))
         )

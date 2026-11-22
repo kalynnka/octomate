@@ -1087,10 +1087,10 @@ class CodexTentacle(AgentTentacle[str, None]):
             raise ValueError("This command requires a prepared invocation")
         async with (
             self.conversation_locks.hold(str(conversation.id)),
-            self.driving(thread_id),
+            contextlib.AsyncExitStack() as resources,
         ):
             api_key = await self.runtime_api_key(context.user_id)
-            await self.ink.open_thread(
+            codex_thread, _ = await self.ink.open_thread(
                 thread_id=thread_id,
                 conversation_id=conversation.id,
                 api_key_id=api_key.key.id if api_key is not None else None,
@@ -1113,6 +1113,13 @@ class CodexTentacle(AgentTentacle[str, None]):
                 if permission_mode == "full_access"
                 else Sandbox.workspace_write,
             )
+            thread_id = codex_thread.id
+            if conversation.external_id != thread_id:
+                await self.conversations.set_external_id(conversation, thread_id)
+                conversation = await self.conversations.get(
+                    conversation.id, with_runs=False
+                )
+            await resources.enter_async_context(self.driving(thread_id))
             if intent.command_id == "builtin:compact":
                 turn = await self.ink.start_command(thread_id)
                 completed = await turn.run()

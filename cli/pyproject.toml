@@ -25,7 +25,7 @@ dependencies = [
 
 [project.optional-dependencies]
 claude = ["claude-agent-sdk>=0.2.165"]
-codex = ["openai-codex>=0.162.1"]
+codex = ["openai-codex>=0.171.0"]
 
 [project.urls]
 Repository = "https://github.com/kalynnka/octomate"

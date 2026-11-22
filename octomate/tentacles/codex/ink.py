@@ -59,9 +59,9 @@ from openai_codex.generated.v2_all import (
     SkillsListResponse,
     ThreadApproveGuardianDeniedActionResponse,
     ThreadClosedNotification,
-    ThreadForkParams,
     ThreadUnsubscribeResponse,
 )
+from openai_codex.generated.v2_all import ThreadForkParams as SdkThreadForkParams
 from pydantic import AnyUrl, SecretStr, TypeAdapter, ValidationError
 from pydantic.alias_generators import to_snake
 
@@ -77,6 +77,7 @@ from octomate.tentacles.codex.client import RequestHandler, SharedCodex
 from octomate.tentacles.codex.schemas import (
     CodexModelCatalog,
     PermissionProfile,
+    ThreadForkParams,
     ThreadResumeParams,
     ThreadSettingsUpdateResponse,
     ThreadStartParams,
@@ -357,19 +358,31 @@ class CodexInk(AgentInk):
         if not self.running:
             raise RuntimeError("Codex runtime is not running")
         binding = (conversation_id, api_key_id)
+        provider_changed = False
         if thread_id is not None:
             thread = AsyncThread(self.client, thread_id)
             metadata = await thread.read(include_turns=False)
+            provider_changed = (
+                model_provider is not None
+                and model_provider != metadata.thread.model_provider
+            )
             loaded = not isinstance(metadata.thread.status.root, NotLoadedThreadStatus)
             # TODO: Use stable runtime authentication and resolve the current caller
             # and conversation in Octomate so thread reuse depends only on thread_id.
-            if loaded and self.thread_bindings.get(thread_id) == binding:
+            if (
+                loaded
+                and self.thread_bindings.get(thread_id) == binding
+                and not provider_changed
+            ):
                 return thread, model or metadata.thread.model
             if loaded and not isinstance(metadata.thread.status.root, IdleThreadStatus):
-                raise RuntimeError("Codex thread must be idle to change MCP identity")
+                raise RuntimeError(
+                    "Codex thread must be idle to change MCP identity or provider"
+                )
             # An interrupted reconfiguration must not leave the old identity trusted.
-            self.thread_bindings.pop(thread_id, None)
-            if loaded:
+            if not provider_changed:
+                self.thread_bindings.pop(thread_id, None)
+            if loaded and not provider_changed:
                 # Resume reapplies overrides to an idle thread without subscribers.
                 await self.client._client.request(
                     "thread/unsubscribe",
@@ -377,7 +390,39 @@ class CodexInk(AgentInk):
                     response_model=ThreadUnsubscribeResponse,
                 )
         thread_config = await self.thread_config(cwd, mcp_bearer, conversation_id)
-        if thread_id is not None:
+        if thread_id is not None and provider_changed:
+            policy, reviewer = (
+                _approval_mode_settings(approval_mode)
+                if approval_mode is not None
+                else (
+                    AskForApproval(root=AskForApprovalValue.on_request),
+                    ApprovalsReviewer.user,
+                )
+            )
+            forked = await self.client._client.thread_fork(
+                thread_id,
+                ThreadForkParams(
+                    thread_id=thread_id,
+                    model=model,
+                    model_provider=model_provider,
+                    cwd=cwd,
+                    config=thread_config,
+                    approval_policy=policy,
+                    approvals_reviewer=reviewer,
+                    base_instructions=base_instructions,
+                    developer_instructions=developer_instructions,
+                    ephemeral=ephemeral,
+                    permissions=PERMISSION_PROFILES[sandbox],
+                    exclude_turns=True,
+                ),
+            )
+            if forked.thread.id == thread_id:
+                raise ValueError("Codex fork returned the source thread id")
+            thread, model_name = (
+                AsyncThread(self.client, forked.thread.id),
+                forked.model,
+            )
+        elif thread_id is not None:
             thread, model_name = await self.resume_thread(
                 thread_id=thread_id,
                 approval_mode=approval_mode,
@@ -551,7 +596,7 @@ class CodexInk(AgentInk):
         config = await self.thread_config(str(cwd), None, None)
         forked = await self.client._client.thread_fork(
             session_id,
-            ThreadForkParams(
+            SdkThreadForkParams(
                 thread_id=session_id,
                 cwd=str(cwd),
                 config=config,
@@ -777,6 +822,8 @@ class CodexInk(AgentInk):
             origin_call_id=item.id,
             uri=uri,
         )
+        if item.environment_id is not None:
+            params.environment_id = item.environment_id
         if context is not None:
             params.target = McpResourceReadTarget(
                 connector_id=context.connector_id, link_id=context.link_id

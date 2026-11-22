@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import sys
 import threading
 from collections.abc import Callable, Coroutine
 from concurrent.futures import Future
@@ -27,7 +28,6 @@ from openai_codex.generated.v2_all import (
 )
 from pydantic import TypeAdapter, ValidationError
 
-from octomate.fibers import MAX_FRAME_BYTES
 from octomate.habitat import ManagedHabitat
 from octomate.tentacles.codex.adapter import json_object_adapter
 from octomate.tentacles.codex.telemetry import TracedCodexClient
@@ -113,23 +113,19 @@ class ConcurrentCodexClient(TracedCodexClient):
             self.reader_thread.join()
 
     async def read_frame(self) -> JsonObject:
-        """Read one bounded native JSON-RPC frame on the stream's event loop."""
+        """Read one native JSON-RPC line, including full transcript responses."""
         if self.reader is None:
             raise TransportClosedError("Codex habitat reader is not running")
         try:
-            frame = await self.reader.receive_until(b"\n", MAX_FRAME_BYTES + 1)
+            frame = await self.reader.receive_until(b"\n", sys.maxsize)
         except anyio.IncompleteRead:
             if self.reader.buffer:
                 raise CodexError("Incomplete Codex protocol frame") from None
             raise TransportClosedError(
                 f"Codex closed stdout. stderr_tail={self._stderr_tail()[:2000]}"
             ) from None
-        except anyio.DelimiterNotFound:
-            raise CodexError("Codex protocol frame exceeds the size limit") from None
         except (anyio.ClosedResourceError, anyio.BrokenResourceError):
             raise TransportClosedError("Codex habitat stream closed") from None
-        if len(frame) > MAX_FRAME_BYTES:
-            raise CodexError("Codex protocol frame exceeds the size limit")
         try:
             return json_object_adapter.validate_json(frame)
         except ValidationError:
@@ -238,8 +234,6 @@ class ConcurrentCodexClient(TracedCodexClient):
             if self.instrument:
                 payload = self.trace_message(payload)
             frame = json_object_adapter.dump_json(payload)
-            if len(frame) > MAX_FRAME_BYTES:
-                raise CodexError("Codex protocol frame exceeds the size limit")
             with self._lock:
                 try:
                     from_thread.run(

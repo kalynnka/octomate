@@ -35,6 +35,10 @@ class ProcessInfo(BaseModel):
     trace: dict[str, str] | None = None
 
 
+class EchoResponse(BaseModel):
+    text: str
+
+
 @pytest.fixture
 def sandbox(tmp_path: Path) -> SbxHabitat:
     executable = tmp_path / "sbx"
@@ -89,7 +93,7 @@ async def test_guest_router_keeps_reading_during_approval(
     async with SharedCodex(
         config, approve, instrument=instrument, habitat=sandbox
     ) as client:
-        assert client.metadata.userAgent == "codex/0.162.1"
+        assert client.metadata.userAgent == "codex/0.171.0"
         with trace.use_span(span):
             first = await client._client.request(
                 "probe", {"ask": True}, response_model=ProcessInfo
@@ -132,7 +136,6 @@ async def test_guest_router_keeps_reading_during_approval(
         ("exit", "guest diagnostic"),
         ("invalid", "Invalid Codex protocol"),
         ("partial", "Incomplete Codex protocol"),
-        ("oversize", "size limit"),
     ],
 )
 async def test_failed_initialization_releases_the_guest(
@@ -193,6 +196,23 @@ async def test_closed_stream_fails_requests_without_hanging(
         assert client.transport.token is None
         with pytest.raises(TransportClosedError):
             await client._client.request("probe", {}, response_model=ProcessInfo)
+
+
+async def test_large_rpc_round_trip_preserves_following_frames(
+    sandbox: SbxHabitat, config: CodexConfig
+) -> None:
+    text = "large transcript\n" * 150_000
+    async with SharedCodex(
+        config, AsyncMock(), instrument=False, habitat=sandbox
+    ) as client:
+        response = await client._client.request(
+            "echo", {"text": text}, response_model=EchoResponse
+        )
+        assert response.text == text
+        following = await client._client.request(
+            "probe", {}, response_model=ProcessInfo
+        )
+        assert following.pid > 0
 
 
 @pytest.mark.parametrize("failed_request", [False, True])

@@ -272,14 +272,17 @@ def mcp_app_call() -> JsonObject:
 
 @pytest.mark.parametrize("source", ["current", "context", "legacy"])
 @pytest.mark.parametrize("encoded", [False, True])
+@pytest.mark.parametrize("environment", [None, "guest-a"])
 async def test_app_resource_reads_advertised_ui_with_original_scope(
     command_transport: CommandTransport,
     mcp_app_call: JsonObject,
     source: str,
     encoded: bool,
+    environment: str | None,
 ) -> None:
     ink, incoming, outgoing = command_transport
     item = McpToolCallThreadItem.model_validate(mcp_app_call)
+    item.environment_id = environment
     if source != "current":
         item.mcp_app_ui = None
     if source == "legacy":
@@ -289,13 +292,16 @@ async def test_app_resource_reads_advertised_ui_with_original_scope(
     reading = asyncio.create_task(ink.app_resource("thread-a", item))
     request = await asyncio.to_thread(outgoing.get, True, 1)
     assert request["method"] == "mcpServer/resource/read"
-    assert request["params"] == {
+    expected: JsonObject = {
         "threadId": "thread-a",
         "server": "apps",
         "uri": uri,
         "originCallId": "call-a",
         "target": {"connectorId": "weather", "linkId": "account-a"},
     }
+    if environment is not None:
+        expected["environmentId"] = environment
+    assert request["params"] == expected
     html = "<html><body>上海</body></html>"
     content: JsonObject = {
         "uri": uri,
