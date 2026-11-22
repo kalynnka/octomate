@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from pydantic import JsonValue
+from uuid_utils.compat import uuid7
 
 args = sys.argv[1:]
 assert args[:2] == ["--debug=false", "exec"]
@@ -19,6 +20,9 @@ while args[index].startswith("--"):
     elif key == "--workdir":
         os.chdir(value)
     index += 1
+if args[index + 1 : index + 3] == ["mkdir", "-p"]:
+    Path(args[index + 3]).mkdir(parents=True, exist_ok=True)
+    sys.exit(0)
 info = {
     "pid": os.getpid(),
     "argv": args[index + 1 :],
@@ -54,6 +58,38 @@ for line in sys.stdin:
             sys.stdout.flush()
             sys.exit(0)
         send({"id": request["id"], "result": {"userAgent": "codex/0.171.0"}})
+        continue
+    if method in {"thread/start", "thread/resume", "thread/fork"}:
+        thread_id = (
+            request["params"]["threadId"] if method == "thread/resume" else str(uuid7())
+        )
+        send(
+            {
+                "id": request["id"],
+                "result": {
+                    "thread": {
+                        "id": thread_id,
+                        "sessionId": thread_id,
+                        "cliVersion": "0.171.0",
+                        "createdAt": 0,
+                        "updatedAt": 0,
+                        "cwd": os.getcwd(),
+                        "ephemeral": False,
+                        "modelProvider": "test",
+                        "preview": "",
+                        "source": "appServer",
+                        "status": {"type": "idle"},
+                        "turns": [],
+                    },
+                    "model": "test-model",
+                    "modelProvider": "test",
+                    "cwd": os.getcwd(),
+                    "approvalPolicy": "never",
+                    "approvalsReviewer": "user",
+                    "sandbox": {"type": "dangerFullAccess"},
+                },
+            }
+        )
         continue
     if method == "probe":
         if request.get("params", {}).get("ask"):

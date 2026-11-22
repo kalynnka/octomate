@@ -65,6 +65,7 @@ from octomate.config import ChannelConfig, OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.database import async_session
 from octomate.events import ActionBatchEvent
+from octomate.habitat import ManagedHabitat
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import OctomateSession
@@ -85,6 +86,7 @@ from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import base as codex_base
 from octomate.tentacles.codex import ink as codex_ink
+from octomate.tentacles.codex import pool as codex_pool
 from octomate.tentacles.codex.client import RequestHandler, SharedCodex
 from octomate.tentacles.codex.schemas import (
     ThreadResumeParams,
@@ -343,11 +345,18 @@ class FakeCodex:
     local_mcp_servers: ClassVar[JsonObject] = {}
 
     def __init__(
-        self, config: CodexSdkConfig, handler: RequestHandler, *, instrument: bool
+        self,
+        config: CodexSdkConfig,
+        handler: RequestHandler,
+        *,
+        instrument: bool,
+        habitat: ManagedHabitat | None = None,
     ) -> None:
         FakeCodex.last_config = config
         FakeCodex.builds += 1
         FakeCodex.approval_handler = handler
+        self.habitat = habitat
+        self.transport = SimpleNamespace(closing=False)
         self.notifications: asyncio.Queue[Notification | CodexError] = asyncio.Queue()
         self._client = SimpleNamespace(
             _sync=None,
@@ -597,7 +606,7 @@ async def test_driven_names_are_persisted_and_revised_without_reading_turns(
     in_memory_engine: AsyncEngine,
     resumed: bool,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     sdk_thread_id = "prior-thread" if resumed else "thread-new"
     reset_fake_codex(text_script("done", thread_id=sdk_thread_id))
     octomate = Octomate()
@@ -658,7 +667,7 @@ async def test_driven_names_are_persisted_and_revised_without_reading_turns(
 async def test_driven_child_name_does_not_rename_parent_thread(
     monkeypatch: pytest.MonkeyPatch, in_memory_engine: AsyncEngine
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done", thread_id="thread-new"))
     FakeCodex.thread_name = "Child work"
     octomate = Octomate()
@@ -721,7 +730,7 @@ async def test_driven_name_lookup_failure_keeps_the_run_result(
     caplog: pytest.LogCaptureFixture,
     error: CodexError | OSError,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done", thread_id="thread-new"))
     read = AsyncMock(side_effect=error)
     monkeypatch.setattr(FakeThread, "read", read)
@@ -789,7 +798,7 @@ async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     monkeypatch: pytest.MonkeyPatch,
     instrument: bool,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     trace_environment = TraceEnvironment(
         "https://logfire.example/v1/traces", SecretStr("test-token")
     )
@@ -876,7 +885,7 @@ async def test_instructions_join_the_developer_instructions(
 ) -> None:
     # Run-level instructions (an accomplice's framing included) ride the
     # thread's developer instructions, joined after the config default.
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     tentacle = _tentacle(
@@ -910,7 +919,7 @@ async def test_instructions_join_the_developer_instructions(
 async def test_run_resumes_prior_thread_and_applies_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done", thread_id="prev-thread"))
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "codex", "")] = FakeConversation(
@@ -982,7 +991,7 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
     in_memory_engine: AsyncEngine,
     here: bool,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("before", thread_id="thread-new"))
     fork = AsyncMock(return_value=SimpleNamespace(thread=FakeThread("thread-fork")))
     monkeypatch.setattr(FakeCodex, "thread_fork", fork, raising=False)
@@ -1114,7 +1123,7 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
 async def test_codex_fork_passes_the_turn_cutoff(
     monkeypatch: pytest.MonkeyPatch, last_turn_id: str | None
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex([])
     fork = AsyncMock(return_value=SimpleNamespace(thread=FakeThread("thread-fork")))
     monkeypatch.setattr(FakeCodex, "thread_fork", fork)
@@ -1147,7 +1156,7 @@ async def test_codex_fork_passes_the_turn_cutoff(
 async def test_codex_fork_failure_leaves_the_source_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex([])
     fork = AsyncMock(side_effect=RuntimeError("fork failed"))
     monkeypatch.setattr(FakeCodex, "thread_fork", fork, raising=False)
@@ -1171,7 +1180,7 @@ async def test_codex_cannot_fork_without_a_session_id(
     monkeypatch: pytest.MonkeyPatch, external_id: str | None
 ) -> None:
     client = Mock()
-    monkeypatch.setattr(codex_ink, "SharedCodex", client)
+    monkeypatch.setattr(codex_pool, "SharedCodex", client)
     source = Conversation(
         thread_id=_THREAD, agent_tentacle_id="codex", external_id=external_id
     )
@@ -1185,7 +1194,7 @@ async def test_codex_cannot_fork_without_a_session_id(
 async def test_run_with_output_type_passes_schema_and_validates_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script('{"answer":"ok"}'))
     tentacle = _tentacle(FakeConversationManager())
 
@@ -1210,7 +1219,7 @@ async def test_run_with_output_type_passes_schema_and_validates_json(
 async def test_failed_run_persists_before_raising(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(failed_script("boom"))
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
@@ -1242,6 +1251,7 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
     async def start_fake_thread(
         self: codex_ink.CodexInk,
         *,
+        client: SharedCodex | None = None,
         approval_mode: ApprovalMode | None,
         base_instructions: str | None,
         config: JsonObject,
@@ -1258,8 +1268,9 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         assert approval_mode is None
         assert sandbox is Sandbox.workspace_write
         assert config == {"mcp_servers": {}}
-        assert isinstance(self.client, FakeCodex)
-        self.client._client._start_turn = AsyncMock(
+        assert client is self.pool.core_client
+        assert isinstance(self.pool.core_client, FakeCodex)
+        self.pool.core_client._client._start_turn = AsyncMock(
             return_value=(
                 SimpleNamespace(turn=SimpleNamespace(id="turn-1")),
                 None,
@@ -1267,7 +1278,7 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         )
         return FakeThread("thread-new"), "runtime-model"
 
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     monkeypatch.setattr(codex_ink.CodexInk, "start_thread", start_fake_thread)
     monkeypatch.setattr(
         codex_ink, "AsyncTurnHandle", Mock(return_value=ApprovalFakeTurn())
@@ -1605,7 +1616,7 @@ async def test_detached_run_drains_before_releasing_resources(
     detach: str,
     fails: bool,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex([])
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
@@ -1696,7 +1707,7 @@ async def test_detached_run_drains_before_releasing_resources(
             assert len(tentacle.live_turns) == 1
             assert len(tentacle.bridge_contexts) == 1
             assert len(tentacle.run_tasks) == 1
-            assert tentacle.ink.client is not None
+            assert tentacle.ink.pool.core_client is not None
             cwd = FakeCodex.turn_calls[0].cwd
             assert cwd is not None
             assert await anyio.Path(cwd).is_dir()
@@ -1748,7 +1759,7 @@ async def test_shutdown_drains_live_turns_without_interrupting(
     monkeypatch: pytest.MonkeyPatch,
     cancel_shutdown: bool,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
@@ -1797,7 +1808,10 @@ async def test_shutdown_drains_live_turns_without_interrupting(
 
     assert len(conversations.runs) == 1
     assert FakeCodex.closed == 1
-    assert tentacle.ink.notification_task is None
+    assert (
+        tentacle.ink.pool.notification_readers.get(tentacle.ink.pool.core_client)
+        is None
+    )
     assert not tentacle.live_turns
     assert not tentacle.driven_sessions
 
@@ -1805,7 +1819,7 @@ async def test_shutdown_drains_live_turns_without_interrupting(
 async def test_same_conversation_waits_with_both_workspaces_claimed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
@@ -1885,7 +1899,7 @@ async def test_same_conversation_waits_with_both_workspaces_claimed(
 async def test_one_client_serves_multiple_conversations_and_closes_on_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done", thread_id="thread-new"))
     other_thread = uuid7()
     tentacle = _tentacle(FakeConversationManager())
@@ -1913,7 +1927,10 @@ async def test_one_client_serves_multiple_conversations_and_closes_on_exit(
         assert FakeCodex.builds == 1
 
     assert FakeCodex.closed == 1
-    assert tentacle.ink.notification_task is None
+    assert (
+        tentacle.ink.pool.notification_readers.get(tentacle.ink.pool.core_client)
+        is None
+    )
 
 
 @pytest.mark.parametrize("external_id", [None, "thread-prior"])
@@ -1921,7 +1938,7 @@ async def test_one_client_serves_multiple_conversations_and_closes_on_exit(
 async def test_session_is_driven_before_turn_dispatch_and_released_afterward(
     monkeypatch: pytest.MonkeyPatch, external_id: str | None, fails: bool
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     session_id = external_id or "thread-new"
     reset_fake_codex(
         failed_script("boom", thread_id=session_id)
@@ -1998,7 +2015,7 @@ async def test_a_new_thread_does_not_block_an_existing_conversations_first_token
     starting = asyncio.Event()
     finish_starting = asyncio.Event()
 
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done", thread_id="thread-new"))
     FakeCodex.start_gate = (starting, finish_starting)
     tentacle = _tentacle(FakeConversationManager())
@@ -2054,7 +2071,7 @@ async def test_failed_shared_client_startup_closes_the_process(
         async def __aenter__(self) -> FakeCodex:
             raise error("startup stopped")
 
-    monkeypatch.setattr(codex_ink, "SharedCodex", FailedStartingCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FailedStartingCodex)
     reset_fake_codex(text_script("done"))
     tentacle = _tentacle(FakeConversationManager())
 
@@ -2063,7 +2080,10 @@ async def test_failed_shared_client_startup_closes_the_process(
     ):
         async with tentacle:
             pytest.fail("A failed shared process must not enter")
-    assert tentacle.ink.notification_task is None
+    assert (
+        tentacle.ink.pool.notification_readers.get(tentacle.ink.pool.core_client)
+        is None
+    )
 
     assert FakeCodex.closed == 1
 
@@ -2083,7 +2103,7 @@ async def test_the_conversations_preset_overrides_the_configured_one(
     sandbox: Sandbox,
     external_id: str | None,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "codex", "")] = FakeConversation(
@@ -2122,7 +2142,7 @@ async def test_the_conversations_preset_overrides_the_configured_one(
 async def test_a_warm_thread_retains_the_reported_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done", thread_id="thread-new"))
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
@@ -2151,7 +2171,7 @@ async def test_a_warm_thread_retains_the_reported_model(
 async def test_provider_change_forks_history_and_only_persists_a_successful_fork(
     monkeypatch: pytest.MonkeyPatch, loaded: bool, failed: bool
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done", thread_id="thread-fork"))
     FakeCodex.thread_providers["source"] = "other-provider"
     if loaded:
@@ -2206,7 +2226,7 @@ async def test_provider_change_forks_history_and_only_persists_a_successful_fork
 async def test_a_warm_thread_reapplies_the_selected_preset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done", thread_id="thread-new"))
     conversations = FakeConversationManager()
     conversation = FakeConversation(
@@ -2246,7 +2266,7 @@ async def test_native_identity_is_persisted_before_a_failed_first_turn(
     in_memory_engine: AsyncEngine,
     error: type[Exception] | type[asyncio.CancelledError],
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done", thread_id="thread-new"))
     octomate = Octomate()
     thread_id = await a_thread()
@@ -2296,7 +2316,7 @@ async def test_native_identity_is_persisted_before_a_failed_first_turn(
 async def test_concurrent_first_turns_share_the_persisted_native_identity(
     monkeypatch: pytest.MonkeyPatch, in_memory_engine: AsyncEngine
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done", thread_id="thread-new"))
     octomate = Octomate()
     thread_id = await a_thread()
@@ -2335,7 +2355,7 @@ async def test_concurrent_first_turns_share_the_persisted_native_identity(
 async def test_native_state_takes_precedence_over_cached_binding(
     monkeypatch: pytest.MonkeyPatch, replaced: bool
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
@@ -2365,7 +2385,7 @@ async def test_native_state_takes_precedence_over_cached_binding(
 async def test_active_native_thread_refuses_a_changed_mcp_binding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
@@ -2398,7 +2418,7 @@ async def test_unavailable_saved_modes_require_an_explicit_choice(
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "codex", "")] = FakeConversation(
@@ -2428,7 +2448,7 @@ async def test_a_subagent_run_declines_only_where_a_human_was_needed(
     monkeypatch: pytest.MonkeyPatch,
     permission_mode: str,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     conversation = FakeConversation(
@@ -2484,7 +2504,7 @@ async def test_shared_client_reuses_keys_per_user(
     disconnect: bool,
     start_first: int,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = ConversationManager()
     octomate = Octomate(
@@ -2532,7 +2552,7 @@ async def test_shared_client_reuses_keys_per_user(
         )
     first_started = list(principals)[start_first]
     started = asyncio.Event()
-    runtime = tentacle.ink.client
+    runtime = tentacle.ink.pool.core_client
     assert isinstance(runtime, FakeCodex)
 
     async def ordered_start(params: ThreadStartParams) -> SimpleNamespace:
@@ -2589,7 +2609,7 @@ async def test_shared_client_reuses_keys_per_user(
         first_token = tokens[str(first.id)]
         assert first.external_id is not None
         FakeCodex.loaded_threads.remove(first.external_id)
-        client = tentacle.ink.client
+        client = tentacle.ink.pool.core_client
         assert isinstance(client, FakeCodex)
         client.notifications.put_nowait(
             notification(
@@ -2614,11 +2634,13 @@ async def test_shared_client_reuses_keys_per_user(
             f"Bearer {first_token.get_secret_value()}"
         )
         if disconnect:
-            client = tentacle.ink.client
+            client = tentacle.ink.pool.core_client
             assert isinstance(client, FakeCodex)
             client.notifications.put_nowait(TransportClosedError("runtime exited"))
-            assert tentacle.ink.notification_task is not None
-            await asyncio.wait_for(tentacle.ink.notification_task, 1)
+            reader = tentacle.ink.pool.notification_readers[
+                tentacle.ink.pool.core_client
+            ]
+            await asyncio.wait_for(reader, 1)
             assert not tentacle.ink.running
             assert not tentacle.ink.thread_bindings
             assert len(tentacle.api_keys) == (1 if same_user else 2)
@@ -2639,7 +2661,7 @@ async def test_expired_user_key_is_replaced_once_and_applied_to_each_thread(
     in_memory_engine: AsyncEngine,
     cancel_refresh: bool,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = ConversationManager()
     octomate = Octomate(
@@ -2693,7 +2715,7 @@ async def test_expired_user_key_is_replaced_once_and_applied_to_each_thread(
         expired.key.expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
         if cancel_refresh:
-            client = tentacle.ink.client
+            client = tentacle.ink.pool.core_client
             assert isinstance(client, FakeCodex)
             request = AsyncMock()
 
@@ -2775,7 +2797,7 @@ async def test_cached_binding_reconfigures_a_changed_caller(
     in_memory_engine: AsyncEngine,
     moved: bool,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
     conversations = octomate.conversations
@@ -2880,7 +2902,7 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
     external_id: str | None,
     permission_mode: Literal["auto_review", "full_access"],
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     FakeCodex.local_mcp_servers = {
         "octomate": {
@@ -2987,7 +3009,7 @@ async def test_a_turn_without_a_octomate_session_launches_clean(
     # Clean means the server is turned off, not merely left unmentioned: the
     # operator's `~/.codex/config.toml` may hold a native Octomate entry with
     # their own credential in it, and an app-server is a child of this host.
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     FakeCodex.local_mcp_servers = {
         "owner": {"url": "https://owner.example/mcp"},
@@ -3027,7 +3049,7 @@ async def test_local_config_cannot_claim_the_driven_mcp_name(
     )
     monkeypatch.setattr(client._client, "request", request)
     tentacle = _tentacle(FakeConversationManager())
-    tentacle.ink.client = client
+    tentacle.ink.pool.core_client = client
     with pytest.raises(ValueError, match="reserved for driven sessions"):
         await tentacle.ink.thread_config("/project", SecretStr("caller"), uuid7())
     request.assert_awaited_once_with(
@@ -3040,7 +3062,7 @@ async def test_local_config_cannot_claim_the_driven_mcp_name(
 async def test_driven_isolation_overrides_local_feature_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     tentacle = _tentacle(
         FakeConversationManager(),
@@ -3092,7 +3114,7 @@ async def test_a_turn_kicked_by_an_unregistered_user_launches_clean(
 ) -> None:
     # The session is registered, but its kicker is a visitor: no credential to
     # speak with, so the spells are withheld rather than borrowed.
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     octomate = Octomate(
@@ -3150,7 +3172,7 @@ async def test_an_mcp_wiring_flip_reloads_only_the_conversations_thread(
     monkeypatch: pytest.MonkeyPatch,
     in_memory_engine: AsyncEngine,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     octomate = Octomate(
@@ -3221,7 +3243,7 @@ async def test_a_registered_gateway_uses_the_default_served_endpoint(
     monkeypatch: pytest.MonkeyPatch,
     in_memory_engine: AsyncEngine,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     octomate = Octomate(
@@ -3310,7 +3332,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
     monkeypatch: pytest.MonkeyPatch,
     in_memory_engine: AsyncEngine,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("working"))
     conversations = FakeConversationManager()
     octomate = Octomate(
@@ -3334,6 +3356,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
     async def start_binding_thread(
         self: codex_ink.CodexInk,
         *,
+        client: SharedCodex | None = None,
         approval_mode: ApprovalMode | None,
         base_instructions: str | None,
         config: JsonObject,
@@ -3354,10 +3377,11 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
         assert headers["X-Octomate-Conversation"] == str(conversation.id)
         assert driven["url"] == "http://127.0.0.1:8123/octomate/mcp"
         assert driven["tools"] == {"gateway_teleport": {"approval_mode": "prompt"}}
-        assert isinstance(self.client, FakeCodex)
+        assert client is self.pool.core_client
+        assert isinstance(self.pool.core_client, FakeCodex)
         turn = BindingFakeTurn()
         FakeCodex.turns.append(turn)
-        self.client._client._start_turn = AsyncMock(
+        self.pool.core_client._client._start_turn = AsyncMock(
             return_value=(SimpleNamespace(turn=SimpleNamespace(id=turn.id)), turn)
         )
         return FakeThread("thread-new"), "runtime-model"
@@ -3417,7 +3441,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
 async def test_a_resumed_turn_opens_from_what_the_graph_resolved(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "codex", "")] = FakeConversation(
@@ -3457,7 +3481,7 @@ async def test_async_questions_continue_and_answers_resume_the_same_thread(
     in_memory_engine: AsyncEngine,
     final_text: str,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     item = ThreadItem.model_validate(
         {
             "id": "call-async-questions",
@@ -3648,7 +3672,7 @@ async def test_thread_settings_preserve_reviewer_and_report_model(
     client._client.thread_start.return_value.model = "runtime-model"
     client._client.thread_resume.return_value.model = "runtime-model"
     client._client.thread_resume.return_value.thread.id = "previous-thread"
-    tentacle.ink.client = client
+    tentacle.ink.pool.core_client = client
     if resume:
         thread, model_name = await tentacle.ink.resume_thread(
             thread_id="previous-thread",
@@ -3703,7 +3727,7 @@ async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread(
         Mock(),
     )
     client._initialized = True
-    tentacle.ink.client = client
+    tentacle.ink.pool.core_client = client
     thread = AsyncThread(client, "warm-thread")
     for approval, sandbox, reviewer, policy in (
         (ApprovalMode.deny_all, Sandbox.full_access, None, AskForApprovalValue.never),

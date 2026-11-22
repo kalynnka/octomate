@@ -96,11 +96,13 @@ from uuid_utils.compat import uuid7
 
 from octomate.config.agents import Claim, CodexConfig
 from octomate.config.channels import TrunklineChannelConfig
+from octomate.config.habitat import NativeHabitatConfig
 from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
     ArtifactAvailableEvent,
 )
+from octomate.habitat import HabitatError
 from octomate.managers.habitat import Invocation
 from octomate.mcp.server import OCTOMATE_MCP_PATH
 from octomate.nerve import Impulse
@@ -709,6 +711,10 @@ class CodexTentacle(AgentTentacle[str, None]):
         cwd: Path,
     ) -> Conversation:
         """Import an owner's completed native history and fork it into an empty target."""
+        if not isinstance(self.habitats.config, NativeHabitatConfig):
+            raise HabitatError(
+                "Codex transcript import into a habitat is not supported yet"
+            )
         conversations = self.conversations
         async with conversations.lock(target.key):
             source = await conversations.get(source.id)
@@ -1091,11 +1097,13 @@ class CodexTentacle(AgentTentacle[str, None]):
         ):
             api_key = await self.runtime_api_key(context.user_id)
             codex_thread, _ = await self.ink.open_thread(
+                habitat=invocation.habitat,
+                env=invocation.environment,
                 thread_id=thread_id,
                 conversation_id=conversation.id,
                 api_key_id=api_key.key.id if api_key is not None else None,
                 mcp_bearer=api_key.token if api_key is not None else None,
-                cwd=str(invocation.workspace.path),
+                cwd=str(invocation.cwd),
                 approval_mode=ApprovalMode.auto_review
                 if permission_mode == "auto_review"
                 else ApprovalMode.deny_all
@@ -1832,12 +1840,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         else:
             summary = ReasoningSummary(ReasoningSummaryValue(self.config.summary))
 
-        # The run's own workspace: a fork of the project's mirror, or of the empty
-        # repository when the thread is in none. `sandbox="workspace_write"` scopes
-        # writes to it, so for Codex the directory is the whole of running inside a
-        # project — and the workspace is what makes that boundary this run's rather
-        # than everyone's checkout.
-        run_cwd = str(invocation.workspace.path)
+        run_cwd = str(invocation.cwd)
 
         async with contextlib.AsyncExitStack() as resources:
             resources.enter_context(
@@ -1881,6 +1884,8 @@ class CodexTentacle(AgentTentacle[str, None]):
             session = self.gateway_manager.get(conversation.id)
             api_key = await self.runtime_api_key(invocation.owner_id)
             codex_thread, model_name = await self.ink.open_thread(
+                habitat=invocation.habitat,
+                env=invocation.environment,
                 thread_id=conversation.external_id,
                 conversation_id=conversation.id,
                 api_key_id=api_key.key.id if api_key is not None else None,

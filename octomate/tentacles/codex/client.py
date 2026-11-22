@@ -24,9 +24,12 @@ from openai_codex.generated.v2_all import (
     ReviewStartParams,
     ReviewStartResponse,
     ReviewTarget,
+    ThreadForkResponse,
+    ThreadResumeResponse,
+    ThreadStartResponse,
     TurnStartedNotification,
 )
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from octomate.habitat import ManagedHabitat
 from octomate.tentacles.codex.adapter import json_object_adapter
@@ -62,6 +65,7 @@ class ConcurrentCodexClient(TracedCodexClient):
 
     token: EventLoopToken | None  # SDK threads enter the owning async runtime.
     handler: RequestHandler
+    thread_opened: Callable[[str], None] | None
     requests: set[asyncio.Task[None]]
     instrument: bool
     closing: bool
@@ -78,6 +82,7 @@ class ConcurrentCodexClient(TracedCodexClient):
         super().__init__(config=config)
         self.token = None
         self.handler = handler
+        self.thread_opened = None
         self.requests = set()
         self.instrument = instrument
         self.closing = False
@@ -85,6 +90,22 @@ class ConcurrentCodexClient(TracedCodexClient):
         self.stream = None
         self.reader = None
         self.reader_thread = None
+
+    def request[ResponseT: BaseModel](
+        self,
+        method: str,
+        params: JsonObject | None,
+        *,
+        response_model: type[ResponseT],
+    ) -> ResponseT:
+        response = super().request(method, params, response_model=response_model)
+        if self.thread_opened is not None and isinstance(
+            response, ThreadStartResponse | ThreadResumeResponse | ThreadForkResponse
+        ):
+            from_thread.run_sync(
+                self.thread_opened, response.thread.id, token=self.thread_token
+            )
+        return response
 
     @property
     def thread_token(self) -> EventLoopToken:

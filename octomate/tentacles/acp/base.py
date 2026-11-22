@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Sequence
-from contextlib import AsyncExitStack, aclosing, asynccontextmanager
+from contextlib import (
+    AbstractAsyncContextManager,
+    AsyncExitStack,
+    aclosing,
+    asynccontextmanager,
+)
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -44,10 +49,12 @@ from uuid_utils.compat import uuid7
 
 from octomate.config.acp import AcpAgentConfig
 from octomate.config.agents import Claim
+from octomate.config.habitat import NativeHabitatConfig
 from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
 )
+from octomate.habitat import HabitatError
 from octomate.managers.habitat import Invocation
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
@@ -55,6 +62,7 @@ from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import MAX_QUESTION_CHOICES, DeferredActionBatch
 from octomate.schemas.segments import TextSegment
+from octomate.schemas.thread import Thread
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.acp.adapter import json_value_adapter
 from octomate.tentacles.acp.client import NativeAcpClient, NativeAcpSession
@@ -90,6 +98,15 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
     config: AcpAgentConfig
     ink: AcpInk
     provider_permission_mode: str | None = None
+
+    def inhabit(
+        self, *, thread: Thread, conversation: Conversation, owner_id: UUID7 | None
+    ) -> AbstractAsyncContextManager[Invocation]:
+        if not isinstance(self.habitats.config, NativeHabitatConfig):
+            raise HabitatError(f"Agent {self.id!r} cannot run in a sandbox yet")
+        return super().inhabit(
+            thread=thread, conversation=conversation, owner_id=owner_id
+        )
 
     def __init__(
         self,

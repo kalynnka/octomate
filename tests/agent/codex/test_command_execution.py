@@ -55,6 +55,7 @@ from octomate.schemas.triage import Claim
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import ink as codex_ink
+from octomate.tentacles.codex import pool as codex_pool
 from octomate.tentacles.codex.schemas import ThreadSettingsUpdateResponse
 from tests.agent.codex.test_adapter import token_breakdown
 from tests.agent.codex.test_tentacle import (
@@ -75,7 +76,7 @@ from tests.support.users import a_user
 async def execution(
     monkeypatch: pytest.MonkeyPatch, in_memory_engine: AsyncEngine
 ) -> AsyncGenerator[tuple[CodexTentacle, CommandContext, AsyncMock]]:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     monkeypatch.setattr(codex_ink, "AsyncThread", lambda client, id: FakeThread(id))
     monkeypatch.setattr(
         codex_ink,
@@ -482,7 +483,7 @@ async def test_permission_update_applies_to_next_turn_on_the_same_thread(
             await anext(events)
             assert conversation.id in agent.live_turns
             await agent.set_permission_mode(conversation, "full_access")
-            request = agent.ink.client._client.request
+            request = agent.ink.pool.core_client._client.request
             assert isinstance(request, AsyncMock)
             request.assert_awaited_with(
                 "thread/settings/update",
@@ -548,7 +549,7 @@ async def test_permission_update_resets_native_reviewer_on_an_idle_thread(
             conversation_address=context.address,
             invocation=invocation,
         )
-    request = agent.ink.client._client.request
+    request = agent.ink.pool.core_client._client.request
     assert isinstance(request, AsyncMock)
     request.reset_mock()
     await agent.set_permission_mode(conversation, mode)
@@ -579,7 +580,7 @@ async def test_unloaded_permission_selection_does_not_open_a_native_thread(
         await agent.conversations.set_external_id(conversation, "unloaded-thread")
         conversation = await agent.conversations.get(conversation.id)
         context = replace(context, conversation=conversation)
-    request = agent.ink.client._client.request
+    request = agent.ink.pool.core_client._client.request
     assert isinstance(request, AsyncMock)
     request.reset_mock()
     await agent.set_permission_mode(conversation, "full_access")
@@ -608,7 +609,7 @@ async def test_rejected_codex_permission_update_does_not_save_the_selection(
             conversation_address=context.address,
             invocation=invocation,
         )
-    request = agent.ink.client._client.request
+    request = agent.ink.pool.core_client._client.request
     assert isinstance(request, AsyncMock)
     request.side_effect = CodexError("permission update rejected")
     with pytest.raises(CodexError, match="permission update rejected"):
@@ -624,7 +625,7 @@ async def test_status_before_a_conversation_does_not_start_codex(
 ) -> None:
     agent, context, _ = execution
     context = replace(context, conversation=None, cwd=None)
-    request = agent.ink.client._client.request
+    request = agent.ink.pool.core_client._client.request
     assert isinstance(request, AsyncMock)
     request.reset_mock()
     request.side_effect = [
@@ -654,7 +655,7 @@ async def test_status_reads_account_limits_without_a_conversation(
     execution: tuple[CodexTentacle, CommandContext, AsyncMock], multiple_buckets: bool
 ) -> None:
     agent, context, _ = execution
-    request = agent.ink.client._client.request
+    request = agent.ink.pool.core_client._client.request
     assert isinstance(request, AsyncMock)
     request.reset_mock()
     response = GetAccountRateLimitsResponse.model_validate(
@@ -757,7 +758,7 @@ async def test_status_uses_latest_recorded_native_usage(
         await agent.conversations.set_external_id(conversation, "forked-thread")
         conversation = await agent.conversations.get(conversation.id)
         context = replace(context, conversation=conversation)
-    request = agent.ink.client._client.request
+    request = agent.ink.pool.core_client._client.request
     assert isinstance(request, AsyncMock)
     request.side_effect = [GetAccountResponse(account=None, requires_openai_auth=True)]
     result = await agent.command_control(
@@ -790,7 +791,7 @@ async def test_status_does_not_invent_missing_quota_windows(
     execution: tuple[CodexTentacle, CommandContext, AsyncMock], reported: bool
 ) -> None:
     agent, context, _ = execution
-    request = agent.ink.client._client.request
+    request = agent.ink.pool.core_client._client.request
     assert isinstance(request, AsyncMock)
     request.side_effect = [
         GetAccountResponse.model_validate(
@@ -814,7 +815,7 @@ async def test_status_rejects_arguments_before_reading_account(
     execution: tuple[CodexTentacle, CommandContext, AsyncMock],
 ) -> None:
     agent, context, _ = execution
-    request = agent.ink.client._client.request
+    request = agent.ink.pool.core_client._client.request
     assert isinstance(request, AsyncMock)
     request.reset_mock()
     result = await agent.command_control(
@@ -874,7 +875,7 @@ async def test_plan_uses_native_preset_preserving_model_and_effort(
     context = replace(context, conversation=conversation)
     agent.ink.thread_bindings["existing"] = (conversation.id, None)
     FakeCodex.loaded_threads.add("existing")
-    request = agent.ink.client._client.request
+    request = agent.ink.pool.core_client._client.request
     assert isinstance(request, AsyncMock)
     request.reset_mock()
     async with invocation_for(
@@ -1254,7 +1255,7 @@ async def test_mcp_inspection_is_thread_scoped_and_reads_all_pages(
     context = replace(context, conversation=conversation)
     agent.ink.thread_bindings["existing"] = (conversation.id, None)
     FakeCodex.loaded_threads.add("existing")
-    request = agent.ink.client._client.request
+    request = agent.ink.pool.core_client._client.request
     assert isinstance(request, AsyncMock)
     request.reset_mock()
     request.side_effect = [
@@ -1338,7 +1339,7 @@ async def test_builtin_arguments_are_rejected_without_native_effects(
     conversation = await agent.conversations.get(conversation.id)
     context = replace(context, conversation=conversation)
     agent.ink.thread_bindings["existing"] = (conversation.id, None)
-    request = agent.ink.client._client.request
+    request = agent.ink.pool.core_client._client.request
     assert isinstance(request, AsyncMock)
     request.reset_mock()
     events = [
@@ -1500,7 +1501,7 @@ async def test_review_streams_native_review_text_and_records_a_real_run(
     assert run.native_session_id == "thread-new"
     assert run.native_turn_id == "turn-1"
     assert run.name == "review"
-    request = agent.ink.client._client.request
+    request = agent.ink.pool.core_client._client.request
     assert isinstance(request, AsyncMock)
     settings = next(
         call.args[1]

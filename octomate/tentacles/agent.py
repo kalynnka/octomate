@@ -49,8 +49,7 @@ from pydantic_ai.toolsets import AbstractToolset
 from starlette.datastructures import Headers
 
 from octomate.config.agents import AgentConfig, AgentRouteModelName
-from octomate.config.habitat import NativeHabitatConfig
-from octomate.habitat import Habitat, HabitatError
+from octomate.habitat import Habitat
 from octomate.managers.conversation import ConversationNotFound
 from octomate.managers.files import FileOffsetConflict
 from octomate.managers.habitat import Invocation
@@ -137,8 +136,6 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     api_keys: dict[UUID7, IssuedApiKey]  # One credential per user for this agent.
     api_key_lock: asyncio.Lock
     habitats: HabitatManager
-    # Whether a run can be hosted in a managed habitat instead of on the host.
-    supports_managed_habitat: ClassVar[bool] = False
     # Programmatically assembled agents may have no deployment config.
     config: AgentConfig | None = None
 
@@ -704,15 +701,8 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         """Prepare this agent's run in the service's habitat.
 
         Creating the context acquires nothing; the caller enters it and closes
-        it after the run is consumed. An agent that cannot run its harness in a
-        sandbox refuses here, so nothing is prepared and nothing falls back to
-        the host.
+        it after the run is consumed.
         """
-        if (
-            not isinstance(self.habitats.config, NativeHabitatConfig)
-            and not self.supports_managed_habitat
-        ):
-            raise HabitatError(f"Agent {self.id!r} cannot run in a sandbox yet")
         return self.habitats.invoke(
             thread=thread, conversation=conversation, owner_id=owner_id
         )

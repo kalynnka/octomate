@@ -394,17 +394,22 @@ async def test_native_events_approval_and_controls_share_the_connection(
 
 
 @pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize("client_app", [None, "octomate/test", ""])
 async def test_transport_preserves_sdk_environment_and_stderr(
     manager: HabitatManager,
     scope: InvocationScope,
     options: ClaudeAgentOptions,
     explicit: bool,
+    client_app: str | None,
 ) -> None:
+    options.client_app = client_app
     options.enable_file_checkpointing = True
     options.env.update(
         CLAUDE_TEST_STDERR="first diagnostic  \n\nsecond diagnostic",
         CLAUDE_CODE_ENTRYPOINT="cli",
         CLAUDE_AGENT_SDK_VERSION="ignored",
+        CLAUDE_AGENT_SDK_CLIENT_APP="from-env",
+        CLAUDE_AGENT_SDK_DERIVED_CLIENT_APP="outer-session",
     )
     if explicit:
         options.env.update(
@@ -440,6 +445,10 @@ async def test_transport_preserves_sdk_environment_and_stderr(
     assert env["CLAUDE_AGENT_SDK_VERSION"] != "ignored"
     assert env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] == "true"
     assert env["CLAUDE_CODE_SDK_READS_SESSION_STATE"] == "1"
+    assert env["CLAUDE_AGENT_SDK_CLIENT_APP"] == (
+        "from-env" if client_app is None else client_app
+    )
+    assert "CLAUDE_AGENT_SDK_DERIVED_CLIENT_APP" not in env
     assert stderr == ["first diagnostic", "second diagnostic"]
     if explicit:
         assert env["TRACEPARENT"] == "explicit-parent"

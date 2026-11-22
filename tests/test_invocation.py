@@ -1,12 +1,16 @@
 import asyncio
 from pathlib import Path, PurePosixPath
+from typing import Literal
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic_ai.models.test import TestModel
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
+from octomate.config.acp import AcpAgentConfig, AcpProvider
+from octomate.config.agents import DeepseekConfig
 from octomate.config.habitat import SbxHabitatConfig
 from octomate.habitat import Habitat, HabitatError, NativeHabitat
 from octomate.habitat.sbx import SbxHabitat
@@ -16,6 +20,10 @@ from octomate.schemas.thread import ThreadKey
 from octomate.schemas.volumes import GitVolume, UnregisteredProjectError
 from octomate.schemas.volumes.storage import HostDirectory
 from octomate.schemas.workspaces import Workspace
+from octomate.tentacles.acp.base import AcpAgentTentacle
+from octomate.tentacles.agent import AgentTentacle
+from octomate.tentacles.deepseek import DeepseekTentacle
+from octomate.tentacles.inkling import InklingTentacle
 from tests.support.agents import FakeAgent
 from tests.support.managers import a_project, a_registry, a_thread, a_workspace_manager
 from tests.support.users import a_user
@@ -413,31 +421,58 @@ async def test_core_refuses_an_anonymous_project(
             pytest.fail("An anonymous project invocation must not start")
 
 
-class SandboxAgent(FakeAgent):
-    supports_managed_habitat = True
-
-
-@pytest.mark.parametrize("registered", [False, True])
+@pytest.mark.parametrize("kind", ["inkling", "acp", "deepseek", "anonymous"])
 async def test_sandbox_dispatch_refuses_before_preparing_anything(
-    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch, registered: bool
+    in_memory_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: Literal["inkling", "acp", "deepseek", "anonymous"],
 ) -> None:
     app = Octomate()
     app.habitats.config = SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64)
     prepare = AsyncMock()
     monkeypatch.setattr(SbxHabitat, "prepare", prepare)
     thread = await app.threads.ensure(ThreadKey("im", "thread", "room", "turn"))
-    # The manager refuses an unregistered sender whatever the agent; an agent
-    # that cannot run in a sandbox refuses a registered one itself.
-    agent = FakeAgent() if registered else SandboxAgent()
-    agent.habitats = app.habitats
-    message = "cannot run in a sandbox" if registered else "registered user"
-    with pytest.raises(HabitatError, match=message):
-        async with agent.inhabit(
-            thread=thread,
-            conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
-            owner_id=(await a_user()).id if registered else None,
-        ):
-            pytest.fail("Sandbox execution must not fall back to the host")
+    agent: AgentTentacle
+    if kind == "inkling":
+        agent = InklingTentacle(
+            kind,
+            app,
+            auth=app.auth,
+            habitats=app.habitats,
+            models={"test": TestModel()},
+        )
+    elif kind == "acp":
+        agent = AcpAgentTentacle(
+            kind,
+            app,
+            auth=app.auth,
+            habitats=app.habitats,
+            config=AcpAgentConfig(provider=AcpProvider(command="unused")),
+        )
+    elif kind == "deepseek":
+        agent = DeepseekTentacle(
+            app,
+            auth=app.auth,
+            habitats=app.habitats,
+            config=DeepseekConfig(),
+        )
+    else:
+        agent = FakeAgent()
+        agent.habitats = app.habitats
+    message = "registered user" if kind == "anonymous" else "cannot run in a sandbox"
+    try:
+        with pytest.raises(HabitatError, match=message):
+            async with agent.inhabit(
+                thread=thread,
+                conversation=Conversation(
+                    thread_id=thread.id, agent_tentacle_id=agent.id
+                ),
+                owner_id=None if kind == "anonymous" else (await a_user()).id,
+            ):
+                pytest.fail("Sandbox execution must not fall back to the host")
+    finally:
+        if isinstance(agent, DeepseekTentacle):
+            await agent.ink.client.http_client.aclose()
     prepare.assert_not_awaited()
     assert not app.habitats.residences
     assert not app.workspaces.volumes_dir.exists()
@@ -453,7 +488,7 @@ async def test_a_capable_agent_leases_the_owners_sandbox(
     monkeypatch.setattr(SbxHabitat, "stop", AsyncMock())
     owner = await a_user()
     thread = await app.threads.ensure(ThreadKey("im", "thread", "room", "turn"))
-    agent = SandboxAgent()
+    agent = FakeAgent()
     agent.habitats = app.habitats
     try:
         async with agent.inhabit(

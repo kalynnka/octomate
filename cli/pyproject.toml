@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-claude = ["claude-agent-sdk>=0.2.165"]
+claude = ["claude-agent-sdk>=0.2.187"]
 codex = ["openai-codex>=0.171.0"]
 
 [project.urls]

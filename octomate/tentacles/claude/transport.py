@@ -98,6 +98,9 @@ class HabitatTransport(Transport):
             "CLAUDE_CODE_SDK_READS_SESSION_STATE": "1",
             "PWD": str(options.cwd),
         }
+        env.pop("CLAUDE_AGENT_SDK_DERIVED_CLIENT_APP", None)
+        if options.client_app is not None:
+            env["CLAUDE_AGENT_SDK_CLIENT_APP"] = options.client_app
         if options.enable_file_checkpointing:
             env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "true"
         carrier: dict[str, str] = {}

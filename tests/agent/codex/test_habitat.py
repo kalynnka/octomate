@@ -4,23 +4,34 @@ import asyncio
 import os
 import sys
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
+from typing import Literal
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from httpx2 import URL
 from openai_codex import CodexConfig
 from openai_codex.errors import CodexError, TransportClosedError
+from openai_codex.generated.v2_all import (
+    ThreadForkResponse,
+    ThreadResumeResponse,
+    ThreadStartResponse,
+)
 from opentelemetry import trace
 from pydantic import BaseModel
 from uuid_utils.compat import uuid7
 
+from octomate.config.agents import CodexConfig as AgentCodexConfig
 from octomate.config.habitat import SbxHabitatConfig
 from octomate.habitat import HabitatError
 from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
 from octomate.schemas.habitat import InvocationScope
+from octomate.tentacles.codex import pool as codex_pool
 from octomate.tentacles.codex.client import SharedCodex
+from octomate.tentacles.codex.ink import CodexInk
 from octomate.types.json import JsonObject
 from tests.support.managers import a_workspace_manager
 from tests.test_habitat_contracts import IMAGE
@@ -37,6 +48,97 @@ class ProcessInfo(BaseModel):
 
 class EchoResponse(BaseModel):
     text: str
+
+
+@pytest.mark.parametrize("method", ["thread/start", "thread/resume", "thread/fork"])
+async def test_ink_reuses_and_isolates_habitat_clients(
+    sandbox: SbxHabitat,
+    config: CodexConfig,
+    tmp_path: Path,
+    method: Literal["thread/start", "thread/resume", "thread/fork"],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codex_pool, "SharedCodex", SharedCodex)
+    handler = AsyncMock(return_value={})
+    ink = CodexInk(
+        AgentCodexConfig(runtime=config),
+        agent_id="codex",
+        mcp_url=URL("http://127.0.0.1:9000/mcp"),
+        handler=handler,
+    )
+    invalidated = asyncio.Event()
+    ink.pool.watch_notifications = partial(
+        ink.watch_runtime,
+        invalidate_commands=Mock(side_effect=lambda _: invalidated.set()),
+    )
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    other = replace(sandbox, user_id=uuid7())
+    try:
+        peers = await asyncio.gather(
+            *(
+                ink.pool.acquire(sandbox, env={"CODEX_HOME": str(first / ".codex")})
+                for _ in range(4)
+            )
+        )
+        assert all(runtime is peers[0] for runtime in peers)
+        runtime = peers[0]
+        sibling = await ink.pool.acquire(
+            other, env={"CODEX_HOME": str(second / ".codex")}
+        )
+        assert sibling is not runtime
+        assert runtime is not await ink.pool.acquire()
+        info = await runtime._client.request("probe", {}, response_model=ProcessInfo)
+        peer = await sibling._client.request("probe", {}, response_model=ProcessInfo)
+        assert info.pid != peer.pid
+        assert info.environment["CODEX_HOME"] == str(first / ".codex")
+        assert peer.environment["CODEX_HOME"] == str(second / ".codex")
+        assert info.environment["PWD"] == str(first)
+        response = await runtime._client.request(
+            method,
+            {"threadId": str(uuid7())},
+            response_model={
+                "thread/start": ThreadStartResponse,
+                "thread/resume": ThreadResumeResponse,
+                "thread/fork": ThreadForkResponse,
+            }[method],
+        )
+        thread_id = response.thread.id
+        assert await ink.pool.acquire(thread_id=thread_id) is runtime
+        with pytest.raises(ValueError, match="already open in another habitat"):
+            await ink.pool.acquire(other, thread_id=thread_id)
+        ink.thread_bindings[thread_id] = (uuid7(), None)
+        assert await ink.pool.acquire(sandbox, thread_id=thread_id) is runtime
+        core_thread = str(uuid7())
+        ink.thread_bindings[core_thread] = (uuid7(), None)
+        peer_thread = str(uuid7())
+        ink.thread_bindings[peer_thread] = (uuid7(), None)
+        assert await ink.pool.acquire(other, thread_id=peer_thread) is sibling
+        with pytest.raises(ValueError, match="no thread in this habitat"):
+            await sibling.transport.handler("approve", {"threadId": thread_id})
+        handler.assert_not_called()
+        await runtime.transport.handler("approve", {"threadId": thread_id})
+        handler.assert_awaited_once_with("approve", {"threadId": thread_id})
+        await sandbox.resources.aclose()
+        await asyncio.wait_for(invalidated.wait(), 1)
+        assert thread_id not in ink.thread_bindings
+        assert peer_thread in ink.thread_bindings
+        assert core_thread in ink.thread_bindings
+        assert await ink.pool.acquire(thread_id=thread_id) is runtime
+        assert not (await ink.pool.acquire()).transport.closing
+        assert (
+            await sibling._client.request("probe", {}, response_model=ProcessInfo)
+        ).pid == peer.pid
+        replacement = await ink.pool.acquire(
+            sandbox, env={"CODEX_HOME": str(first / ".codex")}
+        )
+        assert replacement is not runtime
+    finally:
+        await ink.close()
+        await sandbox.resources.aclose()
+        await other.resources.aclose()
 
 
 @pytest.fixture

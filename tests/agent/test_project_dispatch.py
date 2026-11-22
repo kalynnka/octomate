@@ -40,7 +40,7 @@ from octomate.schemas.volumes.git import run_git
 from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.codex import CodexTentacle
-from octomate.tentacles.codex import ink as codex_ink
+from octomate.tentacles.codex import pool as codex_pool
 from tests.agent.codex.test_tentacle import (
     FakeCodex,
     reset_fake_codex,
@@ -159,7 +159,7 @@ async def codex_run(octomate: Octomate, thread: Thread) -> str | None:
 @pytest.fixture(autouse=True)
 def _fakes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", RecordingClaudeClient)
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
 
 

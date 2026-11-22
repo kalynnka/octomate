@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import uuid
@@ -13,7 +12,6 @@ from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path, PurePosixPath
 
-import anyio
 from fastmcp.apps.config import UI_MIME_TYPE
 from httpx2 import URL
 from octomate_protocol.gateway import GatewayTool, gateway_tool
@@ -74,6 +72,7 @@ from octomate.telemetry import octomate_trace_environment
 from octomate.tentacles.agent import AgentInk
 from octomate.tentacles.codex.adapter import json_object_adapter
 from octomate.tentacles.codex.client import RequestHandler, SharedCodex
+from octomate.tentacles.codex.pool import CodexClientPool
 from octomate.tentacles.codex.schemas import (
     CodexModelCatalog,
     PermissionProfile,
@@ -128,17 +127,17 @@ DRIVEN_CONFIG_OVERRIDES = (
 
 
 class CodexInk(AgentInk):
-    """Own one app-server client and isolate SDK operations from the tentacle.
+    """Own reusable app-server clients and isolate SDK operations from the tentacle.
 
     The tentacle supplies approval handling and a catalog invalidation callback;
-    the ink owns the process, notification reader and native thread operations.
+    the ink owns their processes, notification readers and native thread operations.
     Conversation lookup and persistence remain with the tentacle.
     """
 
-    client: SharedCodex
+    pool: CodexClientPool
     agent_id: str
     mcp_url: URL
-    notification_task: asyncio.Task[None] | None
+    handler: RequestHandler
     # TODO: Read applied MCP identity from the SDK when thread configuration is exposed.
     thread_bindings: dict[
         str, tuple[uuid.UUID, uuid.UUID | None]
@@ -152,9 +151,9 @@ class CodexInk(AgentInk):
         mcp_url: URL,
         handler: RequestHandler,
     ) -> None:
+        self.handler = handler
         self.agent_id = agent_id
         self.mcp_url = mcp_url
-        self.notification_task = None
         self.thread_bindings = {}
         env = dict(config.runtime.env or {})
         overrides = (*config.runtime.config_overrides, *DRIVEN_CONFIG_OVERRIDES)
@@ -167,47 +166,49 @@ class CodexInk(AgentInk):
                     + json.dumps(trace_environment.endpoint),
                     'otel.trace_exporter.otlp-http.protocol="binary"',
                 )
-        self.client = SharedCodex(
-            config=replace(config.runtime, env=env, config_overrides=overrides),
+        self.pool = CodexClientPool(
+            replace(config.runtime, env=env, config_overrides=overrides),
             handler=handler,
             instrument=config.instrument,
+            handle_request=self.handle_request,
         )
 
     @property
     def running(self) -> bool:
-        return self.notification_task is not None and not self.notification_task.done()
+        return self.pool.running
+
+    async def handle_request(
+        self, method: str, params: JsonObject | None
+    ) -> JsonObject:
+        """Forward approvals only for a thread bound to an Octomate conversation."""
+        thread_id = (params or {}).get("threadId")
+        if not isinstance(thread_id, str) or thread_id not in self.thread_bindings:
+            raise ValueError("Codex request belongs to no thread in this habitat")
+        return await self.handler(method, params)
 
     async def start(self, *, invalidate_commands: Callable[[str], None]) -> None:
-        starting = asyncio.create_task(self.client.__aenter__())
-        try:
-            await asyncio.shield(starting)
-        except BaseException:
-            with anyio.CancelScope(shield=True):
-                await asyncio.gather(starting, return_exceptions=True)
-                await self.close()
-            raise
-        self.notification_task = asyncio.create_task(
-            self.watch_runtime(invalidate_commands)
+        await self.pool.start(
+            watch_notifications=partial(
+                self.watch_runtime, invalidate_commands=invalidate_commands
+            )
         )
 
     async def close(self) -> None:
-        # Closing the transport releases the SDK's blocking notification read.
-        notification_task, self.notification_task = self.notification_task, None
-        await self.client.close()
-        if notification_task is not None:
-            await notification_task
+        await self.pool.close()
+        self.thread_bindings.clear()
 
     async def compaction_messages(
         self, thread_id: str, turn_id: str, item_id: str
     ) -> list[ModelRequest | ModelResponse]:
         """Read this driven runtime's rollout over RPC, including remote runtimes."""
+        client = await self.pool.acquire(thread_id=thread_id)
         try:
-            thread = (await AsyncThread(self.client, thread_id).read()).thread
+            thread = (await AsyncThread(client, thread_id).read()).thread
             if thread.id != thread_id:
                 raise ValueError("Compaction history belongs to a different thread")
             if thread.path is None:
                 return []
-            response = await self.client._client.request(
+            response = await client._client.request(
                 "fs/readFile", {"path": thread.path}, response_model=FsReadFileResponse
             )
         except CodexError as exc:
@@ -276,26 +277,37 @@ class CodexInk(AgentInk):
             pending = None
         return []
 
-    async def watch_runtime(self, invalidate_commands: Callable[[str], None]) -> None:
+    async def watch_runtime(
+        self, client: SharedCodex, invalidate_commands: Callable[[str], None]
+    ) -> None:
         """Invalidate catalogs and forget bindings for closed native threads."""
         try:
             while True:
-                notification = await self.client._client.next_notification()
+                notification = await client._client.next_notification()
                 if notification.method == "skills/changed":
                     invalidate_commands(self.agent_id)
-                if isinstance(notification.payload, ThreadClosedNotification):
+                if (
+                    isinstance(notification.payload, ThreadClosedNotification)
+                    and await self.pool.acquire(
+                        thread_id=notification.payload.thread_id
+                    )
+                    is client
+                ):
                     self.thread_bindings.pop(notification.payload.thread_id, None)
                     invalidate_commands(self.agent_id)
         except CodexError:
-            if self.notification_task is not None:
+            if self.running and not client.transport.closing:
                 logger.warning("Codex runtime disconnected", exc_info=True)
         finally:
-            self.thread_bindings.clear()
+            for thread_id in list(self.thread_bindings):
+                if await self.pool.acquire(thread_id=thread_id) is client:
+                    self.thread_bindings.pop(thread_id, None)
             invalidate_commands(self.agent_id)
 
     async def skills(self, cwd: Path) -> SkillsListEntry:
         """Rescan native skills for one existing workspace."""
-        response = await self.client._client.request(
+        client = await self.pool.acquire()
+        response = await client._client.request(
             "skills/list",
             {"cwds": [str(cwd)], "forceReload": True},
             response_model=SkillsListResponse,
@@ -307,7 +319,8 @@ class CodexInk(AgentInk):
 
     async def models(self) -> CodexModelCatalog:
         """Read the configured provider and all advertised, visible models."""
-        settings = await self.client._client.request(
+        client = await self.pool.acquire()
+        settings = await client._client.request(
             "config/read",
             {"includeLayers": False},
             response_model=ConfigReadResponse,
@@ -316,7 +329,7 @@ class CodexInk(AgentInk):
         models: list[Model] = []
         cursor: str | None = None
         while True:
-            page = await self.client._client.request(
+            page = await client._client.request(
                 "model/list",
                 {"includeHidden": False, "cursor": cursor},
                 response_model=ModelListResponse,
@@ -341,6 +354,8 @@ class CodexInk(AgentInk):
         self,
         *,
         thread_id: str | None,
+        habitat: Habitat | None = None,
+        env: dict[str, str] | None = None,
         conversation_id: uuid.UUID,
         api_key_id: uuid.UUID | None,
         mcp_bearer: SecretStr | None,
@@ -357,10 +372,11 @@ class CodexInk(AgentInk):
         """Read native liveness and apply the calling conversation's MCP identity."""
         if not self.running:
             raise RuntimeError("Codex runtime is not running")
+        client = await self.pool.acquire(habitat, env=env, thread_id=thread_id)
         binding = (conversation_id, api_key_id)
         provider_changed = False
         if thread_id is not None:
-            thread = AsyncThread(self.client, thread_id)
+            thread = AsyncThread(client, thread_id)
             metadata = await thread.read(include_turns=False)
             provider_changed = (
                 model_provider is not None
@@ -384,12 +400,14 @@ class CodexInk(AgentInk):
                 self.thread_bindings.pop(thread_id, None)
             if loaded and not provider_changed:
                 # Resume reapplies overrides to an idle thread without subscribers.
-                await self.client._client.request(
+                await client._client.request(
                     "thread/unsubscribe",
                     {"threadId": thread_id},
                     response_model=ThreadUnsubscribeResponse,
                 )
-        thread_config = await self.thread_config(cwd, mcp_bearer, conversation_id)
+        thread_config = await self.thread_config(
+            cwd, mcp_bearer, conversation_id, client=client
+        )
         if thread_id is not None and provider_changed:
             policy, reviewer = (
                 _approval_mode_settings(approval_mode)
@@ -399,7 +417,7 @@ class CodexInk(AgentInk):
                     ApprovalsReviewer.user,
                 )
             )
-            forked = await self.client._client.thread_fork(
+            forked = await client._client.thread_fork(
                 thread_id,
                 ThreadForkParams(
                     thread_id=thread_id,
@@ -419,11 +437,12 @@ class CodexInk(AgentInk):
             if forked.thread.id == thread_id:
                 raise ValueError("Codex fork returned the source thread id")
             thread, model_name = (
-                AsyncThread(self.client, forked.thread.id),
+                AsyncThread(client, forked.thread.id),
                 forked.model,
             )
         elif thread_id is not None:
             thread, model_name = await self.resume_thread(
+                client=client,
                 thread_id=thread_id,
                 approval_mode=approval_mode,
                 base_instructions=base_instructions,
@@ -437,6 +456,7 @@ class CodexInk(AgentInk):
             )
         else:
             thread, model_name = await self.start_thread(
+                client=client,
                 approval_mode=approval_mode,
                 base_instructions=base_instructions,
                 config=thread_config,
@@ -456,8 +476,11 @@ class CodexInk(AgentInk):
         cwd: str,
         mcp_bearer: SecretStr | None,
         conversation_id: uuid.UUID | None,
+        *,
+        client: SharedCodex | None = None,
     ) -> JsonObject:
-        settings = await self.client._client.request(
+        client = await self.pool.acquire() if client is None else client
+        settings = await client._client.request(
             "config/read",
             {"cwd": cwd, "includeLayers": False},
             response_model=ConfigReadResponse,
@@ -489,9 +512,14 @@ class CodexInk(AgentInk):
                 f"MCP server name {DRIVEN_MCP_SERVER_NAME!r} is reserved for driven sessions"
             )
         # Keep the caller connection separate so no local transport or auth merges in.
+        mcp_url = (
+            URL(client.habitat.core_url).copy_with(path=self.mcp_url.path)
+            if client.habitat is not None
+            else self.mcp_url
+        )
         servers[DRIVEN_MCP_SERVER_NAME] = {
             "enabled": True,
-            "url": str(self.mcp_url),
+            "url": str(mcp_url),
             "http_headers": {
                 "Authorization": f"Bearer {mcp_bearer.get_secret_value()}",
                 CONVERSATION_HEADER: str(conversation_id),
@@ -503,6 +531,7 @@ class CodexInk(AgentInk):
     async def start_thread(
         self,
         *,
+        client: SharedCodex | None = None,
         approval_mode: ApprovalMode | None,
         base_instructions: str | None,
         config: JsonObject,
@@ -514,6 +543,7 @@ class CodexInk(AgentInk):
         personality: Personality | None,
         sandbox: Sandbox,
     ) -> tuple[AsyncThread, str]:
+        client = await self.pool.acquire() if client is None else client
         approval_policy, reviewer = (
             _approval_mode_settings(approval_mode)
             if approval_mode is not None
@@ -522,8 +552,8 @@ class CodexInk(AgentInk):
                 ApprovalsReviewer.user,
             )
         )
-        await self.client._ensure_initialized()
-        started = await self.client._client.thread_start(
+        await client._ensure_initialized()
+        started = await client._client.thread_start(
             ThreadStartParams(
                 approval_policy=approval_policy,
                 approvals_reviewer=reviewer,
@@ -538,11 +568,12 @@ class CodexInk(AgentInk):
                 permissions=PERMISSION_PROFILES[sandbox],
             )
         )
-        return AsyncThread(self.client, started.thread.id), started.model
+        return AsyncThread(client, started.thread.id), started.model
 
     async def resume_thread(
         self,
         *,
+        client: SharedCodex | None = None,
         thread_id: str,
         approval_mode: ApprovalMode | None,
         base_instructions: str | None,
@@ -554,6 +585,7 @@ class CodexInk(AgentInk):
         personality: Personality | None,
         sandbox: Sandbox,
     ) -> tuple[AsyncThread, str]:
+        client = await self.pool.acquire() if client is None else client
         approval_policy, reviewer = (
             _approval_mode_settings(approval_mode)
             if approval_mode is not None
@@ -562,8 +594,8 @@ class CodexInk(AgentInk):
                 ApprovalsReviewer.user,
             )
         )
-        await self.client._ensure_initialized()
-        resumed = await self.client._client.thread_resume(
+        await client._ensure_initialized()
+        resumed = await client._client.thread_resume(
             thread_id,
             ThreadResumeParams(
                 thread_id=thread_id,
@@ -579,7 +611,7 @@ class CodexInk(AgentInk):
                 permissions=PERMISSION_PROFILES[sandbox],
             ),
         )
-        return AsyncThread(self.client, resumed.thread.id), resumed.model
+        return AsyncThread(client, resumed.thread.id), resumed.model
 
     async def fork_session(
         self,
@@ -593,8 +625,9 @@ class CodexInk(AgentInk):
         """Fork stored native history without carrying the source's MCP identity."""
         if not session_id:
             raise ValueError("Cannot fork a Codex conversation without a session id")
-        config = await self.thread_config(str(cwd), None, None)
-        forked = await self.client._client.thread_fork(
+        client = await self.pool.acquire(habitat, env=env or {})
+        config = await self.thread_config(str(cwd), None, None, client=client)
+        forked = await client._client.thread_fork(
             session_id,
             SdkThreadForkParams(
                 thread_id=session_id,
@@ -633,7 +666,8 @@ class CodexInk(AgentInk):
             action["source"] = native_action.source.name
         if isinstance(native_action, NetworkAccessGuardianApprovalReviewAction):
             action["protocol"] = native_action.protocol.name
-        await self.client._client.request(
+        client = await self.pool.acquire(thread_id=thread_id)
+        await client._client.request(
             "thread/approveGuardianDeniedAction",
             {
                 "threadId": thread_id,
@@ -674,7 +708,8 @@ class CodexInk(AgentInk):
                 ApprovalsReviewer.user,
             )
         )
-        await self.client._client.request(
+        client = await self.pool.acquire(thread_id=thread_id)
+        await client._client.request(
             "thread/settings/update",
             {
                 "threadId": thread_id,
@@ -702,7 +737,8 @@ class CodexInk(AgentInk):
             mode=ModeKind.plan if enabled else ModeKind.default,
             settings=Settings(model=model, reasoning_effort=effort),
         )
-        await self.client._client.request(
+        client = await self.pool.acquire(thread_id=thread_id)
+        await client._client.request(
             "thread/settings/update",
             {
                 "threadId": thread_id,
@@ -718,14 +754,15 @@ class CodexInk(AgentInk):
         Other authentication modes have no ChatGPT quota; RPC failures propagate.
         The SDK leaves the multi-bucket map untyped, so validate it before use.
         """
-        account = await self.client._client.request(
+        client = await self.pool.acquire()
+        account = await client._client.request(
             "account/read", {"refreshToken": False}, response_model=GetAccountResponse
         )
         if account.account is None or not isinstance(
             account.account.root, ChatgptAccount
         ):
             return "Account limits: unavailable (not signed in with ChatGPT)."
-        response = await self.client._client.request(
+        response = await client._client.request(
             "account/rateLimits/read", None, response_model=GetAccountRateLimitsResponse
         )
         buckets = (
@@ -772,10 +809,11 @@ class CodexInk(AgentInk):
 
     async def mcp_status(self, thread_id: str) -> str:
         """Inspect only this thread's MCP connections, including paginated servers."""
+        client = await self.pool.acquire(thread_id=thread_id)
         lines: list[str] = []
         cursor: str | None = None
         while True:
-            page = await self.client._client.request(
+            page = await client._client.request(
                 "mcpServerStatus/list",
                 {"threadId": thread_id, "cursor": cursor},
                 response_model=ListMcpServerStatusResponse,
@@ -828,7 +866,8 @@ class CodexInk(AgentInk):
             params.target = McpResourceReadTarget(
                 connector_id=context.connector_id, link_id=context.link_id
             )
-        response = await self.client._client.request(
+        client = await self.pool.acquire(thread_id=thread_id)
+        response = await client._client.request(
             "mcpServer/resource/read",
             json_object_adapter.validate_python(
                 params.model_dump(mode="json", by_alias=True, exclude_unset=True)
@@ -858,12 +897,16 @@ class CodexInk(AgentInk):
         self, thread_id: str, review: ReviewTarget | None = None
     ) -> AsyncTurnHandle:
         """Retain command-start events and release an abandoned SDK subscription."""
+        client = await self.pool.acquire(thread_id=thread_id)
         started = await acquire_in_thread(
-            partial(self.client.transport.start_command, thread_id, review),
+            partial(client.transport.start_command, thread_id, review),
             discard=lambda started: started.subscription.close(),
         )
         return AsyncTurnHandle(
-            self.client, thread_id, started.id, _subscription=started.subscription
+            client,
+            thread_id,
+            started.id,
+            _subscription=started.subscription,
         )
 
     async def start_turn(
@@ -881,6 +924,7 @@ class CodexInk(AgentInk):
         summary: ReasoningSummary | None,
         review: ReviewTarget | None = None,
     ) -> AsyncTurnHandle:
+        client = await self.pool.acquire(thread_id=thread.id)
         # Apply both axes every turn, including on warm threads after a mode change.
         policy, reviewer = (
             _approval_mode_settings(approval_mode)
@@ -892,7 +936,7 @@ class CodexInk(AgentInk):
         )
         if review is not None:
             # review/start inherits thread settings instead of accepting turn overrides.
-            await self.client._client.request(
+            await client._client.request(
                 "thread/settings/update",
                 {
                     "threadId": thread.id,
@@ -914,7 +958,7 @@ class CodexInk(AgentInk):
             return await self.start_command(thread.id, review)
         # The public SDK cannot select native permission profiles.
         inputs = _to_wire_input(_normalize_run_input(prompt))
-        turn, subscription = await self.client._client._start_turn(
+        turn, subscription = await client._client._start_turn(
             thread.id,
             inputs,
             params=TurnStartParams.model_validate(
@@ -935,7 +979,10 @@ class CodexInk(AgentInk):
             for_handle=True,
         )
         return AsyncTurnHandle(
-            self.client, thread.id, turn.turn.id, _subscription=subscription
+            client,
+            thread.id,
+            turn.turn.id,
+            _subscription=subscription,
         )
 
     async def thread_name(self, thread: AsyncThread) -> str | None:

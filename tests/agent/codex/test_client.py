@@ -237,7 +237,7 @@ async def command_transport(
         mcp_url=URL("http://example.com/mcp"),
         handler=AsyncMock(return_value={}),
     )
-    ink.client = client
+    ink.pool.core_client = client
     async with client:
         reader = asyncio.create_task(asyncio.to_thread(client.transport.reader_loop))
         try:
@@ -498,7 +498,7 @@ async def test_command_turn_retains_events_before_and_after_ack(
     assert handle.id == "turn-a"
     events = [event async for event in handle.stream()]
     assert [event.method for event in events] == ["turn/started", "turn/completed"]
-    assert not ink.client.transport.compact_starts
+    assert not ink.pool.core_client.transport.compact_starts
 
 
 async def test_compaction_does_not_return_at_ack_or_take_another_threads_turn(
@@ -518,12 +518,12 @@ async def test_compaction_does_not_return_at_ack_or_take_another_threads_turn(
         {"method": "turn/started", "params": {"threadId": "bob", "turn": turn}}
     )
     incoming.put({"method": "skills/changed", "params": {}})
-    await asyncio.wait_for(ink.client._client.next_notification(), 1)
+    await asyncio.wait_for(ink.pool.core_client._client.next_notification(), 1)
     assert not starting.done()
     incoming.put(None)
     with pytest.raises(TransportClosedError, match="before compaction started"):
         await asyncio.wait_for(starting, 1)
-    assert not ink.client.transport.compact_starts
+    assert not ink.pool.core_client.transport.compact_starts
 
 
 async def test_review_rejects_another_thread_in_the_response(
@@ -580,8 +580,8 @@ async def test_canceled_command_start_releases_late_subscription(
     )
     incoming.put({"id": request["id"], "result": {}})
     await asyncio.wait_for(closed.wait(), 1)
-    assert not ink.client.transport._router._pending_turn_requests
-    assert not ink.client.transport._router._turn_states
+    assert not ink.pool.core_client.transport._router._pending_turn_requests
+    assert not ink.pool.core_client.transport._router._turn_states
 
 
 def test_constructing_shared_client_needs_no_event_loop_or_process() -> None:

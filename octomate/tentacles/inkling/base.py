@@ -52,6 +52,8 @@ from pydantic_ai_harness.step_persistence.naming import generate_name
 from rich.style import Style
 
 from octomate.config.agents import AgentRouteModelName, InklingConfig
+from octomate.config.habitat import NativeHabitatConfig
+from octomate.habitat import HabitatError
 from octomate.managers.conversation import ConversationManager, ConversationStore
 from octomate.managers.habitat import Invocation
 from octomate.mcp.gateway import CONVERSATION_HEADER
@@ -67,6 +69,7 @@ from octomate.schemas.commands import (
 )
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.segments import MessageSegment, TextSegment
+from octomate.schemas.thread import Thread
 from octomate.schemas.triage import Claim
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import inkling_logfire
@@ -325,6 +328,15 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     toolsets: list[AbstractToolset[None]] = field(init=False)
     # Background MCP/agent warming, spawned by `__aenter__`; `__aexit__` settles it.
     warm_task: asyncio.Task[None] | None = field(init=False)
+
+    def inhabit(
+        self, *, thread: Thread, conversation: Conversation, owner_id: UUID7 | None
+    ) -> AbstractAsyncContextManager[Invocation]:
+        if not isinstance(self.habitats.config, NativeHabitatConfig):
+            raise HabitatError(f"Agent {self.id!r} cannot run in a sandbox yet")
+        return super().inhabit(
+            thread=thread, conversation=conversation, owner_id=owner_id
+        )
 
     def __init__(
         self,

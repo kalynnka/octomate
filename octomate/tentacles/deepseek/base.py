@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncGenerator, Sequence
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from functools import cached_property, partial
 from pathlib import Path
@@ -63,11 +64,13 @@ from rich.style import Style
 from uuid_utils.compat import uuid7
 
 from octomate.config.agents import Claim, DeepseekConfig
+from octomate.config.habitat import NativeHabitatConfig
 from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
     MessageSentEvent,
 )
+from octomate.habitat import HabitatError
 from octomate.managers.habitat import Invocation
 from octomate.nerve import Impulse
 from octomate.prompts import tagged
@@ -88,7 +91,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import ThreadKey
+from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import agent_input_message_attributes, deepseek_logfire
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
@@ -220,6 +223,15 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     default_icon_url: ClassVar[str | None] = "/agent-icons/deepseek.svg"
 
     description: str = "WIP DeepSeek Harness coding agent for repository-aware software engineering tasks."
+
+    def inhabit(
+        self, *, thread: Thread, conversation: Conversation, owner_id: UUID7 | None
+    ) -> AbstractAsyncContextManager[Invocation]:
+        if not isinstance(self.habitats.config, NativeHabitatConfig):
+            raise HabitatError(f"Agent {self.id!r} cannot run in a sandbox yet")
+        return super().inhabit(
+            thread=thread, conversation=conversation, owner_id=owner_id
+        )
 
     def __init__(
         self,

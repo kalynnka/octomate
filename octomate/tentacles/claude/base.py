@@ -225,7 +225,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
     # A Claude run stays live in-process; `pending` (from `AgentTentacle`) parks a
     # waiter per gated tool / question until `Octomate.kick` delivers the response.
     in_process: ClassVar[bool] = True
-    supports_managed_habitat: ClassVar[bool] = True
 
     permission_modes: tuple[PermissionMode, ...] = tuple(
         PermissionMode(value=mode, name=mode) for mode in get_args(ClaudePermissionMode)

@@ -130,7 +130,7 @@ async def test_approve_preserves_late_denial_and_records_one_retry(
     FakeCodex.script = text_script("Retried", thread_id="thread-new")
     outcome = await deliver(agent, context, "approve")
     assert outcome.status == "completed"
-    request = agent.ink.client._client.request
+    request = agent.ink.pool.core_client._client.request
     assert isinstance(request, AsyncMock)
     approvals = [
         call
@@ -189,7 +189,7 @@ async def test_approve_refuses_unselected_or_mismatched_reviews(
     assert isinstance(outcome, CommandError)
     assert outcome.status == "unavailable"
     assert len(FakeCodex.turn_calls) == 1
-    request = agent.ink.client._client.request
+    request = agent.ink.pool.core_client._client.request
     assert isinstance(request, AsyncMock)
     assert not any(
         call.args[0] == "thread/approveGuardianDeniedAction"
@@ -261,7 +261,7 @@ async def test_approve_translates_native_action_shapes(
         notification.payload, ItemGuardianApprovalReviewCompletedNotification
     )
     await agent.ink.approve_denied_action("thread-new", notification.payload)
-    request = agent.ink.client._client.request
+    request = agent.ink.pool.core_client._client.request
     assert isinstance(request, AsyncMock)
     request.assert_awaited_with(
         "thread/approveGuardianDeniedAction",
@@ -284,7 +284,7 @@ async def test_approve_rpc_failure_does_not_start_a_retry(
     agent, context, _ = execution
     FakeCodex.script.insert(-1, review_notification())
     context = await recorded_context(agent, context)
-    request = agent.ink.client._client.request
+    request = agent.ink.pool.core_client._client.request
     assert isinstance(request, AsyncMock)
     request.side_effect = CodexError("approval rejected")
     outcome = await deliver(agent, context, "approve")

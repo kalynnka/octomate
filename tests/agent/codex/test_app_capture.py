@@ -28,7 +28,7 @@ from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import MessageBinding
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.codex import CodexTentacle
-from octomate.tentacles.codex import ink as codex_ink
+from octomate.tentacles.codex import pool as codex_pool
 from octomate.types.json import JsonObject
 from tests.agent.codex.test_tentacle import (
     FakeCodex,
@@ -48,7 +48,7 @@ from tests.support.users import a_user, auth_config
 async def test_driven_app_survives_its_session_and_reuses_the_owned_viewer(
     monkeypatch: pytest.MonkeyPatch, in_memory_engine: AsyncEngine, server: str
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex([])
     host = Octomate(config=OctomateConfig(auth=auth_config()))
     host.config.artifacts.viewer_origin = AnyHttpUrl("https://console.example")
@@ -184,7 +184,7 @@ async def test_driven_app_survives_its_session_and_reuses_the_owned_viewer(
     FakeCodex.on_turn = app_turn
     reads: list[JsonObject | None] = []
     async with tentacle:
-        request = tentacle.ink.client._client.request
+        request = tentacle.ink.pool.core_client._client.request
 
         async def resource_request[ResponseT: BaseModel](
             method: str, params: JsonObject | None, *, response_model: type[ResponseT]
@@ -206,7 +206,9 @@ async def test_driven_app_survives_its_session_and_reuses_the_owned_viewer(
                 }
             )
 
-        monkeypatch.setattr(tentacle.ink.client._client, "request", resource_request)
+        monkeypatch.setattr(
+            tentacle.ink.pool.core_client._client, "request", resource_request
+        )
         async with (
             invocation_for(
                 tentacle, conversation_address=address, thread_id=thread.id
