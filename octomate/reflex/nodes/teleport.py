@@ -182,13 +182,21 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             )
         # The agent resumes in another directory either way — a new thread's own
         # workspace, or the project's — and a runtime session may be filed under
-        # the one it ran in. The tentacle knows how to move its own; this is when.
+        # the one it ran in. Ink owns the move; the graph chooses when.
         agent = ctx.deps.agent(self.agent_id)
+        if not agent.supports_session_fork:
+            raise NotImplementedError(
+                f"Agent {agent.id!r} does not support session forking"
+            )
+        source_session_id = (source_conversation or conversation).external_id
         async with agent.inhabit(
             thread=state.thread, conversation=conversation, owner_id=owner_id
         ) as invocation:
-            external_id = await agent.fork_session(
-                source_conversation or conversation, invocation=invocation
+            external_id = await agent.ink.fork_session(
+                source_session_id,
+                cwd=invocation.cwd,
+                habitat=invocation.habitat,
+                env=invocation.environment,
             )
             if source_conversation is not None:
                 carry = (
@@ -208,7 +216,11 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 conversation = await ctx.deps.conversation_manager.get(
                     conversation.id, with_runs=False
                 )
-            await agent.relocate(conversation, invocation=invocation)
+            await agent.ink.relocate_session(
+                conversation.external_id,
+                cwd=invocation.cwd,
+                habitat=invocation.habitat,
+            )
             if source_conversation is not None:
                 state.thread = await ctx.deps.thread_manager.rename(
                     state.thread,

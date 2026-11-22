@@ -159,7 +159,7 @@ async def case(
     )
     source = await octomate.conversations.get(source.id)
     fork = AsyncMock(return_value=str(uuid7()))
-    monkeypatch.setattr(tentacle.ink, "fork_thread", fork)
+    monkeypatch.setattr(tentacle.ink, "fork_session", fork)
     return ForkCase(tentacle, source, target, owner.id, prefix, pending, home, fork)
 
 

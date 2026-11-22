@@ -18,8 +18,8 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import ImageSegment
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import (
+    ChannelInk,
     DownloadedImage,
-    Ink,
 )
 from octomate.tentacles.discord.schema import (
     DiscordAddress,
@@ -45,7 +45,7 @@ class DiscordSendKwargs(TypedDict, total=False):
     mention_author: bool
 
 
-class DiscordInk(Ink[DiscordOutboundMessage]):
+class DiscordInk(ChannelInk[DiscordOutboundMessage]):
     """Discord transport over a logged-in discord.py client; edits a message in
     place for streaming and opens a public thread for a sub-thread."""
 

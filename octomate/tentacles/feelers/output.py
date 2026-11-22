@@ -87,7 +87,7 @@ from octomate.types.todos import STATUS_MARKERS
 
 if TYPE_CHECKING:
     from octomate.managers.deferred import DeferredActionManager
-    from octomate.tentacles.channel import ChannelOutput, Chromo, Ink
+    from octomate.tentacles.channel import ChannelInk, ChannelOutput, Chromo
     from octomate.tentacles.feelers.artifacts import ArtifactFeeler
     from octomate.tentacles.feelers.deferred import (
         ApprovalFeeler,
@@ -997,7 +997,7 @@ def split_reply(
 
 async def present_markdown[MessageT, RawT](
     *,
-    ink: Ink[MessageT],
+    ink: ChannelInk[MessageT],
     chromo: Chromo[RawT, MessageT],
     address: ChannelAddress,
     markdown: str,
@@ -1029,7 +1029,9 @@ async def present_markdown[MessageT, RawT](
 class DefaultMarkdownFeeler[RawT, MessageT]:
     """Sends markdown through a channel's chromo and ink as plain messages."""
 
-    def __init__(self, *, ink: Ink[MessageT], chromo: Chromo[RawT, MessageT]) -> None:
+    def __init__(
+        self, *, ink: ChannelInk[MessageT], chromo: Chromo[RawT, MessageT]
+    ) -> None:
         self.ink = ink
         self.chromo = chromo
 
@@ -1064,7 +1066,9 @@ class DefaultSegmentsFeeler[RawT, MessageT]:
     """Sends output segments through a channel's chromo and ink, one message per
     payload."""
 
-    def __init__(self, *, ink: Ink[MessageT], chromo: Chromo[RawT, MessageT]) -> None:
+    def __init__(
+        self, *, ink: ChannelInk[MessageT], chromo: Chromo[RawT, MessageT]
+    ) -> None:
         self.ink = ink
         self.chromo = chromo
 
@@ -1174,7 +1178,7 @@ class DefaultTimelineFeeler[RawT, MessageT](TimelineFeeler):
     def __init__(
         self,
         *,
-        ink: Ink[MessageT],
+        ink: ChannelInk[MessageT],
         chromo: Chromo[RawT, MessageT],
         ask_questions: QuestionFeeler,
         approvals: ApprovalFeeler,

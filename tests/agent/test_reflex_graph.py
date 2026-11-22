@@ -78,7 +78,7 @@ from octomate.schemas.triage import (
 from octomate.schemas.user import UserProfile
 from octomate.schemas.volumes import GitVolume, UnregisteredProjectError
 from octomate.schemas.volumes.git import run_git
-from octomate.tentacles.agent import AgentTentacle
+from octomate.tentacles.acp.ink import AcpInk
 from octomate.tentacles.channel import ChannelOutput, ChannelSurfaces
 from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from tests.support.agents import FakeAgent, RecordedRun
@@ -1483,7 +1483,6 @@ async def test_a_native_scheme_signal_lands_in_their_dms_and_hands_off(
 @pytest.mark.parametrize("fork_supported", [False, True])
 async def test_teleport_carries_the_history_across_to_a_far_sub_thread(
     in_memory_engine: None,
-    monkeypatch: pytest.MonkeyPatch,
     fork_supported: bool,
 ) -> None:
     """The same agent, one channel over. A teleport takes its whole history with it,
@@ -1503,7 +1502,7 @@ async def test_teleport_carries_the_history_across_to_a_far_sub_thread(
     )
     target = _source_target(address)
     if not fork_supported:
-        monkeypatch.setattr(FakeAgent, "fork_session", AgentTentacle.fork_session)
+        entry.ink = AcpInk()
     expected = (
         nullcontext()
         if fork_supported
@@ -1526,7 +1525,6 @@ async def test_teleport_carries_the_history_across_to_a_far_sub_thread(
 
     if not fork_supported:
         assert len(entry.turns) == 1
-        assert entry.relocated == []
         # A move whose history never arrived is not announced where it left.
         assert not [
             event for _, event in im.presented if isinstance(event, GatewayEvent)
@@ -2538,8 +2536,7 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
     workspace = (await volume_for(workspaces, thread.id, owner.id)).path
     assert workspace is not None
     assert (workspace / "readme.md").read_text() == "hello"
-    # And the agent's session was relocated to where the resumed run happens.
-    assert [cwd for _, cwd in agent.relocated] == [workspace]
+    assert resumed.invocation.cwd == workspace
 
 
 async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree(
@@ -2635,7 +2632,7 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
         None,
         carried,
     )
-    assert [cwd for _, cwd in agent.relocated] == [carried]
+    assert agent.turns[-1].invocation.cwd == carried
 
 
 @pytest.mark.parametrize(

@@ -60,6 +60,7 @@ from octomate.tentacles.acp.adapter import json_value_adapter
 from octomate.tentacles.acp.client import NativeAcpClient, NativeAcpSession
 from octomate.tentacles.acp.elicitation import AcpForm, AcpFormValidationError
 from octomate.tentacles.acp.history import AcpHistory
+from octomate.tentacles.acp.ink import AcpInk
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.deferred import DeferredSuspender
 from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
@@ -87,6 +88,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
     type: ClassVar[str] = "acp"
     in_process: ClassVar[bool] = True
     config: AcpAgentConfig
+    ink: AcpInk
     provider_permission_mode: str | None = None
 
     def __init__(
@@ -108,6 +110,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             auth=auth,
             habitats=habitats,
         )
+        self.ink = AcpInk()
         self.config = config
         self.gateway = config.gateway
         self.pendings = {}

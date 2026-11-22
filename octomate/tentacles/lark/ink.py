@@ -50,8 +50,8 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import ImageSegment
 from octomate.telemetry import lark_logfire
 from octomate.tentacles.channel import (
+    ChannelInk,
     DownloadedImage,
-    Ink,
 )
 from octomate.tentacles.feelers.output import IMMessageID
 from octomate.tentacles.lark.schema import (
@@ -164,7 +164,7 @@ class LarkWebSocketClient(lark.ws.Client):
             await self._disconnect()
 
 
-class LarkInk(Ink[LarkOutboundMessage]):
+class LarkInk(ChannelInk[LarkOutboundMessage]):
     """Lark Open API transport, routing the SDK's requests through this ink's own
     pooled HTTPX2 client while it is entered."""
 

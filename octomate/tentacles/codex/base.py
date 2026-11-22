@@ -650,22 +650,6 @@ class CodexTentacle(AgentTentacle[str, None]):
                 with contextlib.suppress(Exception):
                     await websocket.close()
 
-    async def fork_session(
-        self,
-        conversation: Conversation,
-        *,
-        invocation: Invocation,
-        last_turn_id: str | None = None,
-    ) -> str:
-        """Copy Codex's stored history into an independent, durable thread."""
-        if not conversation.external_id:
-            raise ValueError("Cannot fork a Codex conversation without a session id")
-        return await self.ink.fork_thread(
-            conversation.external_id,
-            cwd=Path(invocation.cwd),
-            last_turn_id=last_turn_id,
-        )
-
     async def read_fork_transcript(
         self, source: Conversation, *, owner_id: UUID7
     ) -> tuple[bytes, ExternalAgentRun]:
@@ -756,8 +740,10 @@ class CodexTentacle(AgentTentacle[str, None]):
                     data, external_id=source.external_id, owner_id=owner_id
                 ) as imported_id,
             ):
-                external_id = await self.ink.fork_thread(
-                    imported_id, cwd=cwd, last_turn_id=completed_run.id
+                external_id = await self.ink.fork_session(
+                    imported_id,
+                    cwd=cwd,
+                    last_turn_id=completed_run.id,
                 )
                 await conversations.fork(
                     source,

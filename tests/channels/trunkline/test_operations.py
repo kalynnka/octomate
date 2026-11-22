@@ -24,7 +24,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import User, UserProfile
-from octomate.tentacles.agent import AgentTentacle
+from octomate.tentacles.acp.ink import AcpInk
 from octomate.tentacles.discord.base import DiscordTentacle
 from octomate.tentacles.discord.schema import DiscordAddress
 from octomate.tentacles.trunkline import TrunklineTentacle
@@ -580,9 +580,9 @@ async def test_trunkline_directives_require_a_thread(case: Case) -> None:
 
 
 async def test_unsupported_fork_harness_is_not_offered(
-    case: Case, client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
+    case: Case, client: httpx2.AsyncClient
 ) -> None:
-    monkeypatch.setattr(FakeAgent, "fork_session", AgentTentacle.fork_session)
+    case.agent.ink = AcpInk()
     path = f"/api/trunkline/threads/{case.thread.id}"
     options = (await client.get(f"{path}/operations")).json()
     assert options["teleport"]["destinations"] == []

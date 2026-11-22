@@ -24,7 +24,7 @@ from octomate.events import (
 from octomate.schemas.auth import LinkProfileAuthorization
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.channel import Ink
+from octomate.tentacles.channel import ChannelInk
 from octomate.tentacles.feelers.oauth import AuthorizationEvent, PlainTextOAuthFeeler
 from octomate.tentacles.feelers.output import DefaultTimelineFeeler
 from octomate.tentacles.lark.feelers.oauth import (
@@ -192,7 +192,7 @@ class RecordingSlackInk:
 async def test_plain_text_feeler_sends_the_link_and_code() -> None:
     markdown = RecordingMarkdownFeeler()
 
-    await PlainTextOAuthFeeler(cast(Ink[str], FakeOAuthInk()), markdown).present(
+    await PlainTextOAuthFeeler(cast(ChannelInk[str], FakeOAuthInk()), markdown).present(
         _address("napcat"), AUTHORIZATION
     )
 
@@ -306,7 +306,7 @@ async def test_every_channel_routes_a_group_request_the_same_way() -> None:
     await SlackOAuthFeeler(cast(SlackInk, slack)).present(
         _address("slack", "group", shared=True), AUTHORIZATION
     )
-    await PlainTextOAuthFeeler(cast(Ink[str], plain_ink), markdown).present(
+    await PlainTextOAuthFeeler(cast(ChannelInk[str], plain_ink), markdown).present(
         _address("napcat", "group", shared=True), AUTHORIZATION
     )
 
@@ -332,7 +332,7 @@ async def test_a_platform_with_nowhere_private_refuses_to_use_the_group() -> Non
 async def test_plain_text_feeler_asks_for_nothing_a_link_flow_cannot_give() -> None:
     markdown = RecordingMarkdownFeeler()
 
-    await PlainTextOAuthFeeler(cast(Ink[str], FakeOAuthInk()), markdown).present(
+    await PlainTextOAuthFeeler(cast(ChannelInk[str], FakeOAuthInk()), markdown).present(
         _address("napcat"), LINK_AUTHORIZATION
     )
 

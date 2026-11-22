@@ -8,7 +8,7 @@ import httpx2
 from pydantic import JsonValue, SecretStr
 
 from octomate.schemas.segments import ImageSegment
-from octomate.tentacles.channel import DownloadedImage, Ink
+from octomate.tentacles.channel import ChannelInk, DownloadedImage
 from octomate.tentacles.feelers.output import IMMessageID
 from octomate.tentacles.napcat.schema import (
     ActionResponse,
@@ -23,7 +23,7 @@ from octomate.types.json import JsonObject
 logger = logging.getLogger(__name__)
 
 
-class NapcatInk(Ink[NapcatOutboundMessage]):
+class NapcatInk(ChannelInk[NapcatOutboundMessage]):
     """OneBot HTTP transport: private and group sends, stranger lookups and image
     fetches."""
 

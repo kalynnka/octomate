@@ -472,7 +472,7 @@ async def test_fork_failure_leaves_source_and_publishes_no_destination(
     agent, context, _ = execution
     context = await recorded_context(agent, context)
     monkeypatch.setattr(
-        agent.ink, "fork_thread", AsyncMock(side_effect=CodexError("fork failed"))
+        agent.ink, "fork_session", AsyncMock(side_effect=CodexError("fork failed"))
     )
     outcome = await deliver(agent, context, "fork")
     assert outcome.status == "failed"

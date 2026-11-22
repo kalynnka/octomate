@@ -23,6 +23,7 @@ from claude_agent_sdk.types import Message
 
 from octomate.habitat import Habitat, HabitatError, ManagedHabitat
 from octomate.schemas.messages import ModelRequest, ModelResponse
+from octomate.tentacles.agent import AgentInk
 from octomate.tentacles.claude.catalog import (
     CONTROL_COMMANDS,
     ClaudeCommandDescriptor,
@@ -39,7 +40,7 @@ from octomate.tentacles.claude.transcript import (
 from octomate.tentacles.claude.transport import HabitatTransport
 
 
-class ClaudeInk:
+class ClaudeInk(AgentInk):
     """Own turn-local SDK clients without depending on Octomate managers.
 
     Options and turn callbacks arrive at the operation that uses them. The
@@ -55,7 +56,7 @@ class ClaudeInk:
 
     async def fork_session(
         self,
-        session_id: str,
+        session_id: str | None,
         *,
         cwd: Path | PurePosixPath,
         habitat: Habitat,
@@ -69,6 +70,8 @@ class ClaudeInk:
         Ink owns staging and transport for either execution environment.
         """
 
+        if not session_id:
+            raise ValueError("Cannot fork a Claude conversation without a session id")
         if isinstance(habitat, ManagedHabitat):
             args = ("--transcript",) if transcript is not None else ()
             async with habitat.execute(
@@ -112,10 +115,10 @@ class ClaudeInk:
         return await asyncio.to_thread(fork)
 
     async def relocate_session(
-        self, session_id: str, *, cwd: Path | PurePosixPath, habitat: Habitat
+        self, session_id: str | None, *, cwd: Path | PurePosixPath, habitat: Habitat
     ) -> None:
         """Place a session in its next workspace; managed forks already land there."""
-        if not isinstance(habitat, ManagedHabitat):
+        if session_id is not None and not isinstance(habitat, ManagedHabitat):
             await asyncio.to_thread(relocate_session_files, session_id, cwd=Path(cwd))
 
     async def inspect(self, options: ClaudeAgentOptions) -> ClaudeServerInfo:

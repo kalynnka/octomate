@@ -1423,9 +1423,10 @@ async def test_relocating_a_conversation_moves_its_session_by_id(
         conversation = claude_base.Conversation(
             thread_id=_THREAD, agent_tentacle_id="claude", external_id=external_id
         )
-        await tentacle.relocate(
-            conversation,
-            invocation=a_native_invocation(conversation, Path("/workspaces/t1")),
+        await tentacle.ink.relocate_session(
+            conversation.external_id,
+            cwd=Path("/workspaces/t1"),
+            habitat=a_native_invocation(conversation, Path("/workspaces/t1")).habitat,
         )
 
     assert relocated == [("prev-sess", Path("/workspaces/t1"))]
@@ -1470,13 +1471,19 @@ async def test_claude_fork_preserves_source_and_relocates_only_the_new_session(
     )
     tentacle = _tentacle(FakeConversationManager())
 
-    fork_id = await tentacle.fork_session(
-        source, invocation=a_native_invocation(source, destination)
+    fork_id = await tentacle.ink.fork_session(
+        source.external_id,
+        cwd=destination,
+        habitat=a_native_invocation(source, destination).habitat,
     )
     target = claude_base.Conversation(
         thread_id=uuid7(), agent_tentacle_id="claude", external_id=fork_id
     )
-    await tentacle.relocate(target, invocation=a_native_invocation(target, destination))
+    await tentacle.ink.relocate_session(
+        target.external_id,
+        cwd=destination,
+        habitat=a_native_invocation(target, destination).habitat,
+    )
 
     assert fork_id != session_id
     assert source.external_id == session_id
@@ -1497,8 +1504,10 @@ async def test_claude_cannot_fork_without_a_session_id(external_id: str | None) 
         thread_id=_THREAD, agent_tentacle_id="claude", external_id=external_id
     )
     with pytest.raises(ValueError, match="without a session id"):
-        await _tentacle(FakeConversationManager()).fork_session(
-            source, invocation=a_native_invocation(source, Path("/new"))
+        await _tentacle(FakeConversationManager()).ink.fork_session(
+            source.external_id,
+            cwd=Path("/new"),
+            habitat=a_native_invocation(source, Path("/new")).habitat,
         )
 
 

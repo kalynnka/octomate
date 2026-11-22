@@ -71,6 +71,7 @@ from octomate.schemas.triage import Claim
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import inkling_logfire
 from octomate.tentacles.agent import (
+    AgentInk,
     AgentSpecInput,
     AgentTentacle,
 )
@@ -180,6 +181,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     brand_color: ClassVar[Style | None] = Style(color="#C29145", bold=True)
     config: InklingConfig | None = None
 
+    ink: AgentInk = field(init=False)
     agent: Agent[None, InklingOutput] = field(init=False)
     mcp: McpManager = field(init=False)
     # Held on the tentacle, not baked into the Agent: every run decides what to
@@ -213,13 +215,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     @property
     def default_permission_mode(self) -> str | None:
         return self.permission_mode
-
-    async def fork_session(
-        self, conversation: Conversation, *, invocation: Invocation
-    ) -> None:
-        """Inkling resumes the copied Octomate history without an external session."""
-        if conversation.external_id is not None:
-            raise ValueError("Inkling conversations cannot have an external session id")
 
     async def probe_commands(self, context: CommandContext) -> CommandCatalog:
         return CommandCatalog(
@@ -364,6 +359,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             auth=auth,
             habitats=habitats,
         )
+        self.ink = AgentInk()
         self.config = config
         self.mcp = octomate.mcp
         self.workspaces = octomate.workspaces

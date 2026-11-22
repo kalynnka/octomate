@@ -17,7 +17,7 @@ from contextlib import (
 from datetime import UTC, datetime
 from functools import cached_property
 from io import BytesIO
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self, TypeVar, overload
 
@@ -50,7 +50,7 @@ from starlette.datastructures import Headers
 
 from octomate.config.agents import AgentConfig, AgentRouteModelName
 from octomate.config.habitat import NativeHabitatConfig
-from octomate.habitat import HabitatError
+from octomate.habitat import Habitat, HabitatError
 from octomate.managers.conversation import ConversationNotFound
 from octomate.managers.files import FileOffsetConflict
 from octomate.managers.habitat import Invocation
@@ -97,9 +97,36 @@ AgentDepsT = TypeVar("AgentDepsT")
 type AgentSpecInput = JsonObject | AgentSpec
 
 
+class AgentInk:
+    """Runtime session operations, independent of conversation persistence."""
+
+    supports_session_fork: ClassVar[bool] = True  # Independent history forks.
+
+    async def fork_session(
+        self,
+        session_id: str | None,
+        *,
+        cwd: Path | PurePosixPath,
+        habitat: Habitat,
+        env: dict[str, str] | None = None,
+    ) -> str | None:
+        """Octomate-owned history needs no external session copy."""
+        if not self.supports_session_fork:
+            raise NotImplementedError("This runtime does not support session forking")
+        if session_id is not None:
+            raise ValueError("This agent cannot have an external session id")
+        return None
+
+    async def relocate_session(
+        self, session_id: str | None, *, cwd: Path | PurePosixPath, habitat: Habitat
+    ) -> None:
+        """Move workspace-indexed history; runtimes with global IDs need no move."""
+
+
 class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     """Base class for Octomate agents wrapping pydantic-ai run entrypoints."""
 
+    ink: AgentInk  # Runtime operations, including a no-op adapter for Octomate history.
     commands: CommandManager
     projects: ProjectManager
     threads: ThreadManager
@@ -800,7 +827,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     ) -> Thread:
         """Fork owned native or driven history onto an independent surface.
 
-        Native imports use `fork_transcript`. Driven forks use `fork_session` and
+        Native imports use `fork_transcript`. Driven forks use Ink and
         copy the history, settings and project workspace, retaining the source
         session. The caller opens the destination and holds the runtime's turn
         guard while forking a driven conversation.
@@ -816,6 +843,10 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         if source_thread is None:
             raise FileNotFoundError("No conversation")
         driven = source_thread.kind != "native_thread"
+        if driven and not self.supports_session_fork:
+            raise NotImplementedError(
+                f"Agent {self.id!r} does not support session forking"
+            )
         surface = await threads.get(
             source_thread.parent_thread_id or source_thread.id,
             with_messages=False,
@@ -843,7 +874,12 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             async with self.inhabit(
                 thread=thread, conversation=target, owner_id=owner_id
             ) as invocation:
-                external_id = await self.fork_session(source, invocation=invocation)
+                external_id = await self.ink.fork_session(
+                    source.external_id,
+                    cwd=invocation.cwd,
+                    habitat=invocation.habitat,
+                    env=invocation.environment,
+                )
             if source.external_id is not None and (
                 external_id is None or external_id == source.external_id
             ):
@@ -907,27 +943,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     @property
     def supports_session_fork(self) -> bool:
         """Whether this harness implements independent runtime session creation."""
-        return type(self).fork_session is not AgentTentacle.fork_session
-
-    async def fork_session(
-        self, conversation: Conversation, *, invocation: Invocation
-    ) -> str | None:
-        """Fork the runtime session, or stop if this agent cannot fork safely."""
-        raise NotImplementedError(f"Agent {self.id!r} does not support session forking")
-
-    async def relocate(
-        self, conversation: Conversation, *, invocation: Invocation
-    ) -> None:
-        """Relocate the runtime session into the invocation's workspace for its next
-        run. The graph's call, made once a teleport has settled where the
-        agent lands; the tentacle only knows how to move one.
-
-        Nothing to move for a runtime that resumes a session from anywhere. Claude
-        files one under the directory it ran in, and every teleport changes that
-        directory — a new thread's workspace, or the project's — so a driven Claude
-        session needs this on each. A native session's transcript is on its own
-        machine, so a native teleport has nothing here to move: bringing it over is
-        a rebuild from the ledger, still to come, and this is where it lands."""
+        return self.ink.supports_session_fork
 
     async def run_project(self, thread_id: UUID7) -> Project | None:
         """The project a run in this thread is in, or None when it is in none.

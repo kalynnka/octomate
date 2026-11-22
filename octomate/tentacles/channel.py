@@ -124,7 +124,7 @@ class Chromo[RawT, MessageT](
         return self.outbound_markdown("\n\n".join(str(seg) for seg in segments))
 
 
-class Ink[MessageT](ABC):
+class ChannelInk[MessageT](ABC):
     """Base class for platform API clients (transport only).
 
     An ink is an async context manager: the owning tentacle enters it as part
@@ -247,7 +247,7 @@ class ChannelTentacle(
     feelers: Feelers
     # Where what the nerve carries to this channel leaves for the platform.
     siphon: Siphon
-    ink: Ink[MessageT]
+    ink: ChannelInk[MessageT]
     chromo: Chromo[RawT, MessageT]
     config: ChannelConfig
 
@@ -256,7 +256,7 @@ class ChannelTentacle(
         id: str,
         octomate: Octomate,
         *,
-        ink: Ink[MessageT],
+        ink: ChannelInk[MessageT],
         chromo: Chromo[RawT, MessageT],
         config: ChannelConfig,
     ) -> None:

@@ -787,33 +787,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             )
             return await conversations.get(target.id)
 
-    async def fork_session(
-        self,
-        conversation: Conversation,
-        *,
-        invocation: Invocation,
-    ) -> str:
-        """Fork Claude's transcript in the destination environment."""
-        if not conversation.external_id:
-            raise ValueError("Cannot fork a Claude conversation without a session id")
-        return await self.ink.fork_session(
-            conversation.external_id,
-            cwd=invocation.cwd,
-            habitat=invocation.habitat,
-            env=invocation.environment,
-        )
-
-    async def relocate(
-        self, conversation: Conversation, *, invocation: Invocation
-    ) -> None:
-        """Place the session in its destination workspace."""
-        if conversation.external_id is not None:
-            await self.ink.relocate_session(
-                conversation.external_id,
-                cwd=invocation.cwd,
-                habitat=invocation.habitat,
-            )
-
     async def _await_human(
         self,
         requests: DeferredToolRequests,

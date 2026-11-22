@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import Self
+from typing import ClassVar, Self
 
 from octomate_protocol.deepseek import ErrResult, RpcError, RpcResult
 from pydantic_ai.exceptions import AgentRunError
@@ -17,6 +17,7 @@ from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
 )
+from octomate.tentacles.agent import AgentInk
 from octomate.tentacles.deepseek.catalog import (
     DeepseekCommandDescriptor,
     command_descriptors_adapter,
@@ -51,9 +52,10 @@ type InteractionHandler = Callable[
 
 
 @dataclass
-class DeepseekInk:
+class DeepseekInk(AgentInk):
     """Own Remote transport; receive decisions and invalidation callbacks per start."""
 
+    supports_session_fork: ClassVar[bool] = False
     client: DeepseekApiClient
     mux_socket: ClientConnection | None = field(default=None, init=False)
     mux_task: asyncio.Task[None] | None = field(default=None, init=False)

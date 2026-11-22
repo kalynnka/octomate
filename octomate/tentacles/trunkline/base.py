@@ -49,11 +49,11 @@ from octomate.schemas.segments import (
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import (
+    ChannelInk,
     ChannelTentacle,
     Chromo,
     DownloadedImage,
     IMMessageID,
-    Ink,
     ThreadStrategy,
 )
 from octomate.tentacles.siphon import Siphon
@@ -97,7 +97,7 @@ class TrunklineSeamNotWired(NotImplementedError):
         )
 
 
-class TrunklineInk(Ink[WireEvent]):
+class TrunklineInk(ChannelInk[WireEvent]):
     """Console identity and thread locations; output streams inline."""
 
     async def inspect(self) -> UserProfile:

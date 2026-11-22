@@ -98,7 +98,7 @@ from octomate.tentacles.slack.schema import SlackOutboundMessage
 from octomate.tentacles.stream import ReactStreamEvent
 from octomate.types.json import JsonObject
 from tests.support.channels import FakeChannelTentacle, RecordingTimeline, carried
-from tests.support.invocations import a_native_invocation, invocation_for
+from tests.support.invocations import invocation_for
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
@@ -1121,9 +1121,9 @@ async def test_codex_fork_passes_the_turn_cutoff(
     )
 
     async with _tentacle(FakeConversationManager()) as tentacle:
-        result = await tentacle.fork_session(
-            source,
-            invocation=a_native_invocation(source, Path("/destination")),
+        result = await tentacle.ink.fork_session(
+            source.external_id,
+            cwd=Path("/destination"),
             last_turn_id=last_turn_id,
         )
 
@@ -1156,8 +1156,8 @@ async def test_codex_fork_failure_leaves_the_source_unchanged(
 
     async with tentacle:
         with pytest.raises(RuntimeError, match="fork failed"):
-            await tentacle.fork_session(
-                source, invocation=a_native_invocation(source, Path("/destination"))
+            await tentacle.ink.fork_session(
+                source.external_id, cwd=Path("/destination")
             )
 
     assert source.external_id == "source"
@@ -1174,8 +1174,8 @@ async def test_codex_cannot_fork_without_a_session_id(
         thread_id=_THREAD, agent_tentacle_id="codex", external_id=external_id
     )
     with pytest.raises(ValueError, match="without a session id"):
-        await _tentacle(FakeConversationManager()).fork_session(
-            source, invocation=a_native_invocation(source, Path("/new"))
+        await _tentacle(FakeConversationManager()).ink.fork_session(
+            source.external_id, cwd=Path("/new")
         )
     client.return_value._client.thread_fork.assert_not_called()
 

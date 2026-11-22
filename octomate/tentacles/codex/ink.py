@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import anyio
 from fastmcp.apps.config import UI_MIME_TYPE
@@ -66,10 +66,12 @@ from pydantic import AnyUrl, SecretStr, TypeAdapter, ValidationError
 from pydantic.alias_generators import to_snake
 
 from octomate.config.agents import CodexConfig
+from octomate.habitat import Habitat
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.schemas.mcp import McpAppResource
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.telemetry import octomate_trace_environment
+from octomate.tentacles.agent import AgentInk
 from octomate.tentacles.codex.adapter import json_object_adapter
 from octomate.tentacles.codex.client import RequestHandler, SharedCodex
 from octomate.tentacles.codex.schemas import (
@@ -124,7 +126,7 @@ DRIVEN_CONFIG_OVERRIDES = (
 )
 
 
-class CodexInk:
+class CodexInk(AgentInk):
     """Own one app-server client and isolate SDK operations from the tentacle.
 
     The tentacle supplies approval handling and a catalog invalidation callback;
@@ -534,22 +536,30 @@ class CodexInk:
         )
         return AsyncThread(self.client, resumed.thread.id), resumed.model
 
-    async def fork_thread(
-        self, thread_id: str, *, cwd: Path, last_turn_id: str | None = None
+    async def fork_session(
+        self,
+        session_id: str | None,
+        *,
+        cwd: Path | PurePosixPath,
+        habitat: Habitat | None = None,
+        env: dict[str, str] | None = None,
+        last_turn_id: str | None = None,
     ) -> str:
         """Fork stored native history without carrying the source's MCP identity."""
+        if not session_id:
+            raise ValueError("Cannot fork a Codex conversation without a session id")
         config = await self.thread_config(str(cwd), None, None)
         forked = await self.client._client.thread_fork(
-            thread_id,
+            session_id,
             ThreadForkParams(
-                thread_id=thread_id,
+                thread_id=session_id,
                 cwd=str(cwd),
                 config=config,
                 ephemeral=False,
                 last_turn_id=last_turn_id,
             ),
         )
-        if forked.thread.id == thread_id:
+        if forked.thread.id == session_id:
             raise ValueError("Codex fork returned the source thread id")
         return forked.thread.id
 
