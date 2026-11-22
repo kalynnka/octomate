@@ -9,7 +9,9 @@ async def remove_sandbox(sandbox: SbxHabitat) -> None:
         await sandbox.command("rm", "--force", sandbox.name)
 
 
-async def cli_pids(sandbox: SbxHabitat) -> list[int]:
+async def cli_pids(
+    sandbox: SbxHabitat, *, argument_pattern: str = "--output-forma[t]"
+) -> list[int]:
     paths = await sandbox.command(
         "exec",
         sandbox.name,
@@ -24,7 +26,7 @@ async def cli_pids(sandbox: SbxHabitat) -> list[int]:
         "-lzx",
         "-e",
         # Match the CLI argument without matching this probe itself.
-        "--output-forma[t]",
+        argument_pattern,
         "{}",
         ";",
     )

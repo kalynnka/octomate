@@ -160,6 +160,7 @@ class HabitatManager:
                         habitat=habitat,
                     )
             finally:
+                await habitat.resources.aclose()
                 await habitat.stop()
             return
         if owner_id is None:
@@ -337,6 +338,7 @@ class HabitatManager:
                 )
 
     async def halt(self, residence: Residence) -> None:
+        await residence.habitat.resources.aclose()
         await residence.habitat.stop()
         residence.needs_cleanup = False
 

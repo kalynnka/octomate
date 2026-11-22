@@ -10,7 +10,7 @@ dependencies = [
     # Include the CLI so server installs provide the `octomate` console script.
     "octomate-cli>=0.0.1,<0.1",
     "octomate-protocol>=0.0.1,<0.1",
-    "anyio>=4",
+    "anyio>=4.11",
     "sh>=2.4,<3",
     "httpx2>=2",
     "httpcore2>=2.12.0,<3",

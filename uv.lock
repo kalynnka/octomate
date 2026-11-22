@@ -2142,7 +2142,7 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.9" },
     { name = "aiosqlite", specifier = ">=0.22.1" },
     { name = "alembic", specifier = ">=1.15" },
-    { name = "anyio", specifier = ">=4" },
+    { name = "anyio", specifier = ">=4.11" },
     { name = "arcanus", specifier = ">=0.1.5" },
     { name = "argon2-cffi", specifier = ">=25.1.0" },
     { name = "cachetools", specifier = ">=7.1.1,<8" },

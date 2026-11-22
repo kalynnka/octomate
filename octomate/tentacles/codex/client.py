@@ -2,10 +2,18 @@
 
 import asyncio
 import logging
+import threading
 from collections.abc import Callable, Coroutine
 from concurrent.futures import Future
+from contextlib import AsyncExitStack
+from types import TracebackType
 from typing import NamedTuple, NotRequired, Self, TypedDict
 
+import anyio
+from anyio import from_thread
+from anyio.abc import ByteStream
+from anyio.lowlevel import EventLoopToken, current_token
+from anyio.streams.buffered import BufferedByteReceiveStream
 from openai_codex import AsyncCodex, CodexConfig
 from openai_codex._message_router import _TurnSubscription
 from openai_codex.client import CodexClient
@@ -17,8 +25,11 @@ from openai_codex.generated.v2_all import (
     ReviewTarget,
     TurnStartedNotification,
 )
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
+from octomate.fibers import MAX_FRAME_BYTES
+from octomate.habitat import ManagedHabitat
+from octomate.tentacles.codex.adapter import json_object_adapter
 from octomate.tentacles.codex.telemetry import TracedCodexClient
 from octomate.types.json import JsonObject
 
@@ -49,24 +60,82 @@ class CommandTurn(NamedTuple):
 class ConcurrentCodexClient(TracedCodexClient):
     """Dispatch server requests on the event loop, outside the SDK reader thread."""
 
-    loop: asyncio.AbstractEventLoop
+    token: EventLoopToken | None  # SDK threads enter the owning async runtime.
     handler: RequestHandler
     requests: set[asyncio.Task[None]]
     instrument: bool
     closing: bool
     compact_starts: dict[str, Future[str]]  # Compaction ACKs omit the turn ID.
+    stream: ByteStream | None  # Guest stdio; None retains the SDK's local subprocess.
+    reader: BufferedByteReceiveStream | None
+    reader_thread: (
+        threading.Thread | None
+    )  # Guest reader; the SDK owns its local reader.
 
     def __init__(
         self, config: CodexConfig, handler: RequestHandler, *, instrument: bool
     ) -> None:
         super().__init__(config=config)
+        self.token = None
         self.handler = handler
         self.requests = set()
         self.instrument = instrument
         self.closing = False
         self.compact_starts = {}
+        self.stream = None
+        self.reader = None
+        self.reader_thread = None
 
-    def _reader_loop(self) -> None:
+    @property
+    def thread_token(self) -> EventLoopToken:
+        if self.token is None:
+            raise TransportClosedError("Codex async runtime is not connected")
+        return self.token
+
+    def start(self) -> None:
+        if self.stream is None:
+            super().start()
+            return
+        if self.reader_thread is not None:
+            return
+        self.reader = BufferedByteReceiveStream(self.stream)
+        self.reader_thread = threading.Thread(target=self.reader_loop, daemon=True)
+        self.reader_thread.start()
+
+    def close(self) -> None:
+        if self.stream is None:
+            super().close()
+            return
+        self._runtime_version = None
+        self._router.fail_all(TransportClosedError("Codex habitat client closed"))
+        from_thread.run(self.stream.aclose, token=self.thread_token)
+        if self.reader_thread is not None:
+            self.reader_thread.join()
+
+    async def read_frame(self) -> JsonObject:
+        """Read one bounded native JSON-RPC frame on the stream's event loop."""
+        if self.reader is None:
+            raise TransportClosedError("Codex habitat reader is not running")
+        try:
+            frame = await self.reader.receive_until(b"\n", MAX_FRAME_BYTES + 1)
+        except anyio.IncompleteRead:
+            if self.reader.buffer:
+                raise CodexError("Incomplete Codex protocol frame") from None
+            raise TransportClosedError(
+                f"Codex closed stdout. stderr_tail={self._stderr_tail()[:2000]}"
+            ) from None
+        except anyio.DelimiterNotFound:
+            raise CodexError("Codex protocol frame exceeds the size limit") from None
+        except (anyio.ClosedResourceError, anyio.BrokenResourceError):
+            raise TransportClosedError("Codex habitat stream closed") from None
+        if len(frame) > MAX_FRAME_BYTES:
+            raise CodexError("Codex protocol frame exceeds the size limit")
+        try:
+            return json_object_adapter.validate_json(frame)
+        except ValidationError:
+            raise CodexError("Invalid Codex protocol frame") from None
+
+    def reader_loop(self) -> None:
         try:
             super()._reader_loop()
         finally:
@@ -76,11 +145,18 @@ class ConcurrentCodexClient(TracedCodexClient):
                         TransportClosedError("Codex closed before compaction started")
                     )
 
+    # The SDK starts its local reader through this hook.
+    _reader_loop = reader_loop
+
     def _read_message(self) -> JsonObject:
         # The SDK invokes approval callbacks on its sole reader. Dispatch them
         # outside that reader; its existing router still owns responses and events.
         while True:
-            message = super()._read_message()
+            message = (
+                super()._read_message()
+                if self.stream is None
+                else from_thread.run(self.read_frame, token=self.thread_token)
+            )
             if message.get("method") == "turn/started" and "id" not in message:
                 payload = TurnStartedNotification.model_validate(message.get("params"))
                 if started := self.compact_starts.pop(payload.thread_id, None):
@@ -88,7 +164,7 @@ class ConcurrentCodexClient(TracedCodexClient):
             if "method" not in message or "id" not in message:
                 return message
             request = server_request_adapter.validate_python(message)
-            self.loop.call_soon_threadsafe(self.dispatch, request)
+            from_thread.run_sync(self.dispatch, request, token=self.thread_token)
 
     def start_command(
         self, thread_id: str, review: ReviewTarget | None = None
@@ -158,6 +234,20 @@ class ConcurrentCodexClient(TracedCodexClient):
             self._router.fail_all(error)
 
     def _write_message(self, payload: JsonObject) -> None:
+        if self.stream is not None:
+            if self.instrument:
+                payload = self.trace_message(payload)
+            frame = json_object_adapter.dump_json(payload)
+            if len(frame) > MAX_FRAME_BYTES:
+                raise CodexError("Codex protocol frame exceeds the size limit")
+            with self._lock:
+                try:
+                    from_thread.run(
+                        self.stream.send, frame + b"\n", token=self.thread_token
+                    )
+                except (anyio.ClosedResourceError, anyio.BrokenResourceError):
+                    raise TransportClosedError("Codex habitat stream closed") from None
+            return
         if self.instrument:
             super()._write_message(payload)
         else:
@@ -165,26 +255,109 @@ class ConcurrentCodexClient(TracedCodexClient):
 
 
 class SharedCodex(AsyncCodex):
-    """One SDK client with asynchronous server requests and paired cleanup."""
+    """One reusable SDK client and app-server connection, local or in a habitat.
+
+    Construct once per runtime configuration and share across requests. A habitat
+    client keeps its stdio attachment until explicit close or habitat shutdown.
+    Closed clients cannot restart; a new runtime lifetime needs a new client.
+    """
 
     transport: ConcurrentCodexClient
+    habitat: ManagedHabitat | None
+    connection: AsyncExitStack
+    lifecycle_lock: asyncio.Lock
 
     def __init__(
-        self, config: CodexConfig, handler: RequestHandler, *, instrument: bool
+        self,
+        config: CodexConfig,
+        handler: RequestHandler,
+        *,
+        instrument: bool,
+        habitat: ManagedHabitat | None = None,
     ) -> None:
         super().__init__(config=config)
         self.transport = ConcurrentCodexClient(config, handler, instrument=instrument)
         self._client._sync = self.transport
+        self.habitat = habitat
+        self.connection = AsyncExitStack()
+        self.lifecycle_lock = asyncio.Lock()
 
     async def __aenter__(self) -> Self:
-        self.transport.loop = asyncio.get_running_loop()
-        await super().__aenter__()
+        await self.start()
         return self
 
-    async def close(self) -> None:
+    async def start(self) -> None:
+        """Initialize once, including when concurrent callers first use the SDK."""
+        async with self.lifecycle_lock:
+            if self.transport.closing:
+                raise TransportClosedError("Codex client is closed")
+            if self._initialized:
+                return
+            self.transport.token = current_token()
+            try:
+                await self.connect()
+                await super()._ensure_initialized()
+            except BaseException as error:
+                await self.shutdown(type(error), error, error.__traceback__)
+                raise
+            if self.habitat is not None:
+                self.habitat.resources.push_async_callback(self.close)
+
+    async def connect(self) -> None:
+        """Attach guest stdio before the SDK starts its reader and initializes."""
+        if self.habitat is None:
+            return
+        config = self.transport.config
+        if config.cwd is None:
+            raise ValueError("Habitat Codex clients require a guest working directory")
+        if config.launch_args_override is not None:
+            command = list(config.launch_args_override)
+        else:
+            command = [config.codex_bin or "codex"]
+            for value in config.config_overrides:
+                command.extend(["--config", value])
+            command.extend(["app-server", "--listen", "stdio://"])
+        self.transport.stream = await self.connection.enter_async_context(
+            self.habitat.execute(
+                *command,
+                workdir=config.cwd,
+                env={**(config.env or {}), "PWD": config.cwd},
+                stderr=self.transport._stderr_lines.append,
+            )
+        )
+
+    # SDK APIs initialize lazily through this hook as well as explicit start().
+    _ensure_initialized = start
+
+    async def shutdown(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Drain SDK work, then release the thread token and stdio attachment."""
         self.transport.closing = True
-        requests = list(self.transport.requests)
-        for task in requests:
-            task.cancel()
-        await asyncio.gather(*requests, return_exceptions=True)
-        await super().close()
+        with anyio.CancelScope(shield=True):
+            requests = list(self.transport.requests)
+            for task in requests:
+                task.cancel()
+            await asyncio.gather(*requests, return_exceptions=True)
+            try:
+                await super().close()
+            finally:
+                self.transport.token = None
+                await self.connection.__aexit__(exc_type, exc_value, traceback)
+
+    async def close(self) -> None:
+        await self.__aexit__(None, None, None)
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        with anyio.CancelScope(shield=True):
+            async with self.lifecycle_lock:
+                if not self.transport.closing:
+                    await self.shutdown(exc_type, exc_value, traceback)

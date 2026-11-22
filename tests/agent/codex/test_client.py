@@ -239,7 +239,7 @@ async def command_transport(
     )
     ink.client = client
     async with client:
-        reader = asyncio.create_task(asyncio.to_thread(client.transport._reader_loop))
+        reader = asyncio.create_task(asyncio.to_thread(client.transport.reader_loop))
         try:
             yield CommandTransport(ink, incoming, outgoing)
         finally:
@@ -584,6 +584,7 @@ def test_constructing_shared_client_needs_no_event_loop_or_process() -> None:
 
     client = SharedCodex(CodexConfig(), approve, instrument=False)
     assert client.transport._proc is None
+    assert client.transport.token is None
     assert not client._initialized
 
 
@@ -619,7 +620,7 @@ async def test_reader_delivers_other_responses_and_events_during_approval(
     )
     client = SharedCodex(CodexConfig(), approve, instrument=False)
     await client.__aenter__()
-    reader = asyncio.create_task(asyncio.to_thread(client.transport._reader_loop))
+    reader = asyncio.create_task(asyncio.to_thread(client.transport.reader_loop))
     try:
         incoming.put(
             {
@@ -646,6 +647,7 @@ async def test_reader_delivers_other_responses_and_events_during_approval(
         incoming.put(None)
         await reader
         await client.close()
+    assert client.transport.token is None
 
 
 async def test_closing_shared_client_cancels_and_drains_approval() -> None:

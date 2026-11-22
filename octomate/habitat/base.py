@@ -2,8 +2,8 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from anyio.abc import ByteStream
@@ -23,6 +23,9 @@ class Habitat(ABC):
     """The execution environment core prepares for an agent invocation."""
 
     config: BaseHabitatConfig  # This environment's settings, including core access.
+    resources: AsyncExitStack = field(
+        default_factory=AsyncExitStack, init=False, repr=False, compare=False
+    )  # Clients released by core before stopping this environment.
 
     @property
     def core_url(self) -> str:
