@@ -838,11 +838,12 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         if thread.id == source_thread.id:
             raise ValueError("A fork requires an independent destination thread")
         target = await self.conversations.ensure(thread.id, agent_tentacle_id=self.id)
-        workspace = await self.workspaces.resolve(thread.id, project, owner_id)
         if driven:
             await self.workspaces.carry(source_thread, thread, owner_id)
-            async with self.workspaces.enter(workspace):
-                external_id = await self.fork_session(source, cwd=workspace.path)
+            async with self.inhabit(
+                thread=thread, conversation=target, owner_id=owner_id
+            ) as invocation:
+                external_id = await self.fork_session(source, invocation=invocation)
             if source.external_id is not None and (
                 external_id is None or external_id == source.external_id
             ):
@@ -856,6 +857,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
                 target_conversation_id=target.id,
             )
         else:
+            workspace = await self.workspaces.resolve(thread.id, project, owner_id)
             await self.fork_transcript(
                 source, target, owner_id=owner_id, cwd=workspace.path
             )
@@ -908,14 +910,16 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         return type(self).fork_session is not AgentTentacle.fork_session
 
     async def fork_session(
-        self, conversation: Conversation, *, cwd: Path
+        self, conversation: Conversation, *, invocation: Invocation
     ) -> str | None:
         """Fork the runtime session, or stop if this agent cannot fork safely."""
         raise NotImplementedError(f"Agent {self.id!r} does not support session forking")
 
-    async def relocate(self, conversation: Conversation, *, cwd: Path) -> None:
-        """Relocate the runtime session behind `conversation` to `cwd`, where its next
-        run resumes. The graph's call, made once a teleport has settled where the
+    async def relocate(
+        self, conversation: Conversation, *, invocation: Invocation
+    ) -> None:
+        """Relocate the runtime session into the invocation's workspace for its next
+        run. The graph's call, made once a teleport has settled where the
         agent lands; the tentacle only knows how to move one.
 
         Nothing to move for a runtime that resumes a session from anywhere. Claude

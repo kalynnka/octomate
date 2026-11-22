@@ -1,6 +1,7 @@
 """Shared habitat lifecycle and managed runtime capabilities."""
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -67,6 +68,13 @@ class ManagedHabitat(Habitat):
 
     @abstractmethod
     def execute(
-        self, *command: str, workdir: str, env: dict[str, str] | None = None
+        self,
+        *command: str,
+        workdir: str,
+        env: dict[str, str] | None = None,
+        stderr: Callable[[str], None] | None = None,
     ) -> AbstractAsyncContextManager[ByteStream]:
-        """Run a command with duplex stdio, closing and reaping it on exit."""
+        """Run with duplex stdio; deliver stderr lines on the caller's event loop.
+
+        Close and reap the process on exit, reporting an unsuccessful exit.
+        """

@@ -159,7 +159,7 @@ async def case(
     )
     source = await octomate.conversations.get(source.id)
     fork = AsyncMock(return_value=str(uuid7()))
-    monkeypatch.setattr(tentacle, "fork_session", fork)
+    monkeypatch.setattr(tentacle.ink, "fork_thread", fork)
     return ForkCase(tentacle, source, target, owner.id, prefix, pending, home, fork)
 
 
@@ -214,7 +214,7 @@ async def test_fork_copies_only_completed_uploaded_history(
     assert remainder == (case.prefix + case.pending).split(b"\n", 1)[1]
     assert imported.stat().st_mode & 0o777 == 0o600
     assert imported.parent.stat().st_mode & 0o777 == 0o700
-    assert case.fork.call_args.args[0].external_id == import_id
+    assert case.fork.call_args.args[0] == import_id
     completed_id = json.loads(case.prefix.splitlines()[-1])["payload"]["turn_id"]
     assert case.fork.call_args.kwargs == {
         "cwd": tmp_path,
@@ -265,10 +265,7 @@ async def test_two_destinations_have_distinct_imports(
     assert first.external_id != second.external_id
     assert first.transcript_file_id != second.transcript_file_id
     assert len(list(case.home.glob("sessions/users/*/*.jsonl"))) == 2
-    assert (
-        case.fork.call_args_list[0].args[0].external_id
-        != case.fork.call_args_list[1].args[0].external_id
-    )
+    assert case.fork.call_args_list[0].args[0] != case.fork.call_args_list[1].args[0]
 
 
 async def test_another_owner_cannot_import_the_transcript(

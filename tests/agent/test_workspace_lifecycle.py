@@ -35,7 +35,7 @@ async def context(
     in_memory_engine: AsyncEngine, tmp_path: Path
 ) -> AsyncIterator[GraphRunContext[ReflexState, ReflexDeps]]:
     app = Octomate()
-    app.connect(FakeAgent())
+    app.connect(FakeAgent(workspaces=app.workspaces))
     app.connect(FakeChannelTentacle(octomate=app))
     owner = await a_user("alice")
     root = tmp_path / "project"

@@ -56,7 +56,7 @@ from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.transcript import transcripts_dir
 from octomate.types.json import JsonObject
 from tests.agent.claude.test_native_fork import a_native_session
-from tests.support.invocations import invocation_for
+from tests.support.invocations import a_native_invocation, invocation_for
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
@@ -1413,19 +1413,20 @@ async def test_relocating_a_conversation_moves_its_session_by_id(
     # on record. Nothing to move before a session exists.
     relocated: list[tuple[str, Path]] = []
     monkeypatch.setattr(
-        claude_base,
-        "relocate_session",
+        claude_ink,
+        "relocate_session_files",
         lambda session_id, *, cwd: relocated.append((session_id, cwd)),
     )
     tentacle = _tentacle(FakeConversationManager())
 
-    await tentacle.relocate(
-        cast(claude_base.Conversation, FakeConversation(external_id="prev-sess")),
-        cwd=Path("/workspaces/t1"),
-    )
-    await tentacle.relocate(
-        cast(claude_base.Conversation, FakeConversation()), cwd=Path("/workspaces/t1")
-    )
+    for external_id in ("prev-sess", None):
+        conversation = claude_base.Conversation(
+            thread_id=_THREAD, agent_tentacle_id="claude", external_id=external_id
+        )
+        await tentacle.relocate(
+            conversation,
+            invocation=a_native_invocation(conversation, Path("/workspaces/t1")),
+        )
 
     assert relocated == [("prev-sess", Path("/workspaces/t1"))]
 
@@ -1469,11 +1470,13 @@ async def test_claude_fork_preserves_source_and_relocates_only_the_new_session(
     )
     tentacle = _tentacle(FakeConversationManager())
 
-    fork_id = await tentacle.fork_session(source, cwd=destination)
+    fork_id = await tentacle.fork_session(
+        source, invocation=a_native_invocation(source, destination)
+    )
     target = claude_base.Conversation(
         thread_id=uuid7(), agent_tentacle_id="claude", external_id=fork_id
     )
-    await tentacle.relocate(target, cwd=destination)
+    await tentacle.relocate(target, invocation=a_native_invocation(target, destination))
 
     assert fork_id != session_id
     assert source.external_id == session_id
@@ -1495,5 +1498,50 @@ async def test_claude_cannot_fork_without_a_session_id(external_id: str | None) 
     )
     with pytest.raises(ValueError, match="without a session id"):
         await _tentacle(FakeConversationManager()).fork_session(
-            source, cwd=Path("/new")
+            source, invocation=a_native_invocation(source, Path("/new"))
         )
+
+
+@pytest.mark.parametrize("empty", [False, True])
+async def test_ink_import_cleans_staging_after_success_or_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, empty: bool
+) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    session_id, message_id = str(uuid7()), str(uuid7())
+    source = claude_base.Conversation(
+        thread_id=_THREAD, agent_tentacle_id="claude", external_id=session_id
+    )
+    invocation = a_native_invocation(source, tmp_path)
+    data = (
+        b""
+        if empty
+        else (
+            json.dumps(
+                {
+                    "type": "user",
+                    "sessionId": session_id,
+                    "uuid": message_id,
+                    "parentUuid": None,
+                    "message": {"role": "user", "content": "retained history"},
+                }
+            )
+            + "\n"
+        ).encode()
+    )
+    ink = claude_ink.ClaudeInk()
+    if empty:
+        with pytest.raises(FileNotFoundError, match="not found"):
+            await ink.fork_session(
+                session_id, cwd=tmp_path, habitat=invocation.habitat, transcript=data
+            )
+        assert list(transcripts_dir(tmp_path).glob("*.jsonl")) == []
+    else:
+        forked = await ink.fork_session(
+            session_id, cwd=tmp_path, habitat=invocation.habitat, transcript=data
+        )
+        [message] = get_session_messages(forked, directory=str(tmp_path))
+        assert message.message == {"role": "user", "content": "retained history"}
+        assert message.uuid != message_id
+        assert forked != session_id
+    assert not (transcripts_dir(tmp_path) / f"{session_id}.jsonl").exists()
+    assert source.external_id == session_id

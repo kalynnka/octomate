@@ -17,6 +17,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.inkling import InklingTentacle
+from tests.support.invocations import a_native_invocation
 from tests.support.users import a_user
 
 
@@ -31,11 +32,18 @@ async def test_inkling_fork_needs_no_external_session(tmp_path: Path) -> None:
     )
     conversation = Conversation(thread_id=uuid7(), agent_tentacle_id="inkling")
 
-    assert await tentacle.fork_session(conversation, cwd=tmp_path) is None
+    assert (
+        await tentacle.fork_session(
+            conversation, invocation=a_native_invocation(conversation, tmp_path)
+        )
+        is None
+    )
 
     conversation.external_id = "unexpected-runtime"
     with pytest.raises(ValueError, match="cannot have an external session id"):
-        await tentacle.fork_session(conversation, cwd=tmp_path)
+        await tentacle.fork_session(
+            conversation, invocation=a_native_invocation(conversation, tmp_path)
+        )
 
 
 async def test_shared_fork_can_share_history_without_an_external_session(

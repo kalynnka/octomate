@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -195,6 +195,7 @@ class FakeConversation(PydanticConversation):
     messages: list[ModelMessage] = field(default_factory=list)
     name: str | None = None
     external_id: str | None = None
+    transcript_file_id: UUID7 | None = None
     thread_id: UUID7 | None = None
     subagent_id: str = ""
     parent_conversation_id: UUID7 | None = None
@@ -301,11 +302,20 @@ class FakeConversationManager(ConversationManager):
         self,
         conversation: Conversation,
         external_id: str,
-    ) -> Conversation:
-        stored = await self.get(conversation.id)
-        stored.external_id = external_id
-        conversation.external_id = external_id
-        return conversation
+    ) -> None:
+        for key, stored in self.store.items():
+            if stored.id == conversation.id:
+                self.store[key] = replace(
+                    stored,
+                    external_id=external_id,
+                    transcript_file_id=(
+                        stored.transcript_file_id
+                        if stored.external_id == external_id
+                        else None
+                    ),
+                )
+                return
+        raise ValueError(f"unknown conversation {conversation.id}")
 
     async def link_parent_run(
         self,

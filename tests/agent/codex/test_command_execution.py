@@ -296,6 +296,8 @@ async def test_skill_turn_preserves_input_context_and_records_outcome(
     assert conversation is not None
     if resumed:
         await agent.octomate.conversations.set_external_id(conversation, "prior-thread")
+        conversation = await agent.conversations.get(conversation.id)
+        context = replace(context, conversation=conversation)
         FakeCodex.script = text_script("reviewed", thread_id="prior-thread")
     catalog = await agent.discover_commands(context)
     descriptor = next(
@@ -575,6 +577,8 @@ async def test_unloaded_permission_selection_does_not_open_a_native_thread(
     assert conversation is not None
     if native_thread:
         await agent.conversations.set_external_id(conversation, "unloaded-thread")
+        conversation = await agent.conversations.get(conversation.id)
+        context = replace(context, conversation=conversation)
     request = agent.ink.client._client.request
     assert isinstance(request, AsyncMock)
     request.reset_mock()
@@ -751,6 +755,8 @@ async def test_status_uses_latest_recorded_native_usage(
     conversation = await agent.conversations.get(conversation.id, with_runs=False)
     if copied_history:
         await agent.conversations.set_external_id(conversation, "forked-thread")
+        conversation = await agent.conversations.get(conversation.id)
+        context = replace(context, conversation=conversation)
     request = agent.ink.client._client.request
     assert isinstance(request, AsyncMock)
     request.side_effect = [GetAccountResponse(account=None, requires_openai_auth=True)]
@@ -864,6 +870,8 @@ async def test_plan_uses_native_preset_preserving_model_and_effort(
     agent.routes = agent.build_routes()
     await agent.conversations.set_effort(conversation, "high")
     await agent.conversations.set_external_id(conversation, "existing")
+    conversation = await agent.conversations.get(conversation.id)
+    context = replace(context, conversation=conversation)
     agent.ink.thread_bindings["existing"] = (conversation.id, None)
     FakeCodex.loaded_threads.add("existing")
     request = agent.ink.client._client.request
@@ -940,6 +948,8 @@ async def test_native_controls_resume_saved_threads_without_an_agent_run(
     conversation = context.conversation
     assert conversation is not None
     await agent.conversations.set_external_id(conversation, "existing")
+    conversation = await agent.conversations.get(conversation.id)
+    context = replace(context, conversation=conversation)
     if binding == "foreign":
         FakeCodex.loaded_threads.add("existing")
         agent.ink.thread_bindings["existing"] = (uuid7(), None)
@@ -997,6 +1007,8 @@ async def test_compact_command_persists_completed_items_without_creating_a_run(
     conversation = context.conversation
     assert conversation is not None
     await agent.conversations.set_external_id(conversation, "existing")
+    conversation = await agent.conversations.get(conversation.id)
+    context = replace(context, conversation=conversation)
     runtime_config = FakeCodex.last_config
     if content_available:
         monkeypatch.setattr(
@@ -1200,6 +1212,8 @@ async def test_mcp_inspection_is_thread_scoped_and_reads_all_pages(
     conversation = context.conversation
     assert conversation is not None
     await agent.conversations.set_external_id(conversation, "existing")
+    conversation = await agent.conversations.get(conversation.id)
+    context = replace(context, conversation=conversation)
     agent.ink.thread_bindings["existing"] = (conversation.id, None)
     FakeCodex.loaded_threads.add("existing")
     request = agent.ink.client._client.request
@@ -1283,6 +1297,8 @@ async def test_builtin_arguments_are_rejected_without_native_effects(
     conversation = context.conversation
     assert conversation is not None
     await agent.conversations.set_external_id(conversation, "existing")
+    conversation = await agent.conversations.get(conversation.id)
+    context = replace(context, conversation=conversation)
     agent.ink.thread_bindings["existing"] = (conversation.id, None)
     request = agent.ink.client._client.request
     assert isinstance(request, AsyncMock)
@@ -1311,6 +1327,8 @@ async def test_compact_waits_and_records_only_a_command_receipt(
     conversation = context.conversation
     assert conversation is not None
     await agent.conversations.set_external_id(conversation, "existing")
+    conversation = await agent.conversations.get(conversation.id)
+    context = replace(context, conversation=conversation)
     agent.ink.thread_bindings["existing"] = (conversation.id, None)
     entered, finish = asyncio.Event(), asyncio.Event()
     reset_fake_codex(failed_script("Compaction failed", thread_id="existing"))

@@ -248,13 +248,15 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         return self.default_model if model is None else super().resolve_model(model)
 
     async def fork_session(
-        self, conversation: Conversation, *, cwd: Path
+        self, conversation: Conversation, *, invocation: Invocation
     ) -> str | None:
         """The fake has no external runtime session to fork."""
         return None
 
-    async def relocate(self, conversation: Conversation, *, cwd: Path) -> None:
-        self.relocated.append((conversation.id, cwd))
+    async def relocate(
+        self, conversation: Conversation, *, invocation: Invocation
+    ) -> None:
+        self.relocated.append((conversation.id, invocation.workspace.path))
 
     async def run(
         self,

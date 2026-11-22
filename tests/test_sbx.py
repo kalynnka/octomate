@@ -34,6 +34,9 @@ def sandbox(tmp_path: Path) -> SbxHabitat:
         "import json, os, signal, sys\n"
         "from pathlib import Path\n"
         "args = sys.argv[1:]\n"
+        "if args[1] == 'many':\n"
+        "    print('\\n'.join(map(str, range(100))))\n"
+        "    sys.exit(0)\n"
         "if args[1] == 'fail':\n"
         "    print('synthetic-secret', file=sys.stderr)\n"
         "    print('synthetic-secret')\n"
@@ -146,10 +149,20 @@ async def test_sh_attachment_preserves_duplex_bytes_and_eof(
         os.kill(info.pid, 0)
 
 
-async def test_sh_failure_does_not_expose_command_output(sandbox: SbxHabitat) -> None:
+async def test_sh_failure_keeps_stderr_in_diagnostics(
+    sandbox: SbxHabitat, caplog: pytest.LogCaptureFixture
+) -> None:
     with pytest.raises(HabitatError, match=r"failed \(exit 7\)") as failure:
         await sandbox.command("fail")
     assert "synthetic-secret" not in str(failure.value)
+    assert "synthetic-secret" in caplog.text
+
+
+async def test_command_stdout_is_not_limited_by_the_stderr_tail(
+    sandbox: SbxHabitat,
+) -> None:
+    output = await sandbox.command("many")
+    assert output.decode().splitlines() == [str(index) for index in range(100)]
 
 
 @pytest.mark.parametrize("cancel", [False, True])

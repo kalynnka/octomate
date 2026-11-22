@@ -651,13 +651,19 @@ class CodexTentacle(AgentTentacle[str, None]):
                     await websocket.close()
 
     async def fork_session(
-        self, conversation: Conversation, *, cwd: Path, last_turn_id: str | None = None
+        self,
+        conversation: Conversation,
+        *,
+        invocation: Invocation,
+        last_turn_id: str | None = None,
     ) -> str:
         """Copy Codex's stored history into an independent, durable thread."""
         if not conversation.external_id:
             raise ValueError("Cannot fork a Codex conversation without a session id")
         return await self.ink.fork_thread(
-            conversation.external_id, cwd=cwd, last_turn_id=last_turn_id
+            conversation.external_id,
+            cwd=Path(invocation.cwd),
+            last_turn_id=last_turn_id,
         )
 
     async def read_fork_transcript(
@@ -750,13 +756,8 @@ class CodexTentacle(AgentTentacle[str, None]):
                     data, external_id=source.external_id, owner_id=owner_id
                 ) as imported_id,
             ):
-                imported_source = Conversation(
-                    thread_id=source.thread_id,
-                    agent_tentacle_id=self.id,
-                    external_id=imported_id,
-                )
-                external_id = await self.fork_session(
-                    imported_source, cwd=cwd, last_turn_id=completed_run.id
+                external_id = await self.ink.fork_thread(
+                    imported_id, cwd=cwd, last_turn_id=completed_run.id
                 )
                 await conversations.fork(
                     source,
@@ -1904,6 +1905,9 @@ class CodexTentacle(AgentTentacle[str, None]):
             codex_thread_id = codex_thread.id
             if conversation.external_id != codex_thread_id:
                 await self.conversations.set_external_id(conversation, codex_thread_id)
+                conversation = await self.conversations.get(
+                    conversation.id, with_runs=False
+                )
             await resources.enter_async_context(self.driving(codex_thread_id))
             interjections = Interjections[Notification]()
             self.bridge_contexts[codex_thread_id] = CodexBridgeContext(

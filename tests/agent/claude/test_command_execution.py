@@ -443,6 +443,8 @@ async def test_direct_commands_persist_receipts_and_native_session_without_model
         external_id="previous-session",
     )
     await agent.conversations.set_external_id(conversation, "previous-session")
+    conversation = await agent.conversations.get(conversation.id)
+    context = replace(context, conversation=conversation)
     client.receive_response.side_effect = lambda: native_messages(streams[script])
     intent = CommandIntent(command_id=command)
     async with AsyncExitStack() as stack:
@@ -618,6 +620,8 @@ async def test_model_command_preserves_arguments_context_stream_and_history(
     assert conversation is not None
     if resumed:
         await agent.conversations.set_external_id(conversation, "prior-session")
+        conversation = await agent.conversations.get(conversation.id)
+        context = replace(context, conversation=conversation)
     client.receive_response.side_effect = lambda: native_messages(streams["skill"])
     intent = CommandIntent(command_id="fixture-review", arguments=arguments)
     async with AsyncExitStack() as stack:

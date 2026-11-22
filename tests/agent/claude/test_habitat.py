@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 import sys
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path, PurePosixPath
@@ -18,12 +18,15 @@ from claude_agent_sdk import (
     PermissionResultAllow,
     ResultMessage,
     ToolPermissionContext,
+    get_session_messages,
     project_key_for_directory,
 )
 from fastapi import UploadFile
+from opentelemetry import trace
 from pydantic import BaseModel
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import PartDeltaEvent
+from pydantic_graph import GraphRunContext
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
@@ -32,9 +35,13 @@ from octomate.config import OctomateConfig
 from octomate.config.agents import ClaudeCodeConfig
 from octomate.config.habitat import SbxHabitatConfig
 from octomate.fibers import FiberError
+from octomate.habitat import HabitatError
 from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
+from octomate.reflex.nodes.teleport import Teleport
+from octomate.reflex.state import ReflexDeps, ReflexState, ResponseTarget
+from octomate.reflex.suspender import TeleportRequest
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.habitat import InvocationScope
@@ -44,8 +51,8 @@ from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.transport import HabitatTransport
 from octomate.types.json import JsonObject
-from tests.agent.claude.test_driven_transcript import served
 from tests.agent.claude.test_native_fork import a_native_session
+from tests.support.channels import FakeChannelTentacle
 from tests.support.invocations import invocation_for
 from tests.support.managers import (
     FakeConversationManager,
@@ -61,6 +68,7 @@ class ProcessInfo(BaseModel):
     argv: list[str]
     cwd: str
     config: str | None
+    environment: dict[str, str] = {}
 
 
 @pytest.fixture
@@ -108,7 +116,7 @@ def executable(tmp_path: Path) -> Path:
     return executable
 
 
-async def test_native_fork_downloads_the_completed_turn_into_the_guest(
+async def test_native_fork_sends_the_completed_turn_into_the_guest(
     in_memory_engine: AsyncEngine,
     executable: Path,
     tmp_path: Path,
@@ -143,6 +151,7 @@ async def test_native_fork_downloads_the_completed_turn_into_the_guest(
     source = await core.conversations.ensure(thread.id, agent_tentacle_id=agent.id)
     session = str(uuid7())
     await core.conversations.set_external_id(source, session)
+    source = await core.conversations.get(source.id)
     first = {
         "type": "user",
         "uuid": str(uuid7()),
@@ -170,15 +179,12 @@ async def test_native_fork_downloads_the_completed_turn_into_the_guest(
         files=core.files,
         owner_id=sender.user_id,
     )
-    async with served(core) as url:
-        monkeypatch.setattr(SbxHabitat, "core_url", property(lambda _: url))
-        try:
-            landed = await agent.fork(
-                source, ThreadKey("trunkline", "thread", "lu", "landing"), sender=sender
-            )
-        finally:
-            await agent.revoke_runtime_keys()
-            await core.habitats.close()
+    try:
+        landed = await agent.fork(
+            source, ThreadKey("trunkline", "thread", "lu", "landing"), sender=sender
+        )
+    finally:
+        await core.habitats.close()
 
     [target] = await core.conversations.for_thread(landed.id)
     assert target.external_id is not None
@@ -200,6 +206,120 @@ async def test_native_fork_downloads_the_completed_turn_into_the_guest(
     assert [row["message"] for row in messages] == [first["message"]]
     assert messages[0]["uuid"] != first["uuid"]
     assert not (tmp_path / "core-claude").exists()
+
+
+@pytest.mark.parametrize("new_thread", [False, True])
+async def test_driven_teleport_forks_the_guest_session(
+    in_memory_engine: AsyncEngine,
+    executable: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    new_thread: bool,
+) -> None:
+    core, agent, sender = await a_native_session()
+    assert sender.user_id is not None
+    channel = core.connect(FakeChannelTentacle(octomate=core))
+    sender.channel_tentacle_id = channel.id
+    address = ChannelAddress(channel.id, "dm", "lu", "lu")
+    origin = ResponseTarget(channel_id=channel.id, address=address)
+    thread = await core.threads.ensure(address)
+    source = await core.conversations.ensure(thread.id, agent_tentacle_id=agent.id)
+    session_id = str(uuid7())
+    await core.conversations.set_external_id(source, session_id)
+    source = await core.conversations.get(source.id)
+    core.habitats.config = SbxHabitatConfig(image=IMAGE, executable=str(executable))
+    monkeypatch.setattr(SbxHabitat, "prepare", AsyncMock())
+    monkeypatch.setattr(SbxHabitat, "stop", AsyncMock())
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "empty-core"))
+
+    def guest_path(_habitat: SbxHabitat, volume: Volume) -> PurePosixPath:
+        assert volume.usage is not None
+        return PurePosixPath(tmp_path / "guest" / volume.usage)
+
+    monkeypatch.setattr(SbxHabitat, "path", guest_path)
+    guest = tmp_path / "guest"
+    (guest / "tree").mkdir(parents=True)
+    projects = guest / "config" / ".claude" / "projects"
+    previous = projects / project_key_for_directory(guest / "previous")
+    previous.mkdir(parents=True)
+    transcript = previous / f"{session_id}.jsonl"
+    row = {
+        "type": "user",
+        "sessionId": session_id,
+        "uuid": str(uuid7()),
+        "parentUuid": None,
+        "message": {"role": "user", "content": "guest history"},
+    }
+    data = (json.dumps(row) + "\n").encode()
+    transcript.write_bytes(data)
+    retained = await core.conversations.store_transcript(
+        UploadFile(BytesIO(data), filename=transcript.name),
+        0,
+        conversation=source,
+        files=core.files,
+        owner_id=sender.user_id,
+    )
+    state = ReflexState(
+        thread=thread, source_target=origin, target=origin, user_profile=sender
+    )
+    node = Teleport(
+        TeleportRequest(
+            hint="move",
+            tool_call_id=None,
+            destination=address,
+            new_thread=new_thread,
+            resume=True,
+        ),
+        origin,
+        agent.id,
+    )
+    try:
+        async with core.nerve.publish(address) as impulses:
+            deps = ReflexDeps(
+                channels=core.channels,
+                agents=core.agents,
+                thread_manager=core.threads,
+                conversation_manager=core.conversations,
+                action_manager=core.deferred_actions,
+                gateway=core.gateway,
+                workspaces=core.workspaces,
+                impulses=impulses,
+            )
+            await node.run(GraphRunContext(state=state, deps=deps))
+    finally:
+        await core.habitats.close()
+    assert state.thread is not None
+    landed = await core.conversations.ensure(
+        state.thread.id, agent_tentacle_id=agent.id
+    )
+    assert (landed.id != source.id) == new_thread
+    assert landed.external_id != session_id
+    assert landed.transcript_file_id is None
+    forked = (
+        projects
+        / project_key_for_directory(guest / "tree")
+        / f"{landed.external_id}.jsonl"
+    )
+    assert landed.external_id is not None
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(guest / "config" / ".claude"))
+    [message] = get_session_messages(landed.external_id, directory=str(guest / "tree"))
+    assert message.message == row["message"]
+    assert message.uuid != row["uuid"]
+    uploaded = await core.conversations.store_transcript(
+        UploadFile(BytesIO(forked.read_bytes()), filename=forked.name),
+        0,
+        conversation=landed,
+        files=core.files,
+        owner_id=sender.user_id,
+    )
+    assert uploaded.id != retained.id
+    assert transcript.read_bytes() == data
+    assert await core.files.read(retained.id, owner_id=sender.user_id) == data
+    if new_thread:
+        original = await core.conversations.get(source.id)
+        assert original.external_id == session_id
+        assert original.transcript_file_id == retained.id
+    assert not (tmp_path / "empty-core").exists()
 
 
 @pytest.fixture
@@ -271,6 +391,89 @@ async def test_native_events_approval_and_controls_share_the_connection(
     assert '"type": "control_response"' in log
     with pytest.raises(ProcessLookupError):
         os.kill(info.pid, 0)
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+async def test_transport_preserves_sdk_environment_and_stderr(
+    manager: HabitatManager,
+    scope: InvocationScope,
+    options: ClaudeAgentOptions,
+    explicit: bool,
+) -> None:
+    options.enable_file_checkpointing = True
+    options.env.update(
+        CLAUDE_TEST_STDERR="first diagnostic  \n\nsecond diagnostic",
+        CLAUDE_CODE_ENTRYPOINT="cli",
+        CLAUDE_AGENT_SDK_VERSION="ignored",
+    )
+    if explicit:
+        options.env.update(
+            TRACEPARENT="explicit-parent",
+            TRACESTATE="explicit-state",
+            CLAUDE_CODE_SDK_READS_SESSION_STATE="0",
+        )
+    stderr: list[str] = []
+    options.stderr = stderr.append
+    span = trace.NonRecordingSpan(
+        trace.SpanContext(
+            trace_id=1,
+            span_id=2,
+            is_remote=False,
+            trace_flags=trace.TraceFlags(1),
+        )
+    )
+    try:
+        with trace.use_span(span):
+            async with (
+                manager.enter(scope, uuid7()) as residence,
+                HabitatTransport.client(residence.habitat, options),
+            ):
+                pass
+    finally:
+        await manager.close()
+    info = ProcessInfo.model_validate_json(
+        (await anyio.Path(options.env["CLAUDE_TEST_LOG"]).read_text()).splitlines()[0]
+    )
+    env = info.environment
+    assert env["PWD"] == str(options.cwd)
+    assert env["CLAUDE_CODE_ENTRYPOINT"] == "cli"
+    assert env["CLAUDE_AGENT_SDK_VERSION"] != "ignored"
+    assert env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] == "true"
+    assert env["CLAUDE_CODE_SDK_READS_SESSION_STATE"] == "1"
+    assert stderr == ["first diagnostic", "second diagnostic"]
+    if explicit:
+        assert env["TRACEPARENT"] == "explicit-parent"
+        assert env["TRACESTATE"] == "explicit-state"
+    else:
+        assert (
+            env["TRACEPARENT"]
+            == "00-00000000000000000000000000000001-0000000000000002-01"
+        )
+
+
+@pytest.mark.parametrize("delay", ["0", "0.2"])
+async def test_nonzero_exit_after_protocol_eof_is_reported(
+    manager: HabitatManager,
+    scope: InvocationScope,
+    options: ClaudeAgentOptions,
+    caplog: pytest.LogCaptureFixture,
+    delay: str,
+) -> None:
+    options.env.update(
+        CLAUDE_TEST_EXIT_CODE="7",
+        CLAUDE_TEST_EXIT_DELAY=delay,
+        CLAUDE_TEST_STDERR="upload failed",
+    )
+    try:
+        with pytest.raises(HabitatError, match="exit 7"):
+            async with (
+                manager.enter(scope, uuid7()) as residence,
+                HabitatTransport.client(residence.habitat, options),
+            ):
+                pass
+    finally:
+        await manager.close()
+    assert "upload failed" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -461,12 +664,15 @@ async def test_a_driven_turn_runs_inside_the_owners_sandbox(
         *command: str,
         workdir: str,
         env: dict[str, str] | None = None,
+        stderr: Callable[[str], None] | None = None,
     ) -> AsyncGenerator[ByteStream]:
         assert env is not None
         assert env["OCTOMATE_CLI_URL"] == "http://host.docker.internal:8000"
         assert env["OCTOMATE_CLI_TOKEN"]
         executions.append(command)
-        async with execute(habitat, *command, workdir=workdir, env=env) as stream:
+        async with execute(
+            habitat, *command, workdir=workdir, env=env, stderr=stderr
+        ) as stream:
             yield stream
 
     monkeypatch.setattr(SbxHabitat, "execute", capture_execution)

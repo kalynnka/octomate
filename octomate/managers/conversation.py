@@ -1848,14 +1848,15 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
     async def set_external_id(
         self, conversation: Conversation, external_id: str
     ) -> None:
-        """Bind a conversation to its replacement runtime session."""
+        """Bind the runtime session, clearing its transcript reference when the ID changes."""
         async with async_session() as session:
             stored = await session.get(Conversation, conversation.id)
             if stored is None:
                 raise ValueError(f"unknown conversation {conversation.id}")
+            if stored.external_id != external_id:
+                stored.transcript_file_id = None
             stored.external_id = external_id
             await session.commit()
-        conversation.external_id = external_id
 
     async def set_permission_mode(
         self,

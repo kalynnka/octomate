@@ -1,5 +1,6 @@
 """Claude's native control protocol over a process inside a habitat."""
 
+import logging
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
@@ -11,6 +12,7 @@ from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, Transport
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 from claude_agent_sdk._version import __version__ as SDK_VERSION
 from claude_agent_sdk.types import _configure_can_use_tool
+from opentelemetry import propagate
 from pydantic import TypeAdapter, ValidationError
 
 from octomate.fibers import MAX_FRAME_BYTES, FiberError
@@ -18,6 +20,7 @@ from octomate.habitat import ManagedHabitat
 from octomate.types.json import JsonObject
 
 message_adapter = TypeAdapter(JsonObject)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -88,14 +91,40 @@ class HabitatTransport(Transport):
         )
         # Reuse the pinned SDK's flag mapping for its native control protocol.
         command = SubprocessCLITransport("", command_options)._build_command()
+        env = {
+            "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
+            **options.env,
+            "CLAUDE_AGENT_SDK_VERSION": SDK_VERSION,
+            "CLAUDE_CODE_SDK_READS_SESSION_STATE": "1",
+            "PWD": str(options.cwd),
+        }
+        if options.enable_file_checkpointing:
+            env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "true"
+        carrier: dict[str, str] = {}
+        try:
+            propagate.inject(carrier)
+        except Exception:
+            logger.debug("Claude trace context propagation failed", exc_info=True)
+        if "traceparent" in carrier:
+            env.update(
+                (key.upper(), value)
+                for key, value in carrier.items()
+                if key.upper() not in options.env
+            )
+
+        def on_stderr(line: str) -> None:
+            line = line.rstrip()
+            if line and options.stderr is not None:
+                try:
+                    options.stderr(line)
+                except Exception:
+                    logger.debug("Claude stderr callback failed", exc_info=True)
+
         async with habitat.execute(
             *command,
             workdir=str(options.cwd),
-            env={
-                "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
-                "CLAUDE_AGENT_SDK_VERSION": SDK_VERSION,
-                **options.env,
-            },
+            env=env,
+            stderr=on_stderr if options.stderr is not None else None,
         ) as stream:
             transport = cls(
                 stream, max_frame_bytes=options.max_buffer_size or MAX_FRAME_BYTES

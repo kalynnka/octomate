@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import platform
 import re
 import socket
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -24,6 +26,7 @@ from octomate.schemas.volumes import Volume
 
 COMMAND_TIMEOUT = 30.0
 PREPARE_TIMEOUT = 300.0
+logger = logging.getLogger(__name__)
 
 
 class SbxKitArgs(TypedDict):
@@ -95,7 +98,7 @@ class SbxHabitat(ManagedHabitat):
                 },
                 _tty_in=False,
                 _tty_out=False,
-                _err=os.devnull,
+                _decode_errors="replace",
                 _async=True,
                 _return_cmd=True,
             )
@@ -121,6 +124,9 @@ class SbxHabitat(ManagedHabitat):
         except sh.TimeoutException:
             raise HabitatError(f"sbx {args[0]} timed out") from None
         except sh.ErrorReturnCode as error:
+            logger.error(
+                "sbx %s failed: %s", args[0], error.stderr.decode("utf-8", "replace")
+            )
             raise HabitatError(
                 f"sbx {args[0]} failed (exit {error.exit_code}); "
                 "check Docker sign-in, daemon readiness and image availability"
@@ -215,12 +221,22 @@ class SbxHabitat(ManagedHabitat):
 
     @asynccontextmanager
     async def execute(
-        self, *command: str, workdir: str, env: dict[str, str] | None = None
+        self,
+        *command: str,
+        workdir: str,
+        env: dict[str, str] | None = None,
+        stderr: Callable[[str], None] | None = None,
     ) -> AsyncGenerator[UNIXSocketStream]:
         """Connect guest stdio directly to a byte stream, bypassing sh buffering."""
         parent, child = socket.socketpair()
         stream: UNIXSocketStream | None = None
         process: sh.RunningCommand | None = None
+        loop = asyncio.get_running_loop()
+
+        def receive_stderr(line: str) -> None:
+            if stderr is not None:
+                loop.call_soon_threadsafe(stderr, line.rstrip("\r\n"))
+
         try:
             stream = await UNIXSocketStream.from_socket(parent)
             with child.makefile("rwb", buffering=0) as stdio:
@@ -234,6 +250,9 @@ class SbxHabitat(ManagedHabitat):
                     *command,
                     _in=stdio,
                     _out=stdio.fileno(),
+                    _err=receive_stderr if stderr is not None else None,
+                    _tee="err",
+                    _internal_bufsize=64,
                 )
         except BaseException as error:
             if stream is not None:
@@ -245,23 +264,44 @@ class SbxHabitat(ManagedHabitat):
             raise
         finally:
             child.close()
+        failed = False
         try:
             async with stream:
                 yield stream
+        except BaseException:
+            failed = True
+            raise
         finally:
+            terminated = failed and process.is_alive()
             with suppress(ProcessLookupError):
-                if process.is_alive():
+                if terminated:
                     process.terminate()
+            waiter = asyncio.create_task(asyncio.to_thread(process.wait))
             try:
                 with anyio.fail_after(5, shield=True):
-                    await process
+                    await asyncio.shield(waiter)
             except TimeoutError:
-                with suppress(ProcessLookupError):
-                    process.kill()
-                with anyio.CancelScope(shield=True), suppress(sh.ErrorReturnCode):
-                    await process
-            except sh.ErrorReturnCode:
-                pass
+                if not failed:
+                    raise HabitatError(
+                        "Sandbox command did not exit after closing stdio"
+                    ) from None
+            except sh.ErrorReturnCode as error:
+                if not (terminated and error.exit_code < 0):
+                    logger.error(
+                        "Sandbox command failed (exit %s): %s",
+                        error.exit_code,
+                        error.stderr.decode("utf-8", "replace"),
+                    )
+                    if not failed:
+                        raise HabitatError(
+                            f"Sandbox command failed (exit {error.exit_code}); check the process stderr"
+                        ) from None
+            finally:
+                if not waiter.done():
+                    with suppress(ProcessLookupError):
+                        process.kill()
+                    with anyio.CancelScope(shield=True), suppress(sh.ErrorReturnCode):
+                        await asyncio.shield(waiter)
 
     async def stop(self) -> None:
         if self.managed:

@@ -34,6 +34,7 @@ from octomate.managers import ConversationManager, ThreadManager, UserManager
 from octomate.models.messages import ModelMessage as MessageModel
 from octomate.nerve import Nerve
 from octomate.schemas.conversation import Conversation, ConversationKey
+from octomate.schemas.files import Jsonl
 from octomate.schemas.messages import ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
 from octomate.schemas.segments import TextSegment
@@ -1416,10 +1417,40 @@ async def test_native_handle_is_saved_before_any_run() -> None:
     manager = ConversationManager()
     conversation = await manager.ensure(await _thread(), agent_tentacle_id="codex")
     await manager.set_external_id(conversation, "native-thread")
-    assert conversation.external_id == "native-thread"
+    assert conversation.external_id is None
     stored = await ConversationManager().get(conversation.id)
     assert stored.external_id == "native-thread"
     assert not await stored.runs
+
+
+@pytest.mark.parametrize("external_id", ["original", "replacement"])
+async def test_session_binding_keeps_only_the_matching_transcript(
+    external_id: str,
+) -> None:
+    manager = ConversationManager()
+    conversation = await manager.ensure(await _thread(), agent_tentacle_id="claude")
+    await manager.set_external_id(conversation, "original")
+    transcript = Jsonl(
+        name="session.jsonl", size=0, provider="filesystem", key=str(uuid7())
+    )
+    async with async_session() as session:
+        session.add(transcript)
+        stored = await session.get(Conversation, conversation.id)
+        assert stored is not None
+        stored.transcript_file_id = transcript.id
+        await session.commit()
+    conversation = await manager.get(conversation.id)
+
+    await manager.set_external_id(conversation, external_id)
+
+    expected = transcript.id if external_id == "original" else None
+    assert conversation.external_id == "original"
+    assert conversation.transcript_file_id == transcript.id
+    reloaded = await manager.get(conversation.id)
+    assert reloaded.external_id == external_id
+    assert reloaded.transcript_file_id == expected
+    async with async_session() as session:
+        assert await session.get(Jsonl, transcript.id) is not None
 
 
 async def _carry_pair(
@@ -1486,6 +1517,7 @@ async def test_fork_attaches_an_independent_runtime_without_changing_source(
             await a_thread("empty-fork-source"), agent_tentacle_id="codex"
         )
         await service.set_external_id(source, "sess-1")
+        source = await service.get(source.id)
 
     run = await service.fork(source, target, external_id="sess-fork")
 

@@ -186,6 +186,7 @@ async def test_driven_command_compaction_has_summary_without_a_model_run(
         thread.id, agent_tentacle_id="deepseek"
     )
     await app.conversations.set_external_id(conversation, "sess-1")
+    conversation = await app.conversations.get(conversation.id)
     if with_history:
         accumulator = DeepseekRunAccumulator()
         accumulator.begin("first")

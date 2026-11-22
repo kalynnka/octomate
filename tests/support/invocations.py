@@ -2,16 +2,35 @@
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from pydantic import UUID7
+from uuid_utils.compat import uuid7
 
+from octomate.config.habitat import NativeHabitatConfig
 from octomate.database import async_session
+from octomate.habitat import NativeHabitat
 from octomate.managers.habitat import Invocation
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.thread import Thread
-from octomate.schemas.volumes import GitVolume
+from octomate.schemas.volumes import GitVolume, Volume
+from octomate.schemas.volumes.storage import HostDirectory
+from octomate.schemas.workspaces import Workspace
 from octomate.tentacles.agent import AgentTentacle
+
+
+def a_native_invocation(conversation: Conversation, cwd: Path) -> Invocation:
+    """Describe native resources for a direct operation without opening storage."""
+    return Invocation(
+        id=uuid7(),
+        conversation=conversation,
+        habitat=NativeHabitat(config=NativeHabitatConfig()),
+        workspace=Workspace(
+            thread_id=conversation.thread_id,
+            volumes={"work": Volume(storage=HostDirectory(cwd), ephemeral=True)},
+        ),
+    )
 
 
 @asynccontextmanager

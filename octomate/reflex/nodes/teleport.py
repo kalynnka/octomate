@@ -183,15 +183,14 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         # The agent resumes in another directory either way — a new thread's own
         # workspace, or the project's — and a runtime session may be filed under
         # the one it ran in. The tentacle knows how to move its own; this is when.
-        async with ctx.deps.workspaces.open(
-            state.thread.id,
-            await ctx.deps.workspaces.projects.of(state.thread),
-            owner_id,
-        ) as workspace:
-            cwd = workspace.path
-            agent = ctx.deps.agent(self.agent_id)
+        agent = ctx.deps.agent(self.agent_id)
+        async with agent.inhabit(
+            thread=state.thread, conversation=conversation, owner_id=owner_id
+        ) as invocation:
+            external_id = await agent.fork_session(
+                source_conversation or conversation, invocation=invocation
+            )
             if source_conversation is not None:
-                external_id = await agent.fork_session(source_conversation, cwd=cwd)
                 carry = (
                     external_id is not None
                     and external_id == source_conversation.external_id
@@ -202,18 +201,19 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     carry_external_id=carry,
                     external_id=None if carry else external_id,
                 )
-                await agent.relocate(conversation, cwd=cwd)
+            elif external_id is not None and external_id != conversation.external_id:
+                await ctx.deps.conversation_manager.set_external_id(
+                    conversation, external_id
+                )
+                conversation = await ctx.deps.conversation_manager.get(
+                    conversation.id, with_runs=False
+                )
+            await agent.relocate(conversation, invocation=invocation)
+            if source_conversation is not None:
                 state.thread = await ctx.deps.thread_manager.rename(
                     state.thread,
                     ctx.deps.thread_manager.fork_title(source_conversation, source),
                 )
-            elif not self.request.new_thread:
-                external_id = await agent.fork_session(conversation, cwd=cwd)
-                if external_id is not None and external_id != conversation.external_id:
-                    await ctx.deps.conversation_manager.set_external_id(
-                        conversation, external_id
-                    )
-                await agent.relocate(conversation, cwd=cwd)
         if opened is not None:
             await announce_crossing(
                 ctx,

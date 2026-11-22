@@ -7,9 +7,11 @@ import os
 import uuid
 import weakref
 from collections.abc import AsyncGenerator, Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory, gettempdir
 
+import anyio
+from anyio.streams.buffered import BufferedByteReceiveStream
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
@@ -19,13 +21,20 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import Message
 
-from octomate.habitat import Habitat, ManagedHabitat
+from octomate.habitat import Habitat, HabitatError, ManagedHabitat
 from octomate.schemas.messages import ModelRequest, ModelResponse
-from octomate.tentacles.claude.catalog import ClaudeCommandDescriptor, ClaudeServerInfo
+from octomate.tentacles.claude.catalog import (
+    CONTROL_COMMANDS,
+    ClaudeCommandDescriptor,
+    ClaudeServerInfo,
+)
 from octomate.tentacles.claude.transcript import (
     CompactBoundary,
     TranscriptUserMessage,
-    relocate_session,
+    transcripts_dir,
+)
+from octomate.tentacles.claude.transcript import (
+    relocate_session as relocate_session_files,
 )
 from octomate.tentacles.claude.transport import HabitatTransport
 
@@ -45,24 +54,69 @@ class ClaudeInk:
         self.live_clients = weakref.WeakValueDictionary()
 
     async def fork_session(
-        self, session_id: str, *, cwd: Path, source_cwd: Path | None = None
+        self,
+        session_id: str,
+        *,
+        cwd: Path | PurePosixPath,
+        habitat: Habitat,
+        env: dict[str, str] | None = None,
+        transcript: bytes | None = None,
     ) -> str:
-        """Fork with the SDK, then file the copy where the destination resumes it.
+        """Create a durable SDK fork in the destination's session storage.
 
-        The SDK's directory argument selects the source, not the destination.
-        Native imports stage their source in the destination directory already.
+        Managed habitats run the offline SDK helper beside their session files.
+        `transcript` supplies retained history through its last completed turn.
+        Ink owns staging and transport for either execution environment.
         """
 
-        def fork() -> str:
-            forked = fork_session(
+        if isinstance(habitat, ManagedHabitat):
+            args = ("--transcript",) if transcript is not None else ()
+            async with habitat.execute(
+                "octomate",
+                "claude",
+                "habitat",
+                "relocate",
                 session_id,
-                directory=str(source_cwd) if source_cwd is not None else None,
-            )
-            if source_cwd != cwd:
-                relocate_session(forked.session_id, cwd=cwd)
-            return forked.session_id
+                *args,
+                workdir=str(cwd),
+                env=env,
+            ) as stream:
+                if transcript is not None:
+                    await stream.send(transcript)
+                await stream.send_eof()
+                try:
+                    line = await BufferedByteReceiveStream(stream).receive_until(
+                        b"\n", 37
+                    )
+                    return str(uuid.UUID(line.decode("ascii")))
+                except (ValueError, anyio.IncompleteRead, anyio.DelimiterNotFound):
+                    raise HabitatError(
+                        "Claude did not return a forked session ID"
+                    ) from None
+
+        def fork() -> str:
+            if transcript is None:
+                forked = fork_session(session_id)
+                relocate_session_files(forked.session_id, cwd=Path(cwd))
+                return forked.session_id
+            staged = transcripts_dir(Path(cwd)) / f"{session_id}.jsonl"
+            staged.parent.mkdir(parents=True, exist_ok=True)
+            with staged.open("xb") as output:
+                try:
+                    output.write(transcript)
+                    output.flush()
+                    return fork_session(session_id, directory=str(cwd)).session_id
+                finally:
+                    staged.unlink()
 
         return await asyncio.to_thread(fork)
+
+    async def relocate_session(
+        self, session_id: str, *, cwd: Path | PurePosixPath, habitat: Habitat
+    ) -> None:
+        """Place a session in its next workspace; managed forks already land there."""
+        if not isinstance(habitat, ManagedHabitat):
+            await asyncio.to_thread(relocate_session_files, session_id, cwd=Path(cwd))
 
     async def inspect(self, options: ClaudeAgentOptions) -> ClaudeServerInfo:
         """Read a fresh initialization snapshot without submitting a prompt."""
@@ -160,6 +214,7 @@ class ClaudeInk:
             if command is not None:
                 info = ClaudeServerInfo.model_validate(await client.get_server_info())
                 commands = {entry.id: entry for entry in info.commands or ()}
+                commands.update(CONTROL_COMMANDS)
                 if commands.get(command.id) != command:
                     raise LookupError("This command changed; refresh commands.")
             previous = self.live_clients.get(conversation_id)
