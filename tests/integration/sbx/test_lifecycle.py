@@ -1,6 +1,7 @@
 """Explicit local VM acceptance with disposable identities and no host mounts."""
 
 import os
+from contextlib import AsyncExitStack
 
 import pytest
 from anyio.streams.buffered import BufferedByteReceiveStream
@@ -11,11 +12,14 @@ from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
 from octomate.schemas.habitat import InvocationScope
+from tests.integration.sbx import remove_sandbox
 from tests.support.managers import a_workspace_manager
 
 
 @pytest.mark.timeout(600)
-async def test_command_attachment_reuse_and_stop_start_persistence() -> None:
+async def test_command_attachment_reuse_and_stop_start_persistence(
+    sbx_cleanup: AsyncExitStack,
+) -> None:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
@@ -84,9 +88,8 @@ async def test_command_attachment_reuse_and_stop_start_persistence() -> None:
                 )
             ).strip() == b"installed"
     finally:
-        await manager.close()
         for state in manager.residences.values():
             backend = state.habitat
-            assert isinstance(backend, SbxHabitat)
-            if backend.managed:
-                await backend.command("rm", "--force", backend.name)
+            if isinstance(backend, SbxHabitat) and backend.managed:
+                sbx_cleanup.push_async_callback(remove_sandbox, backend)
+        sbx_cleanup.push_async_callback(manager.close)

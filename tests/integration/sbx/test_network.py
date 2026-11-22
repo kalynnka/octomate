@@ -1,6 +1,7 @@
 """Opt-in verification of kit resources and per-sandbox outbound TCP policy."""
 
 import os
+from contextlib import AsyncExitStack
 
 import pytest
 from pydantic import TypeAdapter
@@ -12,12 +13,15 @@ from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
 from octomate.schemas.habitat import InvocationScope
 from octomate.types.json import JsonObject
+from tests.integration.sbx import remove_sandbox
 from tests.support.managers import a_workspace_manager
 
 
 @pytest.mark.timeout(300)
 @pytest.mark.parametrize("internet_access", [True, False])
-async def test_internet_access_is_applied_at_creation(internet_access: bool) -> None:
+async def test_internet_access_is_applied_at_creation(
+    internet_access: bool, sbx_cleanup: AsyncExitStack
+) -> None:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
@@ -85,11 +89,8 @@ async def test_internet_access_is_applied_at_creation(internet_access: bool) -> 
             )
             assert status.strip() == (b"200" if internet_access else b"403")
     finally:
-        try:
-            await manager.close()
-        finally:
-            if (
-                sandbox.name
-                in (await sandbox.command("ls", quiet=True)).decode().splitlines()
-            ):
-                await sandbox.command("rm", "--force", sandbox.name)
+        for state in manager.residences.values():
+            backend = state.habitat
+            if isinstance(backend, SbxHabitat) and backend.managed:
+                sbx_cleanup.push_async_callback(remove_sandbox, backend)
+        sbx_cleanup.push_async_callback(manager.close)

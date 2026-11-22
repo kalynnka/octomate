@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import platform
+from contextlib import AsyncExitStack
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import monotonic
@@ -19,6 +20,7 @@ from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
 from octomate.schemas.habitat import InvocationScope
+from tests.integration.sbx import remove_sandbox
 from tests.support.managers import a_workspace_manager
 
 
@@ -78,7 +80,9 @@ async def sample_load(sandbox: SbxHabitat, pids: set[int]) -> float:
 
 
 @pytest.mark.timeout(600)
-async def test_single_user_resource_cost(tmp_path: Path) -> None:
+async def test_single_user_resource_cost(
+    tmp_path: Path, sbx_cleanup: AsyncExitStack
+) -> None:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
@@ -171,6 +175,8 @@ async def test_single_user_resource_cost(tmp_path: Path) -> None:
         print(output.read_text())
         print(f"Resource report: {output}")
     finally:
-        await manager.close()
-        if sandbox.managed:
-            await sandbox.command("rm", "--force", sandbox.name)
+        for state in manager.residences.values():
+            backend = state.habitat
+            if isinstance(backend, SbxHabitat) and backend.managed:
+                sbx_cleanup.push_async_callback(remove_sandbox, backend)
+        sbx_cleanup.push_async_callback(manager.close)

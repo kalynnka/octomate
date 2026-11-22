@@ -2,6 +2,7 @@
 
 import json
 import os
+from contextlib import AsyncExitStack
 from shlex import quote
 
 import pytest
@@ -13,6 +14,7 @@ from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
 from octomate.schemas.habitat import InvocationScope
+from tests.integration.sbx import remove_sandbox
 from tests.support.managers import a_thread, a_workspace_manager
 from tests.support.users import a_user
 
@@ -20,6 +22,7 @@ from tests.support.users import a_user
 @pytest.mark.timeout(600)
 async def test_guest_writes_land_in_the_owners_volumes_and_nowhere_else(
     in_memory_engine: AsyncEngine,
+    sbx_cleanup: AsyncExitStack,
 ) -> None:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
@@ -85,6 +88,8 @@ async def test_guest_writes_land_in_the_owners_volumes_and_nowhere_else(
             )
             assert hidden == b"hidden"
     finally:
-        await manager.close()
-        if sandbox.managed:
-            await sandbox.command("rm", "--force", sandbox.name)
+        for state in manager.residences.values():
+            backend = state.habitat
+            if isinstance(backend, SbxHabitat) and backend.managed:
+                sbx_cleanup.push_async_callback(remove_sandbox, backend)
+        sbx_cleanup.push_async_callback(manager.close)

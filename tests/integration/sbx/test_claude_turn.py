@@ -1,8 +1,10 @@
 """Opt-in model calls through the core SDK and an actual guest Claude CLI."""
 
 import asyncio
+import json
 import os
 from collections.abc import AsyncGenerator
+from contextlib import AsyncExitStack
 from dataclasses import replace
 
 import pytest
@@ -14,7 +16,6 @@ from claude_agent_sdk import (
     ResultMessage,
     ToolPermissionContext,
 )
-from pydantic import TypeAdapter
 from pydantic_ai.messages import PartDeltaEvent
 from uuid_utils.compat import uuid7
 
@@ -26,6 +27,7 @@ from octomate.schemas.habitat import InvocationScope
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.transport import HabitatTransport
 from octomate.types.json import JsonObject
+from tests.integration.sbx import cli_pids, remove_sandbox
 from tests.support.managers import a_workspace_manager
 
 pytestmark = [
@@ -38,7 +40,9 @@ pytestmark = [
 
 
 @pytest.fixture
-async def guest() -> AsyncGenerator[tuple[HabitatManager, InvocationScope, SbxHabitat]]:
+async def guest(
+    sbx_cleanup: AsyncExitStack,
+) -> AsyncGenerator[tuple[HabitatManager, InvocationScope, SbxHabitat]]:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
@@ -54,26 +58,21 @@ async def guest() -> AsyncGenerator[tuple[HabitatManager, InvocationScope, SbxHa
     )
     try:
         async with manager.enter(scope, uuid7()):
-            await sandbox.command(
-                "exec",
-                sandbox.name,
-                "/opt/octomate/.venv/bin/python",
-                "-c",
-                "import json; from pathlib import Path; "
-                f"oauth = json.loads(Path('{sandbox.config_dir}/.claude/.credentials.json').read_text())['claudeAiOauth']; "
-                "assert oauth['accessToken'] == 'sk-ant-oat01-proxy-managed'; "
-                "assert oauth['refreshToken'] == 'sk-ant-ort01-proxy-managed'",
-            )
+            credential = json.loads(
+                (sandbox.config_dir / ".claude" / ".credentials.json").read_text()
+            )["claudeAiOauth"]
+            if (
+                credential["accessToken"] != "sk-ant-oat01-proxy-managed"
+                or credential["refreshToken"] != "sk-ant-ort01-proxy-managed"
+            ):
+                pytest.fail("Sandbox OAuth tokens must be proxy-managed placeholders")
         yield manager, scope, sandbox
     finally:
-        try:
-            await manager.close()
-        finally:
-            if (
-                sandbox.name
-                in (await sandbox.command("ls", quiet=True)).decode().splitlines()
-            ):
-                await sandbox.command("rm", "--force", sandbox.name)
+        for state in manager.residences.values():
+            backend = state.habitat
+            if isinstance(backend, SbxHabitat) and backend.managed:
+                sbx_cleanup.push_async_callback(remove_sandbox, backend)
+        sbx_cleanup.push_async_callback(manager.close)
 
 
 async def turn(client: ClaudeSDKClient, prompt: str) -> ClaudeRunAccumulator:
@@ -91,21 +90,6 @@ async def turn(client: ClaudeSDKClient, prompt: str) -> ClaudeRunAccumulator:
     assert not terminal.is_error, terminal.result
     assert streamed, "No native stream events were translated in core"
     return accumulator
-
-
-async def cli_pids(sandbox: SbxHabitat) -> list[int]:
-    return TypeAdapter(list[int]).validate_json(
-        await sandbox.command(
-            "exec",
-            sandbox.name,
-            "/opt/octomate/.venv/bin/python",
-            "-c",
-            "import json; from pathlib import Path; "
-            "print(json.dumps([int(p.name) for p in Path('/proc').iterdir() "
-            "if p.name.isdigit() and (p/'cmdline').exists() and "
-            "b'--output-format' in (p/'cmdline').read_bytes().split(b'\\0')]))",
-        )
-    )
 
 
 async def test_model_tools_resume_interrupt_and_cancel(
@@ -157,15 +141,13 @@ async def test_model_tools_resume_interrupt_and_cancel(
             response = tasks.create_task(turn(client, prompt))
             async with asyncio.timeout(120):
                 await asked.wait()
-            assert (
-                await sandbox.command(
-                    "exec",
-                    sandbox.name,
-                    "/opt/octomate/.venv/bin/python",
-                    "-c",
-                    "from pathlib import Path; print(Path('/home/agent/workspace/transport-proof.txt').exists())",
-                )
-                == b"False\n"
+            await sandbox.command(
+                "exec",
+                sandbox.name,
+                "test",
+                "!",
+                "-e",
+                "/home/agent/workspace/transport-proof.txt",
             )
             await client.set_permission_mode("default")
             answer.set()

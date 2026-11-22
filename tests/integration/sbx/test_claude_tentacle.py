@@ -2,6 +2,7 @@
 
 import json
 import os
+from contextlib import AsyncExitStack
 
 import pytest
 from pydantic import HttpUrl
@@ -18,6 +19,7 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.habitat import InvocationScope
 from octomate.tentacles.claude import ClaudeTentacle
 from tests.agent.claude.test_driven_transcript import kept_bytes, served
+from tests.integration.sbx import remove_sandbox
 from tests.support.invocations import invocation_for
 from tests.support.managers import a_thread
 from tests.support.users import a_user, auth_config
@@ -37,6 +39,7 @@ ADDRESS = ChannelAddress(
 
 async def test_a_driven_turn_writes_into_the_owners_tree_and_resumes(
     in_memory_engine: AsyncEngine,
+    sbx_cleanup: AsyncExitStack,
 ) -> None:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
@@ -147,9 +150,9 @@ async def test_a_driven_turn_writes_into_the_owners_tree_and_resumes(
             assert message.message_text == summary["message"]["content"]
             assert message.run_id is None
     finally:
-        try:
-            await tentacle.revoke_runtime_keys()
-            await host.habitats.close()
-        finally:
-            if isinstance(sandbox, SbxHabitat) and sandbox.managed:
-                await sandbox.command("rm", "--force", sandbox.name)
+        for state in host.habitats.residences.values():
+            backend = state.habitat
+            if isinstance(backend, SbxHabitat) and backend.managed:
+                sbx_cleanup.push_async_callback(remove_sandbox, backend)
+        sbx_cleanup.push_async_callback(host.habitats.close)
+        sbx_cleanup.push_async_callback(tentacle.revoke_runtime_keys)

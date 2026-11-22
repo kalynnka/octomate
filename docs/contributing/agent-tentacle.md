@@ -5,11 +5,12 @@ conversation, stream what happens in Octomate's event vocabulary, raise approval
 and questions as deferred requests, and advertise its models. Inkling is the
 smallest complete example; Claude Code is the one to read for a subprocess harness.
 
-Wrap each agent's third-party SDK in its `ink.py` and expose that wrapper as the
-tentacle's `ink`. The wrapper follows its SDK's operations and resource lifetime;
-there is no shared agent Ink base class or required method set. Codex owns one
-shared client, while Claude opens a client for each inspection or turn. Managers,
-approval decisions and persistence stay in the tentacle; operation callbacks pass
+Wrap each agent's third-party SDK in its `ink.py`, subclass `AgentInk`, and expose
+that wrapper as the tentacle's required `ink`. Use `AgentInk()` directly when
+Octomate owns the history and no external session needs copying or moving, as
+Inkling does. The wrapper follows its SDK's operations and resource lifetime.
+Codex owns one shared client, while Claude opens a client for each inspection or
+turn. Managers, approval decisions and persistence stay in the tentacle; operation callbacks pass
 through method arguments. Claude and Codex use this structure. `DeepseekInk` owns
 the shared Remote client's context, multiplexed event routing, session queues and
 subscription cleanup. Startup receives callbacks for interaction decisions and
@@ -19,8 +20,13 @@ Ink also validates native command catalogs and executes command lines without
 attachments. Its execution result preserves native success
 and error variants, lifecycle IDs and source-event references; unmatched lines
 return `None` and Remote failures raise. The tentacle enters and exits Ink; other
-existing Remote operations still use `ink.client`. Inkling keeps its SDK ownership
-inline pending migration.
+existing Remote operations still use `ink.client`.
+
+Keep external session copying and relocation in the ink. Shared callers invoke
+the ink directly; conversation ownership and persistence stay with the tentacle
+and managers. An adapter that cannot fork independent history declares that
+capability on its class, as `AcpInk` and `DeepseekInk` do. See the
+[AgentInk contract](../api/tentacles/base.md#octomate.tentacles.agent.AgentInk).
 
 Pass managers explicitly when constructing Claude and Codex tentacles. Their
 shared discovery and project lookup use the injected command, project and thread
@@ -32,7 +38,9 @@ and deployment configuration.
 weak map of active clients keyed by conversation ID. The tentacle supplies SDK
 options and the per-turn interruption callback, translates native messages, and
 records the result. Closing a stream closes its SDK context before the workspace
-is released.
+is released. For managed runs, its SDK transport launches the CLI through the
+invocation's habitat and carries the CLI's stdio back to the client. Session
+copies are placed inside the destination habitat; inspection uses the core SDK.
 
 Codex keeps its SDK operations in `CodexInk`: client startup and shutdown,
 notifications, discovery queries, MCP configuration, and native thread and turn
@@ -48,9 +56,9 @@ credentials, human approvals and run recording.
 `AgentTentacle` is abstract over two methods, each taking the same arguments:
 
 ```python
-async def run(self, user_prompt=None, *, conversation_address, thread_id=None,
-              deferred_tool_results=None, deferred_suspender=None, model=None,
-              effort=None, conversation_id=None, interactive=True,
+async def run(self, user_prompt=None, *, conversation_address, invocation,
+              deferred_tool_results=None, model=None,
+              effort=None, interactive=True,
               instructions=None, capabilities=None, ...) -> AgentRunResult[...]
 
 def run_stream_events(self, ...same...) -> ReactEventStream[...]
