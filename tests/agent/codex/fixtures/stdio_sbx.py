@@ -20,9 +20,6 @@ while args[index].startswith("--"):
     elif key == "--workdir":
         os.chdir(value)
     index += 1
-if args[index + 1 : index + 3] == ["mkdir", "-p"]:
-    Path(args[index + 3]).mkdir(parents=True, exist_ok=True)
-    sys.exit(0)
 info = {
     "pid": os.getpid(),
     "argv": args[index + 1 :],

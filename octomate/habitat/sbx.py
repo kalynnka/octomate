@@ -222,6 +222,7 @@ class SbxHabitat(ManagedHabitat):
                 skills="off",
                 no_progress=True,
             )
+            return
         metadata = await self.command(
             "exec",
             self.name,

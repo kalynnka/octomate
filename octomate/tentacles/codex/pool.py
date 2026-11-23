@@ -102,6 +102,7 @@ class CodexClientPool:
         self.habitat_clients.clear()
         self.thread_routes.clear()
 
+    @codex_logfire.instrument("codex.acquire", extract_args=["thread_id"])
     async def acquire(
         self,
         habitat: Habitat | None = None,
@@ -137,8 +138,6 @@ class CodexClientPool:
             if env is None:
                 raise ValueError("A new habitat client requires its environment")
             cwd = str(PurePosixPath(env["CODEX_HOME"]).parent)
-            async with habitat.execute("mkdir", "-p", env["CODEX_HOME"], workdir=cwd):
-                pass
             config = replace(
                 self.core_client.transport.config,
                 codex_bin=self.guest_binary,

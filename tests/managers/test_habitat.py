@@ -278,11 +278,13 @@ async def test_reuse_does_not_create_or_replace_a_habitat(
     command = SbxHabitat.command
     assert isinstance(command, AsyncMock)
     await manager.residence(scope).habitat.prepare()
+    assert "exec" not in [c.args[0] for c in command.await_args_list]
     command.reset_mock()
     async with manager.enter(scope, uuid7()):
         pass
     await manager.close()
     assert "create" not in [c.args[0] for c in command.await_args_list]
+    assert "exec" in [c.args[0] for c in command.await_args_list]
 
 
 @pytest.mark.parametrize("field", [0, 1, 2, 3, 4, 5, 6])
