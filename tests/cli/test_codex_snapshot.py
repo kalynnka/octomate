@@ -154,6 +154,7 @@ async def test_finalize_waits_for_snapshot_receipt_before_eof(
             hello = client_message_adapter.validate_json(await websocket.recv())
             assert isinstance(hello, StreamHello)
             assert hello.protocol == STREAM_PROTOCOL
+            assert hello.catchup_end == len(previous + prefix)
             assert websocket.request is not None
             assert websocket.request.headers["Authorization"] == "Bearer test-token"
             await websocket.send(

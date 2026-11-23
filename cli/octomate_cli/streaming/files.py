@@ -115,6 +115,14 @@ class FileCursor:
     offset: int = 0
 
     @staticmethod
+    def size(path: Path) -> int:
+        """A missing transcript has no catch-up prefix yet."""
+        try:
+            return path.stat().st_size
+        except FileNotFoundError:
+            return 0
+
+    @staticmethod
     def opening_line(path: Path) -> str | None:
         try:
             with path.open("rb") as handle:
@@ -241,6 +249,7 @@ class SessionTail:
                     first_line=first_line,
                     tool_call_id=meta.tool_use_id,
                     description=meta.description,
+                    catchup_end=await asyncio.to_thread(FileCursor.size, path),
                 ).model_dump_json()
             )
             async with asyncio.timeout(STREAM_ACK_TIMEOUT):
@@ -373,6 +382,7 @@ async def stream_session(
                 transcript_path=str(transcript_path),
                 cwd=cwd,
                 client_version=CLIENT_VERSION,
+                catchup_end=await asyncio.to_thread(FileCursor.size, transcript_path),
             ).model_dump_json()
         )
         welcome = server_message_adapter.validate_json(await websocket.recv())

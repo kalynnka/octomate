@@ -1616,3 +1616,24 @@ async def test_an_unfinished_turn_publishes_its_start_again_on_reconnect() -> No
         replay = held(live)
         assert replay[0].event.event_kind == "run_started"
         assert replay[-1].event.event_kind == "run_ended"
+
+
+async def test_catchup_offset_keeps_native_history_and_resumes_activity() -> None:
+    app = Octomate()
+    tailer = ClaudeTranscriptTailer(
+        app.conversations, app.threads, agent_tentacle_id="claude"
+    )
+    async with app.nerve.subscribe(ThreadTopic(SESSION_KEY)) as live:
+        async with app.nerve.publish(SESSION_ADDRESS) as publisher:
+            state, _ = await tailer.attach_remote(
+                SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, publisher
+            )
+            state.catchup_end = total_bytes(TURN_ONE)
+            await feed_records(tailer, state, TURN_ONE)
+        events = held(live)
+        assert events
+        assert all(impulse.replay for impulse in events[:-1])
+        assert not events[-1].replay
+        assert events[-1].event.event_kind == "run_activity_changed"
+        assert state.catchup_end == 0
+        tailer.detach_remote(state)

@@ -19,7 +19,7 @@ from pydantic import UUID7, ValidationError
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.messages import TextContent, UserPromptPart
 
-from octomate.events import SubagentSettledEvent, SubagentStartedEvent
+from octomate.events import RunEndedEvent, SubagentSettledEvent, SubagentStartedEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
 from octomate.nerve import Impulse
@@ -122,6 +122,7 @@ class SubagentTail:
 
     agent_id: str
     path: Path
+    catchup_end: int = 0  # Child transcript length at registration.
     offset: int = 0
     # The parent's call this child answers, when the client's meta file names it.
     call_id: str | None = None
@@ -149,6 +150,9 @@ class TailState:
     sender: UserProfile
     address: ChannelAddress  # The native surface resolved by the tentacle.
     impulses: ObjectSendStream[Impulse]  # The publisher open for this connection.
+    catchup_end: int = (
+        0  # Initial root transcript length advertised by this connection.
+    )
     offset: int = 0
     conversation: Conversation | None = None
     recorded: set[str] = field(default_factory=set)  # prompt_ids already committed
@@ -348,8 +352,16 @@ class ClaudeTranscriptTailer:
         if agent_id is None:
             state.offset = end
             line = self.parse_line(raw, state.session_id)
+            if state.open_turn is not None and state.open_turn.native is not None:
+                state.open_turn.native.replay = end <= state.catchup_end
             if line is not None:
                 await self.process_line(state, line, start, end)
+            if state.catchup_end and end >= state.catchup_end:
+                state.catchup_end = 0
+                if state.open_turn is not None and state.open_turn.native is not None:
+                    await state.open_turn.native.caught_up()
+                else:
+                    await state.impulses.send(Impulse(RunEndedEvent(), state.address))
             return
         tail = self.subagent_tail(state, agent_id)
         if tail.conversation is None:
@@ -675,6 +687,7 @@ class ClaudeTranscriptTailer:
                         name=kind if isinstance(kind, str) else "Claude",
                     ),
                     state.address,
+                    replay=state.offset <= state.catchup_end,
                 )
             )
             if agent_id not in working:
@@ -684,6 +697,7 @@ class ClaudeTranscriptTailer:
                             invocation_id=agent_id, status="completed"
                         ),
                         state.address,
+                        replay=state.offset <= state.catchup_end,
                     )
                 )
 
@@ -757,6 +771,7 @@ class ClaudeTranscriptTailer:
             sender=state.sender,
             impulses=state.impulses,
             messages=accumulator.messages,
+            replay=end <= state.catchup_end,
         )
         text = prompt_text(line.message)
         if native is not None:
@@ -1006,6 +1021,7 @@ class ClaudeTranscriptTailer:
                             invocation_id=tail.agent_id, status="cancelled"
                         ),
                         state.address,
+                        replay=end <= tail.catchup_end,
                     )
                 )
         elif isinstance(line, TranscriptAssistantLine):

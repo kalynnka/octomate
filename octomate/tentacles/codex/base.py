@@ -399,7 +399,9 @@ class CodexTentacle(AgentTentacle[str, None]):
         return {
             ThreadKey.from_address(state.address)
             for state in self.session_tailer.sessions.values()
-            if state.open_turn is not None and state.open_turn.native is not None
+            if state.open_turn is not None
+            and state.open_turn.native is not None
+            and not state.open_turn.native.replay
         }
 
     @cached_property
@@ -526,6 +528,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             hello.session_id,
             hello.client_version or "unversioned",
         )
+        state.catchup_end = hello.catchup_end
         conversation = state.conversation
         assert conversation is not None
         slot = FileTransferSlot(
@@ -566,6 +569,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 slot.prefix = await self.files.read(
                     conversation.transcript_file_id, owner_id=sender.user_id
                 )
+            state.catchup_end = max(state.catchup_end, len(slot.prefix))
             for raw in slot.prefix.split(b"\n")[:-1]:
                 end = slot.offset + len(raw) + 1
                 await self.session_tailer.feed_remote(

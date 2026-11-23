@@ -85,6 +85,7 @@ class Impulse(Generic[EventT]):
     # The thread Nerve.publish stamps on the event: the asking thread
     # for a kick, the native thread for a tail, or None when neither names a thread.
     origin: ThreadKey | None = None
+    replay: bool = False  # Historical transcript events must not animate live activity.
 
 
 @with_config(

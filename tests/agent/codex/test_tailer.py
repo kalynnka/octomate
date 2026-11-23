@@ -873,3 +873,56 @@ async def test_empty_reserved_turn_commits_its_checkpoint_and_settles(
             "run_started",
             "run_ended",
         ]
+
+
+@pytest.mark.usefixtures("db")
+@pytest.mark.parametrize("finished", [False, True])
+@pytest.mark.parametrize("unmodeled_tail", [False, True])
+async def test_catchup_offset_preserves_history_without_replaying_activity(
+    tmp_path: Path, finished: bool, unmodeled_tail: bool
+) -> None:
+    path = tmp_path / "rollout.jsonl"
+    write_rollout(path)
+    records = path.read_text().splitlines()
+    prefix = records if finished else records[:-1]
+    if unmodeled_tail:
+        prefix = [*prefix, "{}"]
+    app = Octomate()
+    _, tailer = wired(app)
+    async with app.nerve.subscribe(
+        ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
+    ) as live:
+        async with app.nerve.publish(SESSION_ADDRESS) as publisher:
+            state, _ = await tailer.attach_remote(
+                SESSION_ID, ROLLOUT_LABEL, SENDER, SESSION_ADDRESS, publisher
+            )
+            state.catchup_end = sum(len(raw.encode()) + 1 for raw in prefix)
+            offset = 0
+            for raw in prefix:
+                end = offset + len(raw.encode()) + 1
+                await tailer.feed_remote(state, None, raw, offset, end)
+                offset = end
+        events = held(live)
+        assert events
+        assert all(impulse.replay for impulse in events[:-1])
+        assert not events[-1].replay
+        assert events[-1].event.event_kind == (
+            "run_ended" if finished else "run_activity_changed"
+        )
+        assert state.catchup_end == 0
+        if not finished:
+            async with app.nerve.publish(SESSION_ADDRESS) as publisher:
+                state.impulses = publisher
+                assert state.open_turn is not None
+                assert state.open_turn.native is not None
+                state.open_turn.native.impulses = publisher
+                raw = records[-1]
+                await tailer.feed_remote(
+                    state, None, raw, offset, offset + len(raw.encode()) + 1
+                )
+            assert all(not impulse.replay for impulse in held(live))
+        assert state.conversation is not None
+        stored = await app.conversations.get(state.conversation.id)
+        assert stored.native_run_ids == {TURN_ID}
+        assert await app.conversations.history(stored.id)
+        tailer.detach_remote(state)

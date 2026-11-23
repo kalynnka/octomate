@@ -122,6 +122,8 @@ async def watch_activity(
             sent_at = monotonic()
             ready.set()
             async for impulse in impulses:
+                if impulse.replay:
+                    continue
                 update = ActivityUpdate.from_event(
                     identity, impulse.event, narrator, octomate.awake_since.get(key)
                 )

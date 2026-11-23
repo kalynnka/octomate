@@ -371,6 +371,11 @@ async def test_activity_socket_multiplexes_without_streaming_content(
             initial = await asyncio.wait_for(socket.outbound.get(), 1)
             assert json.loads(initial["text"])["event"]["event_kind"] == "run_ended"
         for topic in topics:
+            octomate.nerve.deliver(
+                topic,
+                Impulse(RunActivityChangedEvent(activity="thinking"), replay=True),
+            )
+        for topic in topics:
             for _ in range(100):
                 octomate.nerve.deliver(
                     topic,

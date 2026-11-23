@@ -128,7 +128,7 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
             gateway_manager=host.gateway,
         )
         host.connect(tentacle)
-        await resources.enter_async_context(host.fastmcp.lifespan(host.fastmcp))
+        await resources.enter_async_context(host.lifespan(host))
         base = await resources.enter_async_context(served(host))
         await resources.enter_async_context(tentacle)
         sandbox.config = sandbox.config.model_copy(

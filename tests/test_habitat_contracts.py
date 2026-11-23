@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from ipaddress import IPv4Address
 from unittest.mock import Mock
 
 import pytest
@@ -10,14 +9,12 @@ from pydantic_ai.messages import (
     PartDeltaEvent,
     TextPartDelta,
 )
-from pydantic_ai.models.test import TestModel
+from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.config.agents import InklingConfig
 from octomate.config.base import OctomateConfig
 from octomate.config.habitat import NativeHabitatConfig, SbxHabitatConfig
-from octomate.config.models import ModelConfig
 from octomate.events import HabitatProgressEvent
 from octomate.habitat import NativeHabitat
 from octomate.habitat.sbx import SbxHabitat
@@ -28,8 +25,6 @@ from octomate.nerve import (
 )
 from octomate.schemas.habitat import InvocationScope
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.inkling import InklingTentacle
-from octomate.tentacles.inkling.agent import Agent
 
 IMAGE = "octomate-sandbox@sha256:" + "a" * 64
 
@@ -106,41 +101,17 @@ def test_sbx_internet_access_is_enabled_by_default() -> None:
     assert SbxHabitatConfig(image=IMAGE).internet_access
 
 
-async def test_sbx_cannot_silently_serve_native_before_dispatch_is_implemented() -> (
-    None
-):
-    app = Octomate(
-        config=OctomateConfig(
-            host=IPv4Address("192.0.2.10"),
-            port=8123,
-            habitat=SbxHabitatConfig(
-                image=IMAGE, core_address=HttpUrl("https://core.example:8443")
-            ),
-            tentacles={
-                "inkling": InklingConfig(
-                    models=[ModelConfig(name="openai:gpt-4.1-mini")]
-                )
-            },
-        )
-    )
-    app.connect(
-        InklingTentacle(
-            "inkling",
-            app,
-            auth=app.auth,
-            habitats=app.habitats,
-            agent=Agent(TestModel()),
-        )
-    )
-    assert app.habitats.config is app.config.habitat
-    scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
-    assert (
-        app.habitats.residence(scope).habitat.core_url
-        == "https://host.docker.internal:8443"
-    )
-    with pytest.raises(RuntimeError, match="not yet wired into React"):
-        async with app.lifespan(app):
-            pytest.fail("sbx must not reach native serving")
+async def test_sbx_application_lifespan_starts_without_allocating_a_vm(
+    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = Mock(side_effect=AssertionError("Startup must not launch sbx"))
+    monkeypatch.setattr(SbxHabitat, "cli", cli)
+    app = Octomate(config=OctomateConfig(habitat=SbxHabitatConfig(image=IMAGE)))
+    async with app.lifespan(app) as state:
+        assert state["octomate"] is app
+        assert app.habitats.config is app.config.habitat
+        assert app.habitats.residences == {}
+    cli.assert_not_called()
 
 
 def test_ownership_is_bound_to_the_registered_user() -> None:

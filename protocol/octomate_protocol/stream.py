@@ -52,6 +52,10 @@ class StreamHello(BaseModel):
     # skew diagnosis. The Claude Code version is not carried here: it rides every
     # transcript line, which the server parses anyway.
     client_version: str = ""
+    catchup_end: NonNegativeInt = Field(
+        default=0,
+        description="Transcript byte length at connection time; earlier lines restore history.",
+    )
 
 
 class StreamLine(BaseModel):
@@ -128,6 +132,9 @@ class StreamOpenSubagent(BaseModel):
     name: str = Field(min_length=1)
     first_line: str | None = Field(
         default=None, description="Codex rollout metadata for parent verification."
+    )
+    catchup_end: NonNegativeInt = Field(
+        default=0, description="Child transcript byte length at registration time."
     )
     tool_call_id: str | None = Field(
         default=None,

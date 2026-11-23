@@ -18,6 +18,7 @@ from pydantic_ai.messages import (
 
 from octomate.events import (
     AgentMessageEvent,
+    RunActivityChangedEvent,
     RunEndedEvent,
     RunStartedEvent,
     StreamEvents,
@@ -55,6 +56,9 @@ class NativeTurn:
     recorded: set[str]
     # Keep the actual requests: list positions can change while folding.
     prompts: dict[UUID7, ModelRequest] = field(default_factory=dict)
+    replay: bool = (
+        False  # True until the connection's initial transcript offset is reached.
+    )
 
     @classmethod
     async def open(
@@ -69,6 +73,7 @@ class NativeTurn:
         sender: UserProfile,
         impulses: ObjectSendStream[Impulse],
         messages: list[ModelMessage],
+        replay: bool = False,
     ) -> NativeTurn | None:
         """Publish the opening bracket unless this turn already has an owner."""
         if run_id in recorded:
@@ -81,11 +86,22 @@ class NativeTurn:
         ):
             recorded.add(run_id)
             return None
-        turn = cls(threads, locks, address, sender, impulses, messages, recorded)
+        turn = cls(
+            threads, locks, address, sender, impulses, messages, recorded, replay=replay
+        )
         await impulses.send(
-            Impulse(RunStartedEvent(address=address, sender=sender), address)
+            Impulse(
+                RunStartedEvent(address=address, sender=sender), address, replay=replay
+            )
         )
         return turn
+
+    async def caught_up(self) -> None:
+        """Resume activity for an open turn after restoring its historical prefix."""
+        self.replay = False
+        await self.impulses.send(
+            Impulse(RunActivityChangedEvent(activity="working"), self.address)
+        )
 
     async def prompt(
         self,
@@ -139,6 +155,7 @@ class NativeTurn:
                         text=inbound.message_text or "",
                     ),
                     self.address,
+                    replay=self.replay,
                 )
             )
         elif actor_kind == "human":
@@ -148,6 +165,7 @@ class NativeTurn:
                         enqueue_id=str(inbound.id), messages=(request,)
                     ),
                     self.address,
+                    replay=self.replay,
                 )
             )
         elif actor_kind == "system":
@@ -157,6 +175,7 @@ class NativeTurn:
                         message_id=inbound.id, text=inbound.message_text or ""
                     ),
                     self.address,
+                    replay=self.replay,
                 )
             )
 
@@ -164,7 +183,9 @@ class NativeTurn:
         """Consume and publish the accumulator's events on the native thread."""
         for event in events:
             if (wire := to_wire(event)) is not None:
-                await self.impulses.send(Impulse(wire, self.address))
+                await self.impulses.send(
+                    Impulse(wire, self.address, replay=self.replay)
+                )
 
     async def close(
         self,
@@ -213,5 +234,6 @@ class NativeTurn:
                     outcome="cancelled" if interrupted else None,
                 ),
                 self.address,
+                replay=self.replay,
             )
         )

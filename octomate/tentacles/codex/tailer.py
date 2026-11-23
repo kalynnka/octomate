@@ -40,7 +40,7 @@ from pydantic_ai.usage import RequestUsage
 from starlette.datastructures import Headers
 from uuid_utils import UUID
 
-from octomate.events import ArtifactAvailableEvent
+from octomate.events import ArtifactAvailableEvent, RunEndedEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.files import FileManager
 from octomate.managers.thread import ThreadManager
@@ -231,6 +231,9 @@ class TailState:
     sender: UserProfile
     address: ChannelAddress
     impulses: ObjectSendStream[Impulse]
+    catchup_end: int = (
+        0  # Initial root transcript length advertised by this connection.
+    )
     offset: int = 0
     conversation: Conversation | None = None
     recorded: set[str] = field(default_factory=set)
@@ -366,10 +369,19 @@ class CodexTranscriptTailer:
                 line = rollout_line_adapter.validate_json(raw)
             except ValidationError:
                 logger.debug("skipping unmodeled Codex rollout line")
-                return
-            await self.process_line(
-                state, line, start, end, visualizations=visualizations
-            )
+                line = None
+            if state.open_turn is not None and state.open_turn.native is not None:
+                state.open_turn.native.replay = end <= state.catchup_end
+            if line is not None:
+                await self.process_line(
+                    state, line, start, end, visualizations=visualizations
+                )
+            if state.catchup_end and end >= state.catchup_end:
+                state.catchup_end = 0
+                if state.open_turn is not None and state.open_turn.native is not None:
+                    await state.open_turn.native.caught_up()
+                else:
+                    await state.impulses.send(Impulse(RunEndedEvent(), state.address))
             return
         tail = await self.remote_subagent(state, key, raw)
         if tail is None:
@@ -486,6 +498,7 @@ class CodexTranscriptTailer:
                 sender=state.sender,
                 impulses=state.impulses,
                 messages=state.open_turn.messages,
+                replay=end <= state.catchup_end,
             )
             return
         turn = state.open_turn

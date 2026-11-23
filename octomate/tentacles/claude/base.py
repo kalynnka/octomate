@@ -320,7 +320,9 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         return {
             ThreadKey.from_address(state.address)
             for state in self.session_tailer.sessions.values()
-            if state.open_turn is not None and state.open_turn.native is not None
+            if state.open_turn is not None
+            and state.open_turn.native is not None
+            and not state.open_turn.native.replay
         }
 
     @cached_property
@@ -486,6 +488,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         state, offsets = await self.session_tailer.attach_remote(
             hello.session_id, Path(hello.transcript_path), sender, address, impulses
         )
+        state.catchup_end = hello.catchup_end
         conversation = state.conversation
         if conversation is None:
             raise RuntimeError(f"session {hello.session_id} attached without a home")
@@ -613,6 +616,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                     await process_batch()
                     tail = self.session_tailer.subagent_tail(state, message.name)
                     tail.call_id = message.tool_call_id
+                    tail.catchup_end = message.catchup_end
                     child = (
                         tail.conversation
                         or await self.session_tailer.prepare_subagent(state, tail)
