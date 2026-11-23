@@ -253,6 +253,20 @@ async def test_attachment_delivers_stderr_and_reports_nonzero_exit(
     assert "synthetic-secret" in caplog.text
 
 
+async def test_attachment_logs_stderr_without_replacing_the_callers_error(
+    sandbox: SbxHabitat, caplog: pytest.LogCaptureFixture
+) -> None:
+    error = RuntimeError("SDK initialization failed")
+    # The caller must fail inside the live transport to exercise its cleanup.
+    with pytest.raises(RuntimeError, match="SDK initialization failed") as failure:  # noqa: PT012
+        async with sandbox.execute("fail", workdir="/workspace") as stream:
+            with pytest.raises(anyio.EndOfStream):
+                await stream.receive()
+            raise error
+    assert failure.value is error
+    assert "synthetic-secret" in caplog.text
+
+
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_command_context_reaps_its_child_without_stopping_the_vm(
     sandbox: SbxHabitat, cancel: bool

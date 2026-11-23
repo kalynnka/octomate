@@ -282,16 +282,17 @@ class SbxHabitat(ManagedHabitat):
                                 process.kill()
                         await process.wait()
                         errors = await reader
-                    if not failed and deadline.cancel_called:
-                        raise HabitatError(
-                            "Sandbox command did not exit after closing stdio"
-                        )
-                    if not failed and process.returncode:
+                    if process.returncode and (errors or not failed):
                         logger.error(
                             "Sandbox command failed (exit %s): %s",
                             process.returncode,
                             errors.decode("utf-8", "replace"),
                         )
+                    if not failed and deadline.cancel_called:
+                        raise HabitatError(
+                            "Sandbox command did not exit after closing stdio"
+                        )
+                    if not failed and process.returncode:
                         raise HabitatError(
                             f"Sandbox command failed (exit {process.returncode}); "
                             "check the process stderr"
