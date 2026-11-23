@@ -26,7 +26,7 @@ import yaml
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from octomate_protocol.deployment import DatabaseBackup
-from pydantic import AnyHttpUrl, SecretStr, TypeAdapter
+from pydantic import AnyHttpUrl, HttpUrl, SecretStr, TypeAdapter
 from sqlalchemy.engine import make_url
 
 from octomate.config import (
@@ -48,6 +48,7 @@ from octomate.config.channels import (
     TrunklineChannelConfig,
 )
 from octomate.config.database import database_settings
+from octomate.config.habitat import NativeHabitatConfig, SbxHabitatConfig
 from octomate.mcp.server import OCTOMATE_MCP_PATH
 from octomate_cli.installation import DeploymentTarget
 from octomate_cli.mcp import McpPreset
@@ -191,7 +192,20 @@ def prepare(
     agents: list[str],
     mcps: list[McpPreset] | None = None,
     target: DeploymentTarget = DeploymentTarget.launchd,
+    sandbox_image: str | None = None,
 ) -> None:
+    if sandbox_image is not None and (
+        target == DeploymentTarget.docker
+        or any(name not in {"claude", "codex"} for name in agents)
+    ):
+        raise ValueError("sbx requires a host service with Claude or Codex agents.")
+    habitat = (
+        SbxHabitatConfig(
+            image=sandbox_image, core_address=HttpUrl(f"http://127.0.0.1:{port}")
+        )
+        if sandbox_image is not None
+        else NativeHabitatConfig()
+    )
     if not agents or any(
         name not in {"claude", "codex", "deepseek"} for name in agents
     ):
@@ -278,6 +292,7 @@ def prepare(
     configured_tentacles.update(configured_channels)
     configured_tentacles.update(configured_mcps)
     config = OctomateConfig(
+        habitat=habitat,
         host=IPv4Address(
             "0.0.0.0" if target == DeploymentTarget.docker else "127.0.0.1"
         ),
@@ -310,7 +325,7 @@ def prepare(
     for channel in channels:
         payload["tentacles"][channel].update(CHANNEL_PLACEHOLDERS[channel])
     sections = {
-        "octomate": ("host", "port", "mirrors", "workspaces"),
+        "octomate": ("host", "port", "mirrors", "workspaces", "habitat"),
         "tentacles": ("tentacles",),
         "auth": ("auth",),
         "projects": ("projects",),
@@ -529,6 +544,7 @@ def main() -> None:
         choices=("prepare", "check", "ready", "stopped", "backup", "migrate", "verify"),
     )
     parser.add_argument("--port", type=int)
+    parser.add_argument("--sandbox-image")
     parser.add_argument(
         "--target", type=DeploymentTarget, choices=list(DeploymentTarget)
     )
@@ -564,6 +580,7 @@ def main() -> None:
             args.agent,
             mcps,
             args.target or DeploymentTarget.launchd,
+            args.sandbox_image,
         )
         return
     if (
@@ -572,9 +589,10 @@ def main() -> None:
         or args.channel
         or args.mcp_presets
         or args.target
+        or args.sandbox_image
     ):
         parser.error(
-            "--port, --agent, --channel, --mcp-presets and --target apply only to prepare"
+            "--port, --agent, --channel, --mcp-presets, --target and --sandbox-image apply only to prepare"
         )
     config = OctomateConfig()
     database = database_path()

@@ -30,6 +30,53 @@ from typer.testing import CliRunner
 runner = CliRunner()
 
 
+@pytest.mark.parametrize("yes", [False, True])
+def test_sbx_selection_runs_shared_setup_and_passes_image_to_preparation(
+    tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch, yes: bool
+) -> None:
+    monkeypatch.setattr(wizard, "select_tentacles", Mock(return_value=["codex"]))
+    setup = Mock()
+    monkeypatch.setattr(init_cli, "setup_habitat", setup)
+    image = "example.test/agents@sha256:" + "a" * 64
+    result = runner.invoke(
+        service_typer,
+        [
+            "init",
+            "--prepare",
+            "--root",
+            str(tmp_path / "service"),
+            "--port",
+            "8123",
+            "--agent",
+            "codex",
+            "--channel",
+            "none",
+            *(["--habitat", "sbx", "--sandbox-image", image, "--yes"] if yes else []),
+        ],
+        input="" if yes else f"sbx\n{image}\ny\n",
+    )
+    assert result.exit_code == 0, result.output
+    setup.assert_called_once_with("sbx", agent=["codex"], check=yes)
+    arguments = commands.call_args_list[2].args[0]
+    assert arguments[arguments.index("--sandbox-image") + 1] == image
+
+
+def test_declining_sbx_review_does_not_set_up_host(
+    tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(wizard, "select_tentacles", Mock(return_value=["codex"]))
+    setup = Mock()
+    monkeypatch.setattr(init_cli, "setup_habitat", setup)
+    result = runner.invoke(
+        service_typer,
+        ["init", "--prepare", "--root", str(tmp_path / "service"), "--port", "8123"],
+        input="sbx\nexample.test/agents@sha256:" + "a" * 64 + "\nn\n",
+    )
+    assert result.exit_code == 1
+    setup.assert_not_called()
+    commands.assert_not_called()
+
+
 @pytest.mark.parametrize("target", ["systemd", "manual"])
 def test_linux_prepares_without_launchd_or_activation(
     tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch, target: str
@@ -247,7 +294,7 @@ def test_abort_leaves_installation_directory_absent(
             "--channel",
             "none",
         ],
-        input="n\n",
+        input="\nn\n",
     )
     assert result.exit_code == 1
     assert "Aborted" in result.output
@@ -263,7 +310,7 @@ def test_tentacles_are_selected_together_before_detail_steps(
     result = runner.invoke(
         service_typer,
         ["init", "--prepare", "--root", str(tmp_path / "service")],
-        input="8124\ny\n",
+        input="8124\n\ny\n",
     )
     assert result.exit_code == 0, result.output
     headings = [
@@ -809,7 +856,7 @@ def test_wizard_collects_mcp_before_review_and_only_prepares_after_confirmation(
             "--channel",
             "none",
         ],
-        input="github_work\ntest-client\ny\n" + ("y\n" if confirm else "n\n"),
+        input="github_work\ntest-client\ny\n\n" + ("y\n" if confirm else "n\n"),
     )
     assert result.exit_code == (0 if confirm else 1), result.output
     assert "GitHub (github_work, read-only)" in result.output

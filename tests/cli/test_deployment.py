@@ -70,6 +70,16 @@ def test_prepared_configuration_passes_subprocess_check(preparation: Path) -> No
     assert not (preparation / "octomate.db").exists()
 
 
+def test_prepare_persists_sbx_and_the_selected_core_port(preparation: Path) -> None:
+    image = "example.test/agents@sha256:" + "a" * 64
+    deployment.prepare(8123, [], ["codex"], sandbox_image=image)
+    config = OctomateConfig()
+    assert config.habitat.mode == "sbx"
+    assert config.habitat.image == image
+    assert str(config.habitat.core_address) == "http://127.0.0.1:8123/"
+    assert not (preparation / "octomate.db").exists()
+
+
 @pytest.mark.parametrize(
     "target",
     [DeploymentTarget.systemd, DeploymentTarget.docker, DeploymentTarget.manual],

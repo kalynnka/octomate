@@ -17,12 +17,15 @@ from rich.prompt import Confirm, IntPrompt, Prompt
 from rich.table import Table
 from rich.text import Text
 
+from octomate_cli.habitat import HabitatMode
+from octomate_cli.habitat import setup as setup_habitat
 from octomate_cli.installation import DeploymentTarget, Installation
 from octomate_cli.mcp import McpPreset
 from octomate_cli.wizard import tentacles_step
 from octomate_cli.wizard.agents import AGENTS
 from octomate_cli.wizard.base import brand_color, console
 from octomate_cli.wizard.channels import CHANNELS
+from octomate_cli.wizard.habitat import habitat_step
 from octomate_cli.wizard.mcp import MCPS
 
 
@@ -69,6 +72,16 @@ def init(
         typer.Option(
             help="Deployment target; defaults to launchd on macOS and systemd on Linux."
         ),
+    ] = None,
+    habitat: Annotated[
+        HabitatMode | None,
+        typer.Option(
+            help="Execution habitat for every selected agent; prompts when omitted."
+        ),
+    ] = None,
+    sandbox_image: Annotated[
+        str | None,
+        typer.Option(help="Immutable sbx agent image (repository@sha256:digest)."),
     ] = None,
     yes: Annotated[
         bool,
@@ -130,9 +143,11 @@ def init(
             or port is not None
             or agent is not None
             or channel is not None
+            or habitat is not None
+            or sandbox_image is not None
         ):
             raise typer.BadParameter(
-                "Prepared installations retain their settings. Omit --source, --port, --agent and --channel to validate again."
+                "Prepared installations retain their settings. Omit --source, --port, --agent, --channel, --habitat and --sandbox-image to validate again."
             )
         validate_existing(service, account.pw_dir)
         return
@@ -153,6 +168,9 @@ def init(
         )
     port = network_step(port)
     tentacles = tentacles_step(agent, channel, interactive=not yes, console=console)
+    sandbox_image = habitat_step(
+        tentacles.agents, habitat, sandbox_image, interactive=not yes, target=target
+    )
     if target == DeploymentTarget.docker and "deepseek" in tentacles.agents:
         raise typer.BadParameter(
             "The Docker image includes Claude and Codex. DSH needs a custom image; add it after preparation."
@@ -166,7 +184,10 @@ def init(
         tentacles.channels,
         tentacles.mcps,
         yes,
+        sandbox_image,
     )
+    if sandbox_image is not None:
+        setup_habitat("sbx", agent=tentacles.agents, check=yes)
     prepare_step(
         service,
         source,
@@ -177,6 +198,7 @@ def init(
         tentacles.agents,
         tentacles.channels,
         tentacles.mcps,
+        sandbox_image,
     )
 
 
@@ -354,6 +376,7 @@ def review_step(
     channels: list[str],
     mcps: list[McpPreset],
     yes: bool,
+    sandbox_image: str | None = None,
 ) -> None:
     root = service.directory
     environment = service.environment
@@ -367,6 +390,7 @@ def review_step(
         ("Version", revision),
         ("Source", str(source) if source else "github.com/kalynnka/octomate"),
         ("Bind", f"127.0.0.1:{port}"),
+        ("Agent habitat", f"sbx · {sandbox_image}" if sandbox_image else "native"),
         (
             "Agents Tentacles",
             ", ".join(AGENTS[name].label for name in agent),
@@ -444,6 +468,7 @@ def prepare_step(
     agent: list[str],
     channels: list[str],
     mcps: list[McpPreset],
+    sandbox_image: str | None = None,
 ) -> None:
     root = service.directory
     environment = service.environment
@@ -519,6 +544,7 @@ def prepare_step(
                             for argument in ("--channel", name)
                         ),
                         *(["--mcp-presets"] if mcps else []),
+                        *(["--sandbox-image", sandbox_image] if sandbox_image else []),
                         *(
                             ["--target", service.target.value]
                             if service.target != DeploymentTarget.launchd

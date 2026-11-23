@@ -36,7 +36,25 @@ permissions:
   network:
     allow:
       - "**"
+      - api.openai.com
 credentials:
+  - service: openai
+    apiKey:
+      name: OPENAI_API_KEY
+      proxyManaged: true
+      inject:
+        - domain: api.openai.com
+          header: Authorization
+          format: Bearer %s
+    oauth:
+      tokenEndpoint:
+        host: auth.openai.com
+        path: /oauth/token
+      resourceHosts:
+        - chatgpt.com
+      sentinels:
+        accessToken: oai-oat01-proxy-managed
+        refreshToken: oai-ort01-proxy-managed
   - service: anthropic
     oauth:
       tokenEndpoint:

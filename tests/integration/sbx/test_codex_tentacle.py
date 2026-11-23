@@ -1,4 +1,4 @@
-"""Real guest Codex turns with a scripted model and persistent habitat client."""
+"""Guest Codex reuse with a scripted provider or opt-in authenticated inference."""
 
 import json
 import os
@@ -30,10 +30,25 @@ from tests.support.users import a_user, auth_config
 
 
 @pytest.mark.timeout(600)
+@pytest.mark.parametrize(
+    "live",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.skipif(
+                os.environ.get("SBX_TEST_CODEX_TURN") != "1",
+                reason="Set SBX_TEST_CODEX_TURN=1 to use the sbx OpenAI credential",
+            ),
+        ),
+    ],
+    ids=["scripted", "authenticated"],
+)
 async def test_driven_turns_reuse_the_guest_client_and_native_session(
     in_memory_engine: AsyncEngine,
     sbx_cleanup: AsyncExitStack,
     tmp_path: Path,
+    live: bool,
 ) -> None:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
@@ -67,11 +82,11 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
     sbx_cleanup.push_async_callback(host.habitats.close)
 
     async with AsyncExitStack() as resources:
-        provider_url = resources.enter_context(local_provider(state))
-        guest_url = str(URL(provider_url).copy_with(host="host.docker.internal"))
-        runtime = RuntimeConfig(
-            env={"CODEX_HOME": str(core_home), "OPENAI_API_KEY": ""},
-            config_overrides=(
+        overrides: tuple[str, ...] = ()
+        if not live:
+            provider_url = resources.enter_context(local_provider(state))
+            guest_url = str(URL(provider_url).copy_with(host="host.docker.internal"))
+            overrides = (
                 'model_provider="audit"',
                 'model="gpt-5"',
                 "model_providers.audit="
@@ -83,7 +98,10 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
                         "requires_openai_auth": False,
                     }
                 ).replace(": ", " = "),
-            ),
+            )
+        runtime = RuntimeConfig(
+            env={"CODEX_HOME": str(core_home)},
+            config_overrides=overrides,
         )
         tentacle = CodexTentacle(
             host,
@@ -111,6 +129,7 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
         previous = None
         pids = []
         external_id = None
+        memory_token = uuid7().hex
         for command in (
             "printf habitat-proof > proof.txt; uname -s",
             "cat proof.txt; uname -s",
@@ -125,15 +144,41 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
                 thread_id=thread_id,
                 owner_id=owner.id,
             ) as invocation:
+                prompt = "Execute the synthetic probe once."
+                if live:
+                    prompt = (
+                        f"Remember this token for the next turn: {memory_token}. "
+                        if previous is None
+                        else "Recall the token I gave you in the previous turn. "
+                    ) + (
+                        f"Run exactly this shell command: {command!r}. "
+                        "Reply with the remembered token and the command output. "
+                        "Do not write the token to any file."
+                    )
                 result = await tentacle.run(
-                    "Execute the synthetic probe once.",
+                    prompt,
                     conversation_address=address,
                     invocation=invocation,
                     interactive=False,
+                    model=os.environ.get("SBX_TEST_CODEX_MODEL", "gpt-6.2-sol")
+                    if live
+                    else None,
                 )
-                assert result.output == "done"
-                assert state.outcome is not None
-                assert "Linux" in state.outcome.text
+                if live:
+                    assert memory_token in result.output
+                    assert "Linux" in result.output
+                    assert previous is None or "habitat-proof" in result.output
+                    assert json.loads(
+                        (sandbox.config_dir / ".codex" / "auth.json").read_text()
+                    )["OPENAI_API_KEY"] in {
+                        "oai-oat01-proxy-managed",
+                        "proxy-managed",
+                    }
+                else:
+                    assert result.output == "done"
+                    assert state.outcome is not None
+                    assert "Linux" in state.outcome.text
+                    assert previous is None or "habitat-proof" in state.outcome.text
                 ink = tentacle.ink
                 client = await ink.pool.acquire(invocation.habitat)
                 assert client is not await ink.pool.acquire()
@@ -151,7 +196,6 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
                 assert previous is None or client is previous
                 assert not pids or current_pids == pids
                 assert external_id is None or conversation.external_id == external_id
-                assert previous is None or "habitat-proof" in state.outcome.text
                 previous, pids, external_id = (
                     client,
                     current_pids,
@@ -169,3 +213,6 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
                 )
             ).invocations
         assert not list(core_home.glob("sessions/**/*.jsonl"))
+    assert previous is not None
+    assert previous.transport.closing
+    assert not await cli_pids(sandbox, argument_pattern="app-serve[r]")
