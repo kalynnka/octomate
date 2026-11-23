@@ -6,7 +6,7 @@ import sys
 import threading
 from collections.abc import Callable, Coroutine
 from concurrent.futures import Future
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, nullcontext
 from types import TracebackType
 from typing import NamedTuple, NotRequired, Self, TypedDict
 
@@ -32,6 +32,7 @@ from openai_codex.generated.v2_all import (
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from octomate.habitat import ManagedHabitat
+from octomate.telemetry import codex_logfire
 from octomate.tentacles.codex.adapter import json_object_adapter
 from octomate.tentacles.codex.telemetry import TracedCodexClient
 from octomate.types.json import JsonObject
@@ -98,7 +99,17 @@ class ConcurrentCodexClient(TracedCodexClient):
         *,
         response_model: type[ResponseT],
     ) -> ResponseT:
-        response = super().request(method, params, response_model=response_model)
+        with (
+            codex_logfire.span(
+                "codex.rpc {method}",
+                method=method,
+                thread_id=(params or {}).get("threadId"),
+                transport="habitat-stdio" if self.stream is not None else "local-stdio",
+            )
+            if self.instrument
+            else nullcontext()
+        ):
+            response = super().request(method, params, response_model=response_model)
         if self.thread_opened is not None and isinstance(
             response, ThreadStartResponse | ThreadResumeResponse | ThreadForkResponse
         ):
@@ -310,8 +321,13 @@ class SharedCodex(AsyncCodex):
                 return
             self.transport.token = current_token()
             try:
-                await self.connect()
-                await super()._ensure_initialized()
+                with codex_logfire.span(
+                    "codex.connect",
+                    habitat=self.habitat.name if self.habitat else "native",
+                    transport="habitat-stdio" if self.habitat else "local-stdio",
+                ):
+                    await self.connect()
+                    await super()._ensure_initialized()
             except BaseException as error:
                 await self.shutdown(type(error), error, error.__traceback__)
                 raise
@@ -344,6 +360,7 @@ class SharedCodex(AsyncCodex):
     # SDK APIs initialize lazily through this hook as well as explicit start().
     _ensure_initialized = start
 
+    @codex_logfire.instrument("codex.disconnect", extract_args=False)
     async def shutdown(
         self,
         exc_type: type[BaseException] | None,

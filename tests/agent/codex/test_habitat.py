@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from httpx2 import URL
+from logfire.testing import CaptureLogfire
+from logfire.testing import capfire as capfire
 from openai_codex import CodexConfig
 from openai_codex.errors import CodexError, TransportClosedError
 from openai_codex.generated.v2_all import (
@@ -179,6 +181,7 @@ async def test_guest_router_keeps_reading_during_approval(
     monkeypatch: pytest.MonkeyPatch,
     instrument: bool,
     override: bool,
+    capfire: CaptureLogfire,
 ) -> None:
     monkeypatch.setenv("CORE_ONLY", "must-not-reach-the-guest")
     if override:
@@ -198,7 +201,9 @@ async def test_guest_router_keeps_reading_during_approval(
         assert client.metadata.userAgent == "codex/0.171.0"
         with trace.use_span(span):
             first = await client._client.request(
-                "probe", {"ask": True}, response_model=ProcessInfo
+                "probe",
+                {"ask": True, "token": "must-not-be-traced"},
+                response_model=ProcessInfo,
             )
         await requested.wait()
         second = await client._client.request("probe", {}, response_model=ProcessInfo)
@@ -222,10 +227,21 @@ async def test_guest_router_keeps_reading_during_approval(
     )
     assert (first.trace is not None) is instrument
     if first.trace is not None:
-        assert (
-            first.trace["traceparent"]
-            == "00-00000000000000000000000000000001-0000000000000002-01"
+        [rpc] = [
+            span
+            for span in capfire.exporter.exported_spans
+            if span.name == "codex.rpc {method}"
+            and span.parent is not None
+            and span.parent.span_id == 2
+        ]
+        assert rpc.context is not None
+        assert rpc.context.trace_id == 1
+        assert first.trace["traceparent"] == (
+            f"00-{rpc.context.trace_id:032x}-{rpc.context.span_id:016x}-01"
         )
+        assert rpc.attributes is not None
+        assert rpc.attributes["transport"] == "habitat-stdio"
+    assert "must-not-be-traced" not in str(capfire.exporter.exported_spans_as_dict())
     assert client.transport.reader_thread is not None
     assert not client.transport.reader_thread.is_alive()
     with pytest.raises(ProcessLookupError):

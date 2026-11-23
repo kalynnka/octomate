@@ -10,6 +10,7 @@ import anyio
 from openai_codex import CodexConfig
 
 from octomate.habitat import Habitat, ManagedHabitat
+from octomate.telemetry import codex_logfire
 from octomate.tentacles.codex.client import RequestHandler, SharedCodex
 from octomate.types.json import JsonObject
 
@@ -120,6 +121,12 @@ class CodexClientPool:
             raise RuntimeError("Codex runtime is not running")
         async with self.creation_lock:
             existing = self.habitat_clients.get(habitat.name)
+            codex_logfire.info(
+                "Acquire Codex client in {habitat}",
+                habitat=habitat.name,
+                reused=existing is not None and not existing.transport.closing,
+                thread_id=thread_id,
+            )
             if existing is not None and not existing.transport.closing:
                 if thread_id is not None:
                     self.bind_thread(existing, thread_id)

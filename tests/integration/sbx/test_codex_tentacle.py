@@ -114,7 +114,7 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
         tentacle = CodexTentacle(
             host,
             habitats=host.habitats,
-            config=CodexConfig(runtime=runtime, permission_mode="full_access"),
+            config=CodexConfig(runtime=runtime, permission_mode="user_review"),
             commands=host.commands,
             projects=host.projects,
             threads=host.threads,

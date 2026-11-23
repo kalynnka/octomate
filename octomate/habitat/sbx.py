@@ -8,6 +8,7 @@ import os
 import platform
 import re
 import socket
+from collections import deque
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
@@ -15,7 +16,6 @@ from pathlib import Path, PurePosixPath
 from typing import Literal, TypedDict, Unpack
 
 import anyio
-import sh
 from anyio.abc import UNIXSocketStream
 from pydantic import UUID7
 from yarl import URL
@@ -23,6 +23,7 @@ from yarl import URL
 from octomate.config.habitat import SbxHabitatConfig
 from octomate.habitat.base import HabitatError, ManagedHabitat
 from octomate.schemas.volumes import Volume
+from octomate.telemetry import habitat_logfire
 
 COMMAND_TIMEOUT = 30.0
 PREPARE_TIMEOUT = 300.0
@@ -86,61 +87,76 @@ class SbxHabitat(ManagedHabitat):
             )
         return PurePosixPath(volume.path)
 
-    def cli(self) -> sh.Command[sh.RunningCommand]:
-        """Keep host credentials out of child processes and use ordinary stdio."""
+    @asynccontextmanager
+    async def cli(
+        self,
+        *args: str,
+        stdin: int = asyncio.subprocess.DEVNULL,
+        stdout: int = asyncio.subprocess.PIPE,
+    ) -> AsyncGenerator[asyncio.subprocess.Process]:
+        """Own a child process with ordinary stdio and no host credentials."""
         try:
-            return sh.Command(self.config.executable).bake(
+            process = await asyncio.create_subprocess_exec(
+                self.config.executable,
                 "--debug=false",
-                _env={
+                *args,
+                env={
                     key: os.environ[key]
                     for key in ("PATH", "HOME", "TMPDIR", "XDG_RUNTIME_DIR")
                     if key in os.environ
                 },
-                _tty_in=False,
-                _tty_out=False,
-                _decode_errors="replace",
-                _async=True,
-                _return_cmd=True,
+                stdin=stdin,
+                stdout=stdout,
+                stderr=asyncio.subprocess.PIPE,
             )
-        except sh.CommandNotFound:
+        except OSError:
             raise HabitatError(
                 "Cannot launch sbx; check the configured executable"
             ) from None
+        try:
+            yield process
+        finally:
+            with anyio.CancelScope(shield=True):
+                if process.returncode is None:
+                    with suppress(ProcessLookupError):
+                        process.kill()
+                await process.wait()
 
     async def command(
         self,
         *args: str,
         **options: Unpack[SbxOptions],
     ) -> bytes:
-        process: sh.RunningCommand | None = None
+        arguments = list(args)
+        for key, value in options.items():
+            flag = "--" + key.replace("_", "-")
+            if isinstance(value, bool):
+                if value:
+                    arguments.append(flag)
+            elif isinstance(value, list):
+                arguments.extend(f"{flag}={item}" for item in value)
+            else:
+                arguments.append(f"{flag}={value}")
         try:
-            process = self.cli()(
-                *args,
-                **options,
-                _timeout=PREPARE_TIMEOUT if args[0] == "create" else COMMAND_TIMEOUT,
-            )
-            await process
-            return process.stdout
-        except sh.TimeoutException:
+            with habitat_logfire.span(
+                "sbx {operation}", operation=args[0], habitat=self.name
+            ):
+                async with self.cli(*arguments) as process:
+                    async with asyncio.timeout(
+                        PREPARE_TIMEOUT if args[0] == "create" else COMMAND_TIMEOUT
+                    ):
+                        stdout, stderr = await process.communicate()
+            if process.returncode:
+                logger.error(
+                    "sbx %s failed: %s", args[0], stderr.decode("utf-8", "replace")
+                )
+                raise HabitatError(
+                    f"sbx {args[0]} failed (exit {process.returncode}); "
+                    "check Docker sign-in, daemon readiness and image availability"
+                )
+            return stdout
+        except TimeoutError:
             raise HabitatError(f"sbx {args[0]} timed out") from None
-        except sh.ErrorReturnCode as error:
-            logger.error(
-                "sbx %s failed: %s", args[0], error.stderr.decode("utf-8", "replace")
-            )
-            raise HabitatError(
-                f"sbx {args[0]} failed (exit {error.exit_code}); "
-                "check Docker sign-in, daemon readiness and image availability"
-            ) from None
-        except (OSError, sh.ForkException):
-            raise HabitatError(
-                "Cannot launch sbx; check the configured executable"
-            ) from None
-        finally:
-            if process is not None and process.is_alive():
-                with suppress(ProcessLookupError):
-                    process.kill()
-                with suppress(sh.ErrorReturnCode, sh.TimeoutException):
-                    await process
 
     async def preflight(self) -> None:
         system, machine = platform.system(), platform.machine()
@@ -227,81 +243,76 @@ class SbxHabitat(ManagedHabitat):
         env: dict[str, str] | None = None,
         stderr: Callable[[str], None] | None = None,
     ) -> AsyncGenerator[UNIXSocketStream]:
-        """Connect guest stdio directly to a byte stream, bypassing sh buffering."""
+        """Connect guest stdio directly to a byte stream."""
         parent, child = socket.socketpair()
-        stream: UNIXSocketStream | None = None
-        process: sh.RunningCommand | None = None
-        loop = asyncio.get_running_loop()
-
-        def receive_stderr(line: str) -> None:
-            if stderr is not None:
-                loop.call_soon_threadsafe(stderr, line.rstrip("\r\n"))
-
-        try:
-            stream = await UNIXSocketStream.from_socket(parent)
-            with child.makefile("rwb", buffering=0) as stdio:
-                process = self.cli().bake(
+        with parent, child:
+            async with (
+                await UNIXSocketStream.from_socket(parent) as stream,
+                self.cli(
                     "exec",
-                    interactive=True,
-                    workdir=workdir,
-                    env=[f"{key}={value}" for key, value in (env or {}).items()],
-                )(
+                    "--interactive",
+                    f"--workdir={workdir}",
+                    *(f"--env={key}={value}" for key, value in (env or {}).items()),
                     self.name,
                     *command,
-                    _in=stdio,
-                    _out=stdio.fileno(),
-                    _err=receive_stderr if stderr is not None else None,
-                    _tee="err",
-                    _internal_bufsize=64,
-                )
-        except BaseException as error:
-            if stream is not None:
-                await stream.aclose()
-            else:
-                parent.close()
-            if isinstance(error, (OSError, sh.ForkException)):
-                raise HabitatError("Cannot launch the sandbox command") from None
-            raise
-        finally:
-            child.close()
-        failed = False
-        try:
-            async with stream:
-                yield stream
-        except BaseException:
-            failed = True
-            raise
-        finally:
-            terminated = failed and process.is_alive()
-            with suppress(ProcessLookupError):
-                if terminated:
-                    process.terminate()
-            waiter = asyncio.create_task(asyncio.to_thread(process.wait))
-            try:
-                with anyio.fail_after(5, shield=True):
-                    await asyncio.shield(waiter)
-            except TimeoutError:
-                if not failed:
-                    raise HabitatError(
-                        "Sandbox command did not exit after closing stdio"
-                    ) from None
-            except sh.ErrorReturnCode as error:
-                if not (terminated and error.exit_code < 0):
-                    logger.error(
-                        "Sandbox command failed (exit %s): %s",
-                        error.exit_code,
-                        error.stderr.decode("utf-8", "replace"),
-                    )
-                    if not failed:
+                    stdin=child.fileno(),
+                    stdout=child.fileno(),
+                ) as process,
+            ):
+                child.close()
+                if process.stderr is None:
+                    raise RuntimeError("Sandbox stderr pipe was not opened")
+                reader = asyncio.create_task(self.read_stderr(process.stderr, stderr))
+                failed = False
+                try:
+                    yield stream
+                except BaseException:
+                    failed = True
+                    raise
+                finally:
+                    with anyio.CancelScope(shield=True):
+                        await stream.aclose()
+                        if failed and process.returncode is None:
+                            with suppress(ProcessLookupError):
+                                process.terminate()
+                        with anyio.move_on_after(5) as deadline:
+                            await process.wait()
+                        with suppress(ProcessLookupError):
+                            if process.returncode is None:
+                                process.kill()
+                        await process.wait()
+                        errors = await reader
+                    if not failed and deadline.cancel_called:
                         raise HabitatError(
-                            f"Sandbox command failed (exit {error.exit_code}); check the process stderr"
-                        ) from None
-            finally:
-                if not waiter.done():
-                    with suppress(ProcessLookupError):
-                        process.kill()
-                    with anyio.CancelScope(shield=True), suppress(sh.ErrorReturnCode):
-                        await asyncio.shield(waiter)
+                            "Sandbox command did not exit after closing stdio"
+                        )
+                    if not failed and process.returncode:
+                        logger.error(
+                            "Sandbox command failed (exit %s): %s",
+                            process.returncode,
+                            errors.decode("utf-8", "replace"),
+                        )
+                        raise HabitatError(
+                            f"Sandbox command failed (exit {process.returncode}); "
+                            "check the process stderr"
+                        )
+
+    async def read_stderr(
+        self, source: asyncio.StreamReader, callback: Callable[[str], None] | None
+    ) -> bytes:
+        """Deliver live diagnostics and retain a bounded tail for exit failures."""
+        errors: deque[bytes] = deque(maxlen=100)
+        pending = b""
+        while chunk := await source.read(65536):
+            errors.append(chunk)
+            if callback is None:
+                continue
+            *lines, pending = (pending + chunk).split(b"\n")
+            for line in lines:
+                callback(line.decode("utf-8", "replace").rstrip("\r"))
+        if callback is not None and pending:
+            callback(pending.decode("utf-8", "replace").rstrip("\r"))
+        return b"".join(errors)
 
     async def stop(self) -> None:
         if self.managed:

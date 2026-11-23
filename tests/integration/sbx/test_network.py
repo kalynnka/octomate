@@ -1,5 +1,6 @@
 """Opt-in verification of kit resources and per-sandbox outbound TCP policy."""
 
+import asyncio
 import os
 from contextlib import AsyncExitStack
 
@@ -47,7 +48,7 @@ async def test_internet_access_is_applied_at_creation(
             await sandbox.command(
                 "exec",
                 sandbox.name,
-                "/opt/octomate/.venv/bin/python",
+                "python",
                 "-c",
                 "import os; from pathlib import Path; "
                 "assert os.cpu_count() == 1; "
@@ -56,26 +57,28 @@ async def test_internet_access_is_applied_at_creation(
                 "assert 768 < int(memory.split()[1]) / 1024 <= 1024, memory",
             )
             for host in ("example.com:443", "api.anthropic.com:443"):
-                process = sandbox.cli()(
-                    "policy",
-                    "check",
-                    "network",
-                    "--json",
-                    "--sandbox",
-                    sandbox.name,
-                    host,
-                    _ok_code=(0, 1),
-                    _timeout=30,
-                )
-                await process
-                policy = TypeAdapter(JsonObject).validate_json(process.stdout)
+                async with (
+                    asyncio.timeout(30),
+                    sandbox.cli(
+                        "policy",
+                        "check",
+                        "network",
+                        "--json",
+                        "--sandbox",
+                        sandbox.name,
+                        host,
+                    ) as process,
+                ):
+                    stdout, stderr = await process.communicate()
+                assert process.returncode in (0, 1), stderr.decode()
+                policy = TypeAdapter(JsonObject).validate_json(stdout)
                 assert policy["allowed"] is internet_access
                 if not internet_access:
                     assert policy["deny_kind"] == "explicit"
             status = await sandbox.command(
                 "exec",
                 sandbox.name,
-                "/opt/octomate/.venv/bin/python",
+                "python",
                 "-c",
                 "import urllib.error, urllib.request\n"
                 "try:\n"

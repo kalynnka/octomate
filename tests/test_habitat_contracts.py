@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import Mock
+from contextlib import nullcontext
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from pydantic import HttpUrl, ValidationError
@@ -112,6 +113,33 @@ async def test_sbx_application_lifespan_starts_without_allocating_a_vm(
         assert app.habitats.config is app.config.habitat
         assert app.habitats.residences == {}
     cli.assert_not_called()
+
+
+@pytest.mark.parametrize("failed", [False, True])
+async def test_application_shutdown_releases_habitats(
+    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch, failed: bool
+) -> None:
+    prepare, stop, release = AsyncMock(), AsyncMock(), AsyncMock()
+    monkeypatch.setattr(SbxHabitat, "prepare", prepare)
+    monkeypatch.setattr(SbxHabitat, "stop", stop)
+    app = Octomate(config=OctomateConfig(habitat=SbxHabitatConfig(image=IMAGE)))
+    scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
+    with (
+        pytest.RaisesGroup(pytest.RaisesExc(RuntimeError, match="probe"))
+        if failed
+        else nullcontext()
+    ):
+        async with app.lifespan(app):
+            async with app.habitats.enter(scope, uuid7()) as residence:
+                residence.habitat.resources.push_async_callback(release)
+            assert residence.idle is not None
+            if failed:
+                raise RuntimeError("probe")
+    release.assert_awaited_once()
+    stop.assert_awaited_once()
+    assert app.habitats.closed
+    assert residence.idle is None
+    assert residence.status.phase == "stopped"
 
 
 def test_ownership_is_bound_to_the_registered_user() -> None:

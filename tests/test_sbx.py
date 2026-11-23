@@ -7,7 +7,8 @@ import shutil
 import subprocess
 import sys
 import tomllib
-from contextlib import suppress
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 import anyio
@@ -117,6 +118,9 @@ def sandbox(tmp_path: Path) -> SbxHabitat:
         "    Path(args[2]).write_text(str(os.getpid()))\n"
         "    print('started', flush=True)\n"
         "    signal.pause()\n"
+        "if args[1] == 'exec' and args[-1] == 'fail':\n"
+        "    sys.stderr.write('x' * 70000 + '\\nsynthetic-secret')\n"
+        "    sys.exit(7)\n"
         "print(json.dumps(dict(pid=os.getpid(), argv=args, environment=dict(os.environ), "
         "tty=[os.isatty(0), os.isatty(1)])), flush=True)\n"
         "if args[1] == 'exec':\n"
@@ -237,6 +241,18 @@ async def test_command_stdout_is_not_limited_by_the_stderr_tail(
     assert output.decode().splitlines() == [str(index) for index in range(100)]
 
 
+async def test_attachment_delivers_stderr_and_reports_nonzero_exit(
+    sandbox: SbxHabitat, caplog: pytest.LogCaptureFixture
+) -> None:
+    lines: list[str] = []
+    with pytest.raises(HabitatError, match=r"failed \(exit 7\)") as failure:
+        async with sandbox.execute("fail", workdir="/workspace", stderr=lines.append):
+            pass
+    assert lines == ["x" * 70000, "synthetic-secret"]
+    assert "synthetic-secret" not in str(failure.value)
+    assert "synthetic-secret" in caplog.text
+
+
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_command_context_reaps_its_child_without_stopping_the_vm(
     sandbox: SbxHabitat, cancel: bool
@@ -293,11 +309,17 @@ async def test_sh_timeout_and_cancellation_reap_child(
 ) -> None:
     monkeypatch.setattr(sbx_module, "COMMAND_TIMEOUT", 5 if cancel else 0.3)
     started = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    command = sandbox.cli().bake(
-        _out=lambda line: loop.call_soon_threadsafe(started.set)
-    )
-    monkeypatch.setattr(sandbox, "cli", lambda: command)
+    launch = sandbox.cli
+
+    @asynccontextmanager
+    async def cli(*args: str) -> AsyncGenerator[asyncio.subprocess.Process]:
+        async with launch(*args) as process:
+            assert process.stdout is not None
+            await process.stdout.readline()
+            started.set()
+            yield process
+
+    monkeypatch.setattr(sandbox, "cli", cli)
     pid_file = tmp_path / "child.pid"
     task = asyncio.create_task(sandbox.command("wait", str(pid_file)))
     try:

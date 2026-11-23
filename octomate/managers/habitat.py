@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 from collections.abc import AsyncGenerator
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -36,6 +36,7 @@ from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
 from octomate.schemas.volumes import Volume
 from octomate.schemas.workspaces import Workspace
+from octomate.telemetry import habitat_logfire
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -144,43 +145,50 @@ class HabitatManager:
         before anything is prepared.
         """
         invocation_id = uuid7()
-        projects = self.workspaces.projects
-        if isinstance(self.config, NativeHabitatConfig):
-            project = await projects.of(thread) if projects.roots else None
-            habitat = NativeHabitat(config=self.config)
-            await habitat.prepare()
-            try:
-                async with self.workspaces.open(
-                    thread.id, project, owner_id
-                ) as workspace:
-                    yield Invocation(
-                        id=invocation_id,
-                        conversation=conversation,
-                        workspace=workspace,
-                        habitat=habitat,
-                    )
-            finally:
-                await habitat.resources.aclose()
-                await habitat.stop()
-            return
-        if owner_id is None:
-            raise HabitatError("Running in a sandbox requires a registered user")
-        project = await projects.of(thread) if projects.roots else None
-        scope = InvocationScope(
-            user_id=owner_id, conversation_id=conversation.id, thread_id=thread.id
-        )
-        # The workspace is opened first, so the root the sandbox mounts exists,
-        # and released last, after the sandbox lease and the harness in it.
-        async with (
-            self.workspaces.open(thread.id, project, owner_id) as workspace,
-            self.enter(scope, invocation_id) as residence,
+        with habitat_logfire.span(
+            "habitat.invoke",
+            invocation_id=invocation_id,
+            thread_id=thread.id,
+            conversation_id=conversation.id,
+            user_id=owner_id,
+            mode=self.config.mode,
         ):
-            yield Invocation(
-                id=invocation_id,
-                conversation=conversation,
-                workspace=workspace,
-                habitat=residence.habitat,
+            projects = self.workspaces.projects
+            if isinstance(self.config, NativeHabitatConfig):
+                project = await projects.of(thread) if projects.roots else None
+                habitat = NativeHabitat(config=self.config)
+                await habitat.prepare()
+                try:
+                    async with (
+                        habitat.resources,
+                        self.workspaces.open(thread.id, project, owner_id) as workspace,
+                    ):
+                        yield Invocation(
+                            id=invocation_id,
+                            conversation=conversation,
+                            workspace=workspace,
+                            habitat=habitat,
+                        )
+                finally:
+                    await habitat.stop()
+                return
+            if owner_id is None:
+                raise HabitatError("Running in a sandbox requires a registered user")
+            project = await projects.of(thread) if projects.roots else None
+            scope = InvocationScope(
+                user_id=owner_id, conversation_id=conversation.id, thread_id=thread.id
             )
+            # Release the sandbox lease before the workspace it mounts.
+            async with (
+                self.workspaces.open(thread.id, project, owner_id) as workspace,
+                self.enter(scope, invocation_id) as residence,
+            ):
+                yield Invocation(
+                    id=invocation_id,
+                    conversation=conversation,
+                    workspace=workspace,
+                    habitat=residence.habitat,
+                )
 
     def residenced(self, user_id: UUID7, conversation_id: UUID7) -> bool:
         """Whether an invocation of the conversation is inside the user's sandbox now."""
@@ -252,6 +260,18 @@ class HabitatManager:
             )
         self.nerve.deliver(HabitatTopic(residence.user_id), Impulse(residence.status))
         self.nerve.deliver(UserTopic(residence.user_id), Impulse(residence.status))
+        habitat_logfire.log(
+            "error" if error is not None else "info",
+            "Habitat {habitat} {phase}",
+            attributes={
+                "habitat": residence.habitat.name,
+                "phase": phase,
+                "invocation_id": invocation_id,
+                "thread_id": scope.thread_id if scope else None,
+                "conversation_id": scope.conversation_id if scope else None,
+                "error": str(error) if error is not None else None,
+            },
+        )
 
     @asynccontextmanager
     async def enter(
@@ -273,18 +293,20 @@ class HabitatManager:
         try:
             yield residence
         finally:
-            async with AsyncExitStack() as cleanup:
-                cleanup.enter_context(anyio.CancelScope(shield=True))
-                await cleanup.enter_async_context(residence.lock)
-                residence.invocations.discard(invocation_id)
-                residence.conversations[scope.conversation_id] -= 1
-                if not residence.conversations[scope.conversation_id]:
-                    del residence.conversations[scope.conversation_id]
-                if not residence.invocations and not self.closed:
-                    residence.idle = asyncio.get_running_loop().call_later(
-                        residence.habitat.idle_timeout, self.idle_out, residence
-                    )
+            with anyio.CancelScope(shield=True):
+                async with residence.lock:
+                    residence.invocations.discard(invocation_id)
+                    residence.conversations[scope.conversation_id] -= 1
+                    if not residence.conversations[scope.conversation_id]:
+                        del residence.conversations[scope.conversation_id]
+                    if not residence.invocations and not self.closed:
+                        residence.idle = asyncio.get_running_loop().call_later(
+                            residence.habitat.idle_timeout, self.idle_out, residence
+                        )
 
+    @habitat_logfire.instrument(
+        "habitat.prepare", extract_args=["scope", "invocation_id"]
+    )
     async def prepare(
         self, residence: Residence, scope: InvocationScope, invocation_id: UUID7
     ) -> None:
@@ -337,6 +359,7 @@ class HabitatManager:
                     }
                 )
 
+    @habitat_logfire.instrument("habitat.stop", extract_args=False)
     async def halt(self, residence: Residence) -> None:
         await residence.habitat.resources.aclose()
         await residence.habitat.stop()

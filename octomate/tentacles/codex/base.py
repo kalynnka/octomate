@@ -1815,6 +1815,12 @@ class CodexTentacle(AgentTentacle[str, None]):
                     agent_id=self.id,
                     run_name=run_name or self.id,
                     conversation_address=str(conversation_address),
+                    invocation_id=invocation.id,
+                    thread_id=invocation.thread_id,
+                    conversation_id=conversation.id,
+                    native_thread_id=conversation.external_id,
+                    habitat=invocation.habitat.name,
+                    cwd=run_cwd,
                     **agent_input_message_attributes(user_prompt),
                 )
             )

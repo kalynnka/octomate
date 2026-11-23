@@ -465,9 +465,12 @@ class Octomate(FastAPI):
                     # after a cancellation, so shutdown stays prompt.
                     mirroring.cancel()
                     sweeping.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await mirroring
-                        await sweeping
+                    try:
+                        with suppress(asyncio.CancelledError):
+                            await mirroring
+                            await sweeping
+                    finally:
+                        await self.habitats.close()
 
     @asynccontextmanager
     async def run_tentacles(self) -> AsyncGenerator[None]:

@@ -65,7 +65,7 @@ async def sample_load(sandbox: SbxHabitat, pids: set[int]) -> float:
             sandbox.command(
                 "exec",
                 sandbox.name,
-                "/opt/octomate/.venv/bin/python",
+                "python",
                 "-c",
                 "import hashlib,time; data=bytearray(256*1024*1024); "
                 "end=time.monotonic()+5\n"
@@ -102,7 +102,7 @@ async def test_single_user_resource_cost(
             startup_seconds = monotonic() - started
             invoked = monotonic()
             async with sandbox.execute(
-                "/opt/octomate/.venv/bin/python",
+                "python",
                 "-c",
                 "import os,sys; print(os.getpid(), flush=True); sys.stdin.buffer.read()",
                 workdir="/home/agent/workspace",
@@ -134,7 +134,7 @@ async def test_single_user_resource_cost(
                 await sandbox.command(
                     "exec",
                     sandbox.name,
-                    "/opt/octomate/.venv/bin/python",
+                    "python",
                     "-c",
                     "import json,sys; from pathlib import Path; "
                     "assert not Path('/proc', sys.argv[1]).exists(), 'Guest process survived disconnect'; "

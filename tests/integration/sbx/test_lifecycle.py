@@ -56,7 +56,7 @@ async def test_command_attachment_reuse_and_stop_start_persistence(
                 "--workdir",
                 "/home/agent/workspace",
                 first.habitat.name,
-                "/opt/octomate/.venv/bin/python",
+                "python",
                 "-c",
                 "from pathlib import Path; "
                 "Path('uncommitted.txt').write_text('retained'); "
@@ -73,7 +73,7 @@ async def test_command_attachment_reuse_and_stop_start_persistence(
                 "--workdir",
                 "/home/agent/workspace",
                 restarted.habitat.name,
-                "/opt/octomate/.venv/bin/python",
+                "python",
                 "-c",
                 "from pathlib import Path; "
                 "assert Path('uncommitted.txt').read_text() == 'retained'; "
