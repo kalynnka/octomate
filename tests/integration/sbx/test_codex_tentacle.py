@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from httpx2 import URL
+from openai_codex import AsyncThread
 from openai_codex import CodexConfig as RuntimeConfig
 from pydantic import HttpUrl
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -169,11 +170,13 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
                     assert "Linux" in result.output
                     assert previous is None or "habitat-proof" in result.output
                     assert json.loads(
-                        (sandbox.config_dir / ".codex" / "auth.json").read_text()
-                    )["OPENAI_API_KEY"] in {
-                        "oai-oat01-proxy-managed",
-                        "proxy-managed",
-                    }
+                        await sandbox.command(
+                            "exec",
+                            sandbox.name,
+                            "cat",
+                            f"{invocation.environment['CODEX_HOME']}/auth.json",
+                        )
+                    ) == {"OPENAI_API_KEY": "proxy-managed"}
                 else:
                     assert result.output == "done"
                     assert state.outcome is not None
@@ -193,6 +196,18 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
                     invocation.conversation.id, with_runs=False
                 )
                 assert conversation.external_id is not None
+                expected_provider = "audit"
+                if live:
+                    mode = await sandbox.command(
+                        "exec", sandbox.name, "printenv", "SBX_CRED_OPENAI_MODE"
+                    )
+                    expected_provider = (
+                        "sandboxd" if mode.strip() == b"oauth" else "openai"
+                    )
+                native_thread = await AsyncThread(
+                    client, conversation.external_id
+                ).read()
+                assert native_thread.thread.model_provider == expected_provider
                 assert previous is None or client is previous
                 assert not pids or current_pids == pids
                 assert external_id is None or conversation.external_id == external_id

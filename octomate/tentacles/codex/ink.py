@@ -373,6 +373,14 @@ class CodexInk(AgentInk):
         if not self.running:
             raise RuntimeError("Codex runtime is not running")
         client = await self.pool.acquire(habitat, env=env, thread_id=thread_id)
+        if client.habitat is not None and model_provider is not None:
+            # Model discovery uses core; authentication belongs to the guest runtime.
+            settings = await client._client.request(
+                "config/read",
+                {"cwd": cwd, "includeLayers": False},
+                response_model=ConfigReadResponse,
+            )
+            model_provider = settings.config.model_provider or "openai"
         binding = (conversation_id, api_key_id)
         provider_changed = False
         if thread_id is not None:

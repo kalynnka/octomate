@@ -73,3 +73,8 @@ credentials:
             refreshToken: "{{.RefreshToken}}"
             expiresAt: "{{.ExpiresAt}}"
             scopes: "{{.Scopes}}"
+setup:
+  install:
+    - command: sh "$HOME/setup-codex.sh"
+      user: "1000"
+      description: Seed kit-managed Codex config/auth from the sbx credential mode

@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import shutil
+import subprocess
 import sys
+import tomllib
 from contextlib import suppress
 from pathlib import Path
 
 import anyio
 import pytest
+import yaml
 from anyio.streams.buffered import BufferedByteReceiveStream
 from pydantic import BaseModel, HttpUrl
 from uuid_utils.compat import uuid7
@@ -24,6 +29,73 @@ class ProcessInfo(BaseModel):
     argv: list[str]
     environment: dict[str, str]
     tty: list[bool]
+
+
+@pytest.mark.parametrize("mode", ["oauth", "apikey", "none", None, "invalid"])
+def test_kit_initializes_codex_auth_and_clears_previous_mode_settings(
+    tmp_path: Path, mode: str | None
+) -> None:
+    kit_directory = Path(sbx_module.__file__).parent
+    kit = yaml.safe_load((kit_directory / "spec.yaml").read_text())
+    home = tmp_path / "home"
+    shutil.copytree(kit_directory / "files" / "home", home)
+    owner_config = tmp_path / "owner's config"
+    codex_home = owner_config / ".codex"
+    codex_home.mkdir(parents=True)
+    config = codex_home / "config.toml"
+    auth = codex_home / "auth.json"
+    config.write_text('model_provider = "previous"\n')
+    auth.write_text('{"OPENAI_API_KEY":"previous-placeholder"}')
+    session = codex_home / "sessions" / "retained.jsonl"
+    session.parent.mkdir()
+    session.write_text("retained history\n")
+    environment = {
+        "PATH": os.defpath,
+        "HOME": str(home),
+        "OCTOMATE_HABITAT_CONFIG": str(owner_config),
+    }
+    if mode is not None:
+        environment["SBX_CRED_OPENAI_MODE"] = mode
+    for hook in kit["setup"]["install"]:
+        result = subprocess.run(
+            ["sh", "-c", hook["command"]],
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == (1 if mode == "invalid" else 0), result.stderr
+    assert session.read_text() == "retained history\n"
+    settings = tomllib.loads(config.read_text())
+    if mode == "invalid":
+        assert settings == {"model_provider": "previous"}
+        assert json.loads(auth.read_text()) == {
+            "OPENAI_API_KEY": "previous-placeholder"
+        }
+        return
+    if mode not in {"oauth", "apikey"}:
+        assert settings == {}
+        assert not auth.exists()
+        return
+    assert json.loads(auth.read_text()) == {"OPENAI_API_KEY": "proxy-managed"}
+    assert auth.stat().st_mode & 0o777 == 0o600
+    assert settings == {
+        "forced_login_method": "api",
+        **(
+            {
+                "model_provider": "sandboxd",
+                "model_providers": {
+                    "sandboxd": {
+                        "name": "Sandbox Proxy",
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                        "experimental_bearer_token": "oai-oat01-proxy-managed",
+                        "requires_openai_auth": False,
+                    }
+                },
+            }
+            if mode == "oauth"
+            else {}
+        ),
+    }
 
 
 @pytest.fixture
