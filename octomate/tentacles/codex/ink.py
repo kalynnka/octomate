@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 import uuid
-from base64 import b64decode
-from collections.abc import Callable
+from base64 import b64decode, b64encode
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path, PurePosixPath
 
+import anyio
 from fastmcp.apps.config import UI_MIME_TYPE
 from httpx2 import URL
 from octomate_protocol.gateway import GatewayTool, gateway_tool
@@ -30,6 +33,8 @@ from openai_codex.generated.v2_all import (
     ConfigReadResponse,
     ExecveGuardianApprovalReviewAction,
     FsReadFileResponse,
+    FsRemoveResponse,
+    FsWriteFileResponse,
     GetAccountRateLimitsResponse,
     GetAccountResponse,
     GuardianApprovalReviewStatus,
@@ -60,11 +65,12 @@ from openai_codex.generated.v2_all import (
     ThreadUnsubscribeResponse,
 )
 from openai_codex.generated.v2_all import ThreadForkParams as SdkThreadForkParams
-from pydantic import AnyUrl, SecretStr, TypeAdapter, ValidationError
+from pydantic import UUID7, AnyUrl, SecretStr, TypeAdapter, ValidationError
 from pydantic.alias_generators import to_snake
+from uuid_utils.compat import uuid7
 
 from octomate.config.agents import CodexConfig
-from octomate.habitat import Habitat
+from octomate.habitat import Habitat, ManagedHabitat
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.schemas.mcp import McpAppResource
 from octomate.schemas.messages import ModelRequest, ModelResponse
@@ -85,6 +91,7 @@ from octomate.tentacles.codex.schemas import (
 from octomate.tentacles.codex.transcript import (
     CompactedItem,
     CompactionCompletedEvent,
+    RolloutLine,
     UserMessageIdentities,
     context_item_id,
     is_injected_message,
@@ -620,6 +627,90 @@ class CodexInk(AgentInk):
             ),
         )
         return AsyncThread(client, resumed.thread.id), resumed.model
+
+    @staticmethod
+    def import_metadata(data: bytes, *, external_id: str) -> RolloutLine:
+        """Require a complete snapshot with its own matching session metadata."""
+        if not data.endswith(b"\n"):
+            raise ValueError("Completed turn must end at a transcript line boundary")
+        opening = data.split(b"\n", 1)[0]
+        metadata = rollout_line_adapter.validate_json(opening)
+        if metadata.type != "session_meta" or metadata.payload.get("id") != external_id:
+            raise ValueError("Transcript metadata does not match the source session")
+        if metadata.payload.get("history_base") is not None:
+            raise ValueError(
+                "This transcript requires ancestor files before it can be imported"
+            )
+        return metadata
+
+    @contextlib.asynccontextmanager
+    async def import_transcript(
+        self,
+        data: bytes,
+        *,
+        external_id: str,
+        owner_id: UUID7,
+        habitat: Habitat,
+        env: dict[str, str],
+    ) -> AsyncGenerator[str]:
+        """Keep a private Codex import on success; remove it if the fork fails."""
+        metadata = self.import_metadata(data, external_id=external_id)
+        _, remainder = data.split(b"\n", 1)
+        # Distinct imports of A must not compete for A's ID in Codex's rollout index.
+        imported_id = str(uuid7())
+        metadata.payload["id"] = imported_id
+        metadata.payload["session_id"] = imported_id
+        imported = metadata.model_dump_json().encode() + b"\n" + remainder
+        name = f"rollout-{metadata.timestamp:%Y-%m-%dT%H-%M-%S}-{imported_id}.jsonl"
+        client = await self.pool.acquire(habitat, env=env)
+        if isinstance(habitat, ManagedHabitat):
+            home = PurePosixPath(env["CODEX_HOME"])
+            path = home / "sessions" / "users" / owner_id.hex / name
+            async with habitat.execute(
+                "mkdir", "-p", "-m", "700", str(path.parent), workdir=str(home)
+            ):
+                pass
+            try:
+                await client._client.request(
+                    "fs/writeFile",
+                    {
+                        "path": str(path),
+                        "dataBase64": b64encode(imported).decode("ascii"),
+                    },
+                    response_model=FsWriteFileResponse,
+                )
+                async with habitat.execute(
+                    "chmod", "600", str(path), workdir=str(home)
+                ):
+                    pass
+                yield imported_id
+            except BaseException:
+                with anyio.CancelScope(shield=True):
+                    await client._client.request(
+                        "fs/remove",
+                        {"path": str(path), "force": True, "recursive": False},
+                        response_model=FsRemoveResponse,
+                    )
+                raise
+            return
+        native_home = await anyio.Path(
+            (client.transport.config.env or {}).get("CODEX_HOME")
+            or os.environ.get("CODEX_HOME")
+            or Path.home() / ".codex"
+        ).expanduser()
+        native_path = await (
+            native_home / "sessions" / "users" / owner_id.hex / name
+        ).absolute()
+        await native_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        handle = await native_path.open("xb")
+        try:
+            async with handle:
+                await handle.write(imported)
+            await native_path.chmod(0o600)
+            yield imported_id
+        except BaseException:
+            await native_path.unlink(missing_ok=True)
+            raise
 
     async def fork_session(
         self,

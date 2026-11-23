@@ -2,14 +2,20 @@
 
 import json
 import os
+from base64 import b64decode
 from contextlib import AsyncExitStack
+from io import BytesIO
 from pathlib import Path
 
 import pytest
+from fastapi import UploadFile
 from httpx2 import URL
 from openai_codex import AsyncThread
 from openai_codex import CodexConfig as RuntimeConfig
+from openai_codex.api import ApprovalMode, Sandbox
+from openai_codex.generated.v2_all import FsReadFileResponse, Thread
 from pydantic import HttpUrl
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
@@ -18,6 +24,7 @@ from octomate.config import OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.config.habitat import SbxHabitatConfig
 from octomate.habitat.sbx import SbxHabitat
+from octomate.managers.habitat import Invocation
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.habitat import InvocationScope
 from octomate.schemas.thread import ThreadKey
@@ -228,6 +235,172 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
                 )
             ).invocations
         assert not list(core_home.glob("sessions/**/*.jsonl"))
+        if not live:
+            source = await AsyncThread(client, external_id).read(include_turns=True)
+            assert len(source.thread.turns) == 2
+            destination = str(invocation.cwd / "fork")
+            await sandbox.command("exec", sandbox.name, "mkdir", "-p", destination)
+            forked_id = await ink.fork_session(
+                external_id,
+                cwd=Path(destination),
+                habitat=sandbox,
+                env=invocation.environment,
+                last_turn_id=source.thread.turns[0].id,
+            )
+            forked = AsyncThread(client, forked_id)
+            history = await forked.read(include_turns=True)
+            assert forked_id != external_id
+            assert [turn.id for turn in history.thread.turns] == [
+                source.thread.turns[0].id
+            ]
+            assert history.thread.cwd.root == destination
+            state.call_id = str(uuid7())
+            state.arguments = {"cmd": "pwd", "max_output_tokens": 1000}
+            state.outcome = None
+            continued = await forked.run(
+                "Execute the synthetic probe once.",
+                cwd=destination,
+                approval_mode=ApprovalMode.deny_all,
+                sandbox=Sandbox.full_access,
+            )
+            assert continued.final_response == "done"
+            assert state.outcome is not None
+            assert destination in state.outcome.text
+            unchanged = await AsyncThread(client, external_id).read(include_turns=True)
+            assert unchanged.thread.turns == source.thread.turns
+            assert len((await forked.read(include_turns=True)).thread.turns) == 2
+            assert await cli_pids(sandbox, argument_pattern="app-serve[r]") == pids
+            await exercise_uploaded_history(tentacle, invocation, source.thread, state)
+            assert await cli_pids(sandbox, argument_pattern="app-serve[r]") == pids
+            assert not list(core_home.glob("sessions/**/*.jsonl"))
     assert previous is not None
     assert previous.transport.closing
     assert not await cli_pids(sandbox, argument_pattern="app-serve[r]")
+
+
+async def exercise_uploaded_history(
+    tentacle: CodexTentacle,
+    invocation: Invocation,
+    source: Thread,
+    state: ScriptedProvider,
+) -> None:
+    """Import an upload whose native session ID does not exist in the guest."""
+    owner_id = invocation.owner_id
+    assert owner_id is not None
+    habitat = invocation.habitat
+    assert isinstance(habitat, SbxHabitat)
+    client = await tentacle.ink.pool.acquire(thread_id=source.id)
+    assert source.path is not None
+    response = await client._client.request(
+        "fs/readFile", {"path": source.path}, response_model=FsReadFileResponse
+    )
+    opening, remainder = b64decode(response.data_base64).split(b"\n", 1)
+    native_id = str(uuid7())
+    metadata = json.loads(opening)
+    metadata["payload"]["id"] = native_id
+    metadata["payload"]["session_id"] = native_id
+    uploaded = json.dumps(metadata).encode() + b"\n" + remainder
+    completed_id = source.turns[0].id
+    end = 0
+    for line in uploaded.splitlines(keepends=True):
+        end += len(line)
+        record = json.loads(line)
+        if (
+            record["type"] == "event_msg"
+            and record["payload"].get("type") == "task_complete"
+            and record["payload"].get("turn_id") == completed_id
+        ):
+            break
+    else:
+        pytest.fail("Native rollout has no completed first turn")
+    native_thread = await tentacle.threads.ensure(
+        ThreadKey("codex", "thread", str(owner_id), native_id), native=True
+    )
+    native = await tentacle.conversations.ensure(
+        native_thread.id, agent_tentacle_id=tentacle.id
+    )
+    await tentacle.conversations.record_external_run(
+        native,
+        completed_id,
+        [ModelRequest(parts=[UserPromptPart("Execute the synthetic probe once.")])],
+        native_session_id=native_id,
+        model_name="gpt-5",
+        permission_mode="full_access",
+        end_offset=end,
+    )
+    await tentacle.conversations.store_transcript(
+        UploadFile(BytesIO(uploaded), filename="rollout.jsonl"),
+        0,
+        conversation=native,
+        files=tentacle.files,
+        owner_id=owner_id,
+    )
+    native = await tentacle.conversations.get(native.id)
+    address = ChannelAddress(
+        "im",
+        "thread",
+        "codex-owner",
+        user_id="codex-owner",
+        channel_thread_id="imported",
+    )
+    target_thread = await tentacle.threads.ensure(
+        ThreadKey("im", "thread", "codex-owner", "imported"),
+        project=invocation.project,
+    )
+    target = await tentacle.conversations.ensure(
+        target_thread.id, agent_tentacle_id=tentacle.id
+    )
+    imported = await tentacle.fork_transcript(
+        native, target, owner_id=owner_id, cwd=invocation.workspace.path
+    )
+    assert imported.external_id not in {None, native_id, source.id}
+    assert imported.external_id is not None
+    history = await AsyncThread(client, imported.external_id).read(include_turns=True)
+    assert [turn.id for turn in history.thread.turns] == [completed_id]
+    assert history.thread.turns[0].items == source.turns[0].items
+    assert imported.transcript_file_id is not None
+    assert (
+        await tentacle.files.read(imported.transcript_file_id, owner_id=owner_id)
+        == uploaded[:end]
+    )
+    assert native.transcript_file_id is not None
+    assert (
+        await tentacle.files.read(native.transcript_file_id, owner_id=owner_id)
+        == uploaded
+    )
+    assert target.external_id is None
+    state.call_id = str(uuid7())
+    state.arguments = {"cmd": "pwd", "max_output_tokens": 1000}
+    state.outcome = None
+    async with invocation_for(
+        tentacle,
+        conversation_address=address,
+        thread_id=target_thread.id,
+        owner_id=owner_id,
+    ) as destination:
+        result = await tentacle.run(
+            "Execute the synthetic probe once.",
+            conversation_address=address,
+            invocation=destination,
+            interactive=False,
+        )
+        assert result.output == "done"
+        assert state.outcome is not None
+        assert str(destination.cwd) in state.outcome.text
+    resumed = await AsyncThread(client, imported.external_id).read(include_turns=True)
+    assert len(resumed.thread.turns) == 2
+    assert resumed.thread.turns[0].items == source.turns[0].items
+    # A failed import must not leave a private rollout behind in the guest.
+    home = invocation.environment["CODEX_HOME"]
+    imports = f"{home}/sessions/users/{owner_id.hex}"
+    before = await habitat.command("exec", habitat.name, "ls", imports)
+    with pytest.raises(RuntimeError, match="abort import"):
+        async with tentacle.ink.import_transcript(
+            uploaded,
+            external_id=native_id,
+            owner_id=owner_id,
+            habitat=habitat,
+            env=invocation.environment,
+        ):
+            raise RuntimeError("abort import")
+    assert await habitat.command("exec", habitat.name, "ls", imports) == before

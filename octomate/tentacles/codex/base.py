@@ -11,7 +11,6 @@ import asyncio
 import contextlib
 import hashlib
 import logging
-import os
 import uuid
 from collections.abc import AsyncGenerator, Generator, Sequence
 from contextvars import Context, copy_context
@@ -96,13 +95,11 @@ from uuid_utils.compat import uuid7
 
 from octomate.config.agents import Claim, CodexConfig
 from octomate.config.channels import TrunklineChannelConfig
-from octomate.config.habitat import NativeHabitatConfig
 from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
     ArtifactAvailableEvent,
 )
-from octomate.habitat import HabitatError
 from octomate.managers.habitat import Invocation
 from octomate.mcp.server import OCTOMATE_MCP_PATH
 from octomate.nerve import Impulse
@@ -157,7 +154,7 @@ from octomate.tentacles.codex.ingest import CodexHookIngest
 from octomate.tentacles.codex.ink import CodexInk
 from octomate.tentacles.codex.schemas import CodexCommandDescriptor
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer
-from octomate.tentacles.codex.transcript import RolloutLine, rollout_line_adapter
+from octomate.tentacles.codex.transcript import rollout_line_adapter
 from octomate.tentacles.deferred import DeferredSuspender, Interjections
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
@@ -679,7 +676,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         completed_run: ExternalAgentRun | None = None
         for run in runs:
             offset = run.end_offset
-            assert offset is not None
+            if offset is None:
+                raise ValueError("Completed Codex turn has no transcript offset")
             if data[offset - 1 : offset] != b"\n":
                 raise ValueError("Turn offset must end at a transcript line boundary")
             start = data.rfind(b"\n", 0, offset - 1) + 1
@@ -699,7 +697,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
         # Uploads may stop inside the next record; Codex selects the turn boundary.
         data = data[: data.rfind(b"\n") + 1]
-        self.import_metadata(data, external_id=source.external_id)
+        self.ink.import_metadata(data, external_id=source.external_id)
         return data, completed_run
 
     async def fork_transcript(
@@ -711,10 +709,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         cwd: Path,
     ) -> Conversation:
         """Import an owner's completed native history and fork it into an empty target."""
-        if not isinstance(self.habitats.config, NativeHabitatConfig):
-            raise HabitatError(
-                "Codex transcript import into a habitat is not supported yet"
-            )
         conversations = self.conversations
         async with conversations.lock(target.key):
             source = await conversations.get(source.id)
@@ -734,21 +728,34 @@ class CodexTentacle(AgentTentacle[str, None]):
             data, completed_run = await self.read_fork_transcript(
                 source, owner_id=owner_id
             )
-            assert completed_run.end_offset is not None
+            if completed_run.end_offset is None:
+                raise ValueError("Completed Codex turn has no transcript offset")
+            thread = await self.threads.get(target.thread_id, with_messages=False)
+            if thread is None:
+                raise FileNotFoundError("No destination thread")
             async with (
+                self.inhabit(
+                    thread=thread, conversation=target, owner_id=owner_id
+                ) as invocation,
                 self.files.partial_copy(
                     source.transcript_file_id,
                     end=completed_run.end_offset,
                     owner_id=owner_id,
                     media_type="application/jsonl",
                 ) as snapshot,
-                self.import_transcript(
-                    data, external_id=source.external_id, owner_id=owner_id
+                self.ink.import_transcript(
+                    data,
+                    external_id=source.external_id,
+                    owner_id=owner_id,
+                    habitat=invocation.habitat,
+                    env=invocation.environment,
                 ) as imported_id,
             ):
                 external_id = await self.ink.fork_session(
                     imported_id,
-                    cwd=cwd,
+                    cwd=invocation.cwd,
+                    habitat=invocation.habitat,
+                    env=invocation.environment,
                     last_turn_id=completed_run.id,
                 )
                 await conversations.fork(
@@ -759,51 +766,6 @@ class CodexTentacle(AgentTentacle[str, None]):
                     permission_mode=completed_run.permission_mode,
                 )
             return await conversations.get(target.id)
-
-    @staticmethod
-    def import_metadata(data: bytes, *, external_id: str) -> RolloutLine:
-        """Require a complete snapshot with its own matching session metadata."""
-        if not data.endswith(b"\n"):
-            raise ValueError("Completed turn must end at a transcript line boundary")
-        opening = data.split(b"\n", 1)[0]
-        metadata = rollout_line_adapter.validate_json(opening)
-        if metadata.type != "session_meta" or metadata.payload.get("id") != external_id:
-            raise ValueError("Transcript metadata does not match the source session")
-        if metadata.payload.get("history_base") is not None:
-            raise ValueError(
-                "This transcript requires ancestor files before it can be imported"
-            )
-        return metadata
-
-    @contextlib.asynccontextmanager
-    async def import_transcript(
-        self, data: bytes, *, external_id: str, owner_id: UUID7
-    ) -> AsyncGenerator[str]:
-        """Keep a private Codex import on success; remove it if the fork fails."""
-        metadata = self.import_metadata(data, external_id=external_id)
-        _, remainder = data.split(b"\n", 1)
-        # Distinct imports of A must not compete for A's ID in Codex's rollout index.
-        imported_id = str(uuid7())
-        metadata.payload["id"] = imported_id
-        metadata.payload["session_id"] = imported_id
-        imported = metadata.model_dump_json().encode() + b"\n" + remainder
-        name = f"rollout-{metadata.timestamp:%Y-%m-%dT%H-%M-%S}-{imported_id}.jsonl"
-        home = await anyio.Path(
-            (self.config.runtime.env or {}).get("CODEX_HOME")
-            or os.environ.get("CODEX_HOME")
-            or Path.home() / ".codex"
-        ).expanduser()
-        path = await (home / "sessions" / "users" / owner_id.hex / name).absolute()
-        await path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        handle = await path.open("xb")
-        try:
-            async with handle:
-                await handle.write(imported)
-            await path.chmod(0o600)
-            yield imported_id
-        except BaseException:
-            await path.unlink(missing_ok=True)
-            raise
 
     async def probe_commands(self, context: CommandContext) -> CommandCatalog:
         """List app actions and inspect skills without preparing a workspace or turn."""
