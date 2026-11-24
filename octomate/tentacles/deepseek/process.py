@@ -1,7 +1,7 @@
 """One `dsh web` child: spawn it, confirm its URL from the banner, kill it with us.
 
-The server is bound to loopback and owned by this process — the bind host is
-fixed at `127.0.0.1` and deliberately not configurable. Authenticated harnesses
+Native servers bind loopback; guest servers bind their routed interface so sbx
+can publish them on host loopback. Authenticated harnesses
 log their launch URL once at INFO. The returned base URL and subsequent
 diagnostics omit the token.
 Extension configuration lives in a fresh private home. Settings, credentials,
@@ -205,8 +205,7 @@ class DeepseekProcess:
                 self.executable,
                 "web",
                 *self.extra_args,
-                "--host",
-                "127.0.0.1",
+                "--",
                 "--port",
                 "0",
                 NO_OPEN,
@@ -257,8 +256,8 @@ class DeepseekProcess:
         launch_url = HttpUrl(match.group(1))
         token = dict(launch_url.query_params()).get("token")
         self.launch_token = SecretStr(token) if token else None
-        if launch_url.host != "127.0.0.1" or launch_url.port is None:
-            raise RuntimeError("DSH did not report its guest loopback listener")
+        if launch_url.port is None:
+            raise RuntimeError("DSH did not report its guest listener port")
         async with habitat.publish(launch_url.port) as address:
             endpoint.set_result(HttpUrl(address))
             self.ready = True

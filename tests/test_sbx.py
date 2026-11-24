@@ -397,5 +397,5 @@ async def test_published_service_uses_assigned_loopback_port_and_unpublishes(
         await consume()
     assert [call.args for call in command.await_args_list] == [
         ("ports", habitat.name, "--publish", "41234/tcp4", "--json"),
-        ("ports", habitat.name, "--unpublish", "127.0.0.1:42123:41234/tcp4"),
+        ("ports", habitat.name, "--unpublish", "41234/tcp4"),
     ]

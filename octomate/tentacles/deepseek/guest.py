@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import socket
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -13,13 +14,22 @@ async def run() -> int:
         lambda: asyncio.StreamReaderProtocol(reader), sys.stdin.buffer
     )
     try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
+            # UDP connect selects the routed interface without sending a packet.
+            route.connect(("192.0.2.1", 9))
+            host = route.getsockname()[0]
         with TemporaryDirectory(prefix="octomate-dsh-") as home:
             patch = Path(home) / "driven.json"
             patch.write_bytes(await reader.readline())
+            # DSH consumes CLI patches before passing web options to its app.
+            boundary = sys.argv.index("--")
             process = await asyncio.create_subprocess_exec(
-                *sys.argv[1:],
+                *sys.argv[1:boundary],
                 "--patch",
                 str(patch),
+                "--host",
+                host,
+                *sys.argv[boundary + 1 :],
                 stdin=asyncio.subprocess.DEVNULL,
                 env={**os.environ, "DSH_HOME": home},
             )

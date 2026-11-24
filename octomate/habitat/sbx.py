@@ -119,7 +119,7 @@ class SbxHabitat(ManagedHabitat):
                     "ports",
                     self.name,
                     "--unpublish",
-                    f"127.0.0.1:{binding.host_port}:{port}/tcp4",
+                    f"{port}/tcp4",
                 )
 
     @asynccontextmanager
