@@ -1,4 +1,4 @@
-"""Habitat setup reviews bindings without collecting or copying credentials."""
+"""Host and credential commands remain independent when invoked directly."""
 
 import json
 from pathlib import Path
@@ -7,7 +7,8 @@ from unittest.mock import Mock
 import pytest
 import typer
 import yaml
-from octomate_cli import habitat
+from octomate_cli import credentials
+from octomate_cli import sbx as sbx_cli
 from octomate_cli.habitat import HabitatMode
 from octomate_cli.installation import DeploymentTarget
 from octomate_cli.main import app
@@ -20,9 +21,9 @@ runner = CliRunner()
 @pytest.fixture
 def sbx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Mock:
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(habitat.sys, "platform", "darwin")
-    monkeypatch.setattr(habitat.os, "getuid", lambda: 501)
-    monkeypatch.setattr(habitat.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(sbx_cli.sys, "platform", "darwin")
+    monkeypatch.setattr(sbx_cli.os, "getuid", lambda: 501)
+    monkeypatch.setattr(sbx_cli.shutil, "which", lambda name: f"/bin/{name}")
 
     def command(executable: str, *arguments: str, capture: bool = False) -> str:
         if arguments == ("version",):
@@ -46,7 +47,7 @@ def sbx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Mock:
         return ""
 
     command_mock = Mock(side_effect=command)
-    monkeypatch.setattr(habitat, "run_sbx", command_mock)
+    monkeypatch.setattr(sbx_cli, "run_sbx", command_mock)
     return command_mock
 
 
@@ -64,7 +65,7 @@ def test_setup_merges_under_the_correct_provider_and_preserves_other_settings(
     }
     path.write_text(yaml.safe_dump(original))
     result = runner.invoke(
-        app, ["habitat", "setup", "sbx", "--agent", "codex"], input="n\nkeep\ny\n"
+        app, ["habitat", "credentials", "sbx", "--service", "openai"], input="keep\ny\n"
     )
     assert result.exit_code == 0, result.output
     document = yaml.safe_load(path.read_text())
@@ -77,25 +78,28 @@ def test_setup_merges_under_the_correct_provider_and_preserves_other_settings(
     assert not any("set" in call.args for call in sbx.call_args_list)
     before = path.read_bytes()
     checked = runner.invoke(
-        app, ["habitat", "setup", "sbx", "--agent", "codex", "--check"]
+        app, ["habitat", "credentials", "sbx", "--service", "openai", "--check"]
     )
     assert checked.exit_code == 0, checked.output
     repeated = runner.invoke(
-        app, ["habitat", "setup", "sbx", "--agent", "codex"], input="n\nkeep\n"
+        app, ["habitat", "credentials", "sbx", "--service", "openai"], input="keep\n"
     )
     assert repeated.exit_code == 0, repeated.output
     assert path.read_bytes() == before
 
 
-def test_login_runs_in_sbx_then_explicit_approval_creates_binding(
+def test_provider_login_and_approval_do_not_run_host_setup(
     sbx: Mock, tmp_path: Path
 ) -> None:
     result = runner.invoke(
-        app, ["habitat", "setup", "sbx", "--agent", "codex"], input="y\noauth\ny\n"
+        app,
+        ["habitat", "credentials", "sbx", "--service", "openai"],
+        input="oauth\ny\n",
     )
     assert result.exit_code == 0, result.output
     calls = [call.args for call in sbx.call_args_list]
-    assert ("/bin/sbx", "login") in calls
+    assert ("/bin/sbx", "login") not in calls
+    assert all(command[1] in {"version", "secret"} for command in calls)
     assert ("/bin/sbx", "secret", "set", "openai", "--oauth") in calls
     assert yaml.safe_load((tmp_path / ".config/sbx/credentials.yaml").read_text()) == {
         "bindings": {
@@ -112,13 +116,13 @@ def test_declined_or_missing_approval_leaves_no_file(
         app,
         [
             "habitat",
-            "setup",
+            "credentials",
             "sbx",
-            "--agent",
-            "codex",
+            "--service",
+            "openai",
             *(["--check"] if check else []),
         ],
-        input="" if check else "n\nkeep\nn\n",
+        input="" if check else "keep\nn\n",
     )
     assert result.exit_code != 0
     assert not (tmp_path / ".config/sbx/credentials.yaml").exists()
@@ -130,7 +134,9 @@ def test_malformed_binding_is_not_replaced_or_followed_by_login(
     path = tmp_path / ".config/sbx/credentials.yaml"
     path.parent.mkdir(parents=True)
     path.write_text("bindings: []\n")
-    result = runner.invoke(app, ["habitat", "setup", "sbx", "--agent", "codex"])
+    result = runner.invoke(
+        app, ["habitat", "credentials", "sbx", "--service", "openai"]
+    )
     assert result.exit_code != 0
     assert "Cannot read sbx bindings" in result.output
     assert path.read_text() == "bindings: []\n"
@@ -139,7 +145,7 @@ def test_malformed_binding_is_not_replaced_or_followed_by_login(
 
 def test_claude_reuses_its_existing_oauth_login(sbx: Mock, tmp_path: Path) -> None:
     result = runner.invoke(
-        app, ["habitat", "setup", "sbx", "--agent", "claude"], input="n\ny\n"
+        app, ["habitat", "credentials", "sbx", "--service", "anthropic"], input="y\n"
     )
     assert result.exit_code == 0, result.output
     assert "existing sbx OAuth" in result.output
@@ -147,16 +153,16 @@ def test_claude_reuses_its_existing_oauth_login(sbx: Mock, tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize("check", [False, True])
-def test_acp_checks_the_host_without_inferring_credentials(
+def test_host_setup_needs_no_agent_or_credentials(
     sbx: Mock, tmp_path: Path, check: bool
 ) -> None:
     result = runner.invoke(
         app,
-        ["habitat", "setup", "sbx", "--agent", "acp", *(["--check"] if check else [])],
+        ["habitat", "setup", "sbx", *(["--check"] if check else [])],
         input="" if check else "n\n",
     )
     assert result.exit_code == 0, result.output
-    assert "authentication separately" in result.output
+    assert "Provider credentials are configured separately" in result.output
     calls = [call.args for call in sbx.call_args_list]
     assert ("/bin/sbx", "ls", "--quiet") in calls
     assert ("/bin/sbx", "settings", "get", "ssh.agentForwardingEnabled") in calls
@@ -164,18 +170,29 @@ def test_acp_checks_the_host_without_inferring_credentials(
     assert not (tmp_path / ".config/sbx/credentials.yaml").exists()
 
 
-def test_acp_and_codex_setup_only_requests_codex_credentials(
-    sbx: Mock, tmp_path: Path
-) -> None:
-    result = runner.invoke(
-        app,
-        ["habitat", "setup", "sbx", "--agent", "acp", "--agent", "codex"],
-        input="n\nkeep\ny\n",
-    )
+def test_host_login_ignores_provider_configuration(sbx: Mock, tmp_path: Path) -> None:
+    path = tmp_path / ".config/sbx/credentials.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text("bindings: []\n")
+    result = runner.invoke(app, ["habitat", "setup", "sbx"], input="y\n")
     assert result.exit_code == 0, result.output
-    document = yaml.safe_load((tmp_path / ".config/sbx/credentials.yaml").read_text())
-    assert set(document["bindings"]) == {"openai"}
-    assert sum("secret" in call.args for call in sbx.call_args_list) == 1
+    assert ("/bin/sbx", "login") in [call.args for call in sbx.call_args_list]
+    assert not any("secret" in call.args for call in sbx.call_args_list)
+    assert path.read_text() == "bindings: []\n"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["setup", "sbx", "--agent", "codex"],
+        ["credentials", "sbx", "--check"],
+        ["credentials", "sbx", "--service", "acp"],
+    ],
+)
+def test_commands_require_their_own_inputs(sbx: Mock, arguments: list[str]) -> None:
+    result = runner.invoke(app, ["habitat", *arguments])
+    assert result.exit_code == 2
+    sbx.assert_not_called()
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex", "deepseek", "acp"])
@@ -208,7 +225,7 @@ def test_domains_match_the_shipped_kit() -> None:
                 entry["domain"] for entry in credential["apiKey"]["inject"]
             ]
         expected[credential["service"]] = modes
-    assert habitat.CREDENTIAL_APPROVAL_DOMAINS == expected
+    assert credentials.CREDENTIAL_APPROVAL_DOMAINS == expected
 
 
 @pytest.mark.parametrize(

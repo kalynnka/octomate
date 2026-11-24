@@ -18,6 +18,7 @@ from rich.prompt import Confirm, IntPrompt, Prompt
 from rich.table import Table
 from rich.text import Text
 
+from octomate_cli.credentials import setup as setup_credentials
 from octomate_cli.habitat import HabitatMode
 from octomate_cli.habitat import setup as setup_habitat
 from octomate_cli.installation import DeploymentTarget, Installation
@@ -26,7 +27,7 @@ from octomate_cli.wizard import tentacles_step
 from octomate_cli.wizard.agents import AGENTS, acp_step
 from octomate_cli.wizard.base import brand_color, console
 from octomate_cli.wizard.channels import CHANNELS
-from octomate_cli.wizard.habitat import habitat_step
+from octomate_cli.wizard.habitat import AGENT_SERVICES, habitat_step
 from octomate_cli.wizard.mcp import MCPS
 
 
@@ -208,7 +209,10 @@ def init(
         acp_args,
     )
     if sandbox_image is not None:
-        setup_habitat("sbx", agent=tentacles.agents, check=yes)
+        setup_habitat("sbx", check=yes)
+        for name in tentacles.agents:
+            if name in AGENT_SERVICES:
+                setup_credentials("sbx", service=AGENT_SERVICES[name], check=yes)
     prepare_step(
         service,
         source,

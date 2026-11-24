@@ -5,9 +5,16 @@ import re
 import typer
 from rich.prompt import Prompt
 
+from octomate_cli.credentials import Service
 from octomate_cli.habitat import SBX_AGENTS, HabitatMode
 from octomate_cli.installation import DeploymentTarget
 from octomate_cli.wizard.base import console
+
+AGENT_SERVICES: dict[str, Service] = {
+    "claude": "anthropic",
+    "codex": "openai",
+    "deepseek": "deepseek",
+}
 
 
 def habitat_step(

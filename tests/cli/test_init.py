@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import TextIO
 from unittest.mock import Mock
+from unittest.mock import call as mock_call
 
 import pytest
 import typer
@@ -31,12 +32,27 @@ runner = CliRunner()
 
 
 @pytest.mark.parametrize("yes", [False, True])
+@pytest.mark.parametrize(
+    ("agents", "services"),
+    [
+        (["codex"], ["openai"]),
+        (["claude", "codex", "deepseek"], ["anthropic", "openai", "deepseek"]),
+    ],
+)
 def test_sbx_selection_runs_shared_setup_and_passes_image_to_preparation(
-    tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch, yes: bool
+    tmp_path: Path,
+    commands: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+    yes: bool,
+    agents: list[str],
+    services: list[str],
 ) -> None:
-    monkeypatch.setattr(wizard, "select_tentacles", Mock(return_value=["codex"]))
-    setup = Mock()
+    monkeypatch.setattr(wizard, "select_tentacles", Mock(return_value=agents))
+    sequence = Mock()
+    setup = sequence.host
+    credentials = sequence.credentials
     monkeypatch.setattr(init_cli, "setup_habitat", setup)
+    monkeypatch.setattr(init_cli, "setup_credentials", credentials)
     image = "example.test/agents@sha256:" + "a" * 64
     result = runner.invoke(
         service_typer,
@@ -47,8 +63,7 @@ def test_sbx_selection_runs_shared_setup_and_passes_image_to_preparation(
             str(tmp_path / "service"),
             "--port",
             "8123",
-            "--agent",
-            "codex",
+            *(argument for name in agents for argument in ("--agent", name)),
             "--channel",
             "none",
             *(["--habitat", "sbx", "--sandbox-image", image, "--yes"] if yes else []),
@@ -56,7 +71,13 @@ def test_sbx_selection_runs_shared_setup_and_passes_image_to_preparation(
         input="" if yes else f"sbx\n{image}\ny\n",
     )
     assert result.exit_code == 0, result.output
-    setup.assert_called_once_with("sbx", agent=["codex"], check=yes)
+    assert sequence.mock_calls == [
+        mock_call.host("sbx", check=yes),
+        *(
+            mock_call.credentials("sbx", service=service, check=yes)
+            for service in services
+        ),
+    ]
     arguments = commands.call_args_list[2].args[0]
     assert arguments[arguments.index("--sandbox-image") + 1] == image
 
@@ -67,6 +88,8 @@ def test_declining_sbx_review_does_not_set_up_host(
     monkeypatch.setattr(wizard, "select_tentacles", Mock(return_value=["codex"]))
     setup = Mock()
     monkeypatch.setattr(init_cli, "setup_habitat", setup)
+    credentials = Mock()
+    monkeypatch.setattr(init_cli, "setup_credentials", credentials)
     result = runner.invoke(
         service_typer,
         ["init", "--prepare", "--root", str(tmp_path / "service"), "--port", "8123"],
@@ -74,6 +97,7 @@ def test_declining_sbx_review_does_not_set_up_host(
     )
     assert result.exit_code == 1
     setup.assert_not_called()
+    credentials.assert_not_called()
     commands.assert_not_called()
 
 
@@ -84,6 +108,8 @@ def test_acp_wizard_passes_provider_arguments_and_uses_shared_sbx_setup(
     monkeypatch.setattr(wizard, "select_tentacles", Mock(return_value=["acp"]))
     setup = Mock()
     monkeypatch.setattr(init_cli, "setup_habitat", setup)
+    credentials = Mock()
+    monkeypatch.setattr(init_cli, "setup_credentials", credentials)
     image = "example.test/agents@sha256:" + "a" * 64
     command = "/opt/acp provider"
     result = runner.invoke(
@@ -120,7 +146,8 @@ def test_acp_wizard_passes_provider_arguments_and_uses_shared_sbx_setup(
     assert result.exit_code == 0, result.output
     assert "ACP provider" in result.output
     assert "two words" in result.output
-    setup.assert_called_once_with("sbx", agent=["acp"], check=yes)
+    setup.assert_called_once_with("sbx", check=yes)
+    credentials.assert_not_called()
     arguments = commands.call_args_list[2].args[0]
     assert arguments[arguments.index("--acp-command") + 1] == command
     assert "--acp-arg=--stdio" in arguments
