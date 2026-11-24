@@ -10,6 +10,7 @@ import tomllib
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import anyio
 import pytest
@@ -371,3 +372,30 @@ async def test_missing_sbx_has_an_actionable_error(
     else:
         with pytest.raises(HabitatError, match="configured executable"):
             await sandbox.command("version")
+
+
+async def test_published_service_uses_assigned_loopback_port_and_unpublishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    command = AsyncMock(
+        return_value=b'[{"host_ip":"127.0.0.1","host_port":42123,"sandbox_port":41234,"protocol":"tcp4"}]'
+    )
+    monkeypatch.setattr(SbxHabitat, "command", command)
+    habitat = SbxHabitat(
+        config=SbxHabitatConfig(image=IMAGE),
+        user_id=uuid7(),
+        root=tmp_path,
+        config_dir=tmp_path,
+    )
+
+    async def consume() -> None:
+        async with habitat.publish(41234) as endpoint:
+            assert endpoint == "http://127.0.0.1:42123"
+            raise RuntimeError("consumer failed")
+
+    with pytest.raises(RuntimeError, match="consumer failed"):
+        await consume()
+    assert [call.args for call in command.await_args_list] == [
+        ("ports", habitat.name, "--publish", "41234/tcp4", "--json"),
+        ("ports", habitat.name, "--unpublish", "127.0.0.1:42123:41234/tcp4"),
+    ]

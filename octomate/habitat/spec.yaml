@@ -38,6 +38,14 @@ permissions:
       - "**"
       - api.openai.com
 credentials:
+  - service: deepseek
+    apiKey:
+      name: DEEPSEEK_API_KEY
+      proxyManaged: true
+      inject:
+        - domain: api.deepseek.com
+          header: Authorization
+          format: Bearer %s
   - service: openai
     apiKey:
       name: OPENAI_API_KEY

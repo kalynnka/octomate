@@ -53,11 +53,12 @@ class DeepseekConfig(AgentConfig):
     )
     port: int = Field(
         default=3081,
-        ge=1,
+        ge=0,
         le=65535,
         description=(
-            "Port for Octomate's own DSH child, separate from native DSH's 3080. "
-            "An occupied port fails startup; existing runtimes are never attached."
+            "Port for Octomate's native DSH child, separate from native DSH's 3080. "
+            "Use 0 for an OS-assigned port. Managed habitats always use an OS-assigned "
+            "port. An occupied port fails startup; existing runtimes are never attached."
         ),
     )
     browser_url: HttpUrl | None = Field(
@@ -96,7 +97,8 @@ class DeepseekConfig(AgentConfig):
             "Native DSH home whose settings.yaml, .credentials.yaml, sessions "
             "and attachments are shared with Octomate's child. Its plugins, "
             "hooks, MCPs and profile patches are not loaded. The child receives "
-            "a separate temporary DSH_HOME."
+            "a separate temporary DSH_HOME. Managed habitats instead keep durable "
+            "DSH data under .dsh in the owner's configuration volume."
         ),
     )
     claims: dict[str, Claim] = Field(

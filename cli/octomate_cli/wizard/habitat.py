@@ -42,7 +42,7 @@ def habitat_step(
         )
     if any(name not in AGENT_SERVICES for name in agents):
         raise typer.BadParameter(
-            "Only Claude and Codex currently support sbx; choose native for other agents."
+            "sbx setup supports Claude, Codex and DeepSeek; choose native for other agents."
         )
     if image is None and interactive:
         image = Prompt.ask(

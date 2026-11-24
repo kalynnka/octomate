@@ -221,13 +221,12 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
             for message in await conversations.effective_messages(conversation)
         ] == [compaction.messages[0].id, conversation.runs[-1].messages[-1].id]
         assert len((await conversations.get(conversation.id)).runs) == 2
-        assert tentacle.process is not None
-        assert tentacle.process.launch_token is not None
-        monkeypatch.setenv(
-            "DSH_LAUNCH_TOKEN", tentacle.process.launch_token.get_secret_value()
-        )
+        process = tentacle.ink.processes["core"]
+        connection = await tentacle.ink.acquire()
+        assert process.launch_token is not None
+        monkeypatch.setenv("DSH_LAUNCH_TOKEN", process.launch_token.get_secret_value())
         history = await asyncio.to_thread(
-            DshHistoryClient, str(tentacle.ink.client.base_url)
+            DshHistoryClient, str(connection.client.base_url)
         )
         records = await asyncio.to_thread(new_entries, history, first_session, 0)
         kinds = [
@@ -322,15 +321,15 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
 
         running = asyncio.create_task(run_running())
         await asyncio.wait_for(waiting.wait(), 10)
-        reply = await tentacle.ink.client.remote(
+        reply = await connection.client.remote(
             "session/cancel", {"request": {"sessionId": first_session}}
         )
         assert isinstance(reply, OkResult)
         await asyncio.wait_for(running, 10)
         await asyncio.wait_for(cancelled.wait(), 10)
-        assert not tentacle.ink.subscribers
+        assert not connection.subscribers
         assert not tentacle.bridge_contexts
-    assert tentacle.process is None
+    assert not tentacle.ink.connections
     assert (home / "cordis.patch.yml").read_text() == native_patch
     assert (native_profile / "cordis.patch.yml").read_text() == native_patch
     assert "OCTOMATE_DSH_TEST_TOKEN: synthetic\n" in credentials.read_text()

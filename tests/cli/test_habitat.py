@@ -161,12 +161,12 @@ def test_domains_match_the_shipped_kit() -> None:
                 entry["domain"] for entry in credential["apiKey"]["inject"]
             ]
         expected[credential["service"]] = modes
-    assert habitat.BINDING_DOMAINS == expected
+    assert habitat.CREDENTIAL_APPROVAL_DOMAINS == expected
 
 
 @pytest.mark.parametrize(
     ("agents", "target"),
-    [(["deepseek"], DeploymentTarget.launchd), (["codex"], DeploymentTarget.docker)],
+    [(["unsupported"], DeploymentTarget.launchd), (["codex"], DeploymentTarget.docker)],
 )
 def test_sbx_selection_rejects_unsupported_runtime(
     agents: list[str], target: DeploymentTarget

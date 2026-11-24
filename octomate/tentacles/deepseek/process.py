@@ -26,8 +26,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit, urlunsplit
 
+import anyio
+from anyio.abc import ByteStream
+from anyio.streams.buffered import BufferedByteReceiveStream
 from pydantic import HttpUrl, SecretStr
 
+from octomate.habitat.sbx import SbxHabitat
 from octomate.tentacles.deepseek.schema import DrivenConfigPatch
 
 logger = logging.getLogger(__name__)
@@ -80,6 +84,10 @@ class DeepseekProcess:
     dsh_home: Path
     ready_timeout: float
     browser_url: HttpUrl | None = None
+    habitat: SbxHabitat | None = None
+    env: dict[str, str] = field(default_factory=dict)
+    guest_task: asyncio.Task[None] | None = field(default=None, init=False)
+    guest_stop: asyncio.Event = field(default_factory=asyncio.Event, init=False)
     process: asyncio.subprocess.Process | None = field(default=None, init=False)
     relays: list[asyncio.Task[None]] = field(default_factory=list, init=False)
     unknown_option: str | None = field(default=None, init=False)
@@ -149,6 +157,23 @@ class DeepseekProcess:
         the retry would only hide the real error behind a second identical
         failure.
         """
+        if self.habitat is not None:
+            endpoint: asyncio.Future[HttpUrl] = (
+                asyncio.get_running_loop().create_future()
+            )
+            self.guest_stop.clear()
+            self.guest_task = asyncio.create_task(
+                self.run_guest(self.habitat, endpoint)
+            )
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(endpoint), self.ready_timeout
+                )
+            except BaseException:
+                endpoint.cancel()
+                self.guest_task.cancel()
+                await asyncio.gather(self.guest_task, return_exceptions=True)
+                raise
         try:
             await self.check_version()
             try:
@@ -164,6 +189,106 @@ class DeepseekProcess:
         except BaseException:
             await self.stop()
             raise
+
+    async def run_guest(
+        self, habitat: SbxHabitat, endpoint: asyncio.Future[HttpUrl]
+    ) -> None:
+        """Keep the guest process and its port mapping in one owning task."""
+        try:
+            launcher = await asyncio.to_thread(
+                Path(__file__).with_name("guest.py").read_text
+            )
+            async with habitat.execute(
+                "python",
+                "-c",
+                launcher,
+                self.executable,
+                "web",
+                *self.extra_args,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "0",
+                NO_OPEN,
+                *(
+                    ["--trusted-host", urlsplit(str(self.browser_url)).netloc]
+                    if self.browser_url is not None
+                    else []
+                ),
+                workdir=str(self.dsh_home.parent),
+                env=self.env,
+                stderr=self.capture_diagnostic,
+            ) as stream:
+                stdout = BufferedByteReceiveStream(stream)
+                try:
+                    await self.connect_guest(habitat, stream, stdout, endpoint)
+                finally:
+                    await self.finish_guest(
+                        stream, asyncio.create_task(self.drain_guest(stdout))
+                    )
+        except BaseException as error:
+            self.log_startup_output()
+            if isinstance(error, anyio.EndOfStream | anyio.IncompleteRead):
+                error = RuntimeError(
+                    "dsh web exited before reporting its guest URL; check startup output"
+                )
+            if not endpoint.done():
+                endpoint.set_exception(error)
+            else:
+                raise
+
+    async def connect_guest(
+        self,
+        habitat: SbxHabitat,
+        stream: ByteStream,
+        stdout: BufferedByteReceiveStream,
+        endpoint: asyncio.Future[HttpUrl],
+    ) -> None:
+        """Read readiness before publishing the authenticated HTTP/WebSocket endpoint."""
+        await stream.send(
+            self.driven_patch(self.dsh_home).model_dump_json().encode() + b"\n"
+        )
+        while True:
+            line = (await stdout.receive_until(b"\n", 65536)).decode(errors="replace")
+            match = BANNER.search(line)
+            if match is not None:
+                break
+            self.capture_diagnostic(line)
+        launch_url = HttpUrl(match.group(1))
+        token = dict(launch_url.query_params()).get("token")
+        self.launch_token = SecretStr(token) if token else None
+        if launch_url.host != "127.0.0.1" or launch_url.port is None:
+            raise RuntimeError("DSH did not report its guest loopback listener")
+        async with habitat.publish(launch_url.port) as address:
+            endpoint.set_result(HttpUrl(address))
+            self.ready = True
+            relay = asyncio.create_task(self.drain_guest(stdout))
+            try:
+                await self.guest_stop.wait()
+            finally:
+                relay.cancel()
+                await asyncio.gather(relay, return_exceptions=True)
+
+    async def finish_guest(self, stream: ByteStream, relay: asyncio.Task[None]) -> None:
+        """Signal EOF and let the guest supervisor reap DSH before detaching."""
+        with anyio.CancelScope(shield=True):
+            try:
+                # An exited supervisor has already closed its end of the socket.
+                with contextlib.suppress(OSError, anyio.BrokenResourceError):
+                    await stream.send_eof()
+                await asyncio.wait_for(relay, 5)
+            finally:
+                relay.cancel()
+                await asyncio.gather(relay, return_exceptions=True)
+
+    async def drain_guest(self, stdout: BufferedByteReceiveStream) -> None:
+        try:
+            while True:
+                self.capture_diagnostic(
+                    (await stdout.receive_until(b"\n", 65536)).decode(errors="replace")
+                )
+        except (anyio.EndOfStream, anyio.IncompleteRead):
+            return
 
     async def launch(self, *, suppress_browser: bool) -> HttpUrl:
         """One spawn attempt, up to the banner.
@@ -189,89 +314,7 @@ class DeepseekProcess:
         patch = Path(self.runtime_home.name) / "driven.json"
         await asyncio.to_thread(
             patch.write_text,
-            DrivenConfigPatch(
-                [
-                    {
-                        "id": "settings",
-                        "config": {"path": shared_home / "settings.yaml"},
-                    },
-                    {
-                        "id": "credentials",
-                        "config": {"path": shared_home / ".credentials.yaml"},
-                    },
-                    {
-                        "id": "session-persistence-jsonl",
-                        "config": {"root": shared_home / "sessions"},
-                    },
-                    {"id": "attachment-local", "config": {"dshHome": shared_home}},
-                    {
-                        "id": "sandbox",
-                        "name": "@deepseek-ai/dsh-sandbox-local",
-                        "disabled": False,
-                        "config": {
-                            "runnerCommand": [],
-                            "runnerFailureSignatures": [],
-                        },
-                    },
-                    {
-                        "id": "sandbox-policy",
-                        "name": "@deepseek-ai/dsh-sandbox-policy",
-                        "disabled": False,
-                        "config": {"mode": "workspace-write"},
-                    },
-                    {
-                        "id": "bash-sandbox",
-                        "name": "@deepseek-ai/dsh-bash-sandbox",
-                        "disabled": os.name == "nt",
-                    },
-                    {
-                        "id": "pwsh-sandbox",
-                        "name": "@deepseek-ai/dsh-pwsh-sandbox",
-                        "disabled": os.name != "nt",
-                    },
-                    {
-                        "id": "fs-sandbox",
-                        "name": "@deepseek-ai/dsh-fs-sandbox",
-                        "disabled": False,
-                    },
-                    {
-                        "id": "approval",
-                        "name": "@deepseek-ai/dsh-user-approval",
-                        "disabled": False,
-                        "config": {"policy": "ask"},
-                    },
-                    {
-                        "id": "permission",
-                        "name": "@deepseek-ai/dsh-permission-presets",
-                        "disabled": False,
-                        "config": {
-                            "presets": {
-                                "read-only": {
-                                    "sandbox": "read-only",
-                                    "approval": "ask",
-                                },
-                                "workspace-write": {
-                                    "sandbox": "workspace-write",
-                                    "approval": "ask",
-                                },
-                                "danger-full-access": {
-                                    "sandbox": "danger-full-access",
-                                    "approval": "never",
-                                },
-                            },
-                        },
-                    },
-                    {"id": "hmr", "disabled": True},
-                    {"id": "plugin-manager", "disabled": True},
-                    {"id": "tool-plugin-manager", "disabled": True},
-                    # Presets must not expose profile-management tools whose
-                    # host service is disabled in this managed process.
-                    {
-                        "id": "agent-preset-registry",
-                        "isolate": {"profileContext": True},
-                    },
-                ]
-            ).model_dump_json(),
+            self.driven_patch(shared_home).model_dump_json(),
         )
         process = await asyncio.create_subprocess_exec(
             self.executable,
@@ -321,6 +364,92 @@ class DeepseekProcess:
             )
         self.relays.append(asyncio.create_task(self.relay_stdout(stdout)))
         return base_url
+
+    def driven_patch(self, shared_home: Path) -> DrivenConfigPatch:
+        """Isolate extensions while keeping durable data in the runtime home."""
+        return DrivenConfigPatch(
+            [
+                {
+                    "id": "settings",
+                    "config": {"path": shared_home / "settings.yaml"},
+                },
+                {
+                    "id": "credentials",
+                    "config": {"path": shared_home / ".credentials.yaml"},
+                },
+                {
+                    "id": "session-persistence-jsonl",
+                    "config": {"root": shared_home / "sessions"},
+                },
+                {"id": "attachment-local", "config": {"dshHome": shared_home}},
+                {
+                    "id": "sandbox",
+                    "name": "@deepseek-ai/dsh-sandbox-local",
+                    "disabled": False,
+                    "config": {
+                        "runnerCommand": [],
+                        "runnerFailureSignatures": [],
+                    },
+                },
+                {
+                    "id": "sandbox-policy",
+                    "name": "@deepseek-ai/dsh-sandbox-policy",
+                    "disabled": False,
+                    "config": {"mode": "workspace-write"},
+                },
+                {
+                    "id": "bash-sandbox",
+                    "name": "@deepseek-ai/dsh-bash-sandbox",
+                    "disabled": os.name == "nt",
+                },
+                {
+                    "id": "pwsh-sandbox",
+                    "name": "@deepseek-ai/dsh-pwsh-sandbox",
+                    "disabled": os.name != "nt",
+                },
+                {
+                    "id": "fs-sandbox",
+                    "name": "@deepseek-ai/dsh-fs-sandbox",
+                    "disabled": False,
+                },
+                {
+                    "id": "approval",
+                    "name": "@deepseek-ai/dsh-user-approval",
+                    "disabled": False,
+                    "config": {"policy": "ask"},
+                },
+                {
+                    "id": "permission",
+                    "name": "@deepseek-ai/dsh-permission-presets",
+                    "disabled": False,
+                    "config": {
+                        "presets": {
+                            "read-only": {
+                                "sandbox": "read-only",
+                                "approval": "ask",
+                            },
+                            "workspace-write": {
+                                "sandbox": "workspace-write",
+                                "approval": "ask",
+                            },
+                            "danger-full-access": {
+                                "sandbox": "danger-full-access",
+                                "approval": "never",
+                            },
+                        },
+                    },
+                },
+                {"id": "hmr", "disabled": True},
+                {"id": "plugin-manager", "disabled": True},
+                {"id": "tool-plugin-manager", "disabled": True},
+                # Presets must not expose profile-management tools whose
+                # host service is disabled in this managed process.
+                {
+                    "id": "agent-preset-registry",
+                    "isolate": {"profileContext": True},
+                },
+            ]
+        )
 
     async def read_banner(
         self, process: asyncio.subprocess.Process, stdout: asyncio.StreamReader
@@ -411,6 +540,11 @@ class DeepseekProcess:
         must not outlive octomate. A SIGKILLed octomate does orphan the child
         (dsh has no parent-liveness flag); that residual risk is documented,
         not solved here."""
+        if self.guest_task is not None:
+            self.guest_stop.set()
+            await self.guest_task
+            self.guest_task = None
+            self.launch_token = None
         for task in self.relays:
             task.cancel()
         for task in self.relays:

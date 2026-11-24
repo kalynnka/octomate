@@ -17,7 +17,7 @@ from typing import Literal, TypedDict, Unpack
 
 import anyio
 from anyio.abc import UNIXSocketStream
-from pydantic import UUID7
+from pydantic import UUID7, BaseModel, Field, TypeAdapter
 from yarl import URL
 
 from octomate.config.habitat import SbxHabitatConfig
@@ -28,6 +28,15 @@ from octomate.telemetry import habitat_logfire
 COMMAND_TIMEOUT = 30.0
 PREPARE_TIMEOUT = 300.0
 logger = logging.getLogger(__name__)
+
+
+class PublishedPort(BaseModel):
+    host_ip: str
+    host_port: int = Field(ge=1, le=65535)
+    sandbox_port: int = Field(ge=1, le=65535)
+
+
+published_ports_adapter = TypeAdapter(list[PublishedPort])
 
 
 class SbxKitArgs(TypedDict):
@@ -86,6 +95,32 @@ class SbxHabitat(ManagedHabitat):
                 "Only the owner's own volumes are visible in their sandbox"
             )
         return PurePosixPath(volume.path)
+
+    @asynccontextmanager
+    async def publish(self, port: int) -> AsyncGenerator[str]:
+        """Expose a guest TCP port on ephemeral host loopback for this context."""
+        data = await self.command(
+            "ports", self.name, "--publish", f"{port}/tcp4", "--json"
+        )
+        ports = published_ports_adapter.validate_json(data)
+        matches = [
+            binding
+            for binding in ports
+            if binding.sandbox_port == port and binding.host_ip == "127.0.0.1"
+        ]
+        if len(matches) != 1:
+            raise HabitatError("sbx did not return one published port for the service")
+        binding = matches[0]
+        try:
+            yield f"http://127.0.0.1:{binding.host_port}"
+        finally:
+            with anyio.CancelScope(shield=True):
+                await self.command(
+                    "ports",
+                    self.name,
+                    "--unpublish",
+                    f"127.0.0.1:{binding.host_port}:{port}/tcp4",
+                )
 
     @asynccontextmanager
     async def cli(

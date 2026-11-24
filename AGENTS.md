@@ -64,6 +64,7 @@ Always generate UUIDs with `uuid7` from `uuid_utils.compat`, including in tests.
 4. Keep batch/action ownership clear: batches group actions; each action represents exactly one user-facing approval or one user-facing question. Do not wrap multiple logical actions inside one action's metadata.
 5. Use polymorphic ORM/schema mappings when persisted variants share a table but have distinct types. The ORM inheritance, schema classes, and status types should line up with the domain variants.
 6. Preserve platform callback state as typed action data where practical. Cards and blocks may serialize ids and fields, but callback handlers should rehydrate typed actions before applying business logic.
+7. Create reusable `TypeAdapter` instances at module scope alongside the types they validate. Do not construct a disposable adapter inline or recreate it inside a function on each call; reuse the named adapter for validation and serialization.
 
 ## Persistence
 

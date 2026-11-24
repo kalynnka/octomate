@@ -10,7 +10,6 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config.acp import AcpAgentConfig, AcpProvider
-from octomate.config.agents import DeepseekConfig
 from octomate.config.habitat import SbxHabitatConfig
 from octomate.habitat import Habitat, HabitatError, NativeHabitat
 from octomate.habitat.sbx import SbxHabitat
@@ -22,7 +21,6 @@ from octomate.schemas.volumes.storage import HostDirectory
 from octomate.schemas.workspaces import Workspace
 from octomate.tentacles.acp.base import AcpAgentTentacle
 from octomate.tentacles.agent import AgentTentacle
-from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.inkling import InklingTentacle
 from tests.support.agents import FakeAgent
 from tests.support.managers import a_project, a_registry, a_thread, a_workspace_manager
@@ -170,6 +168,7 @@ async def test_invocation_borrows_the_habitat_without_managing_its_lifetime(
             "npm_config_store_dir": str(root / "cache" / "pnpm"),
             "CLAUDE_CONFIG_DIR": str(root / "config" / ".claude"),
             "CODEX_HOME": str(root / "config" / ".codex"),
+            "DSH_HOME": str(root / "config" / ".dsh"),
         }
         mirror = await workspace.volume.mirror
         assert mirror is not None
@@ -421,11 +420,11 @@ async def test_core_refuses_an_anonymous_project(
             pytest.fail("An anonymous project invocation must not start")
 
 
-@pytest.mark.parametrize("kind", ["inkling", "acp", "deepseek", "anonymous"])
+@pytest.mark.parametrize("kind", ["inkling", "acp", "anonymous"])
 async def test_sandbox_dispatch_refuses_before_preparing_anything(
     in_memory_engine: AsyncEngine,
     monkeypatch: pytest.MonkeyPatch,
-    kind: Literal["inkling", "acp", "deepseek", "anonymous"],
+    kind: Literal["inkling", "acp", "anonymous"],
 ) -> None:
     app = Octomate()
     app.habitats.config = SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64)
@@ -449,30 +448,17 @@ async def test_sandbox_dispatch_refuses_before_preparing_anything(
             habitats=app.habitats,
             config=AcpAgentConfig(provider=AcpProvider(command="unused")),
         )
-    elif kind == "deepseek":
-        agent = DeepseekTentacle(
-            app,
-            auth=app.auth,
-            habitats=app.habitats,
-            config=DeepseekConfig(),
-        )
     else:
         agent = FakeAgent()
         agent.habitats = app.habitats
     message = "registered user" if kind == "anonymous" else "cannot run in a sandbox"
-    try:
-        with pytest.raises(HabitatError, match=message):
-            async with agent.inhabit(
-                thread=thread,
-                conversation=Conversation(
-                    thread_id=thread.id, agent_tentacle_id=agent.id
-                ),
-                owner_id=None if kind == "anonymous" else (await a_user()).id,
-            ):
-                pytest.fail("Sandbox execution must not fall back to the host")
-    finally:
-        if isinstance(agent, DeepseekTentacle):
-            await agent.ink.client.http_client.aclose()
+    with pytest.raises(HabitatError, match=message):
+        async with agent.inhabit(
+            thread=thread,
+            conversation=Conversation(thread_id=thread.id, agent_tentacle_id=agent.id),
+            owner_id=None if kind == "anonymous" else (await a_user()).id,
+        ):
+            pytest.fail("Sandbox execution must not fall back to the host")
     prepare.assert_not_awaited()
     assert not app.habitats.residences
     assert not app.workspaces.volumes_dir.exists()

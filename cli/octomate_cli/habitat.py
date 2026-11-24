@@ -54,13 +54,20 @@ class SecretInventory(BaseModel):
     secrets: list[StoredSecret]
 
 
-AGENT_SERVICES = {"claude": "anthropic", "codex": "openai"}
-BINDING_DOMAINS: dict[str, dict[str, list[str]]] = {
+type Service = Literal["anthropic", "openai", "deepseek"]
+
+AGENT_SERVICES: dict[str, Service] = {
+    "claude": "anthropic",
+    "codex": "openai",
+    "deepseek": "deepseek",
+}
+CREDENTIAL_APPROVAL_DOMAINS: dict[Service, dict[str, list[str]]] = {
     "openai": {
         "oauth": ["auth.openai.com", "chatgpt.com"],
         "apiKey": ["api.openai.com"],
     },
     "anthropic": {"oauth": ["platform.claude.com", "api.anthropic.com"]},
+    "deepseek": {"apiKey": ["api.deepseek.com"]},
 }
 
 
@@ -81,7 +88,7 @@ def run_sbx(executable: str, *arguments: str, capture: bool = False) -> str:
     return result.stdout or ""
 
 
-def credential_step(executable: str, service: str, *, check: bool) -> str:
+def credential_step(executable: str, service: Service, *, check: bool) -> str:
     inventory = SecretInventory.model_validate_json(
         run_sbx(executable, "secret", "ls", "--global", "--json", capture=True)
     )
@@ -101,7 +108,7 @@ def credential_step(executable: str, service: str, *, check: bool) -> str:
         else None
     )
     if check:
-        if mode not in BINDING_DOMAINS[service]:
+        if mode not in CREDENTIAL_APPROVAL_DOMAINS[service]:
             raise typer.BadParameter(f"No supported sbx credential for {service}.")
         return mode
     if service == "anthropic":
@@ -113,12 +120,15 @@ def credential_step(executable: str, service: str, *, check: bool) -> str:
             )
         console.print("Claude: using the existing sbx OAuth login.")
         return mode
-    choices = ["oauth", "apiKey"]
+    choices = list(CREDENTIAL_APPROVAL_DOMAINS[service])
     if mode is not None:
         choices.insert(0, "keep")
-        console.print(f"OpenAI: stored {mode} credential found.")
+        console.print(f"{service}: stored {mode} credential found.")
     selected = Prompt.ask(
-        "OpenAI authentication", choices=choices, default=choices[0], console=console
+        f"{service} authentication",
+        choices=choices,
+        default=choices[0],
+        console=console,
     )
     if selected == "keep" and mode is not None:
         return mode
@@ -139,7 +149,7 @@ def setup(
     ],
     agent: Annotated[
         list[str] | None,
-        typer.Option("--agent", help="claude or codex; repeat for both."),
+        typer.Option("--agent", help="claude, codex or deepseek; repeat for several."),
     ] = None,
     check: Annotated[
         bool,
@@ -166,7 +176,7 @@ def setup(
     agents = list(dict.fromkeys(name.strip() for name in agent))
     if not agents or any(name not in AGENT_SERVICES for name in agents):
         raise typer.BadParameter(
-            "Only claude and codex currently support sbx habitats."
+            "sbx credential setup supports claude, codex and deepseek."
         )
     executable = shutil.which("sbx")
     if executable is None:
@@ -209,7 +219,7 @@ def setup(
         mode = credential_step(executable, service, check=check)
         bindings = document.bindings.get(service, ServiceBindings())
         binding = bindings.oauth if mode == "oauth" else bindings.apiKey
-        domains = BINDING_DOMAINS[service][mode]
+        domains = CREDENTIAL_APPROVAL_DOMAINS[service][mode]
         missing = [
             domain
             for domain in domains

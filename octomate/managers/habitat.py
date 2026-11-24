@@ -88,6 +88,7 @@ class Invocation:
             settings.update(
                 CLAUDE_CONFIG_DIR=str(path / ".claude"),
                 CODEX_HOME=str(path / ".codex"),
+                DSH_HOME=str(path / ".dsh"),
             )
         return settings
 

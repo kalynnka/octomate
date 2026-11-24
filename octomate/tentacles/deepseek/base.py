@@ -11,7 +11,6 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncGenerator, Sequence
-from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from functools import cached_property, partial
 from pathlib import Path
@@ -20,7 +19,6 @@ from typing import TYPE_CHECKING, ClassVar, overload
 from uuid import uuid4
 
 import anyio
-import httpx2
 from anyio.abc import ObjectSendStream
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -39,7 +37,7 @@ from octomate_protocol.stream import (
     StreamWelcome,
     client_message_adapter,
 )
-from pydantic import UUID7, HttpUrl, ValidationError
+from pydantic import UUID7, ValidationError
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -64,13 +62,11 @@ from rich.style import Style
 from uuid_utils.compat import uuid7
 
 from octomate.config.agents import Claim, DeepseekConfig
-from octomate.config.habitat import NativeHabitatConfig
 from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
     MessageSentEvent,
 )
-from octomate.habitat import HabitatError
 from octomate.managers.habitat import Invocation
 from octomate.nerve import Impulse
 from octomate.prompts import tagged
@@ -91,7 +87,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import Thread, ThreadKey
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import agent_input_message_attributes, deepseek_logfire
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
@@ -100,12 +96,10 @@ from octomate.tentacles.deepseek.adapter import (
     DeepseekRunAccumulator,
 )
 from octomate.tentacles.deepseek.catalog import FORK_COMMAND, DeepseekCommandDescriptor
-from octomate.tentacles.deepseek.client import DeepseekApiClient
 from octomate.tentacles.deepseek.compactions import DeepseekCompactions
 from octomate.tentacles.deepseek.hooks import DeepseekHookInput
 from octomate.tentacles.deepseek.ingest import DeepseekHookIngest
 from octomate.tentacles.deepseek.ink import DeepseekInk, TurnFrame
-from octomate.tentacles.deepseek.process import DeepseekProcess
 from octomate.tentacles.deepseek.tailer import DeepseekEventTailer
 from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
@@ -190,7 +184,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     id: ClassVar[str] = type
     config: DeepseekConfig = field(init=False)
     default_provider: str | None = field(init=False)
-    process: DeepseekProcess | None = field(default=None, init=False, repr=False)
     ink: DeepseekInk = field(init=False, repr=False)
     conversations: ConversationManager = field(init=False, repr=False)
     workspaces: WorkspaceManager = field(init=False, repr=False)
@@ -216,22 +209,14 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     ) -> None:
         session_id = conversation.external_id
         if session_id is not None and session_id in self.driven_sessions:
-            await self.ink.set_permission_mode(session_id, mode)
+            connection = await self.ink.acquire(session_id=session_id)
+            await connection.set_permission_mode(session_id, mode)
 
     # DeepSeek's own blue, so dsh's lines read as dsh's in a shared console.
     brand_color: ClassVar[Style | None] = Style(color="#4D6BFE", bold=True)
     default_icon_url: ClassVar[str | None] = "/agent-icons/deepseek.svg"
 
     description: str = "WIP DeepSeek Harness coding agent for repository-aware software engineering tasks."
-
-    def inhabit(
-        self, *, thread: Thread, conversation: Conversation, owner_id: UUID7 | None
-    ) -> AbstractAsyncContextManager[Invocation]:
-        if not isinstance(self.habitats.config, NativeHabitatConfig):
-            raise HabitatError(f"Agent {self.id!r} cannot run in a sandbox yet")
-        return super().inhabit(
-            thread=thread, conversation=conversation, owner_id=owner_id
-        )
 
     def __init__(
         self,
@@ -259,15 +244,11 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         self.users = octomate.users
         self.bearers = octomate.bearers
         self.description = description or self.description
-        self.process = None
-        # The endpoint is fixed by config, so the client lives as long as the
-        # tentacle — launch, runs and teardown all speak through it.
-        endpoint = HttpUrl(f"http://{config.host}:{config.port}")
         self.ink = DeepseekInk(
-            DeepseekApiClient(
-                base_url=endpoint,
-                http_client=httpx2.AsyncClient(base_url=str(endpoint)),
-            )
+            config,
+            native=self.habitats.config.mode == "native",
+            answer_interaction=self.answer_interaction,
+            invalidate_commands=partial(self.commands.invalidate, agent_id=self.id),
         )
         self.bridge_contexts = {}
         self.pendings = {}
@@ -471,30 +452,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 with contextlib.suppress(Exception):
                     await websocket.close()
 
-    async def start_process(self) -> DeepseekProcess:
-        """Start our isolated child and verify its authenticated Remote API."""
-        process = DeepseekProcess(
-            executable=self.config.executable,
-            port=self.config.port,
-            extra_args=list(self.config.extra_args),
-            dsh_home=self.config.dsh_home,
-            ready_timeout=self.config.ready_timeout,
-            browser_url=self.config.browser_url,
-        )
-        base_url = await process.start()
-        try:
-            if process.launch_token is not None:
-                await self.ink.client.authenticate(process.launch_token)
-            if not await self.ink.client.answering():
-                raise RuntimeError(
-                    f"dsh reported {base_url} but does not answer at {self.ink.client.base_url}"
-                )
-        except BaseException:
-            await process.stop()
-            raise
-        logger.info("dsh Remote API connected")
-        return process
-
     async def probe_commands(self, context: CommandContext) -> CommandCatalog:
         """Read the live session's registry without creating a session or turn."""
         conversation = context.conversation
@@ -504,7 +461,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 status="unavailable",
                 message="DSH command discovery requires an existing native session.",
             )
-        if not self.ink.running:
+        try:
+            connection = await self.ink.acquire(session_id=conversation.external_id)
+        except (AgentRunError, RuntimeError):
             return CommandCatalog(
                 context=context,
                 status="unavailable",
@@ -512,7 +471,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             )
         descriptors = {
             entry.id: entry
-            for entry in await self.ink.list_commands(conversation.external_id)
+            for entry in await connection.list_commands(conversation.external_id)
         }
         descriptors["fork"] = descriptors.get("fork", FORK_COMMAND).model_copy(
             update={
@@ -574,18 +533,15 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 status="stale", message="This command changed; refresh commands."
             )
             return
-        if not self.ink.running:
-            yield CommandError(
-                status="unavailable",
-                message="The DSH Remote connection is not running.",
-            )
-            return
         session_id = conversation.external_id
         line = f"/{descriptor.name}"
         if intent.arguments:
             line += f" {intent.arguments}"
         if invocation is None:
             raise ValueError("This command requires a prepared invocation")
+        connection = await self.ink.acquire(
+            invocation.habitat, env=invocation.environment, session_id=session_id
+        )
         async with (
             self.conversation_locks.hold(str(conversation.id)),
             self.driving(session_id),
@@ -594,9 +550,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             conversation = await self.conversations.get(
                 conversation.id, with_runs=False
             )
-            if (
-                await self.conversations.latest_cwd(conversation.id)
-                != invocation.workspace.path
+            if await self.conversations.latest_cwd(conversation.id) != Path(
+                invocation.cwd
             ):
                 raise ValueError(
                     "DeepSeek cannot resume a session in a different or unverified workspace"
@@ -607,15 +562,15 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             )
             self.check_permission_mode(permission_mode)
             if context.model is not None:
-                await self.ink.select_model(
+                await connection.select_model(
                     session_id,
                     context.model,
                     default_provider=self.default_provider,
                     reasoning_effort=effort,
                 )
-            await self.ink.set_permission_mode(session_id, permission_mode)
-            queue = await self.ink.subscribe(session_id)
-            resources.push_async_callback(self.ink.unsubscribe, session_id)
+            await connection.set_permission_mode(session_id, permission_mode)
+            queue = await connection.subscribe(session_id)
+            resources.push_async_callback(connection.unsubscribe, session_id)
             self.bridge_contexts[session_id] = DeepseekBridgeContext(
                 conversation=conversation,
                 session_allowed=set(conversation.allowed_tools),
@@ -624,7 +579,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 frames=queue,
             )
             resources.callback(self.bridge_contexts.pop, session_id, None)
-            execution = await self.ink.execute_command(session_id, line)
+            execution = await connection.execute_command(session_id, line)
             if execution is None:
                 yield CommandError(
                     status="stale",
@@ -754,9 +709,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         )
 
     async def discover_models(self) -> None:
+        connection = await self.ink.acquire()
         catalog = ModelCatalog.model_validate(
             self.unwrap(
-                await self.ink.client.remote("session/modelCatalog", {}),
+                await connection.client.remote("session/modelCatalog", {}),
                 "session/modelCatalog",
             )
         )
@@ -792,9 +748,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         self.default_provider = catalog.default.provider
 
     async def discover_permissions(self) -> None:
+        connection = await self.ink.acquire()
         catalog = PermissionCatalog.model_validate(
             self.unwrap(
-                await self.ink.client.remote("permissionPresets/catalog", {}),
+                await connection.client.remote("permissionPresets/catalog", {}),
                 "permissionPresets/catalog",
             )
         )
@@ -803,23 +760,11 @@ class DeepseekTentacle(AgentTentacle[str, None]):
 
     async def __aenter__(self) -> DeepseekTentacle:
         await self.ink.__aenter__()
-        # The mux socket must be open before anything prompts, so a run's
-        # first frames cannot outrun the subscribed baseline. A failed
-        # handshake is a broken harness, not weather: fail the start rather
-        # than retrying.
         try:
-            self.process = await self.start_process()
             await self.discover_models()
             await self.discover_permissions()
-            await self.ink.start(
-                answer_interaction=self.answer_interaction,
-                invalidate_commands=partial(self.commands.invalidate, agent_id=self.id),
-            )
         except BaseException:
             await self.ink.__aexit__()
-            if self.process is not None:
-                await self.process.stop()
-            self.process = None
             raise
         self.commands.invalidate(agent_id=self.id)
         return await super().__aenter__()
@@ -842,9 +787,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     future.cancel()
             self.pendings.clear()
             self.bridge_contexts.clear()
-            if self.process is not None:
-                await self.process.stop()
-                self.process = None
         if cancelled:
             raise asyncio.CancelledError
 
@@ -1021,8 +963,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         self, conversation: Conversation, session_id: str
     ) -> None:
         try:
+            connection = await self.ink.acquire(session_id=session_id)
             value = self.unwrap(
-                await self.ink.client.remote(
+                await connection.client.remote(
                     "session/projections", {"request": {"sessionId": session_id}}
                 ),
                 "session/projections",
@@ -1065,13 +1008,12 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deepseek_model = model.model_name if isinstance(model, Model) else model
         conversation = invocation.conversation
         self.check_conversation(conversation, thread_id=invocation.thread_id)
-        client = self.ink.client
-        if not self.ink.running:
-            # The client exists from birth, but a run needs the mux pump: an
-            # un-entered tentacle would prompt and then wait on frames forever.
-            raise RuntimeError(
-                "DeepseekTentacle.run requires the tentacle to be entered"
-            )
+        connection = await self.ink.acquire(
+            invocation.habitat,
+            env=invocation.environment,
+            session_id=conversation.external_id,
+        )
+        client = connection.client
         if output_type is not None:
             raise ValueError(
                 "DeepseekTentacle does not support structured output: dsh's "
@@ -1103,7 +1045,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         if isinstance(instructions, str) and instructions:
             prompt_text = f"{tagged('instructions', instructions)}\n\n{prompt_text}"
 
-        run_cwd = str(invocation.workspace.path)
+        run_cwd = str(invocation.cwd)
 
         with deepseek_logfire.span(
             "DeepseekTentacle {agent_id} {run_name} [{conversation_address}]",
@@ -1124,11 +1066,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 )
                 self.check_permission_mode(permission_mode)
                 session_id = conversation.external_id
-                if (
-                    session_id
-                    and await self.conversations.latest_cwd(conversation.id)
-                    != invocation.workspace.path
-                ):
+                if session_id and await self.conversations.latest_cwd(
+                    conversation.id
+                ) != Path(invocation.cwd):
                     raise ValueError(
                         "DeepSeek cannot resume a session in a different or unverified workspace"
                     )
@@ -1146,17 +1086,22 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     )
                     session_id = created.session_id
                     await self.conversations.set_external_id(conversation, session_id)
+                    await self.ink.acquire(
+                        invocation.habitat,
+                        env=invocation.environment,
+                        session_id=session_id,
+                    )
                 async with self.driving(session_id):
                     if deepseek_model is not None:
-                        await self.ink.select_model(
+                        await connection.select_model(
                             session_id,
                             deepseek_model,
                             default_provider=self.default_provider,
                             reasoning_effort=effort,
                         )
-                    await self.ink.set_permission_mode(session_id, permission_mode)
+                    await connection.set_permission_mode(session_id, permission_mode)
 
-                    queue = await self.ink.subscribe(session_id)
+                    queue = await connection.subscribe(session_id)
                     self.bridge_contexts[session_id] = DeepseekBridgeContext(
                         conversation=conversation,
                         session_allowed=set(conversation.allowed_tools),
@@ -1231,7 +1176,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                                     {"request": {"sessionId": session_id}},
                                 )
                         with contextlib.suppress(Exception):
-                            await self.ink.unsubscribe(session_id)
+                            await connection.unsubscribe(session_id)
 
                 run_id = str(uuid7())
                 recorded_run = await self.conversations.record_agent_run(

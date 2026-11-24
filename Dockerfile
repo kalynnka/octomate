@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim AS node
+FROM node:24.22.3-bookworm-slim AS node
 
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
 
@@ -9,7 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
-    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && npm install --global @deepseek-ai/dsh@0.2.3-alpha.2 \
+    && npm cache clean --force
 
 WORKDIR /app
 
