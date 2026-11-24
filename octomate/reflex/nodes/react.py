@@ -11,6 +11,7 @@ from pydantic_ai.messages import UserContent
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_graph import BaseNode, End, GraphRunContext
 
+from octomate.events import HabitatPreparationEvent
 from octomate.reflex.state import (
     ReflexDeps,
     ReflexGraphResult,
@@ -114,6 +115,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         async def events() -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
             if state.thread is None:
                 raise ValueError("React requires a resolved thread")
+            yield HabitatPreparationEvent(phase="preparing")
             async with (
                 agent.inhabit(
                     thread=state.thread,
@@ -134,6 +136,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     capabilities=capabilities,
                 ) as stream,
             ):
+                yield HabitatPreparationEvent(phase="ready")
                 async for event in stream:
                     yield event
 

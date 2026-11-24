@@ -6,6 +6,7 @@ import type { ApiThread, ApiThreadMessage, WireDeferredQuestion, WireEvent } fro
 import type { OlderPage } from '../src/lib/api/live.ts'
 import type { LedgerItem, ThreadDetail } from '../src/lib/api/types.ts'
 import { LiveSocket, installLiveSocket } from './liveSocket.ts'
+import { chatRows } from '../src/features/chat/ledger.ts'
 
 let server: ViteDevServer
 let api: typeof import('../src/lib/api/index.ts').api
@@ -208,12 +209,14 @@ test('a thread opens on one page and reads older pages only when requested', asy
   await settle()
   assert.deepEqual(asked, [])
   assert.deepEqual(useConsole.getState().detail?.ledger.map(item => item.kind === 'user' && item.text), ['m4'])
+  useConsole.getState().actions.reportThreadError('thread-a', 'An error after m4')
   useConsole.getState().actions.loadOlder()
   useConsole.getState().actions.loadOlder()
   await settle()
   assert.deepEqual(asked, ['unbound:c4'])
   const held = useConsole.getState().detail
   assert.deepEqual(held?.ledger.map((item) => item.kind === 'user' && item.text), ['m3', 'm4'])
+  assert.deepEqual(chatRows(held?.ledger ?? [], [], useConsole.getState().notices).map(item => 'text' in item ? item.text : ''), ['m3', 'm4', 'An error after m4'])
   assert.equal(held?.earlier, true)
   // A revisit opens on what was read, not on the first page alone.
   assert.equal(queryClient.getQueryData<ThreadDetail>(['thread-detail', 'thread-a'])?.ledger.length, 2)

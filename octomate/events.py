@@ -280,6 +280,13 @@ class RunStartedEvent(BaseModel):
 RunActivity = Literal["working", "thinking", "using_tools", "writing", "compacting"]
 
 
+class HabitatPreparationEvent(BaseModel):
+    """The run entered or completed preparation of its habitat."""
+
+    event_kind: Literal["habitat_preparation"] = "habitat_preparation"
+    phase: Literal["preparing", "ready"]
+
+
 class RunActivityChangedEvent(BaseModel):
     """A harness reported activity within the enclosing run's existing brackets."""
 
@@ -608,6 +615,7 @@ type StreamEvents[OutputT] = (
     | ActionBatchUpdatedEvent
     | SubagentStartedEvent
     | SubagentSettledEvent
+    | HabitatPreparationEvent
     | RunActivityChangedEvent
 )
 
@@ -650,6 +658,7 @@ type WireEvent = (
     | ReflexPhaseChangedEvent
     | ThreadEvent
     | RunStartedEvent
+    | HabitatPreparationEvent
     | RunActivityChangedEvent
     | RunEndedEvent
     | RunErrorEvent

@@ -7,6 +7,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.events import (
     ActionBatchEvent,
+    HabitatPreparationEvent,
     ReflexAsleepEvent,
     ReflexPhaseChangedEvent,
     RunActivityChangedEvent,
@@ -22,6 +23,8 @@ from octomate.types.deferred import DeferredResponseMode
 @pytest.mark.parametrize(
     "event",
     [
+        HabitatPreparationEvent(phase="preparing"),
+        HabitatPreparationEvent(phase="ready"),
         ReflexPhaseChangedEvent(phase="preparing"),
         ReflexPhaseChangedEvent(phase="routing"),
         ReflexPhaseChangedEvent(phase="moving"),
@@ -34,13 +37,13 @@ from octomate.types.deferred import DeferredResponseMode
     ],
 )
 def test_phase_and_activity_use_the_existing_wire(
-    event: ReflexPhaseChangedEvent | RunActivityChangedEvent,
+    event: ReflexPhaseChangedEvent | RunActivityChangedEvent | HabitatPreparationEvent,
 ) -> None:
     restored = type(event).model_validate_json(
         wire_event_adapter.dump_json(event, warnings=False)
     )
     assert restored == event
-    if isinstance(event, RunActivityChangedEvent):
+    if isinstance(event, RunActivityChangedEvent | HabitatPreparationEvent):
         assert to_wire(event) is event
 
 

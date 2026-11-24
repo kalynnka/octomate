@@ -25,10 +25,12 @@ from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.config.mirrors import MirrorsConfig
 from octomate.events import (
     GatewayEvent,
+    HabitatPreparationEvent,
     MessageSentEvent,
     ResultSegmentEvent,
     RunErrorEvent,
 )
+from octomate.habitat import NativeHabitat
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager, OctomateSession
@@ -82,7 +84,12 @@ from octomate.tentacles.acp.ink import AcpInk
 from octomate.tentacles.channel import ChannelOutput, ChannelSurfaces
 from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from tests.support.agents import FakeAgent, RecordedRun
-from tests.support.channels import FakeChannelTentacle, FakeOctomate, RecordingInk
+from tests.support.channels import (
+    FakeChannelTentacle,
+    FakeOctomate,
+    RecordingInk,
+    RecordingStatusFeeler,
+)
 from tests.support.invocations import volume_for
 from tests.support.managers import (
     FakeActionManager,
@@ -620,6 +627,65 @@ async def test_route_entry_run_claims_no_ownership() -> None:
     )
 
     assert list(thread.handoffs) == []
+
+
+@pytest.mark.parametrize("failed", [False, True])
+async def test_habitat_preparation_status_arrives_before_the_agent_runs(
+    monkeypatch: pytest.MonkeyPatch, failed: bool
+) -> None:
+    address = _key()
+    target = _source_target(address)
+    agent = FakeAgent(id="other", reception_output="done")
+    release = asyncio.Event()
+    statuses: asyncio.Queue[str] = asyncio.Queue()
+
+    async def prepare(habitat: NativeHabitat) -> None:
+        await release.wait()
+        if failed:
+            raise RuntimeError("habitat preparation failed")
+
+    async def present(
+        feeler: RecordingStatusFeeler, address: ChannelAddress, text: str
+    ) -> None:
+        statuses.put_nowait(text)
+
+    monkeypatch.setattr(NativeHabitat, "prepare", prepare)
+    monkeypatch.setattr(RecordingStatusFeeler, "present", present)
+    task = asyncio.create_task(
+        _run(
+            React(),
+            state=ReflexState(
+                source_target=target,
+                target=target,
+                decision=_summon(),
+                thread=_thread(address),
+            ),
+            deps=_deps(
+                conversations=FakeConversationManager(),
+                channels={"im": _channel()},
+                agent=agent,
+            ),
+        )
+    )
+    try:
+        async with asyncio.timeout(1):
+            while await statuses.get() != "Preparing habitat…":
+                pass
+        assert not task.done()
+        assert not agent.turns
+        release.set()
+        if failed:
+            with pytest.raises(RuntimeError, match="habitat preparation failed"):
+                await task
+        else:
+            await task
+        remaining = [statuses.get_nowait() for _ in range(statuses.qsize())]
+        assert remaining[-1] == ""
+        if not failed:
+            assert "Working on it…" in remaining
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 async def test_reception_registers_gateway_session() -> None:
@@ -1803,7 +1869,9 @@ async def test_reception_closes_agent_stream_before_releasing_gateway(
         address: ChannelAddress,
         stream: AsyncIterator[ReactStreamEvent[ChannelOutput]],
     ) -> None:
-        await anext(stream)
+        async for event in stream:
+            if not isinstance(event, HabitatPreparationEvent):
+                break
         if cancel:
             raise asyncio.CancelledError
         raise RuntimeError("the nerve gave out")

@@ -37,6 +37,7 @@ import { batchFeelers, TurnFold } from '@/lib/api/fold'
 import { holdingBack, liveThreadDetail, withOlderPage } from '@/lib/api/live'
 import { useAuth } from '@/state/auth'
 import { COMMAND_CONTROLS } from '@/features/chat/commands'
+import { chatRows, type LocalNotice } from '@/features/chat/ledger'
 import { withArtifact } from '@/features/artifacts/ledger'
 
 export type ControlSection = '' | 'agents' | 'mcp' | 'profile' | 'keys' | 'dash' | 'settings'
@@ -379,7 +380,7 @@ interface ConsoleState {
   running: boolean
   /** how many trailing ledger items are rendered; scroll-top reveals more */
   ledgerN: number
-  notices: Extract<LedgerItem, { kind: 'notice' }>[]
+  notices: LocalNotice[]
 
   // theme
   theme: ThemeMode
@@ -564,7 +565,10 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       // A reader who moved on, or a refresh that replaced the pages, has no use for it.
       if (get().selThreadId !== thId || get().selConversationId !== conversationId || !current?.reads || current.reads.cursors[read] !== cursor) return
       const detail = withOlderPage(current, current.reads, older)
-      set(s => ({ ledgerN: Math.min(s.ledgerN, current.ledger.length) }))
+      set(s => ({
+        ledgerN: Math.min(s.ledgerN, current.ledger.length),
+        notices: s.notices.map(notice => ({ ...notice, position: notice.position + detail.ledger.length - current.ledger.length })),
+      }))
       showDetail(detail)
       queryClient.setQueryData(detailKey(thId, conversationId), detail)
       // Reveal the page before the reader reaches the scroll boundary.
@@ -1328,7 +1332,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     reportThreadError(threadId, message) {
       const s = get()
       if (s.selThreadId !== threadId || s.ntOn) return
-      set({ notices: [...s.notices, { kind: 'notice', uid: nextUid(), text: message, tone: 'error' }] })
+      set({ notices: [...s.notices, { kind: 'notice', uid: nextUid(), text: message, tone: 'error', position: chatRows(s.detail?.ledger ?? [], s.live).length }] })
       scrollChatBottom(true)
     },
     setGatewayMode: (mode) => set({ gatewayMode: mode }),
@@ -1919,7 +1923,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
               },
               notices: [
                 ...x.notices,
-                { kind: 'notice', uid: nextUid(), text: `effort → ${stored.effort ?? 'auto'} · ${session.route}`, tone: 'info' },
+                { kind: 'notice', uid: nextUid(), text: `effort → ${stored.effort ?? 'auto'} · ${session.route}`, tone: 'info', position: chatRows(x.detail.ledger, x.live).length },
               ],
             },
       )

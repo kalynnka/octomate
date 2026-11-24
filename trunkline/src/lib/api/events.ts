@@ -391,6 +391,11 @@ export interface RunStartedEvent {
   agent_tentacle_id?: string | null
 }
 
+export interface HabitatPreparationEvent {
+  event_kind: 'habitat_preparation'
+  phase: 'preparing' | 'ready'
+}
+
 export interface RunActivityChangedEvent {
   event_kind: 'run_activity_changed'
   activity: 'working' | 'thinking' | 'using_tools' | 'writing' | 'compacting'
@@ -520,6 +525,7 @@ export type WireEvent =
   | AgentMessageEvent
   | SystemMessageEvent
   | RunStartedEvent
+  | HabitatPreparationEvent
   | RunActivityChangedEvent
   | RunEndedEvent
   | RunResultEvent

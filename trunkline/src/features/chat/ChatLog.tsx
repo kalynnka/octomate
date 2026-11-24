@@ -5,6 +5,7 @@ import { botLabel } from '@/lib/api/fold'
 import { AgentLabel, LedgerRow, TraceGroupRow } from './cards'
 import { MessageContext } from './MessageReferences'
 import { traceRows } from './trace'
+import { chatRows } from './ledger'
 import { label, mono, display, statusNote } from '@/components/text'
 
 const CARD_MAX = 'var(--trk-card-max)'
@@ -111,8 +112,10 @@ export function ChatLog() {
   // them off the relay once the ones in hand run out.
   const visible = ledger.slice(-ledgerN)
   const saved = new Set(ledger.map((item) => item.uid))
-  const rows = [...visible, ...live.filter((item) => !saved.has(item.uid))]
-  const items = rows.filter((item) => item.kind !== 'dots')
+  const hidden = ledger.length - visible.length
+  const items = chatRows(visible, live.filter(item => !saved.has(item.uid)), notices
+    .filter(notice => notice.position >= hidden)
+    .map(notice => ({ ...notice, position: notice.position - hidden })))
   const renderedRows = traceRows(items, running)
   const firstLive = live.find(item => item.kind !== 'dots' && !saved.has(item.uid))
   const copyable = new Set<string>()
@@ -256,9 +259,6 @@ export function ChatLog() {
               {item.kind === 'annotated' && item.after.map(context => <MessageContext key={context.uid} item={context} cardMax={CARD_MAX} />)}
             </LedgerRow>}</Fragment>
         })}
-        {notices.map((item) => (
-          <LedgerRow key={item.uid} item={item} cardMax={CARD_MAX} />
-        ))}
       </div>
     </div>
   )

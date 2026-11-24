@@ -5,11 +5,12 @@ from datetime import UTC, datetime
 import pytest
 
 from octomate.events import (
+    HabitatPreparationEvent,
     ReflexAsleepEvent,
     RunActivityChangedEvent,
     wire_event_adapter,
 )
-from octomate.tentacles.feelers.status import StatusNarrator
+from octomate.tentacles.feelers.status import PHRASES, StatusNarrator
 from octomate.tentacles.trunkline.activity import ActivityUpdate
 from octomate.types.json import JsonObject
 
@@ -18,6 +19,19 @@ from octomate.types.json import JsonObject
     ("event", "expected", "line"),
     [
         ({"event_kind": "reflex_awake"}, "working", "Waking"),
+        (
+            {
+                "event_kind": "habitat_preparation",
+                "phase": "preparing",
+            },
+            "working",
+            "Preparing habitat",
+        ),
+        (
+            {"event_kind": "habitat_preparation", "phase": "ready"},
+            "working",
+            "Working on it",
+        ),
         (
             {"event_kind": "reflex_phase_changed", "phase": "routing"},
             "working",
@@ -175,6 +189,18 @@ def test_activity_projection(
     assert data.get("display_text") == line
     assert "private" not in update.model_dump_json()
     assert update.attention is False
+
+
+def test_habitat_status_wording_comes_from_the_narrator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(PHRASES, "preparing_habitat", ("Getting the habitat ready",))
+    event = HabitatPreparationEvent(phase="preparing")
+    update = ActivityUpdate.from_event("key:thread", event, StatusNarrator())
+    assert update is not None
+    assert update.event == RunActivityChangedEvent(
+        activity="working", display_text="Getting the habitat ready"
+    )
 
 
 @pytest.mark.parametrize("blocks_run", [True, False, None])

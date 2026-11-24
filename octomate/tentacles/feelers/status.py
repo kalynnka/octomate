@@ -27,6 +27,7 @@ from pydantic_ai.messages import (
 
 from octomate.events import (
     ActionBatchEvent,
+    HabitatPreparationEvent,
     ReflexAsleepEvent,
     ReflexAwakeEvent,
     ReflexPhaseChangedEvent,
@@ -50,6 +51,14 @@ type StatusUpdate = tuple[ChannelAddress | None, str | None, float]
 # Every way to say one thing. A line says what kind of work is going on; the
 # timeline says exactly what, so nothing here takes an argument or a result.
 PHRASES: dict[str, tuple[str, ...]] = {
+    "preparing_habitat": (
+        "Preparing habitat",
+        "Warming the habitat",
+        "Making room for tentacles",
+        "Furnishing the tide pool",
+        "Getting the burrow ready",
+        "Unpacking the tool chest",
+    ),
     "preparing": (
         "Waking",
         "Stirring",
@@ -273,6 +282,10 @@ class StatusNarrator:
     def narrate(self, event: WireEvent) -> str | None:
         """The line after `event`: empty to dismiss it, None to leave it alone."""
         match event:
+            case HabitatPreparationEvent(phase="preparing"):
+                return self.say("preparing_habitat")
+            case HabitatPreparationEvent(phase="ready"):
+                return self.say("working")
             case ReflexAwakeEvent() | ReflexPhaseChangedEvent(phase="preparing"):
                 return self.say("preparing")
             case ReflexPhaseChangedEvent(phase="moving"):
