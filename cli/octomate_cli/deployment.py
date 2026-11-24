@@ -50,10 +50,12 @@ from octomate.config.channels import (
 from octomate.config.database import database_settings
 from octomate.config.habitat import NativeHabitatConfig, SbxHabitatConfig
 from octomate.mcp.server import OCTOMATE_MCP_PATH
+from octomate_cli.habitat import SBX_AGENTS
 from octomate_cli.installation import DeploymentTarget
 from octomate_cli.mcp import McpPreset
 
 ALEMBIC_INI = Path(str(files("octomate").joinpath("migrations", "alembic.ini")))
+tentacle_configs_adapter = TypeAdapter(dict[str, TentacleConfigVariant])
 
 CHANNEL_PLACEHOLDERS: dict[str, dict[str, str]] = {
     "slack": {
@@ -193,12 +195,14 @@ def prepare(
     mcps: list[McpPreset] | None = None,
     target: DeploymentTarget = DeploymentTarget.launchd,
     sandbox_image: str | None = None,
+    acp_command: str | None = None,
+    acp_args: list[str] | None = None,
 ) -> None:
     if sandbox_image is not None and (
         target == DeploymentTarget.docker
-        or any(name not in {"claude", "codex"} for name in agents)
+        or any(name not in SBX_AGENTS for name in agents)
     ):
-        raise ValueError("sbx requires a host service with Claude or Codex agents.")
+        raise ValueError("sbx requires a host service with supported sandbox agents.")
     habitat = (
         SbxHabitatConfig(
             image=sandbox_image, core_address=HttpUrl(f"http://127.0.0.1:{port}")
@@ -207,14 +211,27 @@ def prepare(
         else NativeHabitatConfig()
     )
     if not agents or any(
-        name not in {"claude", "codex", "deepseek"} for name in agents
+        name not in {"claude", "codex", "deepseek", "acp"} for name in agents
     ):
         raise ValueError(
-            "Choose at least one supported agent: claude, codex, deepseek (DSH; experimental)."
+            "Choose at least one supported agent: claude, codex, deepseek (DSH; experimental), acp."
         )
-    configured_tentacles = TypeAdapter(
-        dict[str, TentacleConfigVariant]
-    ).validate_python({name: {"type": name} for name in agents})
+    if "acp" in agents:
+        if acp_command is None or not acp_command.strip():
+            raise ValueError("ACP requires a non-empty --acp-command.")
+    elif acp_command is not None or acp_args:
+        raise ValueError("--acp-command and --acp-arg require --agent acp.")
+    configured_tentacles = tentacle_configs_adapter.validate_python(
+        {
+            name: {
+                "type": "acp_agent",
+                "provider": {"command": acp_command, "args": acp_args or []},
+            }
+            if name == "acp"
+            else {"type": name}
+            for name in agents
+        }
+    )
     root = Path.cwd()
     home = root / "config"
     if os.environ.get("OCTOMATE_HOME") != str(home):
@@ -243,7 +260,7 @@ def prepare(
     if len({mcp.name for mcp in mcps}) != len(mcps):
         raise ValueError("MCP tentacle names must be unique.")
     client_secret_placeholder = "FILL_IN_OAUTH_CLIENT_SECRET"
-    configured_mcps = TypeAdapter(dict[str, TentacleConfigVariant]).validate_python(
+    configured_mcps = tentacle_configs_adapter.validate_python(
         {
             mcp.name: mcp.configuration() | {"client_secret": client_secret_placeholder}
             for mcp in mcps
@@ -549,8 +566,10 @@ def main() -> None:
         "--target", type=DeploymentTarget, choices=list(DeploymentTarget)
     )
     parser.add_argument(
-        "--agent", action="append", choices=("claude", "codex", "deepseek")
+        "--agent", action="append", choices=("claude", "codex", "deepseek", "acp")
     )
+    parser.add_argument("--acp-command")
+    parser.add_argument("--acp-arg", action="append")
     parser.add_argument(
         "--channel",
         action="append",
@@ -581,6 +600,8 @@ def main() -> None:
             mcps,
             args.target or DeploymentTarget.launchd,
             args.sandbox_image,
+            args.acp_command,
+            args.acp_arg,
         )
         return
     if (
@@ -590,9 +611,12 @@ def main() -> None:
         or args.mcp_presets
         or args.target
         or args.sandbox_image
+        or args.acp_command is not None
+        or args.acp_arg is not None
     ):
         parser.error(
-            "--port, --agent, --channel, --mcp-presets, --target and --sandbox-image apply only to prepare"
+            "--port, --agent, --channel, --mcp-presets, --target, --sandbox-image, "
+            "--acp-command and --acp-arg apply only to prepare"
         )
     config = OctomateConfig()
     database = database_path()

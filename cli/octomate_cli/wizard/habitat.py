@@ -5,7 +5,7 @@ import re
 import typer
 from rich.prompt import Prompt
 
-from octomate_cli.habitat import AGENT_SERVICES, HabitatMode
+from octomate_cli.habitat import SBX_AGENTS, HabitatMode
 from octomate_cli.installation import DeploymentTarget
 from octomate_cli.wizard.base import console
 
@@ -40,9 +40,9 @@ def habitat_step(
         raise typer.BadParameter(
             "sbx setup requires a host service; Docker service integration is not supported."
         )
-    if any(name not in AGENT_SERVICES for name in agents):
+    if any(name not in SBX_AGENTS for name in agents):
         raise typer.BadParameter(
-            "sbx setup supports Claude, Codex and DeepSeek; choose native for other agents."
+            "sbx supports Claude, Codex, DeepSeek and ACP; choose native for other agents."
         )
     if image is None and interactive:
         image = Prompt.ask(

@@ -56,6 +56,7 @@ class SecretInventory(BaseModel):
 
 type Service = Literal["anthropic", "openai", "deepseek"]
 
+SBX_AGENTS = frozenset({"claude", "codex", "deepseek", "acp"})
 AGENT_SERVICES: dict[str, Service] = {
     "claude": "anthropic",
     "codex": "openai",
@@ -149,7 +150,9 @@ def setup(
     ],
     agent: Annotated[
         list[str] | None,
-        typer.Option("--agent", help="claude, codex or deepseek; repeat for several."),
+        typer.Option(
+            "--agent", help="claude, codex, deepseek or acp; repeat for several."
+        ),
     ] = None,
     check: Annotated[
         bool,
@@ -174,10 +177,8 @@ def setup(
             "Agents using sbx (comma-separated)", default="codex", console=console
         ).split(",")
     agents = list(dict.fromkeys(name.strip() for name in agent))
-    if not agents or any(name not in AGENT_SERVICES for name in agents):
-        raise typer.BadParameter(
-            "sbx credential setup supports claude, codex and deepseek."
-        )
+    if not agents or any(name not in SBX_AGENTS for name in agents):
+        raise typer.BadParameter("sbx setup supports claude, codex, deepseek and acp.")
     executable = shutil.which("sbx")
     if executable is None:
         raise typer.BadParameter(
@@ -215,7 +216,13 @@ def setup(
         )
     changed = False
     for name in agents:
-        service = AGENT_SERVICES[name]
+        service = AGENT_SERVICES.get(name)
+        if service is None:
+            console.print(
+                "ACP: configure the selected provider's authentication separately; "
+                "no credential service is inferred."
+            )
+            continue
         mode = credential_step(executable, service, check=check)
         bindings = document.bindings.get(service, ServiceBindings())
         binding = bindings.oauth if mode == "oauth" else bindings.apiKey
@@ -253,5 +260,6 @@ def setup(
         )
         console.print(f"Updated {path}")
     console.print(
-        "sbx credentials and domain approvals are ready. Model access has not been tested."
+        "sbx host setup and selected provider approvals are ready. "
+        "Model access has not been tested."
     )

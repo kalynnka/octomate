@@ -77,6 +77,106 @@ def test_declining_sbx_review_does_not_set_up_host(
     commands.assert_not_called()
 
 
+@pytest.mark.parametrize("yes", [False, True])
+def test_acp_wizard_passes_provider_arguments_and_uses_shared_sbx_setup(
+    tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch, yes: bool
+) -> None:
+    monkeypatch.setattr(wizard, "select_tentacles", Mock(return_value=["acp"]))
+    setup = Mock()
+    monkeypatch.setattr(init_cli, "setup_habitat", setup)
+    image = "example.test/agents@sha256:" + "a" * 64
+    command = "/opt/acp provider"
+    result = runner.invoke(
+        service_typer,
+        [
+            "init",
+            "--prepare",
+            "--root",
+            str(tmp_path / "service"),
+            "--port",
+            "8123",
+            "--agent",
+            "acp",
+            "--channel",
+            "none",
+            "--habitat",
+            "sbx",
+            "--sandbox-image",
+            image,
+            *(
+                [
+                    "--acp-command",
+                    command,
+                    "--acp-arg=--stdio",
+                    "--acp-arg=two words",
+                    "--yes",
+                ]
+                if yes
+                else []
+            ),
+        ],
+        input="" if yes else f"{command}\n--stdio 'two words'\ny\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "ACP provider" in result.output
+    assert "two words" in result.output
+    setup.assert_called_once_with("sbx", agent=["acp"], check=yes)
+    arguments = commands.call_args_list[2].args[0]
+    assert arguments[arguments.index("--acp-command") + 1] == command
+    assert "--acp-arg=--stdio" in arguments
+    assert "--acp-arg=two words" in arguments
+    assert not (tmp_path / "service/octomate.db").exists()
+
+
+@pytest.mark.parametrize(
+    ("agent", "options", "message"),
+    [
+        ("acp", [], "non-empty --acp-command"),
+        ("acp", ["--acp-command", " "], "non-empty --acp-command"),
+        ("codex", ["--acp-command", "provider"], "require --agent acp"),
+        ("codex", ["--acp-arg=--stdio"], "require --agent acp"),
+    ],
+)
+def test_invalid_acp_options_are_rejected_before_preparation(
+    tmp_path: Path, commands: Mock, agent: str, options: list[str], message: str
+) -> None:
+    result = runner.invoke(
+        service_typer,
+        [
+            "init",
+            "--prepare",
+            "--root",
+            str(tmp_path / "service"),
+            "--port",
+            "8123",
+            "--agent",
+            agent,
+            "--channel",
+            "none",
+            "--yes",
+            *options,
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert message in unstyle(result.output)
+    commands.assert_not_called()
+    assert not (tmp_path / "service").exists()
+
+
+def test_acp_wizard_rejects_unclosed_argument_quotes(
+    tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(wizard, "select_tentacles", Mock(return_value=["acp"]))
+    result = runner.invoke(
+        service_typer,
+        ["init", "--prepare", "--root", str(tmp_path / "service"), "--port", "8123"],
+        input="provider\n'unclosed\n",
+    )
+    assert result.exit_code == 2, result.output
+    assert "Invalid ACP arguments" in unstyle(result.output)
+    commands.assert_not_called()
+
+
 @pytest.mark.parametrize("target", ["systemd", "manual"])
 def test_linux_prepares_without_launchd_or_activation(
     tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch, target: str
@@ -702,7 +802,7 @@ def test_checkbox_requires_an_agent_but_channels_are_optional() -> None:
         create_pipe_input() as keys,
         create_app_session(input=keys, output=DummyOutput()),
     ):
-        keys.send_text("\r \x1b[B\x1b[B\x1b[B \r")
+        keys.send_text("\r " + "\x1b[B" * 4 + " \r")
         assert wizard.select_tentacles(None, None) == ["claude"]
 
 
@@ -918,7 +1018,7 @@ def test_checkbox_selects_github_alongside_an_agent() -> None:
         create_pipe_input() as keys,
         create_app_session(input=keys, output=DummyOutput()),
     ):
-        keys.send_text("\x1b[B" * 7 + " \r")
+        keys.send_text("\x1b[B" * 8 + " \r")
         assert wizard.select_tentacles(["codex"], []) == ["codex", "github"]
 
 
@@ -939,6 +1039,7 @@ def test_selection_shows_each_tentacle_with_its_capabilities(
         "Claude Code [Agent]",
         "Codex [Agent]",
         "DSH (experimental) [Agent]",
+        "ACP provider [Agent]",
         "Trunkline [Web] [Channel]",
         "Slack [Channel · MCP]",
         "Lark [Channel]",

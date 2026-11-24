@@ -420,11 +420,11 @@ async def test_core_refuses_an_anonymous_project(
             pytest.fail("An anonymous project invocation must not start")
 
 
-@pytest.mark.parametrize("kind", ["inkling", "acp", "anonymous"])
+@pytest.mark.parametrize("kind", ["inkling", "anonymous"])
 async def test_sandbox_dispatch_refuses_before_preparing_anything(
     in_memory_engine: AsyncEngine,
     monkeypatch: pytest.MonkeyPatch,
-    kind: Literal["inkling", "acp", "anonymous"],
+    kind: Literal["inkling", "anonymous"],
 ) -> None:
     app = Octomate()
     app.habitats.config = SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64)
@@ -439,14 +439,6 @@ async def test_sandbox_dispatch_refuses_before_preparing_anything(
             auth=app.auth,
             habitats=app.habitats,
             models={"test": TestModel()},
-        )
-    elif kind == "acp":
-        agent = AcpAgentTentacle(
-            kind,
-            app,
-            auth=app.auth,
-            habitats=app.habitats,
-            config=AcpAgentConfig(provider=AcpProvider(command="unused")),
         )
     else:
         agent = FakeAgent()
@@ -465,8 +457,11 @@ async def test_sandbox_dispatch_refuses_before_preparing_anything(
     assert not app.workspaces.host_storage.mirrors_dir.exists()
 
 
+@pytest.mark.parametrize("kind", ["fake", "acp"])
 async def test_a_capable_agent_leases_the_owners_sandbox(
-    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+    in_memory_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: Literal["fake", "acp"],
 ) -> None:
     app = Octomate()
     app.habitats.config = SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64)
@@ -474,12 +469,22 @@ async def test_a_capable_agent_leases_the_owners_sandbox(
     monkeypatch.setattr(SbxHabitat, "stop", AsyncMock())
     owner = await a_user()
     thread = await app.threads.ensure(ThreadKey("im", "thread", "room", "turn"))
-    agent = FakeAgent()
-    agent.habitats = app.habitats
+    agent: AgentTentacle
+    if kind == "acp":
+        agent = AcpAgentTentacle(
+            kind,
+            app,
+            auth=app.auth,
+            habitats=app.habitats,
+            config=AcpAgentConfig(provider=AcpProvider(command="unused")),
+        )
+    else:
+        agent = FakeAgent()
+        agent.habitats = app.habitats
     try:
         async with agent.inhabit(
             thread=thread,
-            conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
+            conversation=Conversation(thread_id=thread.id, agent_tentacle_id=agent.id),
             owner_id=owner.id,
         ) as invocation:
             habitat = invocation.habitat

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -22,7 +23,7 @@ from octomate_cli.habitat import setup as setup_habitat
 from octomate_cli.installation import DeploymentTarget, Installation
 from octomate_cli.mcp import McpPreset
 from octomate_cli.wizard import tentacles_step
-from octomate_cli.wizard.agents import AGENTS
+from octomate_cli.wizard.agents import AGENTS, acp_step
 from octomate_cli.wizard.base import brand_color, console
 from octomate_cli.wizard.channels import CHANNELS
 from octomate_cli.wizard.habitat import habitat_step
@@ -57,7 +58,16 @@ def init(
         list[str] | None,
         typer.Option(
             "--agent",
-            help="Agent template: claude, codex or deepseek (DSH; experimental). Repeat for multiple agents.",
+            help="Agent template: claude, codex, deepseek (DSH; experimental) or acp. Repeat for multiple agents.",
+        ),
+    ] = None,
+    acp_command: Annotated[
+        str | None, typer.Option(help="ACP provider executable; requires --agent acp.")
+    ] = None,
+    acp_arg: Annotated[
+        list[str] | None,
+        typer.Option(
+            help="ACP provider argument; repeat for several. Use --acp-arg=--flag for flags."
         ),
     ] = None,
     channel: Annotated[
@@ -145,9 +155,11 @@ def init(
             or channel is not None
             or habitat is not None
             or sandbox_image is not None
+            or acp_command is not None
+            or acp_arg is not None
         ):
             raise typer.BadParameter(
-                "Prepared installations retain their settings. Omit --source, --port, --agent, --channel, --habitat and --sandbox-image to validate again."
+                "Prepared installations retain their settings. Omit --source, --port, --agent, --channel, --habitat, --sandbox-image, --acp-command and --acp-arg to validate again."
             )
         validate_existing(service, account.pw_dir)
         return
@@ -168,6 +180,13 @@ def init(
         )
     port = network_step(port)
     tentacles = tentacles_step(agent, channel, interactive=not yes, console=console)
+    acp_command, acp_args = acp_step(
+        "acp" in tentacles.agents,
+        acp_command,
+        acp_arg,
+        interactive=not yes,
+        console=console,
+    )
     sandbox_image = habitat_step(
         tentacles.agents, habitat, sandbox_image, interactive=not yes, target=target
     )
@@ -185,6 +204,8 @@ def init(
         tentacles.mcps,
         yes,
         sandbox_image,
+        acp_command,
+        acp_args,
     )
     if sandbox_image is not None:
         setup_habitat("sbx", agent=tentacles.agents, check=yes)
@@ -199,6 +220,8 @@ def init(
         tentacles.channels,
         tentacles.mcps,
         sandbox_image,
+        acp_command,
+        acp_args,
     )
 
 
@@ -377,6 +400,8 @@ def review_step(
     mcps: list[McpPreset],
     yes: bool,
     sandbox_image: str | None = None,
+    acp_command: str | None = None,
+    acp_args: list[str] | None = None,
 ) -> None:
     root = service.directory
     environment = service.environment
@@ -439,6 +464,8 @@ def review_step(
         ("Prepared definition", str(draft)),
     ):
         table.add_row(key, value)
+    if acp_command is not None:
+        table.add_row("ACP provider", shlex.join([acp_command, *(acp_args or [])]))
     console.print(table)
     if service.target == DeploymentTarget.launchd:
         console.print(
@@ -469,6 +496,8 @@ def prepare_step(
     channels: list[str],
     mcps: list[McpPreset],
     sandbox_image: str | None = None,
+    acp_command: str | None = None,
+    acp_args: list[str] | None = None,
 ) -> None:
     root = service.directory
     environment = service.environment
@@ -545,6 +574,12 @@ def prepare_step(
                         ),
                         *(["--mcp-presets"] if mcps else []),
                         *(["--sandbox-image", sandbox_image] if sandbox_image else []),
+                        *(
+                            ["--acp-command", acp_command]
+                            if acp_command is not None
+                            else []
+                        ),
+                        *(f"--acp-arg={argument}" for argument in acp_args or []),
                         *(
                             ["--target", service.target.value]
                             if service.target != DeploymentTarget.launchd

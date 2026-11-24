@@ -607,8 +607,18 @@ async def test_run_stream_events_creates_session_proxies_events_and_persists(
     ]
     assert driving_span.context is not None
     assert driving_span.context.trace_id == 91
-    assert driving_span.parent is not None
-    assert driving_span.parent.span_id == 92
+    [invocation_span] = [
+        span
+        for span in capfire.exporter.exported_spans
+        if span.name == "habitat.invoke"
+        and span.attributes
+        and span.attributes.get("logfire.span_type") == "span"
+    ]
+    assert invocation_span.context is not None
+    assert invocation_span.context.trace_id == 91
+    assert invocation_span.parent is not None
+    assert invocation_span.parent.span_id == 92
+    assert driving_span.parent == invocation_span.context
     for record in records:
         assert record.context is not None
         assert record.context.trace_id == 91

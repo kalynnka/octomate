@@ -146,6 +146,53 @@ def test_claude_reuses_its_existing_oauth_login(sbx: Mock, tmp_path: Path) -> No
     assert not any("set" in call.args for call in sbx.call_args_list)
 
 
+@pytest.mark.parametrize("check", [False, True])
+def test_acp_checks_the_host_without_inferring_credentials(
+    sbx: Mock, tmp_path: Path, check: bool
+) -> None:
+    result = runner.invoke(
+        app,
+        ["habitat", "setup", "sbx", "--agent", "acp", *(["--check"] if check else [])],
+        input="" if check else "n\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "authentication separately" in result.output
+    calls = [call.args for call in sbx.call_args_list]
+    assert ("/bin/sbx", "ls", "--quiet") in calls
+    assert ("/bin/sbx", "settings", "get", "ssh.agentForwardingEnabled") in calls
+    assert not any("secret" in call for call in calls)
+    assert not (tmp_path / ".config/sbx/credentials.yaml").exists()
+
+
+def test_acp_and_codex_setup_only_requests_codex_credentials(
+    sbx: Mock, tmp_path: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        ["habitat", "setup", "sbx", "--agent", "acp", "--agent", "codex"],
+        input="n\nkeep\ny\n",
+    )
+    assert result.exit_code == 0, result.output
+    document = yaml.safe_load((tmp_path / ".config/sbx/credentials.yaml").read_text())
+    assert set(document["bindings"]) == {"openai"}
+    assert sum("secret" in call.args for call in sbx.call_args_list) == 1
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex", "deepseek", "acp"])
+def test_sbx_selection_accepts_supported_agents(agent: str) -> None:
+    image = "image@sha256:" + "a" * 64
+    assert (
+        habitat_step(
+            [agent],
+            HabitatMode.sbx,
+            image,
+            interactive=False,
+            target=DeploymentTarget.launchd,
+        )
+        == image
+    )
+
+
 def test_domains_match_the_shipped_kit() -> None:
     kit = yaml.safe_load(
         (Path(__file__).parents[2] / "octomate/habitat/spec.yaml").read_text()
