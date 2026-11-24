@@ -1,8 +1,9 @@
 """Own installed ACP harness connections and their provider sessions.
 
-The installed adapters speak ACP over stdio. The SDK owns framing, request IDs,
-concurrent callbacks and process shutdown. A caller handles agent requests and
-notifications directly; the nerve is not a request/reply transport.
+The installed adapters speak ACP over stdio. The SDK owns framing, request IDs
+and concurrent callbacks; the transport owns the local or habitat process.
+A caller handles agent requests and notifications directly; the nerve is not
+a request/reply transport.
 
 This is the client foundation, not a registered agent or a public API. It neither
 creates managed workspaces nor persists transcripts. Authentication, session
@@ -14,16 +15,18 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Self
 
 import acp
 from acp import schema
 from acp.connection import Connection
-from acp.core import DEFAULT_STDIO_BUFFER_LIMIT_BYTES
 from acp.utils import request_model
 from pydantic import JsonValue
 
 from octomate.config.acp import AcpProvider
+from octomate.habitat import Habitat, ManagedHabitat
+from octomate.tentacles.acp.transport import stdio_connection
 from octomate.types.permissions import PermissionMode
 
 type AcpClientHandler = Callable[
@@ -243,6 +246,7 @@ class NativeAcpClient:
     provider: AcpProvider
     connection: Connection  # Live only inside the connect context.
     initialization: schema.InitializeResponse
+    habitat: Habitat | None = None  # Owns provider execution and path interpretation.
 
     @classmethod
     @asynccontextmanager
@@ -253,21 +257,24 @@ class NativeAcpClient:
         initialize: schema.InitializeRequest,
         *,
         env: dict[str, str] | None = None,
+        habitat: Habitat | None = None,
+        cwd: str | None = None,
     ) -> AsyncGenerator[Self]:
         """Start an installed adapter and negotiate ACP v1 before yielding.
 
         `handler` receives the method, JSON parameters and notification flag for
         agent-to-client traffic, including permissions. `initialize` declares
-        only capabilities that handler implements. Environment overrides augment
-        the SDK's minimal inherited environment. Stderr is inherited so an unread
-        pipe cannot stall the adapter; stdout remains exclusively protocol traffic.
+        only capabilities that handler implements. Local processes augment the
+        SDK's minimal inherited environment; habitat processes receive explicit
+        environment overrides. Local stderr is inherited; habitat failures retain
+        their stderr through the habitat. Stdout is exclusively protocol traffic.
 
         Exiting closes this connection and its process, including on failed
         initialization or cancellation. It does not delete provider sessions.
         """
         if initialize.protocol_version != acp.PROTOCOL_VERSION:
             raise ValueError("The native ACP client requires protocol version 1")
-        async with acp.spawn_stdio_connection(
+        async with stdio_connection(
             handler,
             provider.command,
             *provider.args,
@@ -278,9 +285,9 @@ class NativeAcpClient:
                 },
                 **(env or {}),
             },
-            stderr=None,
-            limit=DEFAULT_STDIO_BUFFER_LIMIT_BYTES,
-        ) as (connection, _process):
+            habitat=habitat,
+            cwd=cwd,
+        ) as connection:
             response = await request_model(
                 connection,
                 acp.AGENT_METHODS["initialize"],
@@ -304,7 +311,7 @@ class NativeAcpClient:
                     schema.AuthenticateRequest(method_id=provider.auth_method),
                     schema.AuthenticateResponse,
                 )
-            yield cls(provider, connection, response)
+            yield cls(provider, connection, response, habitat)
 
     async def new_session(
         self, request: schema.NewSessionRequest
@@ -320,13 +327,20 @@ class NativeAcpClient:
             for server in request.mcp_servers
         ):
             raise ValueError("Only HTTP MCP servers are supported")
-        cwd, additional_directories = await self.provider.resolve_workspace(
-            request.cwd,
-            request.additional_directories,
-        )
-        request = request.model_copy(
-            update={"cwd": cwd, "additional_directories": additional_directories}
-        )
+        if isinstance(self.habitat, ManagedHabitat):
+            if any(
+                not PurePosixPath(path).is_absolute()
+                for path in [request.cwd, *(request.additional_directories or [])]
+            ):
+                raise ValueError("ACP workspace paths must be absolute")
+        else:
+            cwd, additional_directories = await self.provider.resolve_workspace(
+                request.cwd,
+                request.additional_directories,
+            )
+            request = request.model_copy(
+                update={"cwd": cwd, "additional_directories": additional_directories}
+            )
         response = await request_model(
             self.connection,
             acp.AGENT_METHODS["session_new"],

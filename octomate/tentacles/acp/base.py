@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import (
-    AbstractAsyncContextManager,
     AsyncExitStack,
     aclosing,
     asynccontextmanager,
@@ -20,7 +19,6 @@ from acp import schema
 from acp.connection import StreamDirection, StreamEvent
 from acp.utils import notify_model, request_model
 from anyio import CancelScope
-from httpx2 import URL
 from pydantic import UUID7, JsonValue
 from pydantic_ai import (
     AgentCapability,
@@ -49,12 +47,11 @@ from uuid_utils.compat import uuid7
 
 from octomate.config.acp import AcpAgentConfig
 from octomate.config.agents import Claim
-from octomate.config.habitat import NativeHabitatConfig
 from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
 )
-from octomate.habitat import HabitatError
+from octomate.habitat import Habitat, ManagedHabitat
 from octomate.managers.habitat import Invocation
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
@@ -62,7 +59,6 @@ from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import MAX_QUESTION_CHOICES, DeferredActionBatch
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import Thread
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.acp.adapter import json_value_adapter
 from octomate.tentacles.acp.client import NativeAcpClient, NativeAcpSession
@@ -98,15 +94,6 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
     config: AcpAgentConfig
     ink: AcpInk
     provider_permission_mode: str | None = None
-
-    def inhabit(
-        self, *, thread: Thread, conversation: Conversation, owner_id: UUID7 | None
-    ) -> AbstractAsyncContextManager[Invocation]:
-        if not isinstance(self.habitats.config, NativeHabitatConfig):
-            raise HabitatError(f"Agent {self.id!r} cannot run in a sandbox yet")
-        return super().inhabit(
-            thread=thread, conversation=conversation, owner_id=owner_id
-        )
 
     def __init__(
         self,
@@ -365,6 +352,12 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             StreamEvent | ActionBatchEvent | ActionBatchAnsweredEvent | None
         ] = asyncio.Queue()
         session_id: str | None = None
+        env = invocation.environment
+        if isinstance(invocation.habitat, ManagedHabitat):
+            config = invocation.workspace.volumes.get("config")
+            if config is None:
+                raise ValueError("Managed ACP requires a configuration volume")
+            env["HOME"] = str(invocation.habitat.path(config))
 
         async def handle(
             method: str, params: JsonValue | None, notification: bool
@@ -413,15 +406,23 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                         else None,
                     ),
                 ),
+                habitat=invocation.habitat,
+                cwd=str(invocation.cwd),
+                env=env,
             ) as client,
         ):
             mcp_servers = await credentials.enter_async_context(
-                self.mcp_servers(client, invocation.owner_id, conversation.id)
+                self.mcp_servers(
+                    client,
+                    invocation.owner_id,
+                    conversation.id,
+                    habitat=invocation.habitat,
+                )
             )
             if conversation.external_id is None:
                 native = await client.new_session(
                     schema.NewSessionRequest(
-                        cwd=str(invocation.workspace.path), mcp_servers=[*mcp_servers]
+                        cwd=str(invocation.cwd), mcp_servers=[*mcp_servers]
                     )
                 )
                 session_id = native.session_id
@@ -436,13 +437,13 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                     acp.AGENT_METHODS["session_load"],
                     schema.LoadSessionRequest(
                         session_id=session_id,
-                        cwd=str(invocation.workspace.path),
+                        cwd=str(invocation.cwd),
                         mcp_servers=[*mcp_servers],
                     ),
                     schema.LoadSessionResponse,
                 )
                 native = NativeAcpSession(
-                    provider, str(invocation.workspace.path), session_id, response
+                    provider, str(invocation.cwd), session_id, response
                 )
             selected_model = await native.select_model(client.connection, model)
             await native.select_effort(client.connection, effort)
@@ -679,7 +680,12 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
 
     @asynccontextmanager
     async def mcp_servers(
-        self, client: NativeAcpClient, user_id: UUID7, conversation_id: UUID7
+        self,
+        client: NativeAcpClient,
+        user_id: UUID7,
+        conversation_id: UUID7,
+        *,
+        habitat: Habitat,
     ) -> AsyncGenerator[list[schema.HttpMcpServer]]:
         """Supply the caller's remote Octomate MCP, revoking its key after the turn."""
         if not self.gateway:
@@ -704,20 +710,12 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                 scopes=["mcp"],
                 expires_at=datetime.now(UTC) + auth.config.runtime_api_key_lifetime,
             )
-        config = self.octomate.config
         try:
             yield [
                 schema.HttpMcpServer(
                     name=OCTOMATE_SERVER_NAME,
                     type="http",
-                    url=str(
-                        URL(
-                            scheme="http",
-                            host=str(config.host),
-                            port=config.port,
-                            path=OCTOMATE_MCP_PATH,
-                        )
-                    ),
+                    url=f"{habitat.core_url}{OCTOMATE_MCP_PATH}",
                     headers=[
                         schema.HttpHeader(
                             name="Authorization",
