@@ -3,6 +3,7 @@
 import math
 from collections.abc import Mapping
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 
 import anyio
@@ -10,6 +11,8 @@ from anyio import to_thread
 from anyio.abc import ByteStream
 from anyio.streams.buffered import BufferedByteReceiveStream
 from pydantic import BaseModel
+from pydantic_ai import RunContext
+from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.workspaces import (
     CommandResult,
     FileEntry,
@@ -45,6 +48,18 @@ from octomate.tentacles.inkling.worker import (
     file_errors,
     response_adapter,
 )
+
+
+@dataclass
+class HabitatWorkspace[DepsT](AbstractCapability[DepsT]):
+    """Resolve workspace history only within the current authorized invocation."""
+
+    invocation: Invocation
+
+    def get_workspace(
+        self, ctx: RunContext[DepsT], *, ref: WorkspaceRef | None
+    ) -> WorkspaceBackend:
+        return HabitatWorkspaceBackend(self.invocation, ref=ref)
 
 
 async def finish_guest(stream: ByteStream, output: BufferedByteReceiveStream) -> None:

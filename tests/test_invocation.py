@@ -420,35 +420,22 @@ async def test_core_refuses_an_anonymous_project(
             pytest.fail("An anonymous project invocation must not start")
 
 
-@pytest.mark.parametrize("kind", ["inkling", "anonymous"])
 async def test_sandbox_dispatch_refuses_before_preparing_anything(
     in_memory_engine: AsyncEngine,
     monkeypatch: pytest.MonkeyPatch,
-    kind: Literal["inkling", "anonymous"],
 ) -> None:
     app = Octomate()
     app.habitats.config = SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64)
     prepare = AsyncMock()
     monkeypatch.setattr(SbxHabitat, "prepare", prepare)
     thread = await app.threads.ensure(ThreadKey("im", "thread", "room", "turn"))
-    agent: AgentTentacle
-    if kind == "inkling":
-        agent = InklingTentacle(
-            kind,
-            app,
-            auth=app.auth,
-            habitats=app.habitats,
-            models={"test": TestModel()},
-        )
-    else:
-        agent = FakeAgent()
-        agent.habitats = app.habitats
-    message = "registered user" if kind == "anonymous" else "cannot run in a sandbox"
-    with pytest.raises(HabitatError, match=message):
+    agent = FakeAgent()
+    agent.habitats = app.habitats
+    with pytest.raises(HabitatError, match="registered user"):
         async with agent.inhabit(
             thread=thread,
             conversation=Conversation(thread_id=thread.id, agent_tentacle_id=agent.id),
-            owner_id=None if kind == "anonymous" else (await a_user()).id,
+            owner_id=None,
         ):
             pytest.fail("Sandbox execution must not fall back to the host")
     prepare.assert_not_awaited()
@@ -457,11 +444,11 @@ async def test_sandbox_dispatch_refuses_before_preparing_anything(
     assert not app.workspaces.host_storage.mirrors_dir.exists()
 
 
-@pytest.mark.parametrize("kind", ["fake", "acp"])
+@pytest.mark.parametrize("kind", ["fake", "acp", "inkling"])
 async def test_a_capable_agent_leases_the_owners_sandbox(
     in_memory_engine: AsyncEngine,
     monkeypatch: pytest.MonkeyPatch,
-    kind: Literal["fake", "acp"],
+    kind: Literal["fake", "acp", "inkling"],
 ) -> None:
     app = Octomate()
     app.habitats.config = SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64)
@@ -477,6 +464,14 @@ async def test_a_capable_agent_leases_the_owners_sandbox(
             auth=app.auth,
             habitats=app.habitats,
             config=AcpAgentConfig(provider=AcpProvider(command="unused")),
+        )
+    elif kind == "inkling":
+        agent = InklingTentacle(
+            kind,
+            app,
+            auth=app.auth,
+            habitats=app.habitats,
+            models={"test": TestModel()},
         )
     else:
         agent = FakeAgent()

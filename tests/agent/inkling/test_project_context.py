@@ -32,7 +32,7 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.database import async_session
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import User
@@ -40,7 +40,7 @@ from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.base import InklingOutput
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
-from tests.support.invocations import invocation_for, volume_for
+from tests.support.invocations import a_native_invocation, invocation_for, volume_for
 from tests.support.managers import a_project, a_registry
 
 ADDRESS = ChannelAddress(
@@ -237,7 +237,9 @@ def test_every_capability_is_rooted_at_the_workspace(tmp_path: Path) -> None:
     )
 
     local_workspace, repo_context, files, shell = tentacle.workspace_capabilities(
-        workspace
+        a_native_invocation(
+            Conversation(thread_id=uuid7(), agent_tentacle_id="inkling"), workspace
+        )
     )
 
     assert isinstance(local_workspace, LocalWorkspace)

@@ -3,12 +3,13 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any
 
 import anyio
 import logfire
 from anyio.abc import ObjectSendStream
-from pydantic import UUID7, DirectoryPath
+from pydantic import UUID7
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -87,9 +88,8 @@ class ReactDeps[ReactOutputT, ReactDepsT]:
     suspender: DeferredSuspender | None = None
     output_type: OutputSpec[ReactOutputT] | None = None
     run_name: str = "react"
-    # The directory this run happens in, recorded on every run it persists. None when
-    # the run is in no project, since a react run has no directory of its own.
-    cwd: DirectoryPath | None = None
+    # The run's directory inside its habitat; it need not exist on core's filesystem.
+    cwd: Path | None = None
     model: Model | KnownModelName | str | None = None
     # The preset used when the conversation has no explicit override.
     permission_mode: AgentPermissionMode | None = None

@@ -52,8 +52,7 @@ from pydantic_ai_harness.step_persistence.naming import generate_name
 from rich.style import Style
 
 from octomate.config.agents import AgentRouteModelName, InklingConfig
-from octomate.config.habitat import NativeHabitatConfig
-from octomate.habitat import HabitatError
+from octomate.habitat import ManagedHabitat
 from octomate.managers.conversation import ConversationManager, ConversationStore
 from octomate.managers.habitat import Invocation
 from octomate.mcp.gateway import CONVERSATION_HEADER
@@ -69,7 +68,6 @@ from octomate.schemas.commands import (
 )
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.segments import MessageSegment, TextSegment
-from octomate.schemas.thread import Thread
 from octomate.schemas.triage import Claim
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import inkling_logfire
@@ -96,6 +94,7 @@ from octomate.tentacles.inkling.react import (
     StartTurn,
     iter_react_graph_events,
 )
+from octomate.tentacles.inkling.workspace import HabitatWorkspace
 from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from octomate.types.permissions import InklingPermissionMode, PermissionMode
 
@@ -329,15 +328,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     # Background MCP/agent warming, spawned by `__aenter__`; `__aexit__` settles it.
     warm_task: asyncio.Task[None] | None = field(init=False)
 
-    def inhabit(
-        self, *, thread: Thread, conversation: Conversation, owner_id: UUID7 | None
-    ) -> AbstractAsyncContextManager[Invocation]:
-        if not isinstance(self.habitats.config, NativeHabitatConfig):
-            raise HabitatError(f"Agent {self.id!r} cannot run in a sandbox yet")
-        return super().inhabit(
-            thread=thread, conversation=conversation, owner_id=owner_id
-        )
-
     def __init__(
         self,
         id: str,
@@ -435,8 +425,10 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         )
         return [capability for capability in bound if capability is not None]
 
-    def workspace_capabilities(self, workspace: Path) -> list[AgentCapability[None]]:
-        """What a run gets for working in `workspace`: the project's instructions, as
+    def workspace_capabilities(
+        self, invocation: Invocation
+    ) -> list[AgentCapability[None]]:
+        """What a run gets in its invocation's workspace: the project's instructions, as
         that fork carries them, and the tools to act in it. A run in no project gets
         none of these and is a conversation.
 
@@ -449,11 +441,13 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         that protects.
         """
         return [
-            LocalWorkspace[None](workspace),
+            HabitatWorkspace[None](invocation)
+            if isinstance(invocation.habitat, ManagedHabitat)
+            else LocalWorkspace[None](str(invocation.cwd)),
             RepoContext[None](expose_inventory_tool=True),
             Toolset(
                 ApprovalRequiredToolset(
-                    wrapped=FileSystem[None](root_dir=workspace).get_toolset()
+                    wrapped=FileSystem[None](root_dir=str(invocation.cwd)).get_toolset()
                 )
             ),
             Toolset(
@@ -1005,9 +999,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 max_retries=2,
             )
             capabilities.extend(OctomateTools.capabilities(client))
-        workspace = invocation.workspace.path
         if invocation.project is not None:
-            capabilities.extend(self.workspace_capabilities(workspace))
+            capabilities.extend(self.workspace_capabilities(invocation))
         graph_deps = ReactDeps(
             agent=self.agent,
             conversation_manager=self.conversation_manager,
@@ -1021,7 +1014,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             suspender=deferred_suspender,
             output_type=react_output_type,
             run_name=resolved_run_name,
-            cwd=workspace,
+            cwd=Path(invocation.cwd),
             model=model,
             permission_mode=self.permission_mode,
             instructions=instructions,
