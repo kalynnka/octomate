@@ -25,7 +25,6 @@ from pydantic_ai.capabilities import (
 )
 from pydantic_ai.messages import (
     ModelResponse,
-    RetryPromptPart,
     ToolCallPart,
     ToolReturnPart,
     UserContent,
@@ -138,7 +137,7 @@ class StartTurn[ReactOutputT, ReactDepsT](
             answered.update(
                 part.tool_call_id
                 for part in message.parts
-                if isinstance(part, ToolReturnPart | RetryPromptPart)
+                if isinstance(part, ToolReturnPart)
             )
         if not abandoned:
             return RunAgent(user_prompt=self.user_prompt)

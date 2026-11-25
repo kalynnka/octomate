@@ -14,7 +14,6 @@ from pydantic_ai.mcp import ToolResult as McpToolResult
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
-    RetryPromptPart,
 )
 from pydantic_ai.toolsets import ApprovalRequiredToolset
 
@@ -72,12 +71,6 @@ class Accomplices:
             if part.tool_call_id not in self.working:
                 return None
             self.working.remove(part.tool_call_id)
-            if isinstance(part, RetryPromptPart):
-                return SubagentSettledEvent(
-                    invocation_id=part.tool_call_id,
-                    status="failed",
-                    response=part.model_response(),
-                )
             return SubagentSettledEvent(
                 invocation_id=part.tool_call_id,
                 status="completed" if part.outcome == "success" else "failed",
