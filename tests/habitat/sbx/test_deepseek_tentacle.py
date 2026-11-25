@@ -27,8 +27,9 @@ from octomate.schemas.habitat import InvocationScope
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.codex.client import SharedCodex
 from octomate.tentacles.deepseek import DeepseekTentacle
-from tests.habitat.sbx import cli_pids, remove_sandbox
+from tests.habitat.sbx import cli_pids, expire_idle, remove_sandbox
 from tests.support.invocations import invocation_for
+from tests.support.managers import a_project, a_registry
 from tests.support.users import a_user, auth_config
 
 
@@ -88,7 +89,11 @@ async def test_dsh_turns_resume_share_codex_vm_and_isolate_other_owner(
     settings = "agent-default-model:\n  provider: octomate-test\n  model: mock\n"
     (core_home / "settings.yaml").write_text(settings)
     address = ChannelAddress("im", "thread", "dsh-owner", user_id="dsh-owner")
-    thread = await host.threads.ensure(ThreadKey.from_address(address))
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    project = a_project(project_root, name="dsh-habitat")
+    host.workspaces.projects = await a_registry(project)
+    thread = await host.threads.ensure(ThreadKey.from_address(address), project=project)
 
     # The same configured overlay path exists independently in core and each VM.
     overlay = sbx_cleanup.enter_context(
@@ -118,41 +123,45 @@ async def test_dsh_turns_resume_share_codex_vm_and_isolate_other_owner(
     )
     monkeypatch.setattr(tentacle, "answer_approval", approval)
     monkeypatch.setattr(tentacle, "answer_questions", question)
-    async with tentacle, host.habitats.enter(owner_scope, uuid7()):
-        guest_module = await sandbox.control(
-            "exec",
-            "--workdir=/opt/dsh",
-            sandbox.name,
-            "node",
-            "--input-type=module",
-            "--eval",
-            "console.log(import.meta.resolve('@deepseek-ai/dsh-llm'))",
-        )
-        guest_home = sandbox.config_dir / ".dsh"
-        await sandbox.control(
-            "exec",
-            sandbox.name,
-            "python",
-            "-c",
-            "import json,sys; from pathlib import Path; "
-            "files=json.loads(sys.argv[1]); "
-            "[(p.parent.mkdir(parents=True, exist_ok=True), p.write_text(text), p.chmod(0o600)) "
-            "for name,text in files.items() for p in [Path(name)]]",
-            json.dumps(
-                {
-                    str(patch): patch.read_text(),
-                    str(plugin): fixture.replace(
-                        "__DSH_LLM_MODULE__", guest_module.decode().strip()
-                    ),
-                    str(guest_home / ".credentials.yaml"): credentials,
-                    str(guest_home / "settings.yaml"): settings,
-                }
-            ),
-        )
+    async with tentacle:
+        async with host.habitats.enter(owner_scope, uuid7()):
+            guest_module = await sandbox.control(
+                "exec",
+                "--workdir=/opt/dsh",
+                sandbox.name,
+                "node",
+                "--input-type=module",
+                "--eval",
+                "console.log(import.meta.resolve('@deepseek-ai/dsh-llm'))",
+            )
+            guest_home = sandbox.config_dir / ".dsh"
+            await sandbox.control(
+                "exec",
+                sandbox.name,
+                "python",
+                "-c",
+                "import json,sys; from pathlib import Path; "
+                "files=json.loads(sys.argv[1]); "
+                "[(p.parent.mkdir(parents=True, exist_ok=True), p.write_text(text), p.chmod(0o600)) "
+                "for name,text in files.items() for p in [Path(name)]]",
+                json.dumps(
+                    {
+                        str(patch): patch.read_text(),
+                        str(plugin): fixture.replace(
+                            "__DSH_LLM_MODULE__", guest_module.decode().strip()
+                        ),
+                        str(guest_home / ".credentials.yaml"): credentials,
+                        str(guest_home / "settings.yaml"): settings,
+                    }
+                ),
+            )
         connection = None
         session_id = None
         pids: list[int] = []
-        for prompt in ("Run the probe", "Resume and run it again"):
+        boot = None
+        for turn, prompt in enumerate(
+            ("Run the probe", "Resume and run it again", "Resume after idle")
+        ):
             async with invocation_for(
                 tentacle,
                 conversation_address=address,
@@ -160,6 +169,19 @@ async def test_dsh_turns_resume_share_codex_vm_and_isolate_other_owner(
                 owner_id=owner.id,
             ) as invocation:
                 assert invocation.habitat is sandbox
+                if boot is not None:
+                    assert (
+                        await sandbox.control(
+                            "exec",
+                            sandbox.name,
+                            "cat",
+                            "/proc/sys/kernel/random/boot_id",
+                        )
+                        != boot
+                    )
+                    assert (
+                        invocation.workspace.path / "proof.txt"
+                    ).read_text() == "habitat-proof"
                 result = await tentacle.run(
                     prompt,
                     conversation_address=address,
@@ -175,8 +197,11 @@ async def test_dsh_turns_resume_share_codex_vm_and_isolate_other_owner(
                 )
                 current_pids = await cli_pids(sandbox, argument_pattern=".*/ds[h]")
                 assert len(current_pids) == 1
-                assert connection is None or current is connection
-                assert not pids or pids == current_pids
+                if boot is None:
+                    assert connection is None or current is connection
+                    assert not pids or pids == current_pids
+                else:
+                    assert current is not connection
                 conversation = await host.conversations.get(invocation.conversation.id)
                 assert conversation.external_id is not None
                 assert session_id is None or session_id == conversation.external_id
@@ -186,8 +211,10 @@ async def test_dsh_turns_resume_share_codex_vm_and_isolate_other_owner(
                     current_pids,
                 )
                 await assert_harness_sharing(host, invocation, other_scope)
-        assert len(conversation.runs) == 2
-        assert approval.await_count == question.await_count == 2
+            if turn == 1:
+                boot = await expire_idle(host.habitats, owner_scope)
+        assert len(conversation.runs) == 3
+        assert approval.await_count == question.await_count == 3
         assert not list(core_home.glob("sessions/**/*"))
         assert await cli_pids(sandbox, argument_pattern=".*/ds[h]") == pids
     assert not await cli_pids(sandbox, argument_pattern=".*/ds[h]")

@@ -20,7 +20,7 @@ from octomate.habitat.sbx import SbxHabitat
 from octomate.schemas.habitat import InvocationScope
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.acp.base import AcpAgentTentacle
-from tests.habitat.sbx import remove_sandbox
+from tests.habitat.sbx import expire_idle, remove_sandbox
 from tests.integration.native_sandbox.provider import ScriptedProvider, local_provider
 from tests.support.invocations import invocation_for
 from tests.support.managers import a_project, a_registry
@@ -106,6 +106,7 @@ async def test_codex_acp_tools_and_fresh_process_resume(
         address = thread.key.address(sender.channel_user_id)
         async with agent:
             session_id = None
+            boot = None
             for command in (
                 "pwd; printf acp-proof > proof.txt && uname -s",
                 "pwd; cat proof.txt && uname -s",
@@ -120,6 +121,16 @@ async def test_codex_acp_tools_and_fresh_process_resume(
                     thread_id=thread.id,
                     owner_id=owner.id,
                 ) as invocation:
+                    if boot is not None:
+                        assert (
+                            await sandbox.control(
+                                "exec",
+                                sandbox.name,
+                                "cat",
+                                "/proc/sys/kernel/random/boot_id",
+                            )
+                            != boot
+                        )
                     await agent.run(
                         "Execute the scripted probe once",
                         invocation=invocation,
@@ -142,3 +153,10 @@ async def test_codex_acp_tools_and_fresh_process_resume(
                         assert conversation.external_id == session_id
                         assert "acp-proof" in state.outcome.text
                     session_id = conversation.external_id
+                if boot is None:
+                    boot = await expire_idle(
+                        host.habitats,
+                        InvocationScope(
+                            user_id=owner.id, conversation_id=invocation.conversation.id
+                        ),
+                    )

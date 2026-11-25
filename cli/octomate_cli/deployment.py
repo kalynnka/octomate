@@ -117,6 +117,13 @@ def configuration_checklist(
             "Local plugins, hooks and MCPs are not loaded. "
             "Verify an actual request through Octomate after activation.\n"
         )
+    if "inkling" in agents:
+        instructions.append(
+            "- [ ] Review `tentacles.inkling.models` in `config/tentacles.yaml` and "
+            "configure its provider in `config/providers.yaml`. Model calls and "
+            "provider credentials stay in the core service; workspace commands "
+            "and file operations use the selected habitat.\n"
+        )
     instructions.append("\n## Selected channels\n")
     for channel in channels:
         if channel == "trunkline":
@@ -197,6 +204,7 @@ def prepare(
     sandbox_image: str | None = None,
     acp_command: str | None = None,
     acp_args: list[str] | None = None,
+    inkling_model: str | None = None,
 ) -> None:
     if sandbox_image is not None and (
         target == DeploymentTarget.docker
@@ -211,16 +219,22 @@ def prepare(
         else NativeHabitatConfig()
     )
     if not agents or any(
-        name not in {"claude", "codex", "deepseek", "acp"} for name in agents
+        name not in {"claude", "codex", "deepseek", "acp", "inkling"} for name in agents
     ):
         raise ValueError(
-            "Choose at least one supported agent: claude, codex, deepseek (DSH; experimental), acp."
+            "Choose at least one supported agent: claude, codex, deepseek (DSH; experimental), acp, inkling."
         )
     if "acp" in agents:
         if acp_command is None or not acp_command.strip():
             raise ValueError("ACP requires a non-empty --acp-command.")
     elif acp_command is not None or acp_args:
         raise ValueError("--acp-command and --acp-arg require --agent acp.")
+    if "inkling" in agents:
+        if inkling_model is None or not inkling_model.strip():
+            raise ValueError("Inkling requires a non-empty --inkling-model.")
+        inkling_model = inkling_model.strip()
+    elif inkling_model is not None:
+        raise ValueError("--inkling-model requires --agent inkling.")
     configured_tentacles = tentacle_configs_adapter.validate_python(
         {
             name: {
@@ -228,6 +242,8 @@ def prepare(
                 "provider": {"command": acp_command, "args": acp_args or []},
             }
             if name == "acp"
+            else {"type": "inkling", "models": [{"name": inkling_model}]}
+            if name == "inkling"
             else {"type": name}
             for name in agents
         }
@@ -566,8 +582,11 @@ def main() -> None:
         "--target", type=DeploymentTarget, choices=list(DeploymentTarget)
     )
     parser.add_argument(
-        "--agent", action="append", choices=("claude", "codex", "deepseek", "acp")
+        "--agent",
+        action="append",
+        choices=("claude", "codex", "deepseek", "acp", "inkling"),
     )
+    parser.add_argument("--inkling-model")
     parser.add_argument("--acp-command")
     parser.add_argument("--acp-arg", action="append")
     parser.add_argument(
@@ -602,6 +621,7 @@ def main() -> None:
             args.sandbox_image,
             args.acp_command,
             args.acp_arg,
+            args.inkling_model,
         )
         return
     if (
@@ -613,10 +633,11 @@ def main() -> None:
         or args.sandbox_image
         or args.acp_command is not None
         or args.acp_arg is not None
+        or args.inkling_model is not None
     ):
         parser.error(
             "--port, --agent, --channel, --mcp-presets, --target, --sandbox-image, "
-            "--acp-command and --acp-arg apply only to prepare"
+            "--acp-command, --acp-arg and --inkling-model apply only to prepare"
         )
     config = OctomateConfig()
     database = database_path()

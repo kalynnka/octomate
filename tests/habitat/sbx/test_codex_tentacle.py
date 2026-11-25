@@ -30,7 +30,7 @@ from octomate.schemas.habitat import InvocationScope
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.codex import CodexTentacle
 from tests.agent.claude.test_driven_transcript import served
-from tests.habitat.sbx import cli_pids, remove_sandbox
+from tests.habitat.sbx import cli_pids, expire_idle, remove_sandbox
 from tests.integration.native_sandbox.provider import ScriptedProvider, local_provider
 from tests.support.invocations import invocation_for
 from tests.support.managers import a_project, a_registry
@@ -138,9 +138,13 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
         pids = []
         external_id = None
         memory_token = uuid7().hex
-        for command in (
-            "printf habitat-proof > proof.txt; uname -s",
-            "cat proof.txt; uname -s",
+        boot = None
+        for turn, command in enumerate(
+            (
+                "printf habitat-proof > proof.txt; uname -s",
+                "cat proof.txt; uname -s",
+                "cat proof.txt; uname -s",
+            )
         ):
             state.tool = "exec_command"
             state.arguments = {"cmd": command, "max_output_tokens": 1000}
@@ -152,6 +156,16 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
                 thread_id=thread_id,
                 owner_id=owner.id,
             ) as invocation:
+                if boot is not None:
+                    assert (
+                        await sandbox.control(
+                            "exec",
+                            sandbox.name,
+                            "cat",
+                            "/proc/sys/kernel/random/boot_id",
+                        )
+                        != boot
+                    )
                 prompt = "Execute the synthetic probe once."
                 if live:
                     prompt = (
@@ -215,8 +229,13 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
                     client, conversation.external_id
                 ).read()
                 assert native_thread.thread.model_provider == expected_provider
-                assert previous is None or client is previous
-                assert not pids or current_pids == pids
+                if boot is None:
+                    assert previous is None or client is previous
+                    assert not pids or current_pids == pids
+                else:
+                    assert client is not previous
+                    assert previous is not None
+                    assert previous.transport.closing
                 assert external_id is None or conversation.external_id == external_id
                 previous, pids, external_id = (
                     client,
@@ -234,10 +253,18 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
                     user_id=owner.id, conversation_id=invocation.conversation.id
                 )
             ).invocations
+            if turn == 1:
+                boot = await expire_idle(
+                    host.habitats,
+                    InvocationScope(
+                        user_id=owner.id, conversation_id=invocation.conversation.id
+                    ),
+                )
         assert not list(core_home.glob("sessions/**/*.jsonl"))
         if not live:
+            assert external_id is not None
             source = await AsyncThread(client, external_id).read(include_turns=True)
-            assert len(source.thread.turns) == 2
+            assert len(source.thread.turns) == 3
             destination = str(invocation.cwd / "fork")
             await sandbox.control("exec", sandbox.name, "mkdir", "-p", destination)
             forked_id = await ink.fork_session(

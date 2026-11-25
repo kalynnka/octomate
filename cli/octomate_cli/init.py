@@ -24,7 +24,7 @@ from octomate_cli.habitat import setup as setup_habitat
 from octomate_cli.installation import DeploymentTarget, Installation
 from octomate_cli.mcp import McpPreset
 from octomate_cli.wizard import tentacles_step
-from octomate_cli.wizard.agents import AGENTS, acp_step
+from octomate_cli.wizard.agents import AGENTS, acp_step, inkling_step
 from octomate_cli.wizard.base import brand_color, console
 from octomate_cli.wizard.channels import CHANNELS
 from octomate_cli.wizard.habitat import AGENT_SERVICES, habitat_step
@@ -59,7 +59,13 @@ def init(
         list[str] | None,
         typer.Option(
             "--agent",
-            help="Agent template: claude, codex, deepseek (DSH; experimental) or acp. Repeat for multiple agents.",
+            help="Agent template: claude, codex, deepseek (DSH; experimental), acp or inkling. Repeat for multiple agents.",
+        ),
+    ] = None,
+    inkling_model: Annotated[
+        str | None,
+        typer.Option(
+            help="Initial Inkling model (provider:model); requires --agent inkling."
         ),
     ] = None,
     acp_command: Annotated[
@@ -158,9 +164,10 @@ def init(
             or sandbox_image is not None
             or acp_command is not None
             or acp_arg is not None
+            or inkling_model is not None
         ):
             raise typer.BadParameter(
-                "Prepared installations retain their settings. Omit --source, --port, --agent, --channel, --habitat, --sandbox-image, --acp-command and --acp-arg to validate again."
+                "Prepared installations retain their settings. Omit --source, --port, --agent, --channel, --habitat, --sandbox-image, --acp-command, --acp-arg and --inkling-model to validate again."
             )
         validate_existing(service, account.pw_dir)
         return
@@ -188,6 +195,12 @@ def init(
         interactive=not yes,
         console=console,
     )
+    inkling_model = inkling_step(
+        "inkling" in tentacles.agents,
+        inkling_model,
+        interactive=not yes,
+        console=console,
+    )
     sandbox_image = habitat_step(
         tentacles.agents, habitat, sandbox_image, interactive=not yes, target=target
     )
@@ -207,6 +220,7 @@ def init(
         sandbox_image,
         acp_command,
         acp_args,
+        inkling_model,
     )
     if sandbox_image is not None:
         setup_habitat("sbx", check=yes)
@@ -226,6 +240,7 @@ def init(
         sandbox_image,
         acp_command,
         acp_args,
+        inkling_model,
     )
 
 
@@ -406,6 +421,7 @@ def review_step(
     sandbox_image: str | None = None,
     acp_command: str | None = None,
     acp_args: list[str] | None = None,
+    inkling_model: str | None = None,
 ) -> None:
     root = service.directory
     environment = service.environment
@@ -468,6 +484,8 @@ def review_step(
         ("Prepared definition", str(draft)),
     ):
         table.add_row(key, value)
+    if inkling_model is not None:
+        table.add_row("Inkling model", inkling_model)
     if acp_command is not None:
         table.add_row("ACP provider", shlex.join([acp_command, *(acp_args or [])]))
     console.print(table)
@@ -502,6 +520,7 @@ def prepare_step(
     sandbox_image: str | None = None,
     acp_command: str | None = None,
     acp_args: list[str] | None = None,
+    inkling_model: str | None = None,
 ) -> None:
     root = service.directory
     environment = service.environment
@@ -584,6 +603,11 @@ def prepare_step(
                             else []
                         ),
                         *(f"--acp-arg={argument}" for argument in acp_args or []),
+                        *(
+                            ["--inkling-model", inkling_model]
+                            if inkling_model is not None
+                            else []
+                        ),
                         *(
                             ["--target", service.target.value]
                             if service.target != DeploymentTarget.launchd

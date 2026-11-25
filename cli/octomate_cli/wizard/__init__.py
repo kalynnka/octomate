@@ -76,7 +76,7 @@ def tentacles_step(
     console.print("3/6 · Tentacles", style=f"bold {brand_color}")
     if agent is not None and (not agent or any(name not in AGENTS for name in agent)):
         raise typer.BadParameter(
-            "Choose at least one supported --agent: claude, codex, deepseek (DSH; experimental), acp."
+            "Choose at least one supported --agent: claude, codex, deepseek (DSH; experimental), acp, inkling."
         )
     if channel == ["none"]:
         channel = []

@@ -21,7 +21,7 @@ class HabitatMode(StrEnum):
     sbx = "sbx"
 
 
-SBX_AGENTS = frozenset({"claude", "codex", "deepseek", "acp"})
+SBX_AGENTS = frozenset({"claude", "codex", "deepseek", "acp", "inkling"})
 
 
 @habitat_typer.command()

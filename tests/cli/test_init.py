@@ -155,16 +155,69 @@ def test_acp_wizard_passes_provider_arguments_and_uses_shared_sbx_setup(
     assert not (tmp_path / "service/octomate.db").exists()
 
 
+@pytest.mark.parametrize("yes", [False, True])
+def test_inkling_wizard_selects_model_and_uses_shared_sbx_setup(
+    tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch, yes: bool
+) -> None:
+    monkeypatch.setattr(wizard, "select_tentacles", Mock(return_value=["inkling"]))
+    setup = Mock()
+    monkeypatch.setattr(init_cli, "setup_habitat", setup)
+    credentials = Mock()
+    monkeypatch.setattr(init_cli, "setup_credentials", credentials)
+    image = "example.test/agents@sha256:" + "a" * 64
+    model = "openai:gpt-5-mini"
+    result = runner.invoke(
+        service_typer,
+        [
+            "init",
+            "--prepare",
+            "--root",
+            str(tmp_path / "service"),
+            "--port",
+            "8123",
+            "--agent",
+            "inkling",
+            "--channel",
+            "none",
+            "--habitat",
+            "sbx",
+            "--sandbox-image",
+            image,
+            *(
+                [
+                    "--inkling-model",
+                    model,
+                    "--yes",
+                ]
+                if yes
+                else []
+            ),
+        ],
+        input="" if yes else f"{model}\ny\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "Inkling model" in result.output
+    assert model in result.output
+    setup.assert_called_once_with("sbx", check=yes)
+    credentials.assert_not_called()
+    arguments = commands.call_args_list[2].args[0]
+    assert arguments[arguments.index("--inkling-model") + 1] == model
+    assert not (tmp_path / "service/octomate.db").exists()
+
+
 @pytest.mark.parametrize(
     ("agent", "options", "message"),
     [
+        ("inkling", [], "non-empty --inkling-model"),
+        ("inkling", ["--inkling-model", " "], "non-empty --inkling-model"),
+        ("codex", ["--inkling-model", "openai:gpt-5-mini"], "requires --agent inkling"),
         ("acp", [], "non-empty --acp-command"),
         ("acp", ["--acp-command", " "], "non-empty --acp-command"),
         ("codex", ["--acp-command", "provider"], "require --agent acp"),
         ("codex", ["--acp-arg=--stdio"], "require --agent acp"),
     ],
 )
-def test_invalid_acp_options_are_rejected_before_preparation(
+def test_invalid_agent_options_are_rejected_before_preparation(
     tmp_path: Path, commands: Mock, agent: str, options: list[str], message: str
 ) -> None:
     result = runner.invoke(
@@ -829,7 +882,7 @@ def test_checkbox_requires_an_agent_but_channels_are_optional() -> None:
         create_pipe_input() as keys,
         create_app_session(input=keys, output=DummyOutput()),
     ):
-        keys.send_text("\r " + "\x1b[B" * 4 + " \r")
+        keys.send_text("\r " + "\x1b[B" * 5 + " \r")
         assert wizard.select_tentacles(None, None) == ["claude"]
 
 
@@ -1045,7 +1098,7 @@ def test_checkbox_selects_github_alongside_an_agent() -> None:
         create_pipe_input() as keys,
         create_app_session(input=keys, output=DummyOutput()),
     ):
-        keys.send_text("\x1b[B" * 8 + " \r")
+        keys.send_text("\x1b[B" * 9 + " \r")
         assert wizard.select_tentacles(["codex"], []) == ["codex", "github"]
 
 
@@ -1067,6 +1120,7 @@ def test_selection_shows_each_tentacle_with_its_capabilities(
         "Codex [Agent]",
         "DSH (experimental) [Agent]",
         "ACP provider [Agent]",
+        "Inkling [Agent]",
         "Trunkline [Web] [Channel]",
         "Slack [Channel · MCP]",
         "Lark [Channel]",

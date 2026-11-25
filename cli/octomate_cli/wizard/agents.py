@@ -42,6 +42,32 @@ def acp(console: Console) -> str:
     return "acp"
 
 
+def inkling(console: Console) -> str:
+    console.print(
+        "Inkling calls its model from the core service. Configure provider credentials "
+        "there; sbx runs its workspace commands and file operations."
+    )
+    return "inkling"
+
+
+def inkling_step(
+    selected: bool,
+    model: str | None,
+    *,
+    interactive: bool,
+    console: Console,
+) -> str | None:
+    if not selected:
+        if model is not None:
+            raise typer.BadParameter("--inkling-model requires --agent inkling.")
+        return None
+    if model is None and interactive:
+        model = Prompt.ask("Inkling model (provider:model)", console=console)
+    if model is None or not model.strip():
+        raise typer.BadParameter("Inkling requires a non-empty --inkling-model.")
+    return model.strip()
+
+
 def acp_step(
     selected: bool,
     command: str | None,
@@ -80,4 +106,7 @@ AGENTS: dict[str, TentacleSetup[str]] = {
         label="DSH (experimental)", capabilities=("Agent",), configure=deepseek
     ),
     "acp": TentacleSetup(label="ACP provider", capabilities=("Agent",), configure=acp),
+    "inkling": TentacleSetup(
+        label="Inkling", capabilities=("Agent",), configure=inkling
+    ),
 }

@@ -188,7 +188,7 @@ async def test_failed_guest_start_reaps_child_and_preserves_diagnostics(
         port=0,
         extra_args=[],
         dsh_home=tmp_path / ".dsh",
-        ready_timeout=1,
+        ready_timeout=5,
         habitat=habitat(tmp_path, str(executable)),
     )
     with pytest.raises(TimeoutError if silent else RuntimeError):

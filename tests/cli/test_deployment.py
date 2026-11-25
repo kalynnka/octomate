@@ -30,6 +30,7 @@ from starlette.routing import Route
 from octomate.config import CONFIG_FILES, AuthConfig, OAuthMcpConfig, OctomateConfig
 from octomate.config.acp import AcpAgentConfig
 from octomate.config.agents import AgentConfig, CodexConfig, DeepseekConfig
+from octomate.config.agents.inkling import InklingConfig
 from octomate.config.channels import ChannelConfig, TrunklineChannelConfig
 from octomate.config.database import database_settings
 from octomate.mcp.base import KnownBearers
@@ -119,6 +120,40 @@ def test_prepare_acp_persists_provider_and_channel_routing(
     assert isinstance(channel, TrunklineChannelConfig)
     assert channel.agents == ["acp"]
     assert config.habitat.mode == ("sbx" if sandbox else "native")
+    assert not (preparation / "octomate.db").exists()
+
+
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_prepare_inkling_persists_model_and_channel_routing(
+    preparation: Path, monkeypatch: pytest.MonkeyPatch, sandbox: bool
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "octomate_cli.deployment",
+            "prepare",
+            "--port",
+            "8123",
+            "--agent",
+            "inkling",
+            "--channel",
+            "trunkline",
+            "--inkling-model",
+            "openai:gpt-5-mini",
+            *(["--sandbox-image", "image@sha256:" + "a" * 64] if sandbox else []),
+        ],
+    )
+    deployment.main()
+    config = OctomateConfig()
+    agent = config.tentacles["inkling"]
+    assert isinstance(agent, InklingConfig)
+    assert [model.name for model in agent.models] == ["openai:gpt-5-mini"]
+    channel = config.tentacles["trunkline"]
+    assert isinstance(channel, TrunklineChannelConfig)
+    assert channel.agents == ["inkling"]
+    assert config.habitat.mode == ("sbx" if sandbox else "native")
+    assert "config/providers.yaml" in (preparation / "CONFIGURATION.md").read_text()
     assert not (preparation / "octomate.db").exists()
 
 

@@ -195,7 +195,7 @@ def test_commands_require_their_own_inputs(sbx: Mock, arguments: list[str]) -> N
     sbx.assert_not_called()
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex", "deepseek", "acp"])
+@pytest.mark.parametrize("agent", ["claude", "codex", "deepseek", "acp", "inkling"])
 def test_sbx_selection_accepts_supported_agents(agent: str) -> None:
     image = "image@sha256:" + "a" * 64
     assert (

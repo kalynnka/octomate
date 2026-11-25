@@ -28,7 +28,7 @@ from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.base import InklingOutput
 from octomate.tentacles.inkling.workspace import HabitatWorkspaceBackend
-from tests.habitat.sbx import remove_sandbox
+from tests.habitat.sbx import expire_idle, remove_sandbox
 from tests.support.invocations import invocation_for
 from tests.support.managers import a_project, a_registry
 from tests.support.users import a_user
@@ -110,6 +110,7 @@ async def test_project_tools_approve_resume_and_reuse_the_habitat(
         "inkling", host, auth=host.auth, habitats=host.habitats, agent=agent
     )
     reference = None
+    boot = None
     for turn in range(2):
         async with invocation_for(
             tentacle,
@@ -118,6 +119,13 @@ async def test_project_tools_approve_resume_and_reuse_the_habitat(
             owner_id=owner.id,
         ) as invocation:
             assert invocation.habitat is sandbox
+            if boot is not None:
+                assert (
+                    await sandbox.control(
+                        "exec", sandbox.name, "cat", "/proc/sys/kernel/random/boot_id"
+                    )
+                    != boot
+                )
             backend = HabitatWorkspaceBackend(invocation)
             if reference is not None:
                 assert backend.ref == reference
@@ -157,6 +165,8 @@ async def test_project_tools_approve_resume_and_reuse_the_habitat(
             shell = next(part for part in returned if part.tool_call_id == "shell")
             assert "Linux" in shell.model_response_str()
             assert str(invocation.cwd) in shell.model_response_str()
+        if turn == 0:
+            boot = await expire_idle(host.habitats, scope)
     read = next(part for part in returned if part.tool_call_id == "read")
     assert "habitat-proof" in read.model_response_str()
     assert not (source / "proof.txt").exists()
