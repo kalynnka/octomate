@@ -158,7 +158,7 @@ async def test_sh_preserves_named_arguments_and_filters_host_environment(
     monkeypatch.setenv("OCTOMATE_DB_URL", "synthetic-secret")
     name = "literal spaces; $(false)"
     result = ProcessInfo.model_validate_json(
-        await sandbox.command(
+        await sandbox.control(
             "create",
             "/kit",
             kit_arg=["image=literal spaces; $(false)", "id=$literal"],
@@ -190,7 +190,7 @@ async def test_sh_attachment_preserves_duplex_bytes_and_eof(
     sandbox: SbxHabitat, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "synthetic-secret")
-    async with sandbox.execute(
+    async with sandbox.resident(
         "python",
         "-c",
         "literal spaces; $(false)",
@@ -230,7 +230,7 @@ async def test_sh_failure_keeps_stderr_in_diagnostics(
     sandbox: SbxHabitat, caplog: pytest.LogCaptureFixture
 ) -> None:
     with pytest.raises(HabitatError, match=r"failed \(exit 7\)") as failure:
-        await sandbox.command("fail")
+        await sandbox.control("fail")
     assert "synthetic-secret" not in str(failure.value)
     assert "synthetic-secret" in caplog.text
 
@@ -238,7 +238,7 @@ async def test_sh_failure_keeps_stderr_in_diagnostics(
 async def test_command_stdout_is_not_limited_by_the_stderr_tail(
     sandbox: SbxHabitat,
 ) -> None:
-    output = await sandbox.command("many")
+    output = await sandbox.control("many")
     assert output.decode().splitlines() == [str(index) for index in range(100)]
 
 
@@ -247,7 +247,7 @@ async def test_attachment_delivers_stderr_and_reports_nonzero_exit(
 ) -> None:
     lines: list[str] = []
     with pytest.raises(HabitatError, match=r"failed \(exit 7\)") as failure:
-        async with sandbox.execute("fail", workdir="/workspace", stderr=lines.append):
+        async with sandbox.resident("fail", workdir="/workspace", stderr=lines.append):
             pass
     assert lines == ["x" * 70000, "synthetic-secret"]
     assert "synthetic-secret" not in str(failure.value)
@@ -260,7 +260,7 @@ async def test_attachment_logs_stderr_without_replacing_the_callers_error(
     error = RuntimeError("SDK initialization failed")
     # The caller must fail inside the live transport to exercise its cleanup.
     with pytest.raises(RuntimeError, match="SDK initialization failed") as failure:  # noqa: PT012
-        async with sandbox.execute("fail", workdir="/workspace") as stream:
+        async with sandbox.resident("fail", workdir="/workspace") as stream:
             with pytest.raises(anyio.EndOfStream):
                 await stream.receive()
             raise error
@@ -275,7 +275,7 @@ async def test_command_context_reaps_its_child_without_stopping_the_vm(
     started: asyncio.Future[ProcessInfo] = asyncio.Future()
 
     async def run() -> None:
-        async with sandbox.execute("cat", workdir="/workspace") as stream:
+        async with sandbox.resident("cat", workdir="/workspace") as stream:
             receive = BufferedByteReceiveStream(stream)
             started.set_result(
                 ProcessInfo.model_validate_json(
@@ -300,12 +300,12 @@ async def test_command_context_reaps_its_child_without_stopping_the_vm(
 async def test_concurrent_commands_have_independent_lifetimes(
     sandbox: SbxHabitat,
 ) -> None:
-    async with sandbox.execute("cat", workdir="/workspace") as first:
+    async with sandbox.resident("cat", workdir="/workspace") as first:
         receive = BufferedByteReceiveStream(first)
         first_info = ProcessInfo.model_validate_json(
             await receive.receive_until(b"\n", 65536)
         )
-        async with sandbox.execute("cat", workdir="/workspace") as second:
+        async with sandbox.resident("cat", workdir="/workspace") as second:
             second_info = ProcessInfo.model_validate_json(
                 await BufferedByteReceiveStream(second).receive_until(b"\n", 65536)
             )
@@ -336,7 +336,7 @@ async def test_sh_timeout_and_cancellation_reap_child(
 
     monkeypatch.setattr(sandbox, "cli", cli)
     pid_file = tmp_path / "child.pid"
-    task = asyncio.create_task(sandbox.command("wait", str(pid_file)))
+    task = asyncio.create_task(sandbox.control("wait", str(pid_file)))
     try:
         async with asyncio.timeout(5):
             await started.wait()
@@ -367,11 +367,11 @@ async def test_missing_sbx_has_an_actionable_error(
     )
     if attach:
         with pytest.raises(HabitatError, match="configured executable"):
-            async with sandbox.execute("cat", workdir="/workspace"):
+            async with sandbox.resident("cat", workdir="/workspace"):
                 pytest.fail("missing executable launched")
     else:
         with pytest.raises(HabitatError, match="configured executable"):
-            await sandbox.command("version")
+            await sandbox.control("version")
 
 
 async def test_published_service_uses_assigned_loopback_port_and_unpublishes(
@@ -380,7 +380,7 @@ async def test_published_service_uses_assigned_loopback_port_and_unpublishes(
     command = AsyncMock(
         return_value=b'[{"host_ip":"127.0.0.1","host_port":42123,"sandbox_port":41234,"protocol":"tcp4"}]'
     )
-    monkeypatch.setattr(SbxHabitat, "command", command)
+    monkeypatch.setattr(SbxHabitat, "control", command)
     habitat = SbxHabitat(
         config=SbxHabitatConfig(image=IMAGE),
         user_id=uuid7(),

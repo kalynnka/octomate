@@ -368,8 +368,8 @@ async def test_invocations_reuse_clients_until_their_own_habitat_stops(
     other_client = SharedCodex(
         config, AsyncMock(), instrument=False, habitat=separate.habitat
     )
-    execute = Mock(wraps=residence.habitat.execute)
-    monkeypatch.setattr(residence.habitat, "execute", execute)
+    resident = Mock(wraps=residence.habitat.resident)
+    monkeypatch.setattr(residence.habitat, "resident", resident)
     stopped: list[str] = []
 
     async def stop(habitat: SbxHabitat) -> None:
@@ -400,7 +400,7 @@ async def test_invocations_reuse_clients_until_their_own_habitat_stops(
             )
             assert {reply.pid for reply in replies} == {first.pid}
             assert separate_process.pid != first.pid
-            execute.assert_called_once()
+            resident.assert_called_once()
         await manager.stop(residence)
         assert stopped == [residence.habitat.name]
         with pytest.raises(ProcessLookupError):

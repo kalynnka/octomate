@@ -123,7 +123,7 @@ class HabitatTransport(Transport):
                 except Exception:
                     logger.debug("Claude stderr callback failed", exc_info=True)
 
-        async with habitat.execute(
+        async with habitat.resident(
             *command,
             workdir=str(options.cwd),
             env=env,

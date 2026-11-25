@@ -38,7 +38,7 @@ async def test_guest_codex_rpc_notifications_stderr_and_cleanup(
     assert isinstance(sandbox, SbxHabitat)
     assert (
         sandbox.name
-        not in (await sandbox.command("ls", quiet=True)).decode().splitlines()
+        not in (await sandbox.control("ls", quiet=True)).decode().splitlines()
     )
     sbx_cleanup.push_async_callback(remove_sandbox, sandbox)
     sbx_cleanup.push_async_callback(manager.close)
@@ -50,7 +50,7 @@ async def test_guest_codex_rpc_notifications_stderr_and_cleanup(
     handler = AsyncMock(return_value={"decision": "decline"})
     client = SharedCodex(config, handler, instrument=True, habitat=sandbox)
     async with manager.enter(scope, uuid7()):
-        await sandbox.command("exec", sandbox.name, "mkdir", "-p", "/home/agent/.codex")
+        await sandbox.control("exec", sandbox.name, "mkdir", "-p", "/home/agent/.codex")
         await client.start()
         assert client.metadata.userAgent is not None
         assert "0.171.0" in client.metadata.userAgent
@@ -71,7 +71,7 @@ async def test_guest_codex_rpc_notifications_stderr_and_cleanup(
     async with manager.enter(peer, uuid7()):
         await asyncio.gather(*(client.start() for _ in range(4)))
         path = "/home/agent/workspace/large-transcript.txt"
-        await sandbox.command(
+        await sandbox.control(
             "exec",
             sandbox.name,
             "python",
@@ -90,7 +90,7 @@ async def test_guest_codex_rpc_notifications_stderr_and_cleanup(
         assert await cli_pids(sandbox, argument_pattern="app-serve[r]") == pids
         await client.close()
         assert not client.transport.reader_thread.is_alive()
-        await sandbox.command(
+        await sandbox.control(
             "exec",
             sandbox.name,
             "timeout",

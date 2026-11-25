@@ -41,11 +41,11 @@ async def test_internet_access_is_applied_at_creation(
     assert isinstance(sandbox, SbxHabitat)
     assert (
         sandbox.name
-        not in (await sandbox.command("ls", quiet=True)).decode().splitlines()
+        not in (await sandbox.control("ls", quiet=True)).decode().splitlines()
     )
     try:
         async with manager.enter(scope, uuid7()):
-            await sandbox.command(
+            await sandbox.control(
                 "exec",
                 sandbox.name,
                 "python",
@@ -75,7 +75,7 @@ async def test_internet_access_is_applied_at_creation(
                 assert policy["allowed"] is internet_access
                 if not internet_access:
                     assert policy["deny_kind"] == "explicit"
-            status = await sandbox.command(
+            status = await sandbox.control(
                 "exec",
                 sandbox.name,
                 "python",

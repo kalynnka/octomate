@@ -183,7 +183,7 @@ async def test_project_tools_approve_resume_and_reuse_the_habitat(
             backend.run("echo $$ > sleeping.pid; exec sleep 30", shell=True)
         )
         try:
-            await sandbox.command(
+            await sandbox.control(
                 "exec",
                 "--workdir",
                 str(invocation.cwd),

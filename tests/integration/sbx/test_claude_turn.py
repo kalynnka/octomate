@@ -54,7 +54,7 @@ async def guest(
     assert isinstance(sandbox, SbxHabitat)
     assert (
         sandbox.name
-        not in (await sandbox.command("ls", quiet=True)).decode().splitlines()
+        not in (await sandbox.control("ls", quiet=True)).decode().splitlines()
     )
     try:
         async with manager.enter(scope, uuid7()):
@@ -141,7 +141,7 @@ async def test_model_tools_resume_interrupt_and_cancel(
             response = tasks.create_task(turn(client, prompt))
             async with asyncio.timeout(120):
                 await asked.wait()
-            await sandbox.command(
+            await sandbox.control(
                 "exec",
                 sandbox.name,
                 "test",
@@ -155,7 +155,7 @@ async def test_model_tools_resume_interrupt_and_cancel(
         assert response.result().session_id == options.session_id
         assert approvals == [command]
         assert (
-            await sandbox.command(
+            await sandbox.control(
                 "exec",
                 sandbox.name,
                 "cat",

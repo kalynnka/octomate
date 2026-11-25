@@ -99,7 +99,7 @@ class SbxHabitat(ManagedHabitat):
     @asynccontextmanager
     async def publish(self, port: int) -> AsyncGenerator[str]:
         """Expose a guest TCP port on ephemeral host loopback for this context."""
-        data = await self.command(
+        data = await self.control(
             "ports", self.name, "--publish", f"{port}/tcp4", "--json"
         )
         ports = published_ports_adapter.validate_json(data)
@@ -115,7 +115,7 @@ class SbxHabitat(ManagedHabitat):
             yield f"http://127.0.0.1:{binding.host_port}"
         finally:
             with anyio.CancelScope(shield=True):
-                await self.command(
+                await self.control(
                     "ports",
                     self.name,
                     "--unpublish",
@@ -157,7 +157,7 @@ class SbxHabitat(ManagedHabitat):
                         process.kill()
                 await process.wait()
 
-    async def command(
+    async def control(
         self,
         *args: str,
         **options: Unpack[SbxOptions],
@@ -212,7 +212,7 @@ class SbxHabitat(ManagedHabitat):
                 )
         else:
             raise HabitatError("Local sbx supports macOS and Linux hosts only")
-        version = await self.command("version")
+        version = await self.control("version")
         if not re.search(
             rb"(?:Client Version:\s+|sbx version )v"
             + re.escape(self.config.version.encode())
@@ -220,7 +220,7 @@ class SbxHabitat(ManagedHabitat):
             version,
         ):
             raise HabitatError(f"Install the pinned sbx release {self.config.version}")
-        forwarding = await self.command("settings", "get", "ssh.agentForwardingEnabled")
+        forwarding = await self.control("settings", "get", "ssh.agentForwardingEnabled")
         if forwarding.strip() != b"false":
             raise HabitatError(
                 "Turn off sbx SSH agent forwarding: sbx settings set "
@@ -229,7 +229,7 @@ class SbxHabitat(ManagedHabitat):
 
     async def prepare(self) -> None:
         await self.preflight()
-        names = (await self.command("ls", quiet=True)).decode().splitlines()
+        names = (await self.control("ls", quiet=True)).decode().splitlines()
         kit_args: SbxKitArgs = {
             "user_id": self.user_id,
             "root": self.root,
@@ -246,7 +246,7 @@ class SbxHabitat(ManagedHabitat):
             # The agents' credential file is written beneath the configuration
             # volume, where the harness is told to keep its configuration.
             await anyio.Path(self.config_dir).mkdir(parents=True, exist_ok=True)
-            await self.command(
+            await self.control(
                 "create",
                 str(Path(__file__).parent),
                 str(self.root),
@@ -258,7 +258,7 @@ class SbxHabitat(ManagedHabitat):
                 no_progress=True,
             )
             return
-        metadata = await self.command(
+        metadata = await self.control(
             "exec",
             self.name,
             "printenv",
@@ -272,14 +272,14 @@ class SbxHabitat(ManagedHabitat):
             )
 
     @asynccontextmanager
-    async def execute(
+    async def resident(
         self,
         *command: str,
         workdir: str,
         env: dict[str, str] | None = None,
         stderr: Callable[[str], None] | None = None,
     ) -> AsyncGenerator[UNIXSocketStream]:
-        """Connect guest stdio directly to a byte stream."""
+        """Keep a guest process attached to a byte stream until its owner exits."""
         parent, child = socket.socketpair()
         with parent, child:
             async with (
@@ -353,6 +353,6 @@ class SbxHabitat(ManagedHabitat):
 
     async def stop(self) -> None:
         if self.managed:
-            names = (await self.command("ls", quiet=True)).decode().splitlines()
+            names = (await self.control("ls", quiet=True)).decode().splitlines()
             if self.name in names:
-                await self.command("stop", self.name)
+                await self.control("stop", self.name)

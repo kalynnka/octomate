@@ -62,7 +62,7 @@ async def sample_load(sandbox: SbxHabitat, pids: set[int]) -> float:
     peak_rss_mib = 0.0
     async with asyncio.TaskGroup() as tasks:
         load = tasks.create_task(
-            sandbox.command(
+            sandbox.control(
                 "exec",
                 sandbox.name,
                 "python",
@@ -93,7 +93,7 @@ async def test_single_user_resource_cost(
     assert isinstance(sandbox, SbxHabitat)
     assert (
         sandbox.name
-        not in (await sandbox.command("ls", quiet=True)).decode().splitlines()
+        not in (await sandbox.control("ls", quiet=True)).decode().splitlines()
     )
     before = await host_usage()
     started = monotonic()
@@ -101,7 +101,7 @@ async def test_single_user_resource_cost(
         async with manager.enter(scope, uuid7()):
             startup_seconds = monotonic() - started
             invoked = monotonic()
-            async with sandbox.execute(
+            async with sandbox.resident(
                 "python",
                 "-c",
                 "import os,sys; print(os.getpid(), flush=True); sys.stdin.buffer.read()",
@@ -131,7 +131,7 @@ async def test_single_user_resource_cost(
                 / (monotonic() - sampled)
             )
             guest = GuestMemory.model_validate_json(
-                await sandbox.command(
+                await sandbox.control(
                     "exec",
                     sandbox.name,
                     "python",

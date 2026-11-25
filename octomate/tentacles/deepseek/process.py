@@ -198,7 +198,7 @@ class DeepseekProcess:
             launcher = await asyncio.to_thread(
                 Path(__file__).with_name("guest.py").read_text
             )
-            async with habitat.execute(
+            async with habitat.resident(
                 "python",
                 "-c",
                 launcher,

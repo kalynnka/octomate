@@ -74,7 +74,7 @@ class ClaudeInk(AgentInk):
             raise ValueError("Cannot fork a Claude conversation without a session id")
         if isinstance(habitat, ManagedHabitat):
             args = ("--transcript",) if transcript is not None else ()
-            async with habitat.execute(
+            async with habitat.resident(
                 "octomate",
                 "claude",
                 "habitat",

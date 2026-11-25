@@ -70,7 +70,7 @@ from pydantic.alias_generators import to_snake
 from uuid_utils.compat import uuid7
 
 from octomate.config.agents import CodexConfig
-from octomate.habitat import Habitat, ManagedHabitat
+from octomate.habitat import Habitat, HabitatError, ManagedHabitat
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.schemas.mcp import McpAppResource
 from octomate.schemas.messages import ModelRequest, ModelResponse
@@ -666,10 +666,14 @@ class CodexInk(AgentInk):
         if isinstance(habitat, ManagedHabitat):
             home = PurePosixPath(env["CODEX_HOME"])
             path = home / "sessions" / "users" / owner_id.hex / name
-            async with habitat.execute(
-                "mkdir", "-p", "-m", "700", str(path.parent), workdir=str(home)
-            ):
-                pass
+            result = await habitat.run(
+                ["mkdir", "-p", "-m", "700", str(path.parent)], workdir=str(home)
+            )
+            if result.exit_code:
+                logger.error(
+                    "Codex transcript directory creation failed: %s", result.stderr
+                )
+                raise HabitatError("Could not create the Codex transcript directory")
             try:
                 await client._client.request(
                     "fs/writeFile",
@@ -679,10 +683,14 @@ class CodexInk(AgentInk):
                     },
                     response_model=FsWriteFileResponse,
                 )
-                async with habitat.execute(
-                    "chmod", "600", str(path), workdir=str(home)
-                ):
-                    pass
+                result = await habitat.run(
+                    ["chmod", "600", str(path)], workdir=str(home)
+                )
+                if result.exit_code:
+                    logger.error(
+                        "Codex transcript permission change failed: %s", result.stderr
+                    )
+                    raise HabitatError("Could not set the Codex transcript permissions")
                 yield imported_id
             except BaseException:
                 with anyio.CancelScope(shield=True):

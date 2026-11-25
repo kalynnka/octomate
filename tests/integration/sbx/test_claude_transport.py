@@ -35,7 +35,7 @@ async def test_guest_cli_controls_and_process_cleanup(
     assert isinstance(sandbox, SbxHabitat)
     assert (
         sandbox.name
-        not in (await sandbox.command("ls", quiet=True)).decode().splitlines()
+        not in (await sandbox.control("ls", quiet=True)).decode().splitlines()
     )
     options = ClaudeAgentOptions(
         cli_path="/usr/local/bin/claude",
@@ -56,7 +56,7 @@ async def test_guest_cli_controls_and_process_cleanup(
         assert pids, "No guest CLI process found"
     assert not state.invocations
     assert state.status.phase == "ready"
-    await sandbox.command(
+    await sandbox.control(
         "exec",
         sandbox.name,
         "timeout",
@@ -70,7 +70,7 @@ async def test_guest_cli_controls_and_process_cleanup(
     stderr: list[str] = []
     # The error is raised on context exit after guest stdio has drained.
     with pytest.raises(HabitatError, match="exit 7"):  # noqa: PT012
-        async with sandbox.execute(
+        async with sandbox.resident(
             "sh",
             "-c",
             "echo acceptance-diagnostic >&2; exit 7",

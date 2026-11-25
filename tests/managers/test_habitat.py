@@ -39,7 +39,7 @@ def manager(monkeypatch: pytest.MonkeyPatch, scope: InvocationScope) -> HabitatM
     monkeypatch.setattr(SbxHabitat, "preflight", AsyncMock())
     monkeypatch.setattr(
         SbxHabitat,
-        "execute",
+        "resident",
         AsyncMock(side_effect=AssertionError("acquisition must not launch an agent")),
     )
     names: set[str] = set()
@@ -59,7 +59,7 @@ def manager(monkeypatch: pytest.MonkeyPatch, scope: InvocationScope) -> HabitatM
             ).encode()
         return "\n".join(sorted(names)).encode() if args[0] == "ls" else b""
 
-    monkeypatch.setattr(SbxHabitat, "command", AsyncMock(side_effect=command))
+    monkeypatch.setattr(SbxHabitat, "control", AsyncMock(side_effect=command))
     return manager
 
 
@@ -88,9 +88,9 @@ async def test_concurrent_acquisitions_share_one_vm_and_keep_peer_alive(
     assert manager.status(scope).phase == "stopped"
     assert not state.needs_cleanup
     assert not manager.nerve.subscribers
-    execute = SbxHabitat.execute
-    assert isinstance(execute, AsyncMock)
-    execute.assert_not_called()
+    resident = SbxHabitat.resident
+    assert isinstance(resident, AsyncMock)
+    resident.assert_not_called()
 
 
 async def test_a_conversation_is_residenced_while_inside(
@@ -133,7 +133,7 @@ async def test_cancelled_prepare_stops_runtime_without_launching_an_agent(
     assert not manager.residence(scope).needs_cleanup
     assert manager.status(scope).phase == "failed"
     assert not manager.nerve.subscribers
-    command = SbxHabitat.command
+    command = SbxHabitat.control
     assert isinstance(command, AsyncMock)
     command.assert_any_await("stop", manager.residence(scope).habitat.name)
 
@@ -195,7 +195,7 @@ async def test_create_mounts_only_the_owners_root_scoped_and_budgeted(
                 phases.append(impulse.event.phase)
             assert phases == ["preparing", "ready"]
         await manager.close()
-    command = SbxHabitat.command
+    command = SbxHabitat.control
     assert isinstance(command, AsyncMock)
     create = next(c for c in command.await_args_list if c.args[0] == "create")
     assert create.args[0] == "create"
@@ -251,7 +251,7 @@ async def test_manager_uses_the_habitat_base_class(
             calls.append("prepare")
 
         @asynccontextmanager
-        async def execute(
+        async def resident(
             self, *command: str, workdir: str, env: dict[str, str] | None = None
         ) -> AsyncGenerator[ByteStream]:
             pytest.fail("acquisition must not launch an agent")
@@ -267,7 +267,7 @@ async def test_manager_uses_the_habitat_base_class(
         assert manager.status(scope).habitat == "another-runtime"
     await manager.close()
     assert calls == ["prepare", "stop"]
-    command = SbxHabitat.command
+    command = SbxHabitat.control
     assert isinstance(command, AsyncMock)
     command.assert_not_called()
 
@@ -275,7 +275,7 @@ async def test_manager_uses_the_habitat_base_class(
 async def test_reuse_does_not_create_or_replace_a_habitat(
     manager: HabitatManager, scope: InvocationScope
 ) -> None:
-    command = SbxHabitat.command
+    command = SbxHabitat.control
     assert isinstance(command, AsyncMock)
     await manager.residence(scope).habitat.prepare()
     assert "exec" not in [c.args[0] for c in command.await_args_list]
@@ -291,7 +291,7 @@ async def test_reuse_does_not_create_or_replace_a_habitat(
 async def test_configuration_mismatch_stops_runtime_without_replacing_it(
     manager: HabitatManager, scope: InvocationScope, field: int
 ) -> None:
-    command = SbxHabitat.command
+    command = SbxHabitat.control
     assert isinstance(command, AsyncMock)
     metadata = [
         str(scope.user_id).encode(),
@@ -343,7 +343,7 @@ async def test_failed_stop_keeps_cleanup_pending(
 ) -> None:
     async with manager.enter(scope, uuid7()):
         pass
-    command = SbxHabitat.command
+    command = SbxHabitat.control
     assert isinstance(command, AsyncMock)
     normal = command.side_effect
     command.side_effect = HabitatError("stop failed")
@@ -444,7 +444,7 @@ async def test_first_acquisitions_race_without_creating_two_vms(
     ready.set()
     await entered.get()
     await entered.get()
-    command = SbxHabitat.command
+    command = SbxHabitat.control
     assert isinstance(command, AsyncMock)
     assert sum(c.args[0] == "create" for c in command.await_args_list) == 1
     prepare.assert_awaited_once()
@@ -485,7 +485,7 @@ async def test_preflight_checks_host_cli_version_and_ssh_forwarding(
     monkeypatch.setattr(sbx_module.platform, "machine", lambda: machine)
     monkeypatch.setattr(sbx_module.platform, "mac_ver", lambda: ("14.1", (), ""))
     monkeypatch.setattr(
-        habitat, "command", sbx_replies(f"{prefix}{version} build\n", forwarding)
+        habitat, "control", sbx_replies(f"{prefix}{version} build\n", forwarding)
     )
     if error is None:
         await habitat.preflight()
@@ -525,7 +525,7 @@ async def test_linux_preflight_requires_supported_host_and_accessible_kvm(
     )
     monkeypatch.setattr(sbx_module.os, "access", lambda path, mode: kvm)
     monkeypatch.setattr(
-        habitat, "command", sbx_replies("Client Version: v0.48.0 build\n")
+        habitat, "control", sbx_replies("Client Version: v0.48.0 build\n")
     )
     if error is None:
         await habitat.preflight()

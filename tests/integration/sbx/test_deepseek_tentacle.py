@@ -119,7 +119,7 @@ async def test_dsh_turns_resume_share_codex_vm_and_isolate_other_owner(
     monkeypatch.setattr(tentacle, "answer_approval", approval)
     monkeypatch.setattr(tentacle, "answer_questions", question)
     async with tentacle, host.habitats.enter(owner_scope, uuid7()):
-        guest_module = await sandbox.command(
+        guest_module = await sandbox.control(
             "exec",
             "--workdir=/opt/dsh",
             sandbox.name,
@@ -129,7 +129,7 @@ async def test_dsh_turns_resume_share_codex_vm_and_isolate_other_owner(
             "console.log(import.meta.resolve('@deepseek-ai/dsh-llm'))",
         )
         guest_home = sandbox.config_dir / ".dsh"
-        await sandbox.command(
+        await sandbox.control(
             "exec",
             sandbox.name,
             "python",
@@ -191,7 +191,7 @@ async def test_dsh_turns_resume_share_codex_vm_and_isolate_other_owner(
         assert not list(core_home.glob("sessions/**/*"))
         assert await cli_pids(sandbox, argument_pattern=".*/ds[h]") == pids
     assert not await cli_pids(sandbox, argument_pattern=".*/ds[h]")
-    assert json.loads(await sandbox.command("ports", sandbox.name, "--json")) == []
+    assert json.loads(await sandbox.control("ports", sandbox.name, "--json")) == []
 
 
 async def assert_harness_sharing(
@@ -220,7 +220,7 @@ async def assert_harness_sharing(
         assert b64decode(content.data_base64) == b"habitat-proof"
         async with host.habitats.enter(other_scope, uuid7()):
             assert peer.name != sandbox.name
-            hidden = await peer.command(
+            hidden = await peer.control(
                 "exec",
                 peer.name,
                 "python",

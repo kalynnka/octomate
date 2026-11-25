@@ -50,7 +50,7 @@ async def stdio_connection(
     if cwd is None:
         raise ValueError("Habitat ACP connections require a guest working directory")
     async with (
-        habitat.execute(command, *args, workdir=cwd, env=env) as stream,
+        habitat.resident(command, *args, workdir=cwd, env=env) as stream,
         stream_connection(stream, handler) as connection,
     ):
         yield connection

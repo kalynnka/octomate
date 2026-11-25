@@ -54,7 +54,7 @@ async def test_guest_writes_land_in_the_owners_volumes_and_nowhere_else(
                 "sk-ant-oat01-proxy-managed"
             )
             assert mirror.path.is_dir()
-            await sandbox.command(
+            await sandbox.control(
                 "exec",
                 "--workdir",
                 str(sandbox.path(workspace.volume)),
@@ -71,14 +71,14 @@ async def test_guest_writes_land_in_the_owners_volumes_and_nowhere_else(
                 await a_thread("later"), None, owner.id
             ) as later:
                 (later.path / "host.txt").write_text("later")
-                seen = await sandbox.command(
+                seen = await sandbox.control(
                     "exec",
                     sandbox.name,
                     "cat",
                     str(sandbox.path(later.volume) / "host.txt"),
                 )
                 assert seen == b"later"
-            hidden = await sandbox.command(
+            hidden = await sandbox.control(
                 "exec",
                 sandbox.name,
                 "sh",

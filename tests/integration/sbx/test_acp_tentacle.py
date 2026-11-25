@@ -123,7 +123,7 @@ async def test_turns_stream_resume_and_use_guest_paths(
             config = invocation.workspace.volumes.get("config")
             assert config is not None
             home = sandbox.path(config)
-            raw = await sandbox.command(
+            raw = await sandbox.control(
                 "exec", sandbox.name, "cat", str(home / "acp-requests.jsonl")
             )
             records = [json.loads(line) for line in raw.splitlines()]
@@ -142,9 +142,9 @@ async def test_turns_stream_resume_and_use_guest_paths(
             reply = next(item for item in messages if item.get("id") == "permission")
             assert reply["result"]["outcome"] == {"outcome": "cancelled"}
             assert (
-                await sandbox.command("exec", sandbox.name, "uname", "-s") == b"Linux\n"
+                await sandbox.control("exec", sandbox.name, "uname", "-s") == b"Linux\n"
             )
-            await sandbox.command(
+            await sandbox.control(
                 "exec",
                 sandbox.name,
                 "timeout",
@@ -216,7 +216,7 @@ async def test_permission_and_cancellation_cross_guest_stdio(
             else:
                 callbacks.answered.set()
             assert (await prompt).stop_reason == ("cancelled" if cancel else "end_turn")
-    raw = await sandbox.command(
+    raw = await sandbox.control(
         "exec", sandbox.name, "cat", "/home/agent/acp-requests.jsonl"
     )
     records = [json.loads(line) for line in raw.splitlines()]
@@ -230,7 +230,7 @@ async def test_permission_and_cancellation_cross_guest_stdio(
             "outcome": "selected",
             "optionId": "yes",
         }
-    await sandbox.command(
+    await sandbox.control(
         "exec",
         sandbox.name,
         "timeout",

@@ -349,7 +349,7 @@ class SharedCodex(AsyncCodex):
                 command.extend(["--config", value])
             command.extend(["app-server", "--listen", "stdio://"])
         self.transport.stream = await self.connection.enter_async_context(
-            self.habitat.execute(
+            self.habitat.resident(
                 *command,
                 workdir=config.cwd,
                 env={**(config.env or {}), "PWD": config.cwd},

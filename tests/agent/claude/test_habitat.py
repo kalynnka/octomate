@@ -664,7 +664,7 @@ async def test_a_driven_turn_runs_inside_the_owners_sandbox(
         + Path(__file__).with_name("fixtures").joinpath("stdio_cli.py").read_text()
     )
     cli.chmod(0o700)
-    execute = SbxHabitat.execute
+    resident = SbxHabitat.resident
     executions: list[tuple[str, ...]] = []
 
     @asynccontextmanager
@@ -679,12 +679,12 @@ async def test_a_driven_turn_runs_inside_the_owners_sandbox(
         assert env["OCTOMATE_CLI_URL"] == "http://host.docker.internal:8000"
         assert env["OCTOMATE_CLI_TOKEN"]
         executions.append(command)
-        async with execute(
+        async with resident(
             habitat, *command, workdir=workdir, env=env, stderr=stderr
         ) as stream:
             yield stream
 
-    monkeypatch.setattr(SbxHabitat, "execute", capture_execution)
+    monkeypatch.setattr(SbxHabitat, "resident", capture_execution)
     # The guest finds `claude` on its own path; the stand-in sbx shares the host's.
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setattr(SbxHabitat, "prepare", AsyncMock())

@@ -4,15 +4,15 @@ from octomate.habitat.sbx import SbxHabitat
 
 
 async def remove_sandbox(sandbox: SbxHabitat) -> None:
-    names = (await sandbox.command("ls", quiet=True)).decode().splitlines()
+    names = (await sandbox.control("ls", quiet=True)).decode().splitlines()
     if sandbox.name in names:
-        await sandbox.command("rm", "--force", sandbox.name)
+        await sandbox.control("rm", "--force", sandbox.name)
 
 
 async def cli_pids(
     sandbox: SbxHabitat, *, argument_pattern: str = "--output-forma[t]"
 ) -> list[int]:
-    paths = await sandbox.command(
+    paths = await sandbox.control(
         "exec",
         sandbox.name,
         "find",

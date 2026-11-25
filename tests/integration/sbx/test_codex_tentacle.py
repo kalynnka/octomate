@@ -177,7 +177,7 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
                     assert "Linux" in result.output
                     assert previous is None or "habitat-proof" in result.output
                     assert json.loads(
-                        await sandbox.command(
+                        await sandbox.control(
                             "exec",
                             sandbox.name,
                             "cat",
@@ -205,7 +205,7 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
                 assert conversation.external_id is not None
                 expected_provider = "audit"
                 if live:
-                    mode = await sandbox.command(
+                    mode = await sandbox.control(
                         "exec", sandbox.name, "printenv", "SBX_CRED_OPENAI_MODE"
                     )
                     expected_provider = (
@@ -239,7 +239,7 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
             source = await AsyncThread(client, external_id).read(include_turns=True)
             assert len(source.thread.turns) == 2
             destination = str(invocation.cwd / "fork")
-            await sandbox.command("exec", sandbox.name, "mkdir", "-p", destination)
+            await sandbox.control("exec", sandbox.name, "mkdir", "-p", destination)
             forked_id = await ink.fork_session(
                 external_id,
                 cwd=Path(destination),
@@ -393,7 +393,7 @@ async def exercise_uploaded_history(
     # A failed import must not leave a private rollout behind in the guest.
     home = invocation.environment["CODEX_HOME"]
     imports = f"{home}/sessions/users/{owner_id.hex}"
-    before = await habitat.command("exec", habitat.name, "ls", imports)
+    before = await habitat.control("exec", habitat.name, "ls", imports)
     with pytest.raises(RuntimeError, match="abort import"):
         async with tentacle.ink.import_transcript(
             uploaded,
@@ -403,4 +403,4 @@ async def exercise_uploaded_history(
             env=invocation.environment,
         ):
             raise RuntimeError("abort import")
-    assert await habitat.command("exec", habitat.name, "ls", imports) == before
+    assert await habitat.control("exec", habitat.name, "ls", imports) == before

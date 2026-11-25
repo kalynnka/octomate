@@ -29,7 +29,7 @@ async def upload_subagent(
     sandbox: SbxHabitat, conversation: Conversation, path: Path, child: Path, token: str
 ) -> None:
     """Deliver SubagentStop through the actual CLI inside the VM."""
-    async with sandbox.execute(
+    async with sandbox.resident(
         "octomate",
         "claude",
         "upload",
