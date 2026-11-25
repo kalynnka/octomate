@@ -30,8 +30,8 @@ from tests.agent.claude.test_command_execution import (
 from tests.agent.claude.test_command_execution import (
     streams as streams,
 )
+from tests.habitat.test_contracts import IMAGE
 from tests.support.users import auth_config
-from tests.test_habitat_contracts import IMAGE
 
 
 async def deliver(

@@ -16,6 +16,7 @@ from octomate_cli.config import cli_settings
 from pydantic_ai import Conversation as PydanticConversation
 from pydantic_ai import RunContext
 from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.models import override_allow_model_requests
 from pydantic_ai_harness.step_persistence import InMemoryStepStore
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
@@ -51,11 +52,19 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
-    if collection_path == Path(__file__).parent / "integration" / "sbx":
+    if collection_path == Path(__file__).parent / "habitat" / "sbx":
         return not config.getoption("--sbx")
     if collection_path == Path(__file__).parent / "integration" / "native_sandbox":
         return not config.getoption("--native-sandbox")
     return None
+
+
+@pytest.fixture(autouse=True)
+def no_model_requests(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Unit tests use scripted models; only explicitly live tests may call providers."""
+    live = request.node.get_closest_marker("trigger") is not None
+    with override_allow_model_requests(live):
+        yield
 
 
 @pytest.fixture(autouse=True)

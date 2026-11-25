@@ -99,6 +99,25 @@ installation has an unpadded key, preserve its decoded bytes when correcting the
 format; do not generate a replacement for a key that already protects stored
 grants. Verify an actual connector authorisation after configuration.
 
+## sbx habitat
+
+### Docker usage analytics
+
+The server operator controls sbx CLI usage analytics. To disable those analytics sent to
+Docker, set `SBX_NO_TELEMETRY=1` in the environment of the process running Octomate,
+then restart the service. For a foreground server, export it in the same shell
+before starting Octomate:
+
+```sh
+export SBX_NO_TELEMETRY=1
+```
+
+Octomate passes this variable through without choosing a value. Leave it unset to
+use sbx's own telemetry preference. This does not disable Octomate's habitat spans
+or agent tracing in [Logfire](observability.md#logfire). See
+[Docker's telemetry settings](https://docs.docker.com/ai/sandboxes/configuration/settings/#telemetry)
+for the CLI and daemon's own controls.
+
 ## Everything else
 
 | Key | Purpose | Defaults |

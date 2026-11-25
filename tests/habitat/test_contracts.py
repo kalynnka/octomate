@@ -102,6 +102,10 @@ def test_sbx_internet_access_is_enabled_by_default() -> None:
     assert SbxHabitatConfig(image=IMAGE).internet_access
 
 
+def test_sbx_idle_timeout_defaults_to_five_minutes() -> None:
+    assert SbxHabitatConfig(image=IMAGE).idle_timeout == 300
+
+
 async def test_sbx_application_lifespan_starts_without_allocating_a_vm(
     in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:

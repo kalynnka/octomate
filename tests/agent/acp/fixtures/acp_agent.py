@@ -109,7 +109,8 @@ def main() -> None:
                                     os.getenv("ACP_TEST_VERSION", "1")
                                 ),
                                 "agentCapabilities": {
-                                    "loadSession": not disabled,
+                                    "loadSession": not disabled
+                                    and os.getenv("ACP_TEST_LOAD") != "0",
                                     "sessionCapabilities": {}
                                     if disabled
                                     else {

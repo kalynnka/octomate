@@ -25,10 +25,10 @@ from octomate.tentacles.acp.base import AcpAgentTentacle
 from octomate.tentacles.acp.client import AcpProvider, NativeAcpClient
 from tests.agent.acp.test_client import Callbacks
 from tests.agent.acp.test_tentacle import custom_provider as custom_provider
-from tests.agent.claude.test_habitat import executable as executable
+from tests.habitat.agents.test_claude import executable as executable
+from tests.habitat.test_contracts import IMAGE
 from tests.support.invocations import invocation_for
 from tests.support.users import a_user, auth_config
-from tests.test_habitat_contracts import IMAGE
 
 
 @pytest.mark.parametrize("cancel", [False, True])

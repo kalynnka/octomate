@@ -130,7 +130,7 @@ async def test_claude_discovery_claims_its_session_through_client_cleanup(
         options = factory.call_args.kwargs["options"]
         assert isinstance(options, ClaudeAgentOptions)
         assert options.session_id is not None
-        assert options.extra_args == {"safe-mode": None}
+        assert options.extra_args == {"safe-mode": None, "no-session-persistence": None}
         assert options.strict_mcp_config is True
         assert tentacle.driven_sessions == {options.session_id: 1}
         return client

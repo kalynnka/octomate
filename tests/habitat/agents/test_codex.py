@@ -35,8 +35,8 @@ from octomate.tentacles.codex import pool as codex_pool
 from octomate.tentacles.codex.client import SharedCodex
 from octomate.tentacles.codex.ink import CodexInk
 from octomate.types.json import JsonObject
+from tests.habitat.test_contracts import IMAGE
 from tests.support.managers import a_workspace_manager
-from tests.test_habitat_contracts import IMAGE
 
 pytestmark = pytest.mark.timeout(20)
 
@@ -148,7 +148,10 @@ def sandbox(tmp_path: Path) -> SbxHabitat:
     executable = tmp_path / "sbx"
     executable.write_text(
         f"#!{sys.executable}\n"
-        + Path(__file__).with_name("fixtures").joinpath("stdio_sbx.py").read_text()
+        + Path(__file__)
+        .parents[2]
+        .joinpath("agent/codex/fixtures/stdio_sbx.py")
+        .read_text()
     )
     executable.chmod(0o700)
     return SbxHabitat(

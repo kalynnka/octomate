@@ -52,6 +52,7 @@ from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.transport import HabitatTransport
 from octomate.types.json import JsonObject
 from tests.agent.claude.test_native_fork import a_native_session
+from tests.habitat.test_contracts import IMAGE
 from tests.support.channels import FakeChannelTentacle
 from tests.support.invocations import invocation_for
 from tests.support.managers import (
@@ -60,7 +61,6 @@ from tests.support.managers import (
     a_workspace_manager,
 )
 from tests.support.users import a_user, auth_config
-from tests.test_habitat_contracts import IMAGE
 
 
 class ProcessInfo(BaseModel):
@@ -76,7 +76,10 @@ def options(tmp_path: Path) -> ClaudeAgentOptions:
     cli = tmp_path / "claude"
     cli.write_text(
         f"#!{sys.executable}\n"
-        + Path(__file__).with_name("fixtures").joinpath("stdio_cli.py").read_text()
+        + Path(__file__)
+        .parents[2]
+        .joinpath("agent/claude/fixtures/stdio_cli.py")
+        .read_text()
     )
     cli.chmod(0o700)
     return ClaudeAgentOptions(
@@ -661,7 +664,10 @@ async def test_a_driven_turn_runs_inside_the_owners_sandbox(
     cli.write_text(
         f"#!{sys.executable}\n"
         f"import os\nos.environ['CLAUDE_TEST_LOG'] = {str(log)!r}\n"
-        + Path(__file__).with_name("fixtures").joinpath("stdio_cli.py").read_text()
+        + Path(__file__)
+        .parents[2]
+        .joinpath("agent/claude/fixtures/stdio_cli.py")
+        .read_text()
     )
     cli.chmod(0o700)
     resident = SbxHabitat.resident

@@ -24,8 +24,8 @@ from octomate.tentacles.deepseek.client import DeepseekApiClient
 from octomate.tentacles.deepseek.ink import DeepseekInk
 from octomate.tentacles.deepseek.process import DeepseekProcess
 from octomate.tentacles.deepseek.wire import MuxFrame
-from tests.agent.claude.test_habitat import executable as executable
-from tests.test_habitat_contracts import IMAGE
+from tests.habitat.agents.test_claude import executable as executable
+from tests.habitat.test_contracts import IMAGE
 
 
 def habitat(tmp_path: Path, executable: str = "sbx") -> SbxHabitat:
@@ -43,7 +43,10 @@ async def test_guest_owns_private_home_listener_and_child(
     binary = tmp_path / "dsh"
     binary.write_text(
         f"#!{sys.executable}\n"
-        + Path(__file__).with_name("fixtures").joinpath("web_process.py").read_text()
+        + Path(__file__)
+        .parents[2]
+        .joinpath("agent/deepseek/fixtures/web_process.py")
+        .read_text()
     )
     binary.chmod(0o700)
     monkeypatch.setenv("PATH", f"{Path(sys.executable).parent}:{os.environ['PATH']}")

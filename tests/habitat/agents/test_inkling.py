@@ -28,10 +28,10 @@ from octomate.schemas.workspaces import Workspace
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.base import InklingOutput
-from tests.agent.claude.test_habitat import executable as executable
+from tests.habitat.agents.test_claude import executable as executable
+from tests.habitat.test_contracts import IMAGE
 from tests.support.managers import a_project, a_registry
 from tests.support.users import a_user
-from tests.test_habitat_contracts import IMAGE
 
 
 @pytest.mark.parametrize(

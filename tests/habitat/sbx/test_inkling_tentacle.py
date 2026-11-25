@@ -28,7 +28,7 @@ from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.agent import Agent
 from octomate.tentacles.inkling.base import InklingOutput
 from octomate.tentacles.inkling.workspace import HabitatWorkspaceBackend
-from tests.integration.sbx import remove_sandbox
+from tests.habitat.sbx import remove_sandbox
 from tests.support.invocations import invocation_for
 from tests.support.managers import a_project, a_registry
 from tests.support.users import a_user

@@ -21,9 +21,9 @@ from octomate.habitat.sbx import SbxHabitat, SbxOptions
 from octomate.managers.habitat import HabitatError, HabitatManager
 from octomate.nerve import HabitatTopic, Nerve, UserTopic
 from octomate.schemas.habitat import InvocationScope
+from tests.habitat.test_contracts import IMAGE
 from tests.support.managers import a_workspace_manager
 from tests.support.nerve import held
-from tests.test_habitat_contracts import IMAGE
 
 
 @pytest.fixture

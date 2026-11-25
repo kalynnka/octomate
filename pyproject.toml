@@ -132,6 +132,7 @@ dev = [
     "pytest-env>=1.1",
     "pytest-timeout>=2.4,<3",
     "pytest-xdist>=3.8,<4",
+    "pytest-socket>=0.7",
 ]
 
 [tool.pyright]
@@ -141,6 +142,7 @@ venv = ".venv"
 extraPaths = [".", "cli", "protocol"]
 
 [tool.pytest.ini_options]
+addopts = "--allow-hosts=127.0.0.1,::1 --allow-unix-socket"
 asyncio_mode = "auto"
 timeout = 180
 # `database_settings` is built when octomate.config.database is imported, which is

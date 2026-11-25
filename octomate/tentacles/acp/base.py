@@ -429,19 +429,36 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                 await self.conversations.set_external_id(conversation, session_id)
             else:
                 capabilities = client.initialization.agent_capabilities
-                if capabilities is None or not capabilities.load_session:
-                    raise ValueError("The ACP provider cannot reopen this conversation")
                 session_id = conversation.external_id
-                response = await request_model(
-                    client.connection,
-                    acp.AGENT_METHODS["session_load"],
-                    schema.LoadSessionRequest(
-                        session_id=session_id,
-                        cwd=str(invocation.cwd),
-                        mcp_servers=[*mcp_servers],
-                    ),
-                    schema.LoadSessionResponse,
-                )
+                response: schema.LoadSessionResponse | schema.ResumeSessionResponse
+                if capabilities is not None and capabilities.load_session:
+                    response = await request_model(
+                        client.connection,
+                        acp.AGENT_METHODS["session_load"],
+                        schema.LoadSessionRequest(
+                            session_id=session_id,
+                            cwd=str(invocation.cwd),
+                            mcp_servers=[*mcp_servers],
+                        ),
+                        schema.LoadSessionResponse,
+                    )
+                elif (
+                    capabilities is not None
+                    and capabilities.session_capabilities is not None
+                    and capabilities.session_capabilities.resume is not None
+                ):
+                    response = await request_model(
+                        client.connection,
+                        acp.AGENT_METHODS["session_resume"],
+                        schema.ResumeSessionRequest(
+                            session_id=session_id,
+                            cwd=str(invocation.cwd),
+                            mcp_servers=[*mcp_servers],
+                        ),
+                        schema.ResumeSessionResponse,
+                    )
+                else:
+                    raise ValueError("The ACP provider cannot reopen this conversation")
                 native = NativeAcpSession(
                     provider, str(invocation.cwd), session_id, response
                 )

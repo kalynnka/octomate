@@ -47,7 +47,7 @@ class SbxHabitatConfig(BaseHabitatConfig):
         description="Guest RAM size in MiB, passed to sbx --memory.",
     )
     idle_timeout: float = Field(
-        default=900,
+        default=300,
         gt=0,
         allow_inf_nan=False,
         description="Seconds after the last invocation finishes before stopping the user sandbox, preserving its disk.",

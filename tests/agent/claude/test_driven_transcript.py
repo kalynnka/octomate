@@ -40,9 +40,9 @@ from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.inkling import InklingTentacle
+from tests.habitat.test_contracts import IMAGE
 from tests.support.managers import a_thread
 from tests.support.users import a_api_key, a_user, auth_config
-from tests.test_habitat_contracts import IMAGE
 
 SECRET = SecretStr("the-hook-secret")
 AUTH = {"Authorization": f"Bearer {SECRET.get_secret_value()}"}

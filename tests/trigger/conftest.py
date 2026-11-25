@@ -140,6 +140,9 @@ def pytest_collection_modifyitems(
     live models or posts IM messages. Naming anything under tests/trigger on the
     command line — or selecting the marker — counts as explicit intent.
     """
+    for item in items:
+        if item.get_closest_marker("trigger") is not None:
+            item.add_marker(pytest.mark.enable_socket)
     if config.option.markexpr == "trigger":
         return
     if any(

@@ -19,7 +19,7 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.habitat import InvocationScope
 from octomate.tentacles.claude import ClaudeTentacle
 from tests.agent.claude.test_driven_transcript import kept_bytes, served
-from tests.integration.sbx import remove_sandbox
+from tests.habitat.sbx import remove_sandbox
 from tests.support.invocations import invocation_for
 from tests.support.managers import a_thread
 from tests.support.users import a_user, auth_config

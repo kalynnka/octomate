@@ -23,7 +23,7 @@ import octomate.habitat.sbx as sbx_module
 from octomate.config.habitat import SbxHabitatConfig
 from octomate.habitat import HabitatError
 from octomate.habitat.sbx import SbxHabitat
-from tests.test_habitat_contracts import IMAGE
+from tests.habitat.test_contracts import IMAGE
 
 
 class ProcessInfo(BaseModel):
@@ -151,11 +151,19 @@ def test_core_address_uses_the_host_port_and_refuses_offline_policy(
 
 
 @pytest.mark.parametrize("internet_access", [True, False])
+@pytest.mark.parametrize("telemetry", [None, "0", "1"])
 async def test_sh_preserves_named_arguments_and_filters_host_environment(
-    sandbox: SbxHabitat, monkeypatch: pytest.MonkeyPatch, internet_access: bool
+    sandbox: SbxHabitat,
+    monkeypatch: pytest.MonkeyPatch,
+    internet_access: bool,
+    telemetry: str | None,
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "synthetic-secret")
     monkeypatch.setenv("OCTOMATE_DB_URL", "synthetic-secret")
+    if telemetry is None:
+        monkeypatch.delenv("SBX_NO_TELEMETRY", raising=False)
+    else:
+        monkeypatch.setenv("SBX_NO_TELEMETRY", telemetry)
     name = "literal spaces; $(false)"
     result = ProcessInfo.model_validate_json(
         await sandbox.control(
@@ -183,6 +191,7 @@ async def test_sh_preserves_named_arguments_and_filters_host_environment(
     ]
     assert "ANTHROPIC_API_KEY" not in result.environment
     assert "OCTOMATE_DB_URL" not in result.environment
+    assert result.environment.get("SBX_NO_TELEMETRY") == telemetry
     assert result.tty == [False, False]
 
 

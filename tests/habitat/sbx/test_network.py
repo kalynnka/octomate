@@ -14,7 +14,7 @@ from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
 from octomate.schemas.habitat import InvocationScope
 from octomate.types.json import JsonObject
-from tests.integration.sbx import remove_sandbox
+from tests.habitat.sbx import remove_sandbox
 from tests.support.managers import a_workspace_manager
 
 

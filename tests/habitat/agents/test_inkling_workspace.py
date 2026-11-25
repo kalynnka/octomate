@@ -27,8 +27,8 @@ from octomate.schemas.volumes import Volume
 from octomate.schemas.volumes.storage import HostDirectory
 from octomate.schemas.workspaces import Workspace as VolumeWorkspace
 from octomate.tentacles.inkling.workspace import HabitatWorkspaceBackend
-from tests.agent.claude.test_habitat import executable as executable
-from tests.test_habitat_contracts import IMAGE
+from tests.habitat.agents.test_claude import executable as executable
+from tests.habitat.test_contracts import IMAGE
 
 
 @pytest.fixture

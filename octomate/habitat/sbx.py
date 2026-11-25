@@ -137,7 +137,13 @@ class SbxHabitat(ManagedHabitat):
                 *args,
                 env={
                     key: os.environ[key]
-                    for key in ("PATH", "HOME", "TMPDIR", "XDG_RUNTIME_DIR")
+                    for key in (
+                        "PATH",
+                        "HOME",
+                        "TMPDIR",
+                        "XDG_RUNTIME_DIR",
+                        "SBX_NO_TELEMETRY",
+                    )
                     if key in os.environ
                 },
                 stdin=stdin,

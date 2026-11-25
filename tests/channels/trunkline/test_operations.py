@@ -412,6 +412,8 @@ async def test_a_teleport_with_a_prompt_sends_it_where_it_lands(
         "gateway",
         "run_started",
         "run_activity_changed",
+        "habitat_preparation",
+        "habitat_preparation",
         "run_result",
         "run_ended",
         "reflex_phase_changed",
@@ -421,6 +423,11 @@ async def test_a_teleport_with_a_prompt_sends_it_where_it_lands(
         for event in events
         if event["event_kind"] == "reflex_phase_changed"
     ] == ["preparing", "moving", "finalizing"]
+    assert [
+        event["phase"]
+        for event in events
+        if event["event_kind"] == "habitat_preparation"
+    ] == ["preparing", "ready"]
     moved, started = events[3], events[4]
     assert moved["action"] == "teleport"
     assert moved["announcement"] == "Continuing this conversation here."

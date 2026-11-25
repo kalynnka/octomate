@@ -39,6 +39,10 @@ on:
         description: Run native sandbox integration tests
         type: boolean
         default: false
+      sbx_tests:
+        description: Run real microVM acceptance on an sbx-equipped runner
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       ref:
@@ -90,7 +94,65 @@ jobs:
           cache-suffix: checks
       - run: uv sync --locked
       - name: Run unit tests
-        run: uv run --no-sync pytest -q -n 2 --dist worksteal --durations=25
+        run: uv run --no-sync pytest --ignore=tests/habitat -q -n 2 --dist worksteal --durations=25
+
+  habitat-tests:
+    name: Habitat contracts and adapters (Python ${{ matrix.python }})
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14", "3.15"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: "0.13.7"
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+          cache-suffix: checks
+      - run: uv sync --locked
+      - run: uv run --no-sync pytest tests/habitat -q -n 2 --durations=25
+
+  sbx-tests:
+    name: Habitat microVM acceptance
+    if: github.event_name == 'workflow_dispatch' && inputs.sbx_tests
+    runs-on: [self-hosted, sbx]
+    timeout-minutes: 30
+    env:
+      SBX_TEST_IMAGE: ${{ vars.SBX_TEST_IMAGE }}
+      SBX_TEST_CODEX_TURN: "0"
+      SBX_TEST_CLAUDE_TURN: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: "0.13.7"
+          python-version: "3.13"
+      - run: uv sync --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.22.3"
+      - name: Install pinned acceptance harnesses
+        run: |
+          npm install --prefix "$RUNNER_TEMP/habitat-harnesses" --no-audit --no-fund \
+            @deepseek-ai/dsh@0.2.3-alpha.2 @deepseek-ai/dsh-llm@0.2.3-alpha.2 \
+            @agentclientprotocol/codex-acp@2.12.0
+          echo "DSH_TEST_EXECUTABLE=$RUNNER_TEMP/habitat-harnesses/node_modules/.bin/dsh" >> "$GITHUB_ENV"
+          echo "CODEX_ACP_TEST_EXECUTABLE=$RUNNER_TEMP/habitat-harnesses/node_modules/@agentclientprotocol/codex-acp/dist/index.js" >> "$GITHUB_ENV"
+      - name: Run scripted microVM acceptance
+        run: >-
+          uv run --no-sync pytest tests/habitat/sbx --sbx
+          -q --durations=25 --junitxml=habitat-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: habitat-microvm-results
+          path: habitat-results.xml
 
   integration-tests:
     name: Integration tests (${{ matrix.harness }})
@@ -165,7 +227,7 @@ jobs:
 
   packages:
     name: Packages (Python ${{ matrix.python }})
-    needs: [lint, test]
+    needs: [lint, test, habitat-tests]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
