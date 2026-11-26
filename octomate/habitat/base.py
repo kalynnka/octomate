@@ -1,17 +1,15 @@
 """Shared habitat lifecycle and managed runtime capabilities."""
 
+import asyncio
 import math
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
-from contextlib import AbstractAsyncContextManager, AsyncExitStack, suppress
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import ClassVar
 
-import anyio
-from anyio import to_thread
 from anyio.abc import ByteStream
-from anyio.streams.buffered import BufferedByteReceiveStream
 from pydantic import UUID7, BaseModel
 from pydantic_ai.workspaces import (
     CommandResult,
@@ -23,6 +21,7 @@ from pydantic_ai.workspaces import (
 from yarl import URL
 
 from octomate.config.habitat import BaseHabitatConfig
+from octomate.habitat.client import ExecutorClient
 from octomate.habitat.executor import (
     CommandRequest,
     CommandResponse,
@@ -31,26 +30,12 @@ from octomate.habitat.executor import (
     Request,
     ValueErrorResponse,
     file_errors,
-    response_adapter,
 )
 from octomate.schemas.volumes import Volume
 
 
 class HabitatError(RuntimeError):
     """An actionable failure safe to publish without guest or credential output."""
-
-
-async def finish_guest(stream: ByteStream, output: BufferedByteReceiveStream) -> None:
-    """Let EOF cancel and reap the guest command before detaching its transport."""
-    with anyio.fail_after(10, shield=True):
-        # A completed guest may already have closed its socket.
-        with suppress(anyio.BrokenResourceError, OSError):
-            await stream.send_eof()
-        try:
-            while await output.receive():
-                pass
-        except anyio.EndOfStream:
-            pass
 
 
 @dataclass(kw_only=True)
@@ -111,10 +96,16 @@ class Habitat(ABC):
         """
 
 
+@dataclass(kw_only=True)
 class ManagedHabitat(Habitat):
     """One registered user's persistent runtime, hosting agent processes."""
 
     user_id: UUID7  # The registered user whose private runtime this is.
+    root: Path  # Owner storage and the executor's startup directory.
+    executor: ExecutorClient | None = field(default=None, init=False, repr=False)
+    executor_lock: asyncio.Lock = field(
+        default_factory=asyncio.Lock, init=False, repr=False
+    )
 
     def path(self, volume: Volume) -> PurePosixPath:
         raise HabitatError("Managed habitat volume mounts are not yet supported")
@@ -135,7 +126,7 @@ class ManagedHabitat(Habitat):
         """Keep a process attached through duplex stdio for the owning context.
 
         SDK clients and service runners keep this context open for their lifetime.
-        The same primitive carries the short-lived executor's request and response.
+        The same primitive carries the retained executor's requests and responses.
         Deliver stderr lines on the caller's event loop; close and reap the process
         on context exit, reporting an unsuccessful exit.
         """
@@ -171,28 +162,12 @@ class ManagedHabitat(Habitat):
     async def request[T: BaseModel](
         self, request: Request, expected: type[T], *, workdir: str
     ) -> T:
-        source = await to_thread.run_sync(
-            Path(__file__).with_name("executor.py").read_text
-        )
-        try:
-            async with self.resident("python", "-c", source, workdir=workdir) as stream:
-                output = BufferedByteReceiveStream(stream)
-                try:
-                    payload = request.model_dump_json().encode()
-                    await stream.send(str(len(payload)).encode() + b"\n" + payload)
-                    size = int(await output.receive_until(b"\n", 32))
-                    response = response_adapter.validate_json(
-                        await output.receive_exactly(size)
-                    )
-                finally:
-                    await finish_guest(stream, output)
-        except (
-            HabitatError,
-            anyio.IncompleteRead,
-            anyio.EndOfStream,
-            anyio.BrokenResourceError,
-        ) as error:
-            raise WorkspaceUnavailableError(str(error)) from error
+        async with self.executor_lock:
+            if self.executor is None or self.executor.closed:
+                self.executor = ExecutorClient(self)
+                self.resources.push_async_callback(self.executor.close)
+            client = self.executor
+        response = await client.request(request, workdir)
         if isinstance(response, expected):
             return response
         match response:

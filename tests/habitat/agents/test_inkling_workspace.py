@@ -3,15 +3,12 @@
 import asyncio
 import os
 from collections.abc import AsyncGenerator, Callable
-from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import anyio
 import pytest
-from anyio.abc import ByteStream
 from pydantic_ai.workspaces import (
-    LocalWorkspaceBackend,
     Workspace,
     WorkspaceBackend,
     WorkspaceOutputLimitError,
@@ -23,7 +20,6 @@ from pydantic_ai.workspaces.conformance import WorkspaceBackendSuite
 from uuid_utils.compat import uuid7
 
 from octomate.config.habitat import SbxHabitatConfig
-from octomate.habitat import executor
 from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import Invocation
 from octomate.schemas.conversation import Conversation
@@ -36,11 +32,11 @@ from tests.habitat.test_contracts import IMAGE
 
 
 @pytest.fixture
-def invocation(executable: Path, tmp_path: Path) -> Invocation:
+async def invocation(executable: Path, tmp_path: Path) -> AsyncGenerator[Invocation]:
     owner = uuid7()
     thread = uuid7()
     volume = Volume(owner_id=owner, storage=HostDirectory(tmp_path))
-    return Invocation(
+    prepared = Invocation(
         id=uuid7(),
         habitat=SbxHabitat(
             config=SbxHabitatConfig(image=IMAGE, executable=str(executable)),
@@ -52,6 +48,11 @@ def invocation(executable: Path, tmp_path: Path) -> Invocation:
         conversation=Conversation(thread_id=thread, agent_tentacle_id="inkling"),
     )
 
+    try:
+        yield prepared
+    finally:
+        await prepared.habitat.resources.aclose()
+
 
 @pytest.fixture
 def backend(invocation: Invocation) -> HabitatWorkspaceBackend:
@@ -62,47 +63,6 @@ def backend(invocation: Invocation) -> HabitatWorkspaceBackend:
 
 
 class TestWorkspace(WorkspaceBackendSuite):
-    @pytest.fixture(autouse=True)
-    def executor_transport(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Exercise file semantics without importing the guest per operation.
-
-        Tests outside this class retain real child processes for stdio, EOF,
-        cancellation, environment isolation, and process cleanup.
-        """
-        monkeypatch.setattr(
-            executor,
-            "LocalWorkspaceBackend",
-            lambda cwd, **kwargs: LocalWorkspaceBackend(tmp_path / cwd, **kwargs),
-        )
-
-        @asynccontextmanager
-        async def resident(
-            habitat: SbxHabitat, *command: str, workdir: str
-        ) -> AsyncGenerator[ByteStream]:
-            assert command[:2] == ("python", "-c")
-            assert Path(workdir) == tmp_path
-            stream = AsyncMock(spec=ByteStream)
-            stream.receive.side_effect = anyio.EndOfStream
-
-            async def send(data: bytes) -> None:
-                size, payload = data.split(b"\n", 1)
-                assert int(size) == len(payload)
-                response = await executor.execute(
-                    executor.request_adapter.validate_json(payload)
-                )
-                encoded = executor.response_adapter.dump_json(response)
-                stream.receive.side_effect = [
-                    str(len(encoded)).encode() + b"\n" + encoded,
-                    anyio.EndOfStream,
-                ]
-
-            stream.send.side_effect = send
-            yield stream
-
-        monkeypatch.setattr(SbxHabitat, "resident", resident)
-
     @pytest.fixture
     def backend(self, backend: HabitatWorkspaceBackend) -> HabitatWorkspaceBackend:
         return backend

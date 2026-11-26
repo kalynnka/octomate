@@ -246,14 +246,15 @@ async def test_create_mounts_only_the_owners_root_scoped_and_budgeted(
 
 
 async def test_manager_uses_the_habitat_base_class(
-    manager: HabitatManager, scope: InvocationScope
+    manager: HabitatManager, scope: InvocationScope, tmp_path: Path
 ) -> None:
     calls: list[str] = []
 
     class OtherHabitat(ManagedHabitat):
         def __init__(self) -> None:
-            super().__init__(config=manager.config)
-            self.user_id = scope.user_id
+            super().__init__(
+                config=manager.config, user_id=scope.user_id, root=tmp_path
+            )
 
         @property
         def id(self) -> str:

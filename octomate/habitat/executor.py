@@ -1,4 +1,4 @@
-"""Execute one workspace operation in the guest, cancelling it on supervisor EOF."""
+"""Serve concurrent workspace operations, cancelling children on supervisor EOF."""
 
 import asyncio
 import os
@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 
 import anyio
 from anyio.abc import Process
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import UUID7, BaseModel, ConfigDict, Field, TypeAdapter
 from pydantic_ai.workspaces import (
     CommandResult,
     FileEntry,
@@ -140,8 +140,32 @@ type Response = Annotated[
     Field(discriminator="kind"),
 ]
 
-request_adapter = TypeAdapter(Request)
-response_adapter = TypeAdapter(Response)
+
+class ExecuteRequest(BaseModel):
+    kind: Literal["execute"] = "execute"
+    id: UUID7
+    workdir: str
+    request: Request
+
+
+class CancelRequest(BaseModel):
+    kind: Literal["cancel"] = "cancel"
+    id: UUID7
+
+
+class CancelledResponse(BaseModel):
+    kind: Literal["cancelled"] = "cancelled"
+
+
+class ExecutionResponse(BaseModel):
+    id: UUID7
+    response: Response | CancelledResponse
+
+
+type ExecutionRequest = Annotated[
+    ExecuteRequest | CancelRequest, Field(discriminator="kind")
+]
+execution_request_adapter = TypeAdapter(ExecutionRequest)
 file_errors: dict[str, type[OSError]] = {
     cls.__name__: cls
     for cls in (
@@ -167,11 +191,11 @@ class CommandWorkspace(LocalWorkspaceBackend):
         return exit_code
 
 
-async def execute(request: Request) -> Response:
+async def execute(request: Request, workdir: str = ".") -> Response:
     # Upstream inherits PATH/HOME, but commands also need the habitat's temp and
     # proxy settings. These come from the guest environment, never core's env.
     backend = CommandWorkspace(
-        ".",
+        workdir,
         env={name: os.environ[name] for name in EXECUTE_ENV if name in os.environ},
     )
     try:
@@ -236,9 +260,9 @@ async def execute(request: Request) -> Response:
         return ValueErrorResponse(message=str(error))
 
 
-async def send_response(response: Response) -> None:
+async def send_response(response: ExecutionResponse) -> None:
     """Drain a complete response even when stdin and stdout share a nonblocking socket."""
-    payload = response_adapter.dump_json(response)
+    payload = response.model_dump_json().encode()
     pending = memoryview(str(len(payload)).encode() + b"\n" + payload)
     while pending:
         await anyio.wait_writable(sys.stdout.fileno())
@@ -250,21 +274,45 @@ async def run() -> None:
     transport, _ = await asyncio.get_running_loop().connect_read_pipe(
         lambda: asyncio.StreamReaderProtocol(reader), sys.stdin.buffer
     )
-    try:
-        size = int(await reader.readline())
-        request = request_adapter.validate_json(await reader.readexactly(size))
-        operation = asyncio.create_task(execute(request))
-        disconnected = asyncio.create_task(reader.read())
+    pending: dict[UUID7, asyncio.Task[Response]] = {}
+    writing = asyncio.Lock()
+    closing = False
+
+    async def serve(message: ExecuteRequest, operation: asyncio.Task[Response]) -> None:
         try:
-            await asyncio.wait(
-                (operation, disconnected), return_when=asyncio.FIRST_COMPLETED
+            response: Response | CancelledResponse = await operation
+        except asyncio.CancelledError:
+            response = CancelledResponse()
+        if not closing:
+            async with writing:
+                await send_response(ExecutionResponse(id=message.id, response=response))
+
+    async def dispatch(tasks: asyncio.TaskGroup) -> None:
+        while size := await reader.readline():
+            message = execution_request_adapter.validate_json(
+                await reader.readexactly(int(size))
             )
-            if operation.done():
-                await send_response(operation.result())
-        finally:
-            operation.cancel()
-            disconnected.cancel()
-            await asyncio.gather(operation, disconnected, return_exceptions=True)
+            if isinstance(message, CancelRequest):
+                if task := pending.get(message.id):
+                    task.cancel()
+                continue
+            if message.id in pending:
+                raise ValueError("Duplicate executor request ID")
+            pending[message.id] = tasks.create_task(
+                execute(message.request, message.workdir)
+            )
+            reply = tasks.create_task(serve(message, pending[message.id]))
+            reply.add_done_callback(lambda _, key=message.id: pending.pop(key, None))
+
+    try:
+        print("ready", flush=True)
+        async with asyncio.TaskGroup() as tasks:
+            try:
+                await dispatch(tasks)
+            finally:
+                closing = True
+                for task in pending.values():
+                    task.cancel()
     finally:
         transport.close()
 

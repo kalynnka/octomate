@@ -1,5 +1,7 @@
 """SRT-confined host processes with persistent owner storage."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -21,10 +23,11 @@ from typing import ClassVar
 import anyio
 from anyio import to_thread
 from anyio.abc import SocketStream
-from pydantic import UUID7
+from pydantic import UUID7, BaseModel
 
 from octomate.config.habitat import SrtHabitatConfig
 from octomate.habitat.base import HabitatError, ManagedHabitat
+from octomate.habitat.executor import Request
 from octomate.schemas.volumes import Volume
 
 logger = logging.getLogger(__name__)
@@ -75,6 +78,16 @@ class SrtHabitat(ManagedHabitat):
             "TMPDIR": str(self.root / "cache" / "tmp"),
             "PYTHONDONTWRITEBYTECODE": "1",
         }
+
+    async def request[T: BaseModel](
+        self, request: Request, expected: type[T], *, workdir: str
+    ) -> T:
+        cwd = Path(await anyio.Path(workdir).resolve())
+        if not cwd.is_relative_to(self.root):
+            raise HabitatError(
+                "SRT working directory must be inside the owner's storage"
+            )
+        return await super().request(request, expected, workdir=str(cwd))
 
     async def prepare(self) -> None:
         if platform.system() != "Darwin":
@@ -275,6 +288,8 @@ class SrtHabitat(ManagedHabitat):
         return b"".join(errors)
 
     async def stop(self) -> None:
+        if self.executor is not None:
+            await self.executor.close()
         for process in tuple(self.processes):
             await self.reap(process)
         if self.settings is not None:

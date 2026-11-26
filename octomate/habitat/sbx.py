@@ -370,6 +370,8 @@ class SbxHabitat(ManagedHabitat):
         return b"".join(errors)
 
     async def stop(self) -> None:
+        if self.executor is not None:
+            await self.executor.close()
         if self.managed:
             names = (await self.control("ls", quiet=True)).decode().splitlines()
             if self.id in names:
