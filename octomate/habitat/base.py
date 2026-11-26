@@ -62,13 +62,6 @@ class Habitat(ABC):
     )  # Clients released by core before stopping this environment.
 
     @property
-    def builtin_sandbox(self) -> bool:
-        """Managed habitats supply confinement unless nested sandboxing is requested."""
-        if self.config.builtin_sandbox is not None:
-            return self.config.builtin_sandbox
-        return not isinstance(self, ManagedHabitat)
-
-    @property
     def core_url(self) -> str:
         """Core's HTTP origin as reached from this runtime."""
         address = URL(str(self.config.core_address)).origin()

@@ -25,7 +25,7 @@ from tests.support.managers import a_workspace_manager
 
 @pytest.mark.parametrize(
     "habitat",
-    [None, {"mode": "native"}, {"mode": "srt"}, {"mode": "sbx", "image": IMAGE}],
+    [None, {"mode": "native"}, {"mode": "sbx", "image": IMAGE}],
 )
 def test_factory_builds_every_harness_without_launching_a_habitat(
     monkeypatch: pytest.MonkeyPatch, habitat: dict[str, str] | None
@@ -70,6 +70,43 @@ def test_factory_builds_every_harness_without_launching_a_habitat(
 
 def test_native_is_the_default_mode() -> None:
     assert OctomateConfig().habitat == NativeHabitatConfig()
+
+
+def test_srt_accepts_claude() -> None:
+    config = OctomateConfig.model_validate(
+        {
+            "habitat": {"mode": "srt"},
+            "tentacles": {"claude": {"type": "claude"}},
+        }
+    )
+    assert config.tentacles["claude"].enabled
+
+
+@pytest.mark.parametrize("agent", ["codex", "deepseek", "acp_agent", "inkling"])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_srt_rejects_enabled_unsupported_agents(agent: str, enabled: bool) -> None:
+    config = {
+        "habitat": {"mode": "srt"},
+        "tentacles": {
+            agent: {
+                "type": agent,
+                "enabled": enabled,
+                **({"provider": {"command": "unused"}} if agent == "acp_agent" else {}),
+                **({"models": [{"name": "test"}]} if agent == "inkling" else {}),
+            }
+        },
+    }
+    if enabled:
+        with pytest.raises(ValidationError, match="SRT habitats support only Claude"):
+            OctomateConfig.model_validate(config)
+    else:
+        assert not OctomateConfig.model_validate(config).tentacles[agent].enabled
+
+
+@pytest.mark.parametrize("field", ["os_sandbox", "builtin_sandbox"])
+def test_habitat_rejects_removed_sandbox_switch(field: str) -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        OctomateConfig.model_validate({"habitat": {"mode": "srt", field: False}})
 
 
 def test_sbx_mode_round_trips() -> None:

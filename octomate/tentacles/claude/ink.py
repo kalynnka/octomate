@@ -175,7 +175,7 @@ class ClaudeInk(AgentInk):
             if isinstance(habitat, ManagedHabitat):
                 options.sandbox = {
                     **(options.sandbox or {}),
-                    "enabled": habitat.builtin_sandbox,
+                    "enabled": False,
                 }
                 client = await resources.enter_async_context(
                     HabitatTransport.client(habitat, options)
@@ -192,7 +192,7 @@ class ClaudeInk(AgentInk):
                     {
                         "permissions": {"blockReadsOutsideWorkingDirectories": True},
                         "sandbox": {
-                            "enabled": habitat.builtin_sandbox,
+                            "enabled": True,
                             "failIfUnavailable": True,
                             "autoAllowBashIfSandboxed": False,
                             "allowUnsandboxedCommands": False,

@@ -653,13 +653,11 @@ async def test_interrupt_and_cancellation_release_process_and_lease(
         os.kill(info.pid, 0)
 
 
-@pytest.mark.parametrize("builtin_sandbox", [None, True, False])
 async def test_a_driven_turn_runs_inside_the_owners_sandbox(
     in_memory_engine: AsyncEngine,
     executable: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    builtin_sandbox: bool | None,
 ) -> None:
     log = tmp_path / "protocol.jsonl"
     cli = tmp_path / "claude"
@@ -701,9 +699,7 @@ async def test_a_driven_turn_runs_inside_the_owners_sandbox(
         config=OctomateConfig(auth=auth_config()),
         conversations=FakeConversationManager(),
     )
-    host.habitats.config = SbxHabitatConfig(
-        executable=str(executable), image=IMAGE, builtin_sandbox=builtin_sandbox
-    )
+    host.habitats.config = SbxHabitatConfig(executable=str(executable), image=IMAGE)
     tentacle = ClaudeTentacle(
         host,
         auth=host.auth,
@@ -768,7 +764,7 @@ async def test_a_driven_turn_runs_inside_the_owners_sandbox(
     assert "--safe-mode" not in info.argv
     settings = json.loads(info.argv[info.argv.index("--settings") + 1])
     assert settings == {
-        "sandbox": {"enabled": builtin_sandbox is True},
+        "sandbox": {"enabled": False},
         "hooks": {
             event: [
                 {

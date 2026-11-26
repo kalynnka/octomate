@@ -55,10 +55,6 @@ class BaseHabitatConfig(BaseModel):
         default=HttpUrl("http://127.0.0.1:8000"),
         description="Core API origin (scheme, host and port), translated by the habitat for its network. Independent of core's listening host and port.",
     )
-    builtin_sandbox: bool | None = Field(
-        default=None,
-        description="Whether agent harnesses apply their own OS sandbox. None enables it for native execution and disables it inside managed habitats. Independent of tool approval settings; support depends on the harness.",
-    )
 
 
 class NativeHabitatConfig(BaseHabitatConfig):

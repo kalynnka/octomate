@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from contextlib import nullcontext
-from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -19,12 +18,10 @@ from octomate.config.base import OctomateConfig
 from octomate.config.habitat import (
     NativeHabitatConfig,
     SbxHabitatConfig,
-    SrtHabitatConfig,
 )
 from octomate.events import HabitatProgressEvent
 from octomate.habitat import NativeHabitat
 from octomate.habitat.sbx import SbxHabitat
-from octomate.habitat.srt import SrtHabitat
 from octomate.managers.habitat import HabitatError, HabitatManager
 from octomate.nerve import (
     Impulse,
@@ -34,28 +31,6 @@ from octomate.schemas.habitat import InvocationScope
 from octomate.schemas.user import UserProfile
 
 IMAGE = "octomate-sandbox@sha256:" + "a" * 64
-
-
-@pytest.mark.parametrize("builtin_sandbox", [None, True, False])
-def test_harness_sandbox_defaults_to_the_execution_boundary(
-    tmp_path: Path, builtin_sandbox: bool | None
-) -> None:
-    native = NativeHabitat(config=NativeHabitatConfig(builtin_sandbox=builtin_sandbox))
-    assert native.builtin_sandbox is (builtin_sandbox is not False)
-    for habitat in (
-        SrtHabitat(
-            config=SrtHabitatConfig(builtin_sandbox=builtin_sandbox),
-            user_id=uuid7(),
-            root=tmp_path,
-        ),
-        SbxHabitat(
-            config=SbxHabitatConfig(image=IMAGE, builtin_sandbox=builtin_sandbox),
-            user_id=uuid7(),
-            root=tmp_path,
-            config_dir=tmp_path / "sbx",
-        ),
-    ):
-        assert habitat.builtin_sandbox is (builtin_sandbox is True)
 
 
 @pytest.mark.parametrize(
