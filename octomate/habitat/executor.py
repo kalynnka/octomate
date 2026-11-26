@@ -2,10 +2,13 @@
 
 import asyncio
 import os
+import signal
 import sys
+from contextlib import suppress
 from typing import Annotated, Literal
 
 import anyio
+from anyio.abc import Process
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from pydantic_ai.workspaces import (
     CommandResult,
@@ -152,10 +155,22 @@ file_errors: dict[str, type[OSError]] = {
 }
 
 
+class CommandWorkspace(LocalWorkspaceBackend):
+    """Commands finish with their process group; residents have a separate lifetime."""
+
+    async def _wait_for_exit(self, process: Process) -> int:
+        # Upstream leaves background children alive on successful completion.
+        # Keep its cancellation cleanup; reap remaining children on ordinary exit.
+        exit_code = await super()._wait_for_exit(process)
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        return exit_code
+
+
 async def execute(request: Request) -> Response:
     # Upstream inherits PATH/HOME, but commands also need the habitat's temp and
     # proxy settings. These come from the guest environment, never core's env.
-    backend = LocalWorkspaceBackend(
+    backend = CommandWorkspace(
         ".",
         env={name: os.environ[name] for name in EXECUTE_ENV if name in os.environ},
     )

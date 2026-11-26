@@ -3646,7 +3646,16 @@ async def test_async_questions_continue_and_answers_resume_the_same_thread(
         assert len(resumed.runs) == 2
 
 
+@pytest.mark.parametrize(
+    ("sandbox", "profile"),
+    [
+        (Sandbox.read_only, ":read-only"),
+        (Sandbox.workspace_write, "octomate-workspace"),
+        (Sandbox.full_access, ":danger-full-access"),
+    ],
+)
 @pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize("managed", [False, True])
 @pytest.mark.parametrize(
     ("approval_mode", "reviewer", "policy"),
     [
@@ -3660,13 +3669,17 @@ async def test_async_questions_continue_and_answers_resume_the_same_thread(
     ],
 )
 async def test_thread_settings_preserve_reviewer_and_report_model(
+    sandbox: Sandbox,
+    profile: str,
     resume: bool,
+    managed: bool,
     approval_mode: ApprovalMode | None,
     reviewer: ApprovalsReviewer | None,
     policy: AskForApprovalValue,
 ) -> None:
     tentacle = _tentacle(FakeConversationManager())
-    client = AsyncMock(spec=AsyncCodex)
+    client = AsyncMock(spec=SharedCodex)
+    client.habitat = Mock(spec=ManagedHabitat) if managed else None
     client._client = AsyncMock()
     client._client.thread_start.return_value.thread.id = "new-thread"
     client._client.thread_start.return_value.model = "runtime-model"
@@ -3684,7 +3697,7 @@ async def test_thread_settings_preserve_reviewer_and_report_model(
             model=None,
             model_provider=None,
             personality=None,
-            sandbox=Sandbox.workspace_write,
+            sandbox=sandbox,
         )
         params = client._client.thread_resume.call_args.args[1]
         assert isinstance(params, ThreadResumeParams)
@@ -3701,7 +3714,7 @@ async def test_thread_settings_preserve_reviewer_and_report_model(
             model=None,
             model_provider=None,
             personality=None,
-            sandbox=Sandbox.workspace_write,
+            sandbox=sandbox,
         )
         params = client._client.thread_start.call_args.args[0]
         assert isinstance(params, ThreadStartParams)
@@ -3711,7 +3724,7 @@ async def test_thread_settings_preserve_reviewer_and_report_model(
     assert params.approval_policy is not None
     assert params.approval_policy.root is policy
     assert params.approvals_reviewer is reviewer
-    assert params.permissions == "octomate-workspace"
+    assert params.permissions == profile
     assert params.sandbox is None
 
 

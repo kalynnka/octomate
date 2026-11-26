@@ -2,9 +2,8 @@
 
 import asyncio
 import os
-import platform
 import signal
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 
@@ -14,7 +13,6 @@ from pydantic_ai.workspaces import WorkspaceBackend, WorkspaceRef
 from pydantic_ai.workspaces.conformance import WorkspaceBackendSuite
 from uuid_utils.compat import uuid7
 
-from octomate.config.habitat import SrtHabitatConfig
 from octomate.habitat.srt import SrtHabitat
 from octomate.managers.habitat import Invocation
 from octomate.schemas.conversation import Conversation
@@ -40,24 +38,6 @@ from tests.habitat.test_commands import (
 from tests.habitat.test_commands import (
     test_run_timeout_retains_output as test_run_timeout_retains_output,
 )
-
-
-@pytest.fixture
-async def habitat(tmp_path: Path) -> AsyncGenerator[SrtHabitat]:
-    if platform.system() != "Darwin":
-        pytest.skip("SRT habitat is currently qualified for macOS only")
-    executable = os.environ.get("SRT_TEST_EXECUTABLE")
-    if not executable:
-        pytest.fail("Set SRT_TEST_EXECUTABLE to the pinned SRT executable")
-    habitat = SrtHabitat(
-        config=SrtHabitatConfig(executable=executable), user_id=uuid7(), root=tmp_path
-    )
-    try:
-        await habitat.prepare()
-        yield habitat
-    finally:
-        await habitat.stop()
-    assert not habitat.processes
 
 
 @pytest.fixture
@@ -243,11 +223,7 @@ async def test_proxy_allows_unlisted_ports_and_blocks_the_blacklist(
     assert result.stdout.splitlines() == ["200", "403"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="macOS SRT does not yet supervise detached command process groups",
-)
-async def test_stop_reaps_detached_command_children(
+async def test_completed_command_reaps_background_children(
     habitat: SrtHabitat, tmp_path: Path
 ) -> None:
     result = await habitat.run(

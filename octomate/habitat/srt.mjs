@@ -9,7 +9,10 @@ try {
   // The SDK checks deniedDomains before consulting this callback.
   await SandboxManager.initialize(config, async () => true);
   const wrapped = await SandboxManager.wrapWithSandbox(command);
-  const child = spawn(wrapped, { shell: true, stdio: 'inherit' });
+  // Separate pipes prevent stdout's nonblocking flags from changing stdin.
+  const child = spawn(wrapped, { shell: true, stdio: ['pipe', 'pipe', 'inherit'] });
+  process.stdin.pipe(child.stdin);
+  child.stdout.pipe(process.stdout);
   process.on('SIGTERM', () => child.kill('SIGTERM'));
   process.on('SIGINT', () => child.kill('SIGINT'));
   process.exitCode = await new Promise((resolve, reject) => {
@@ -17,5 +20,6 @@ try {
     child.once('exit', code => resolve(code ?? 1));
   });
 } finally {
+  process.stdin.destroy();
   await SandboxManager.reset();
 }
