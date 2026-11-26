@@ -1392,7 +1392,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             run_name=run_name or self.id,
             conversation_address=str(conversation_address),
             **agent_input_message_attributes(user_prompt),
-            habitat=invocation.habitat.name,
+            habitat=invocation.habitat.id,
             habitat_mode=self.habitats.config.mode,
             habitat_managed=managed,
         ):

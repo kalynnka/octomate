@@ -140,7 +140,7 @@ async def test_cancelled_prepare_stops_runtime_without_launching_an_agent(
     assert not manager.nerve.subscribers
     command = SbxHabitat.control
     assert isinstance(command, AsyncMock)
-    command.assert_any_await("stop", manager.residence(scope).habitat.name)
+    command.assert_any_await("stop", manager.residence(scope).habitat.id)
 
 
 async def test_cancel_scope_during_prepare_finishes_cleanup(
@@ -256,7 +256,7 @@ async def test_manager_uses_the_habitat_base_class(
             self.user_id = scope.user_id
 
         @property
-        def name(self) -> str:
+        def id(self) -> str:
             return "another-runtime"
 
         @property
@@ -330,7 +330,7 @@ async def test_configuration_mismatch_stops_runtime_without_replacing_it(
 
     async def existing(*args: str, **options: Unpack[SbxOptions]) -> bytes:
         if args[0] == "ls":
-            return manager.residence(scope).habitat.name.encode() + b"\n"
+            return manager.residence(scope).habitat.id.encode() + b"\n"
         return b"\n".join(metadata)
 
     command.side_effect = existing
@@ -340,7 +340,7 @@ async def test_configuration_mismatch_stops_runtime_without_replacing_it(
     assert isinstance(manager.status(scope), HabitatFailedEvent)
     assert not manager.residence(scope).needs_cleanup
     assert "create" not in [c.args[0] for c in command.await_args_list]
-    command.assert_any_await("stop", manager.residence(scope).habitat.name)
+    command.assert_any_await("stop", manager.residence(scope).habitat.id)
     await manager.close()
 
 

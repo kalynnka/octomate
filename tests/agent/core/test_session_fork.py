@@ -28,7 +28,7 @@ async def test_shared_fork_can_share_history_without_an_external_session(
         "inkling",
         app,
         auth=app.auth,
-        habitats=app.habitats,
+        habitats=app.habitats["native"],
         models={"test": TestModel()},
     )
     owner = await a_user()

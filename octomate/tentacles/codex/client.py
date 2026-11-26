@@ -323,7 +323,7 @@ class SharedCodex(AsyncCodex):
             try:
                 with codex_logfire.span(
                     "codex.connect",
-                    habitat=self.habitat.name if self.habitat else "native",
+                    habitat=self.habitat.id if self.habitat else "native",
                     transport="habitat-stdio" if self.habitat else "local-stdio",
                 ):
                     await self.connect()

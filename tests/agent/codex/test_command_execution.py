@@ -93,7 +93,7 @@ async def execution(
     agent = app.connect(
         CodexTentacle(
             app,
-            habitats=app.habitats,
+            habitats=app.habitats["native"],
             config=CodexConfig(permission_mode="auto_review"),
             commands=app.commands,
             projects=app.projects,

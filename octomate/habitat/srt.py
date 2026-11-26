@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
+from typing import ClassVar
 
 import anyio
 from anyio import to_thread
@@ -31,9 +32,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SrtHabitat(ManagedHabitat):
+    type: ClassVar[str] = "srt"
     config: SrtHabitatConfig
     user_id: UUID7
     root: Path  # Owner storage; the shared trust scope for this habitat's processes.
+    name: str = "default"  # Configured habitat name, independent of the owner.
     settings: TemporaryDirectory[str] | None = field(default=None, init=False)
     executable: str | None = field(default=None, init=False)
     node: str | None = field(default=None, init=False)
@@ -41,8 +44,8 @@ class SrtHabitat(ManagedHabitat):
     processes: set[asyncio.subprocess.Process] = field(default_factory=set, init=False)
 
     @property
-    def name(self) -> str:
-        return f"srt-{self.user_id.hex}"
+    def id(self) -> str:
+        return f"srt-{self.name}-{self.user_id.hex}"
 
     @property
     def idle_timeout(self) -> float:

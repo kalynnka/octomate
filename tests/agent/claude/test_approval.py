@@ -193,7 +193,7 @@ def _build(
     tentacle = ClaudeTentacle(
         octomate,
         auth=octomate.auth,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=config or ClaudeCodeConfig(),
         commands=octomate.commands,
         projects=octomate.projects,

@@ -70,17 +70,17 @@ async def test_dsh_turns_resume_share_codex_vm_and_isolate_other_owner(
         "uname -s; printf habitat-proof > proof.txt; cat proof.txt",
     )
     host = Octomate(config=OctomateConfig(auth=auth_config()))
-    host.habitats.config = SbxHabitatConfig(image=image)
+    host.habitats["native"].config = SbxHabitatConfig(image=image)
     owner, other = await a_user("dsh-owner"), await a_user("dsh-other")
     owner_scope = InvocationScope(user_id=owner.id, conversation_id=uuid7())
     other_scope = InvocationScope(user_id=other.id, conversation_id=uuid7())
-    sandbox = host.habitats.residence(owner_scope).habitat
-    peer = host.habitats.residence(other_scope).habitat
+    sandbox = host.habitats["native"].residence(owner_scope).habitat
+    peer = host.habitats["native"].residence(other_scope).habitat
     assert isinstance(sandbox, SbxHabitat)
     assert isinstance(peer, SbxHabitat)
     sbx_cleanup.push_async_callback(remove_sandbox, sandbox)
     sbx_cleanup.push_async_callback(remove_sandbox, peer)
-    sbx_cleanup.push_async_callback(host.habitats.close)
+    sbx_cleanup.push_async_callback(host.habitats["native"].close)
     core_home = tmp_path / "core-dsh"
     core_home.mkdir()
     credentials = "version: 1\nrefs:\n  OCTOMATE_DSH_TEST_TOKEN: synthetic\n"
@@ -106,7 +106,7 @@ async def test_dsh_turns_resume_share_codex_vm_and_isolate_other_owner(
     tentacle = DeepseekTentacle(
         host,
         auth=host.auth,
-        habitats=host.habitats,
+        habitats=host.habitats["native"],
         config=DeepseekConfig(
             port=0, dsh_home=core_home, extra_args=["--patch", str(patch)]
         ),
@@ -124,11 +124,11 @@ async def test_dsh_turns_resume_share_codex_vm_and_isolate_other_owner(
     monkeypatch.setattr(tentacle, "answer_approval", approval)
     monkeypatch.setattr(tentacle, "answer_questions", question)
     async with tentacle:
-        async with host.habitats.enter(owner_scope, uuid7()):
+        async with host.habitats["native"].enter(owner_scope, uuid7()):
             guest_module = await sandbox.control(
                 "exec",
                 "--workdir=/opt/dsh",
-                sandbox.name,
+                sandbox.id,
                 "node",
                 "--input-type=module",
                 "--eval",
@@ -137,7 +137,7 @@ async def test_dsh_turns_resume_share_codex_vm_and_isolate_other_owner(
             guest_home = sandbox.config_dir / ".dsh"
             await sandbox.control(
                 "exec",
-                sandbox.name,
+                sandbox.id,
                 "python",
                 "-c",
                 "import json,sys; from pathlib import Path; "
@@ -173,7 +173,7 @@ async def test_dsh_turns_resume_share_codex_vm_and_isolate_other_owner(
                     assert (
                         await sandbox.control(
                             "exec",
-                            sandbox.name,
+                            sandbox.id,
                             "cat",
                             "/proc/sys/kernel/random/boot_id",
                         )
@@ -212,20 +212,20 @@ async def test_dsh_turns_resume_share_codex_vm_and_isolate_other_owner(
                 )
                 await assert_harness_sharing(host, invocation, other_scope)
             if turn == 1:
-                boot = await expire_idle(host.habitats, owner_scope)
+                boot = await expire_idle(host.habitats["native"], owner_scope)
         assert len(conversation.runs) == 3
         assert approval.await_count == question.await_count == 3
         assert not list(core_home.glob("sessions/**/*"))
         assert await cli_pids(sandbox, argument_pattern=".*/ds[h]") == pids
     assert not await cli_pids(sandbox, argument_pattern=".*/ds[h]")
-    assert json.loads(await sandbox.control("ports", sandbox.name, "--json")) == []
+    assert json.loads(await sandbox.control("ports", sandbox.id, "--json")) == []
 
 
 async def assert_harness_sharing(
     host: Octomate, invocation: Invocation, other_scope: InvocationScope
 ) -> None:
     sandbox = invocation.habitat
-    peer = host.habitats.residence(other_scope).habitat
+    peer = host.habitats["native"].residence(other_scope).habitat
     assert isinstance(sandbox, SbxHabitat)
     assert isinstance(peer, SbxHabitat)
     # A second harness reads the DSH-created file inside the very same VM.
@@ -245,11 +245,11 @@ async def assert_harness_sharing(
             response_model=FsReadFileResponse,
         )
         assert b64decode(content.data_base64) == b"habitat-proof"
-        async with host.habitats.enter(other_scope, uuid7()):
-            assert peer.name != sandbox.name
+        async with host.habitats["native"].enter(other_scope, uuid7()):
+            assert peer.id != sandbox.id
             hidden = await peer.control(
                 "exec",
-                peer.name,
+                peer.id,
                 "python",
                 "-c",
                 "from pathlib import Path; import sys; print(Path(sys.argv[1]).exists())",

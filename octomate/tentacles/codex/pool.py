@@ -121,10 +121,10 @@ class CodexClientPool:
         if self.watch_notifications is None:
             raise RuntimeError("Codex runtime is not running")
         async with self.creation_lock:
-            existing = self.habitat_clients.get(habitat.name)
+            existing = self.habitat_clients.get(habitat.id)
             codex_logfire.info(
                 "Acquire Codex client in {habitat}",
-                habitat=habitat.name,
+                habitat=habitat.id,
                 reused=existing is not None and not existing.transport.closing,
                 thread_id=thread_id,
             )
@@ -164,7 +164,7 @@ class CodexClientPool:
             )
             client.transport.thread_opened = partial(self.bind_thread, client)
             self.notification_readers[client] = await self.start_client(client)
-            self.habitat_clients[habitat.name] = client
+            self.habitat_clients[habitat.id] = client
             if existing is not None:
                 self.notification_readers.pop(existing)
             if thread_id is not None:

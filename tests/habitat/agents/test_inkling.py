@@ -107,7 +107,7 @@ async def test_approved_project_tools_run_in_the_habitat(
         output_type=[str, DeferredToolRequests],
     )
     tentacle = InklingTentacle(
-        "inkling", app, auth=app.auth, habitats=app.habitats, agent=agent
+        "inkling", app, auth=app.auth, habitats=app.habitats["native"], agent=agent
     )
     address = ChannelAddress(
         channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"

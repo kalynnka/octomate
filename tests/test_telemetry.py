@@ -101,7 +101,7 @@ async def test_inkling_native_model_spans_keep_the_driving_trace(
     agent.instrument = True
     host = Octomate(conversations=FakeConversationManager())
     tentacle = InklingTentacle(
-        "inkling", host, auth=host.auth, habitats=host.habitats, agent=agent
+        "inkling", host, auth=host.auth, habitats=host.habitats["native"], agent=agent
     )
 
     with use_span(NonRecordingSpan(SpanContext(101, 102, False, TraceFlags(1)))):

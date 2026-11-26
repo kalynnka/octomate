@@ -369,7 +369,7 @@ class DeepseekInk(AgentInk):
             return connection
         if isinstance(habitat, ManagedHabitat) and not isinstance(habitat, SbxHabitat):
             raise ValueError("DSH currently supports native and sbx habitats only")
-        name = habitat.name if isinstance(habitat, SbxHabitat) else "core"
+        name = habitat.id if isinstance(habitat, SbxHabitat) else "core"
         async with self.lock:
             connection = self.connections.get(name)
             if connection is None:

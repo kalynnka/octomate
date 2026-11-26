@@ -62,7 +62,7 @@ async def case(
     home = tmp_path / "codex"
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(runtime=RuntimeConfig(env={"CODEX_HOME": str(home)})),
         commands=octomate.commands,
         projects=octomate.projects,

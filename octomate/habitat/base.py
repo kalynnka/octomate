@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, suppress
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from typing import ClassVar
 
 import anyio
 from anyio import to_thread
@@ -56,6 +57,7 @@ async def finish_guest(stream: ByteStream, output: BufferedByteReceiveStream) ->
 class Habitat(ABC):
     """The execution environment core prepares for an agent invocation."""
 
+    type: ClassVar[str]  # Backend kind, independent of configured names and owners.
     config: BaseHabitatConfig  # This environment's settings, including core access.
     resources: AsyncExitStack = field(
         default_factory=AsyncExitStack, init=False, repr=False, compare=False
@@ -74,8 +76,8 @@ class Habitat(ABC):
 
     @property
     @abstractmethod
-    def name(self) -> str:
-        """Stable identifier of this habitat."""
+    def id(self) -> str:
+        """Stable runtime identifier used for process routing and lifecycle operations."""
 
     @abstractmethod
     def path(self, volume: Volume) -> Path | PurePosixPath:

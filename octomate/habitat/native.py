@@ -2,13 +2,16 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
+from typing import ClassVar
 
 from pydantic_ai.workspaces import (
     CommandResult,
     LocalWorkspaceBackend,
     WorkspaceCommand,
 )
+from uuid_utils.compat import uuid7
 
 from octomate.config.habitat import NativeHabitatConfig
 from octomate.habitat.base import Habitat
@@ -19,11 +22,12 @@ from octomate.schemas.volumes import Volume
 class NativeHabitat(Habitat):
     """No separate runtime to acquire; adapters own harness policy and clients."""
 
+    type: ClassVar[str] = "native"
     config: NativeHabitatConfig = field(default_factory=NativeHabitatConfig)
 
-    @property
-    def name(self) -> str:
-        return "native"
+    @cached_property
+    def id(self) -> str:
+        return f"{self.type}-{uuid7().hex}"
 
     def path(self, volume: Volume) -> Path:
         return volume.path

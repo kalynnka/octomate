@@ -106,7 +106,7 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
     tentacle = DeepseekTentacle(
         octomate,
         auth=octomate.auth,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=DeepseekConfig(
             executable=executable,
             port=port,
@@ -336,7 +336,7 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
     restarted = DeepseekTentacle(
         tentacle.octomate,
         auth=tentacle.octomate.auth,
-        habitats=tentacle.octomate.habitats,
+        habitats=tentacle.octomate.habitats["native"],
         config=tentacle.config,
     )
     monkeypatch.setattr(restarted, "answer_approval", approve)

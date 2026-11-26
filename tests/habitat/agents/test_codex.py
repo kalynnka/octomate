@@ -380,7 +380,7 @@ async def test_invocations_reuse_clients_until_their_own_habitat_stops(
         assert closing.transport.closing
         assert closing.transport.reader_thread is not None
         assert not closing.transport.reader_thread.is_alive()
-        stopped.append(habitat.name)
+        stopped.append(habitat.id)
 
     monkeypatch.setattr(SbxHabitat, "stop", stop)
     try:
@@ -405,7 +405,7 @@ async def test_invocations_reuse_clients_until_their_own_habitat_stops(
             assert separate_process.pid != first.pid
             resident.assert_called_once()
         await manager.stop(residence)
-        assert stopped == [residence.habitat.name]
+        assert stopped == [residence.habitat.id]
         with pytest.raises(ProcessLookupError):
             os.kill(first.pid, 0)
         with pytest.raises(TransportClosedError, match="closed"):
@@ -416,7 +416,7 @@ async def test_invocations_reuse_clients_until_their_own_habitat_stops(
         assert still_running.pid == separate_process.pid
     finally:
         await manager.close()
-    assert stopped == [residence.habitat.name, separate.habitat.name]
+    assert stopped == [residence.habitat.id, separate.habitat.id]
     with pytest.raises(ProcessLookupError):
         os.kill(separate_process.pid, 0)
 

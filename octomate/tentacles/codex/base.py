@@ -1819,7 +1819,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                     thread_id=invocation.thread_id,
                     conversation_id=conversation.id,
                     native_thread_id=conversation.external_id,
-                    habitat=invocation.habitat.name,
+                    habitat=invocation.habitat.id,
                     cwd=run_cwd,
                     **agent_input_message_attributes(user_prompt),
                 )

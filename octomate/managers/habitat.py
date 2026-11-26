@@ -131,6 +131,7 @@ class HabitatManager:
     config: HabitatConfig
     nerve: Nerve
     workspaces: WorkspaceManager
+    name: str = "default"  # Separates named habitats for the same user.
     residences: dict[UUID7, Residence] = field(default_factory=dict, init=False)
     closed: bool = field(default=False, init=False)
 
@@ -208,12 +209,14 @@ class HabitatManager:
                         config=config,
                         user_id=scope.user_id,
                         root=self.workspaces.root(scope.user_id),
+                        name=self.name,
                     )
                 case SbxHabitatConfig() as config:
                     habitat = SbxHabitat(
                         config=config,
                         user_id=scope.user_id,
                         root=self.workspaces.root(scope.user_id),
+                        name=self.name,
                         config_dir=self.workspaces.host_storage.slot(
                             scope.user_id, "config"
                         ),
@@ -225,7 +228,7 @@ class HabitatManager:
                 habitat=habitat,
                 status=HabitatProgressEvent(
                     user_id=scope.user_id,
-                    habitat=habitat.name,
+                    habitat=habitat.id,
                     sequence=0,
                     phase="unknown",
                 ),
@@ -251,7 +254,7 @@ class HabitatManager:
                 raise ValueError("Habitat errors require the failed phase")
             residence.status = HabitatFailedEvent(
                 user_id=residence.user_id,
-                habitat=residence.habitat.name,
+                habitat=residence.habitat.id,
                 sequence=residence.status.sequence + 1,
                 invocation_id=invocation_id,
                 thread_id=scope.thread_id if scope else None,
@@ -262,7 +265,7 @@ class HabitatManager:
                 raise ValueError("Failed habitat reports require an error")
             residence.status = HabitatProgressEvent(
                 user_id=residence.user_id,
-                habitat=residence.habitat.name,
+                habitat=residence.habitat.id,
                 sequence=residence.status.sequence + 1,
                 invocation_id=invocation_id,
                 thread_id=scope.thread_id if scope else None,
@@ -274,7 +277,7 @@ class HabitatManager:
             "error" if error is not None else "info",
             "Habitat {habitat} {phase}",
             attributes={
-                "habitat": residence.habitat.name,
+                "habitat": residence.habitat.id,
                 "phase": phase,
                 "invocation_id": invocation_id,
                 "thread_id": scope.thread_id if scope else None,

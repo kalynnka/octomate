@@ -14,7 +14,7 @@ from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Literal, TypedDict, Unpack
+from typing import ClassVar, Literal, TypedDict, Unpack
 
 import anyio
 from anyio.abc import SocketStream
@@ -67,15 +67,17 @@ class SbxOptions(TypedDict, total=False):
 
 @dataclass
 class SbxHabitat(ManagedHabitat):
+    type: ClassVar[str] = "sbx"
     config: SbxHabitatConfig
     user_id: UUID7
     root: Path  # The owner's storage on the host, mounted when the sandbox is made.
     config_dir: Path  # The owner's agent-configuration volume, beneath the root.
+    name: str = "default"  # Configured habitat name, independent of the owner.
     managed: bool = field(default=False, init=False)  # Name found or create tried.
 
     @property
-    def name(self) -> str:
-        return f"octomate-{self.user_id.hex}"
+    def id(self) -> str:
+        return f"octomate-{self.name}-{self.user_id.hex}"
 
     @property
     def idle_timeout(self) -> float:
@@ -102,7 +104,7 @@ class SbxHabitat(ManagedHabitat):
     async def publish(self, port: int) -> AsyncGenerator[str]:
         """Expose a guest TCP port on ephemeral host loopback for this context."""
         data = await self.control(
-            "ports", self.name, "--publish", f"{port}/tcp4", "--json"
+            "ports", self.id, "--publish", f"{port}/tcp4", "--json"
         )
         ports = published_ports_adapter.validate_json(data)
         matches = [
@@ -119,7 +121,7 @@ class SbxHabitat(ManagedHabitat):
             with anyio.CancelScope(shield=True):
                 await self.control(
                     "ports",
-                    self.name,
+                    self.id,
                     "--unpublish",
                     f"{port}/tcp4",
                 )
@@ -182,7 +184,7 @@ class SbxHabitat(ManagedHabitat):
                 arguments.append(f"{flag}={value}")
         try:
             with habitat_logfire.span(
-                "sbx {operation}", operation=args[0], habitat=self.name
+                "sbx {operation}", operation=args[0], habitat=self.id
             ):
                 async with self.cli(*arguments) as process:
                     async with asyncio.timeout(
@@ -251,7 +253,7 @@ class SbxHabitat(ManagedHabitat):
             ),
         }
         self.managed = True
-        if self.name not in names:
+        if self.id not in names:
             # sbx takes host paths only when it makes the sandbox, so the whole
             # root is mounted now and every volume made under it later is seen.
             # The agents' credential file is written beneath the configuration
@@ -268,7 +270,7 @@ class SbxHabitat(ManagedHabitat):
                 str(self.root),
                 kit_arg=[f"{key}={value}" for key, value in kit_args.items()],
                 deny_network=denied_domains if self.config.internet_access else ["**"],
-                name=self.name,
+                name=self.id,
                 pull="missing",
                 skills="off",
                 no_progress=True,
@@ -276,7 +278,7 @@ class SbxHabitat(ManagedHabitat):
             return
         metadata = await self.control(
             "exec",
-            self.name,
+            self.id,
             "printenv",
             *(f"OCTOMATE_HABITAT_{key.upper()}" for key in kit_args),
         )
@@ -305,7 +307,7 @@ class SbxHabitat(ManagedHabitat):
                     "--interactive",
                     f"--workdir={workdir}",
                     *(f"--env={key}={value}" for key, value in (env or {}).items()),
-                    self.name,
+                    self.id,
                     *command,
                     stdin=child.fileno(),
                     stdout=child.fileno(),
@@ -370,5 +372,5 @@ class SbxHabitat(ManagedHabitat):
     async def stop(self) -> None:
         if self.managed:
             names = (await self.control("ls", quiet=True)).decode().splitlines()
-            if self.name in names:
-                await self.control("stop", self.name)
+            if self.id in names:
+                await self.control("stop", self.id)

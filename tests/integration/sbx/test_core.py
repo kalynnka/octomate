@@ -72,13 +72,13 @@ async def test_guest_claude_hook_uploads_before_the_invocation_is_released(
         tentacle = octomate.tentacles["claude"]
         assert isinstance(tentacle, ClaudeTentacle)
         scope = InvocationScope(user_id=user.id, conversation_id=conversation.id)
-        sandbox = octomate.habitats.residence(scope).habitat
+        sandbox = octomate.habitats["native"].residence(scope).habitat
         assert isinstance(sandbox, SbxHabitat)
         sandbox.config = sandbox.config.model_copy(
             update={"core_address": HttpUrl(base)}
         )
         sbx_cleanup.push_async_callback(remove_sandbox, sandbox)
-        sbx_cleanup.push_async_callback(octomate.habitats.close)
+        sbx_cleanup.push_async_callback(octomate.habitats["native"].close)
         sbx_cleanup.push_async_callback(tentacle.revoke_runtime_keys)
         address = ChannelAddress(
             channel_tentacle_id="im", chat_type="dm", chat_id="lu", user_id="lu"

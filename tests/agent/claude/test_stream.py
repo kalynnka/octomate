@@ -308,7 +308,7 @@ def stream_client() -> tuple[TestClient, ClaudeTentacle]:
         ClaudeTentacle(
             octomate,
             auth=octomate.auth,
-            habitats=octomate.habitats,
+            habitats=octomate.habitats["native"],
             config=ClaudeCodeConfig(),
             commands=octomate.commands,
             projects=octomate.projects,

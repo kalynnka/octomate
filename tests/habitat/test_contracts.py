@@ -57,13 +57,13 @@ async def test_native_default_constructs_an_idle_habitat_manager(
     cli = Mock(side_effect=AssertionError("Native mode must not launch sbx"))
     monkeypatch.setattr(SbxHabitat, "cli", cli)
     app = Octomate()
-    assert app.config.habitat == NativeHabitatConfig()
-    assert isinstance(app.habitats, HabitatManager)
-    assert app.habitats.config is app.config.habitat
-    assert app.habitats.nerve is app.nerve
-    assert app.habitats.residences == {}
-    await app.habitats.close()
-    assert app.habitats.closed
+    assert app.config.habitats["native"] == NativeHabitatConfig()
+    assert isinstance(app.habitats["native"], HabitatManager)
+    assert app.habitats["native"].config is app.config.habitats["native"]
+    assert app.habitats["native"].nerve is app.nerve
+    assert app.habitats["native"].residences == {}
+    await app.habitats["native"].close()
+    assert app.habitats["native"].closed
     cli.assert_not_called()
 
 
@@ -71,10 +71,29 @@ async def test_native_manager_refuses_vm_acquisition() -> None:
     app = Octomate()
     scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
     with pytest.raises(HabitatError, match="mode is 'native'"):
-        async with app.habitats.enter(scope, uuid7()):
+        async with app.habitats["native"].enter(scope, uuid7()):
             pytest.fail("Native configuration must not allocate a VM")
-    assert app.habitats.residences == {}
-    await app.habitats.close()
+    assert app.habitats["native"].residences == {}
+    await app.habitats["native"].close()
+
+
+async def test_shutdown_drains_all_named_pools_after_one_failure(
+    monkeypatch: pytest.MonkeyPatch, in_memory_engine: AsyncEngine
+) -> None:
+    app = Octomate(
+        config=OctomateConfig(
+            habitats={"first": NativeHabitatConfig(), "second": NativeHabitatConfig()}
+        )
+    )
+    failed = AsyncMock(side_effect=HabitatError("stop failed"))
+    stopped = AsyncMock()
+    monkeypatch.setattr(app.habitats["first"], "close", failed)
+    monkeypatch.setattr(app.habitats["second"], "close", stopped)
+    with pytest.RaisesGroup(pytest.RaisesExc(HabitatError, match="stop failed")):
+        async with app.lifespan(app):
+            pass
+    failed.assert_awaited_once()
+    stopped.assert_awaited_once()
 
 
 @pytest.mark.parametrize(
@@ -116,11 +135,13 @@ async def test_sbx_application_lifespan_starts_without_allocating_a_vm(
 ) -> None:
     cli = Mock(side_effect=AssertionError("Startup must not launch sbx"))
     monkeypatch.setattr(SbxHabitat, "cli", cli)
-    app = Octomate(config=OctomateConfig(habitat=SbxHabitatConfig(image=IMAGE)))
+    app = Octomate(
+        config=OctomateConfig(habitats={"native": SbxHabitatConfig(image=IMAGE)})
+    )
     async with app.lifespan(app) as state:
         assert state["octomate"] is app
-        assert app.habitats.config is app.config.habitat
-        assert app.habitats.residences == {}
+        assert app.habitats["native"].config is app.config.habitats["native"]
+        assert app.habitats["native"].residences == {}
     cli.assert_not_called()
 
 
@@ -131,7 +152,9 @@ async def test_application_shutdown_releases_habitats(
     prepare, stop, release = AsyncMock(), AsyncMock(), AsyncMock()
     monkeypatch.setattr(SbxHabitat, "prepare", prepare)
     monkeypatch.setattr(SbxHabitat, "stop", stop)
-    app = Octomate(config=OctomateConfig(habitat=SbxHabitatConfig(image=IMAGE)))
+    app = Octomate(
+        config=OctomateConfig(habitats={"native": SbxHabitatConfig(image=IMAGE)})
+    )
     scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
     with (
         pytest.RaisesGroup(pytest.RaisesExc(RuntimeError, match="probe"))
@@ -139,14 +162,14 @@ async def test_application_shutdown_releases_habitats(
         else nullcontext()
     ):
         async with app.lifespan(app):
-            async with app.habitats.enter(scope, uuid7()) as residence:
+            async with app.habitats["native"].enter(scope, uuid7()) as residence:
                 residence.habitat.resources.push_async_callback(release)
             assert residence.idle is not None
             if failed:
                 raise RuntimeError("probe")
     release.assert_awaited_once()
     stop.assert_awaited_once()
-    assert app.habitats.closed
+    assert app.habitats["native"].closed
     assert residence.idle is None
     assert residence.status.phase == "stopped"
 

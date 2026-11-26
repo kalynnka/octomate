@@ -79,13 +79,13 @@ async def test_dsh_acp_tools_and_fresh_process_resume(
     settings = "agent-default-model:\n  provider: octomate-test\n  model: mock\n"
     (core_home / "settings.yaml").write_text(settings)
     host = Octomate(config=OctomateConfig(auth=auth_config()))
-    host.habitats.config = SbxHabitatConfig(image=image)
+    host.habitats["native"].config = SbxHabitatConfig(image=image)
     agent = host.connect(
         AcpAgentTentacle(
             "dsh-acp",
             host,
             auth=host.auth,
-            habitats=host.habitats,
+            habitats=host.habitats["native"],
             config=AcpAgentConfig(
                 gateway=False,
                 provider=AcpProvider(
@@ -114,15 +114,15 @@ async def test_dsh_acp_tools_and_fresh_process_resume(
     )
     address = thread.key.address(sender.channel_user_id)
     scope = InvocationScope(user_id=owner.id, conversation_id=uuid7())
-    sandbox = host.habitats.residence(scope).habitat
+    sandbox = host.habitats["native"].residence(scope).habitat
     assert isinstance(sandbox, SbxHabitat)
     sbx_cleanup.push_async_callback(remove_sandbox, sandbox)
-    sbx_cleanup.push_async_callback(host.habitats.close)
-    async with host.habitats.enter(scope, uuid7()):
+    sbx_cleanup.push_async_callback(host.habitats["native"].close)
+    async with host.habitats["native"].enter(scope, uuid7()):
         guest_module = await sandbox.control(
             "exec",
             "--workdir=/opt/dsh",
-            sandbox.name,
+            sandbox.id,
             "node",
             "--input-type=module",
             "--eval",
@@ -130,7 +130,7 @@ async def test_dsh_acp_tools_and_fresh_process_resume(
         )
         await sandbox.control(
             "exec",
-            sandbox.name,
+            sandbox.id,
             "python",
             "-c",
             "import json,sys; from pathlib import Path; "

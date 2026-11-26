@@ -46,7 +46,7 @@ async def agent(client: AsyncMock) -> AsyncGenerator[DeepseekTentacle]:
     agent = DeepseekTentacle(
         host,
         auth=host.auth,
-        habitats=host.habitats,
+        habitats=host.habitats["native"],
         config=DeepseekConfig(),
     )
     connection = DeepseekConnection(client)
@@ -225,7 +225,7 @@ async def test_connection_startup_replaces_unavailable_catalog_and_shutdown_expi
     agent = DeepseekTentacle(
         host,
         auth=host.auth,
-        habitats=host.habitats,
+        habitats=host.habitats["native"],
         config=DeepseekConfig(),
     )
     assert (await agent.discover_commands(context)).status == "unavailable"

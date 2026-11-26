@@ -44,14 +44,14 @@ async def test_internet_access_is_applied_at_creation(
     sandbox = manager.residence(scope).habitat
     assert isinstance(sandbox, SbxHabitat)
     assert (
-        sandbox.name
+        sandbox.id
         not in (await sandbox.control("ls", quiet=True)).decode().splitlines()
     )
     try:
         async with manager.enter(scope, uuid7()):
             await sandbox.control(
                 "exec",
-                sandbox.name,
+                sandbox.id,
                 "python",
                 "-c",
                 "import os; from pathlib import Path; "
@@ -69,7 +69,7 @@ async def test_internet_access_is_applied_at_creation(
                         "network",
                         "--json",
                         "--sandbox",
-                        sandbox.name,
+                        sandbox.id,
                         host,
                     ) as process,
                 ):
@@ -83,7 +83,7 @@ async def test_internet_access_is_applied_at_creation(
                     assert policy["deny_kind"] == "explicit"
             status = await sandbox.control(
                 "exec",
-                sandbox.name,
+                sandbox.id,
                 "python",
                 "-c",
                 "import urllib.error, urllib.request\n"

@@ -1,4 +1,4 @@
-"""The service's habitat mode and the local sbx resource budget."""
+"""Named execution habitats and their resource budgets."""
 
 from pathlib import Path
 from typing import Annotated, Literal
@@ -13,6 +13,10 @@ from pydantic import (
 )
 
 DNS_LABEL = r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
+
+type HabitatName = Annotated[
+    str, StringConstraints(pattern=r"^[a-z][a-z0-9-]*$", max_length=48)
+]
 
 
 def validate_network_domain(value: str) -> str:

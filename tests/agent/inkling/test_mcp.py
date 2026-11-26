@@ -111,7 +111,7 @@ async def test_inkling_calls_todos_through_authenticated_mcp_and_publishes_once(
         model, output_type=[str, list[MessageSegment], DeferredToolRequests]
     )
     inkling = InklingTentacle(
-        "inkling", host, auth=host.auth, habitats=host.habitats, agent=agent
+        "inkling", host, auth=host.auth, habitats=host.habitats["native"], agent=agent
     )
     assert scope.thread_id is not None
     assert scope.conversation_address is not None
@@ -229,7 +229,7 @@ async def test_anonymous_inkling_run_does_not_mount_core_mcp_tools() -> None:
         model, output_type=[str, list[MessageSegment], DeferredToolRequests]
     )
     inkling = InklingTentacle(
-        "inkling", host, auth=host.auth, habitats=host.habitats, agent=agent
+        "inkling", host, auth=host.auth, habitats=host.habitats["native"], agent=agent
     )
     scope = OctomateSession(
         channel_routes={},
@@ -272,7 +272,7 @@ async def test_registered_inkling_run_requires_configured_authentication(
         "inkling",
         host,
         auth=host.auth,
-        habitats=host.habitats,
+        habitats=host.habitats["native"],
         models={"test": TestModel()},
     )
     assert scope.thread_id is not None
@@ -381,7 +381,7 @@ async def test_mcp_accomplices_link_to_the_run_that_returns_their_tool_result(
         "helper",
         host,
         auth=host.auth,
-        habitats=host.habitats,
+        habitats=host.habitats["native"],
         models={"test": FunctionModel(stream_function=report)},
         gateway=False,
     )
@@ -444,7 +444,7 @@ async def test_mcp_accomplices_link_to_the_run_that_returns_their_tool_result(
         "inkling",
         host,
         auth=host.auth,
-        habitats=host.habitats,
+        habitats=host.habitats["native"],
         agent=agent,
         permission_mode="bypassPermissions",
     )

@@ -68,7 +68,7 @@ async def scenario(
         DeepseekTentacle(
             app,
             auth=app.auth,
-            habitats=app.habitats,
+            habitats=app.habitats["native"],
             config=DeepseekConfig(type="deepseek"),
         )
     )

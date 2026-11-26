@@ -162,7 +162,7 @@ def _tentacle(
         "inkling",
         host,
         auth=host.auth,
-        habitats=host.habitats,
+        habitats=host.habitats["native"],
         agent=cast(Agent[None, InklingOutput], agent),
         conversation_manager=conversations,
     )
@@ -513,7 +513,7 @@ async def test_a_teleport_follows_the_approval_posture(
         "inkling",
         host,
         auth=host.auth,
-        habitats=host.habitats,
+        habitats=host.habitats["native"],
         agent=cast(Agent[None, InklingOutput], agent),
     )
     suspender = StubSuspender()
@@ -1001,7 +1001,7 @@ async def test_subagent_run_mounts_the_tentacle_capabilities_too() -> None:
         "inkling",
         host,
         auth=host.auth,
-        habitats=host.habitats,
+        habitats=host.habitats["native"],
         agent=cast(Agent[None, InklingOutput], agent),
         conversation_manager=conversations,
         capabilities=[AskCapability()],
@@ -1100,7 +1100,7 @@ async def test_inkling_default_output_is_segments() -> None:
         "inkling",
         host,
         auth=host.auth,
-        habitats=host.habitats,
+        habitats=host.habitats["native"],
         agent=agent,
         conversation_manager=conversations,
     )
@@ -1134,7 +1134,7 @@ async def test_inkling_applies_its_configured_request_limit() -> None:
         "inkling",
         host,
         auth=host.auth,
-        habitats=host.habitats,
+        habitats=host.habitats["native"],
         agent=agent,
         conversation_manager=conversations,
         capabilities=[probe],

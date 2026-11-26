@@ -236,7 +236,7 @@ def an_inkling(
         "inkling",
         octomate,
         auth=octomate.auth,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         agent=agent,
         conversation_manager=FakeConversationManager(),
     )
