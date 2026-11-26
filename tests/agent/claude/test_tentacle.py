@@ -84,10 +84,6 @@ KEY = ChannelAddress(
 _THREAD = uuid7()
 
 
-class IdentifiedPromptHook(UserPromptSubmitHookInput):
-    prompt_id: str
-
-
 class FakeClaudeClient:
     """Stands in for `ClaudeSDKClient`: captures the options + prompt and yields
     a scripted Claude message stream (text, a tool round-trip, a final answer)."""
@@ -303,7 +299,7 @@ async def test_prompt_hook_identity_is_retained_on_the_driven_run(
             options = self.last_options
             assert isinstance(options, ClaudeAgentOptions)
             assert options.hooks is not None
-            hook_input: IdentifiedPromptHook = {
+            hook_input: UserPromptSubmitHookInput = {
                 "hook_event_name": "UserPromptSubmit",
                 "session_id": "sess-xyz",
                 "transcript_path": "/client/transcript.jsonl",
