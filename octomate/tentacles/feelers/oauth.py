@@ -27,7 +27,7 @@ from octomate.telemetry import channel_logfire
 from octomate.tentacles.feelers.output import IMMessageID, MarkdownFeeler
 
 if TYPE_CHECKING:
-    from octomate.tentacles.channel import Ink
+    from octomate.tentacles.channel import ChannelInk
 
 AuthorizationEvent = OAuthAuthorizationEvent | LinkProfileAuthorizationEvent
 
@@ -46,9 +46,9 @@ def link_profile_body(event: LinkProfileAuthorizationEvent) -> str:
 class OAuthFeeler[MessageT](ABC):
     """Presents one pending authorization for one response target."""
 
-    ink: Ink[MessageT]
+    ink: ChannelInk[MessageT]
 
-    def __init__(self, ink: Ink[MessageT]) -> None:
+    def __init__(self, ink: ChannelInk[MessageT]) -> None:
         self.ink = ink
 
     async def present(
@@ -105,7 +105,7 @@ class PlainTextOAuthFeeler[MessageT](OAuthFeeler[MessageT]):
     """Presents an authorization as a markdown link, with the device code when
     there is one."""
 
-    def __init__(self, ink: Ink[MessageT], markdown: MarkdownFeeler) -> None:
+    def __init__(self, ink: ChannelInk[MessageT], markdown: MarkdownFeeler) -> None:
         super().__init__(ink)
         self.markdown = markdown
 

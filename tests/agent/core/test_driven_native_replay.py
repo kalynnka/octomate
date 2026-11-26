@@ -6,7 +6,6 @@ from typing import Literal
 
 import pytest
 from anyio.abc import ObjectSendStream
-from octomate_protocol.stream import SESSION_FILE
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -134,7 +133,8 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
                 ),
                 impulses=tail_impulses,
             )
-            assert offsets == {SESSION_FILE: 0}
+            assert state.conversation is not None
+            assert offsets == {state.conversation.id: 0}
             offset = 0
             for record in records:
                 line = json.dumps(record)
@@ -158,7 +158,8 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
                 ),
                 tail_impulses,
             )
-            assert offsets == {SESSION_FILE: 0}
+            assert codex_state.conversation is not None
+            assert offsets == {codex_state.conversation.id: 0}
             offset = 0
             payloads: list[dict[str, str]] = [
                 payload
@@ -201,7 +202,8 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
                 ),
                 impulses=tail_impulses,
             )
-            assert offsets == {SESSION_FILE: 0}
+            assert deepseek_state.conversation is not None
+            assert offsets == {deepseek_state.conversation.id: 0}
             events = [
                 event
                 for replay_turn in range(1, turn + 1)

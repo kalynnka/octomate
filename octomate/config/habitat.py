@@ -2,21 +2,28 @@
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 
-class NativeHabitatConfig(BaseModel):
-    """Each harness runs directly on the host, inside its own sandbox."""
+class BaseHabitatConfig(BaseModel):
+    """The core API endpoint known to an isolated execution environment."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+    core_address: HttpUrl = Field(
+        default=HttpUrl("http://127.0.0.1:8000"),
+        description="Core API origin (scheme, host and port), translated by the habitat for its network. Independent of core's listening host and port.",
+    )
+
+
+class NativeHabitatConfig(BaseHabitatConfig):
+    """Each harness runs directly on the host, inside its own sandbox."""
 
     mode: Literal["native"] = "native"
 
 
-class SbxHabitatConfig(BaseModel):
+class SbxHabitatConfig(BaseHabitatConfig):
     """Each registered user's agents run in one persistent sbx VM."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
 
     mode: Literal["sbx"] = "sbx"
     executable: str = Field(default="sbx", min_length=1)
@@ -40,7 +47,7 @@ class SbxHabitatConfig(BaseModel):
         description="Guest RAM size in MiB, passed to sbx --memory.",
     )
     idle_timeout: float = Field(
-        default=900,
+        default=300,
         gt=0,
         allow_inf_nan=False,
         description="Seconds after the last invocation finishes before stopping the user sandbox, preserving its disk.",

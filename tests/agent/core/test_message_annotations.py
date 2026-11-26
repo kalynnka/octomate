@@ -22,10 +22,11 @@ from pydantic_ai.messages import (
 from octomate import Octomate
 from octomate.events import StreamEvents, wire_event_adapter
 from octomate.nerve import Impulse
-from octomate.schemas.annotations import MessageAnnotations
+from octomate.schemas.annotations import MessageAgent, MessageAnnotations
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.claude.content import prompt_content as claude_prompt
+from octomate.tentacles.claude.transcript import TranscriptOrigin
 from octomate.tentacles.codex.adapter import CodexRunAccumulator
 from octomate.tentacles.codex.content import answer_part
 from octomate.tentacles.codex.content import prompt_content as codex_prompt
@@ -82,6 +83,41 @@ def test_claude_selected_lines_remain_a_reference() -> None:
     assert content.content == "Explain it."
 
 
+def test_a_claude_task_notification_is_context_with_nothing_said() -> None:
+    notification = (
+        "<task-notification>\n<task-id>a1</task-id>\n<status>completed</status>\n"
+        '<summary>Agent "audit" finished</summary>\n</task-notification>'
+    )
+    content = claude_prompt(notification)
+    assert isinstance(content, TextContent)
+    result = MessageAnnotations.model_validate(content.metadata["annotations"])
+    assert content.content == ""
+    assert [context.title for context in result.contexts] == ["Task notification"]
+    assert '<summary>Agent "audit" finished</summary>' in result.contexts[0].text
+    assert result.raw == notification
+
+
+def test_a_claude_agent_message_keeps_what_was_said_and_names_who() -> None:
+    body = "[Subagent hand-back] The report follows:\n  two findings"
+    framed = f'Another Claude session sent a message:\n<agent-message from="a1">\n{body}\n</agent-message>'
+    peer = {"kind": "peer", "from": "a1", "name": "general-purpose", "body": body}
+    handed_back = claude_prompt(
+        framed,
+        TranscriptOrigin.model_validate({**peer, "handbackReportText": "two findings"}),
+    )
+    assert isinstance(handed_back, TextContent)
+    result = MessageAnnotations.model_validate(handed_back.metadata["annotations"])
+    assert handed_back.content == "two findings"
+    assert result.agent == MessageAgent(id="a1", name="general-purpose")
+    assert result.raw == framed
+    # A peer that hands nothing back says its whole body.
+    written = claude_prompt(framed, TranscriptOrigin.model_validate(peer))
+    assert isinstance(written, TextContent)
+    assert written.content == body
+    # Any other origin leaves the prompt to its text.
+    assert claude_prompt(framed, TranscriptOrigin(kind="task-notification")) == framed
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -91,6 +127,7 @@ def test_claude_selected_lines_remain_a_reference() -> None:
         "# Context from my IDE setup:\nno request boundary",
         "<ide_opened_file>literal example</ide_opened_file>",
         "<browser_instruction>my own instructions</browser_instruction>",
+        "<task-notification>my own words</task-notification>",
         "<ide_selection>unfinished",
     ],
 )

@@ -1,5 +1,6 @@
 """Claude's native control protocol over a process inside a habitat."""
 
+import logging
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
@@ -11,20 +12,20 @@ from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, Transport
 from claude_agent_sdk._internal.transport.subprocess_cli import SubprocessCLITransport
 from claude_agent_sdk._version import __version__ as SDK_VERSION
 from claude_agent_sdk.types import _configure_can_use_tool
+from opentelemetry import propagate
 from pydantic import TypeAdapter, ValidationError
-from uuid_utils.compat import uuid7
 
 from octomate.fibers import MAX_FRAME_BYTES, FiberError
-from octomate.managers.habitat import HabitatManager
-from octomate.schemas.habitat import InvocationScope
+from octomate.habitat import ManagedHabitat
 from octomate.types.json import JsonObject
 
 message_adapter = TypeAdapter(JsonObject)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class HabitatTransport(Transport):
-    """A duplex SDK connection; the caller owns the guest process and VM lease."""
+    """A duplex SDK connection; the caller owns the guest process and the habitat."""
 
     stream: ByteStream
     max_frame_bytes: int = MAX_FRAME_BYTES
@@ -74,18 +75,14 @@ class HabitatTransport(Transport):
 
     async def close(self) -> None:
         self.ready = False
-        with anyio.fail_after(5):
-            await self.stream.aclose()
+        await self.stream.aclose()
 
     @classmethod
     @asynccontextmanager
     async def client(
-        cls,
-        habitats: HabitatManager,
-        scope: InvocationScope,
-        options: ClaudeAgentOptions,
+        cls, habitat: ManagedHabitat, options: ClaudeAgentOptions
     ) -> AsyncGenerator[ClaudeSDKClient]:
-        """Acquire, run and release using options whose paths refer to the guest."""
+        """Run the CLI in a habitat the caller holds; option paths refer to the guest."""
         if options.cwd is None:
             raise ValueError("Habitat Claude runs require a guest workspace")
         command_options = replace(
@@ -94,23 +91,51 @@ class HabitatTransport(Transport):
         )
         # Reuse the pinned SDK's flag mapping for its native control protocol.
         command = SubprocessCLITransport("", command_options)._build_command()
-        async with (
-            habitats.enter(scope, uuid7()) as residence,
-            residence.habitat.execute(
-                *command,
-                workdir=str(options.cwd),
-                env={
-                    "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
-                    "CLAUDE_AGENT_SDK_VERSION": SDK_VERSION,
-                    **options.env,
-                },
-            ) as stream,
-            ClaudeSDKClient(
-                options=options,
-                transport=cls(
-                    stream,
-                    max_frame_bytes=options.max_buffer_size or MAX_FRAME_BYTES,
-                ),
-            ) as client,
-        ):
-            yield client
+        env = {
+            "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
+            **options.env,
+            "CLAUDE_AGENT_SDK_VERSION": SDK_VERSION,
+            "CLAUDE_CODE_SDK_READS_SESSION_STATE": "1",
+            "PWD": str(options.cwd),
+        }
+        env.pop("CLAUDE_AGENT_SDK_DERIVED_CLIENT_APP", None)
+        if options.client_app is not None:
+            env["CLAUDE_AGENT_SDK_CLIENT_APP"] = options.client_app
+        if options.enable_file_checkpointing:
+            env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] = "true"
+        carrier: dict[str, str] = {}
+        try:
+            propagate.inject(carrier)
+        except Exception:
+            logger.debug("Claude trace context propagation failed", exc_info=True)
+        if "traceparent" in carrier:
+            env.update(
+                (key.upper(), value)
+                for key, value in carrier.items()
+                if key.upper() not in options.env
+            )
+
+        def on_stderr(line: str) -> None:
+            line = line.rstrip()
+            if line and options.stderr is not None:
+                try:
+                    options.stderr(line)
+                except Exception:
+                    logger.debug("Claude stderr callback failed", exc_info=True)
+
+        async with habitat.resident(
+            *command,
+            workdir=str(options.cwd),
+            env=env,
+            stderr=on_stderr if options.stderr is not None else None,
+        ) as stream:
+            transport = cls(
+                stream, max_frame_bytes=options.max_buffer_size or MAX_FRAME_BYTES
+            )
+            async with ClaudeSDKClient(options=options, transport=transport) as client:
+                yield client
+                # Keep the SDK reader alive until Claude finishes its exit hooks.
+                if not transport.input_ended:
+                    await transport.end_input()
+                async for _ in client.receive_messages():
+                    pass

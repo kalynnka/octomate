@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from types import TracebackType
 from uuid import uuid4
 
-import httpx
+import httpx2
 from octomate_protocol.deepseek import (
     ClientRequest,
     ErrResult,
@@ -60,7 +60,7 @@ class DeepseekApiClient:
     """One dsh harness's `/api` gateway: unary calls, event replies, the mux socket."""
 
     base_url: HttpUrl
-    http_client: httpx.AsyncClient
+    http_client: httpx2.AsyncClient
     client_id: str | None = field(default=None, init=False)
     subscriptions: dict[str, asyncio.Future[None]] = field(
         default_factory=dict, init=False
@@ -86,7 +86,7 @@ class DeepseekApiClient:
             response = await self.http_client.get(
                 "/", params={"token": token.get_secret_value()}, follow_redirects=False
             )
-        except httpx.HTTPError:
+        except httpx2.HTTPError:
             raise RuntimeError(
                 f"Could not authenticate to dsh at {self.base_url}"
             ) from None
@@ -119,7 +119,7 @@ class DeepseekApiClient:
     async def call(self, method: str, payload: JsonValue) -> RpcResult:
         """One unary method: POST /api/<method>."""
         message = ClientRequest(rpc_id=str(uuid4()), method=method, payload=payload)
-        timeout = httpx.Timeout(self.http_client.timeout)
+        timeout = httpx2.Timeout(self.http_client.timeout)
         if method == "commands/execute":
             # Commands return after model work such as compaction finishes.
             timeout.read = None
@@ -130,11 +130,11 @@ class DeepseekApiClient:
                 headers=JSON_HEADERS,
                 timeout=timeout,
             )
-        except httpx.ConnectError as error:
+        except httpx2.ConnectError as error:
             return ErrResult(
                 error=RpcError(code="connection-refused", message=str(error))
             )
-        except httpx.HTTPError as error:
+        except httpx2.HTTPError as error:
             return ErrResult(error=RpcError(code="internal", message=str(error)))
         if not response.is_success:
             return ErrResult(

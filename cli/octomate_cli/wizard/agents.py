@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import shlex
+
+import typer
 from rich.console import Console
+from rich.prompt import Prompt
 
 from octomate_cli.wizard.base import TentacleSetup
 
@@ -29,6 +33,70 @@ def deepseek(console: Console) -> str:
     return "deepseek"
 
 
+def acp(console: Console) -> str:
+    console.print(
+        "ACP connects an installed provider over stdio. Install it in the service "
+        "environment and, for sbx, in the sandbox image too. Configure the provider's "
+        "authentication separately."
+    )
+    return "acp"
+
+
+def inkling(console: Console) -> str:
+    console.print(
+        "Inkling calls its model from the core service. Configure provider credentials "
+        "there; sbx runs its workspace commands and file operations."
+    )
+    return "inkling"
+
+
+def inkling_step(
+    selected: bool,
+    model: str | None,
+    *,
+    interactive: bool,
+    console: Console,
+) -> str | None:
+    if not selected:
+        if model is not None:
+            raise typer.BadParameter("--inkling-model requires --agent inkling.")
+        return None
+    if model is None and interactive:
+        model = Prompt.ask("Inkling model (provider:model)", console=console)
+    if model is None or not model.strip():
+        raise typer.BadParameter("Inkling requires a non-empty --inkling-model.")
+    return model.strip()
+
+
+def acp_step(
+    selected: bool,
+    command: str | None,
+    arguments: list[str] | None,
+    *,
+    interactive: bool,
+    console: Console,
+) -> tuple[str | None, list[str]]:
+    if not selected:
+        if command is not None or arguments is not None:
+            raise typer.BadParameter("--acp-command and --acp-arg require --agent acp.")
+        return None, []
+    if command is None and interactive:
+        command = Prompt.ask("ACP provider executable", console=console)
+    if command is None or not command.strip():
+        raise typer.BadParameter("ACP requires a non-empty --acp-command.")
+    if arguments is None and interactive:
+        text = Prompt.ask(
+            "ACP arguments (quote arguments containing spaces)",
+            default="",
+            console=console,
+        )
+        try:
+            arguments = shlex.split(text)
+        except ValueError as error:
+            raise typer.BadParameter(f"Invalid ACP arguments: {error}") from error
+    return command.strip(), arguments or []
+
+
 AGENTS: dict[str, TentacleSetup[str]] = {
     "claude": TentacleSetup(
         label="Claude Code", capabilities=("Agent",), configure=claude
@@ -36,5 +104,9 @@ AGENTS: dict[str, TentacleSetup[str]] = {
     "codex": TentacleSetup(label="Codex", capabilities=("Agent",), configure=codex),
     "deepseek": TentacleSetup(
         label="DSH (experimental)", capabilities=("Agent",), configure=deepseek
+    ),
+    "acp": TentacleSetup(label="ACP provider", capabilities=("Agent",), configure=acp),
+    "inkling": TentacleSetup(
+        label="Inkling", capabilities=("Agent",), configure=inkling
     ),
 }

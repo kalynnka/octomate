@@ -18,7 +18,7 @@ import type {
   ThreadDetail,
 } from '@/lib/api/types'
 import { api, resolveBatch, sendDirective } from '@/lib/api'
-import { castGateway, executeCommand, fetchThreadProject, fetchThreads, watchThread } from '@/lib/api/client'
+import { castGateway, executeCommand, invalidateThreadConversations, fetchThreadProject, fetchThreads, watchThread } from '@/lib/api/client'
 import type {
   ActionBatchAnsweredEvent,
   ActionBatchUpdatedEvent,
@@ -37,6 +37,7 @@ import { batchFeelers, TurnFold } from '@/lib/api/fold'
 import { holdingBack, liveThreadDetail, withOlderPage } from '@/lib/api/live'
 import { useAuth } from '@/state/auth'
 import { COMMAND_CONTROLS } from '@/features/chat/commands'
+import { chatRows, type LocalNotice } from '@/features/chat/ledger'
 import { withArtifact } from '@/features/artifacts/ledger'
 
 export type ControlSection = '' | 'agents' | 'mcp' | 'profile' | 'keys' | 'dash' | 'settings'
@@ -289,7 +290,7 @@ export const replayView = () => {
 }
 
 export interface ConsoleActions {
-  selectThread(chId: string, thId: string, direction?: 'up' | 'down'): Promise<void>
+  selectThread(chId: string, thId: string, direction?: 'up' | 'down', conversationId?: string): Promise<void>
   resumeLiveUpdates(): Promise<void>
   refreshThreadProject(thId: string): Promise<void>
   loadOlder(): void
@@ -371,13 +372,15 @@ interface ConsoleState {
   // selection
   selChannel: string
   selThreadId: string
+  /** A conversation opened in its own workspace within selThreadId. */
+  selConversationId?: string
   detail: ThreadDetail | null
   /** live overlay items appended by the running turn */
   live: LedgerItem[]
   running: boolean
   /** how many trailing ledger items are rendered; scroll-top reveals more */
   ledgerN: number
-  notices: Extract<LedgerItem, { kind: 'notice' }>[]
+  notices: LocalNotice[]
 
   // theme
   theme: ThemeMode
@@ -461,10 +464,6 @@ const nextUid = () => `v${++uidN}`
 /** Ledger items rendered per page — the latest page first, earlier pages on scroll-top. */
 const LEDGER_PAGE = 40
 
-/** Relay pages a thread opens with: the latest of each read, and two more behind
- *  them read while the reader looks. Further pages are read as scrolling nears them. */
-const PRELOAD_PAGES = 3
-
 /* Width lines the shell folds at: below TRACE_BREAK the timeline gives its
    column to the chat, below SIDEBAR_BREAK the thread tree collapses to the
    letter-rail, below PANEL_BREAK the dossier and control close outright. */
@@ -547,25 +546,31 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   const cmtsOf = (s: ConsoleState) => s.cmts ?? s.detail?.comments ?? []
 
   // Threads with a ledger page in flight; one page at a time for each.
+  const detailKey = (threadId: string, conversationId?: string) => conversationId
+    ? ['thread-detail', threadId, conversationId] : ['thread-detail', threadId]
   const paging = new Set<string>()
   let olderFrame: number | undefined
 
   /** Fold one more page onto the open thread — of the read holding the other back. */
   const pageBack = async (thId: string) => {
+    const conversationId = get().selConversationId
     const reads = get().detail?.reads
     const read = reads === undefined ? null : holdingBack(reads)
     const cursor = read === null ? null : reads?.cursors[read]
     if (paging.has(thId) || get().selThreadId !== thId || read === null || !cursor) return
     paging.add(thId)
     try {
-      const older = await api.olderPage(thId, read, cursor)
+      const older = await api.olderPage(thId, read, cursor, conversationId)
       const current = get().detail
       // A reader who moved on, or a refresh that replaced the pages, has no use for it.
-      if (get().selThreadId !== thId || !current?.reads || current.reads.cursors[read] !== cursor) return
+      if (get().selThreadId !== thId || get().selConversationId !== conversationId || !current?.reads || current.reads.cursors[read] !== cursor) return
       const detail = withOlderPage(current, current.reads, older)
-      set(s => ({ ledgerN: Math.min(s.ledgerN, current.ledger.length) }))
+      set(s => ({
+        ledgerN: Math.min(s.ledgerN, current.ledger.length),
+        notices: s.notices.map(notice => ({ ...notice, position: notice.position + detail.ledger.length - current.ledger.length })),
+      }))
       showDetail(detail)
-      queryClient.setQueryData(['thread-detail', thId], detail)
+      queryClient.setQueryData(detailKey(thId, conversationId), detail)
       // Reveal the page before the reader reaches the scroll boundary.
       const log = document.getElementById('trk-chatlog')
       if (log !== null && log.scrollTop < log.clientHeight * 2) actions.loadOlder()
@@ -672,7 +677,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   // from anywhere else — the thread's own channel, another tab — into the
   // overlay. A run this console asked for streams over its own socket instead,
   // and the watch steps aside until that run ends.
-  let viewing: { thId: string; close: () => void } | undefined
+  let viewing: { thId: string; conversationId?: string; close: () => void } | undefined
   // Pending while a watch the relay closed waits to be opened again.
   let rewatch: ReturnType<typeof setTimeout> | undefined
   import.meta.hot?.dispose(() => {
@@ -684,8 +689,8 @@ export const useConsole = create<ConsoleState>()((set, get) => {
 
   /** The thread as the relay holds it now. A read already under way may have
    *  begun before what prompted this one, so it finishes and the thread is read again. */
-  const readThread = async (thId: string) => {
-    const query = { queryKey: ['thread-detail', thId], queryFn: () => api.getThreadDetail(thId), staleTime: 0, retry: false }
+  const readThread = async (thId: string, conversationId?: string) => {
+    const query = { queryKey: detailKey(thId, conversationId), queryFn: () => api.getThreadDetail(thId, conversationId), staleTime: 0, retry: false }
     if (queryClient.isFetching({ queryKey: query.queryKey, exact: true })) await queryClient.fetchQuery(query)
     return queryClient.fetchQuery(query)
   }
@@ -700,25 +705,42 @@ export const useConsole = create<ConsoleState>()((set, get) => {
    *  closes is opened again that way shortly after. */
   const watchOpen = async (thId: string, again = false) => {
     clearTimeout(rewatch)
-    if (viewing?.thId === thId) return
+    const conversationId = get().selConversationId
+    if (viewing?.thId === thId && viewing.conversationId === conversationId) return
     viewing?.close()
     viewing = undefined
     // A run this console started already carries the thread; its end watches it again.
-    if (streamingOn.has(thId)) return
+    if (!conversationId && streamingOn.has(thId)) return
     let socket: Awaited<ReturnType<typeof watchThread>> | undefined
-    const watching = { thId, close: () => socket?.close() }
+    const watching = { thId, conversationId, close: () => socket?.close() }
     // Reserve the watch before connecting so overlapping opens share it.
     viewing = watching
     let fold: TurnFold | undefined
     const turnItems = new Set<string>()
     let reflex = false
     let joined = false
-    const shown = () => viewing === watching && get().selThreadId === thId && !streamingOn.has(thId)
-    const reading = () => queryClient.isFetching({ queryKey: ['thread-detail', thId], exact: true }) > 0
+    const shown = () => viewing === watching && get().selThreadId === thId && get().selConversationId === conversationId && (Boolean(conversationId) || !streamingOn.has(thId))
+    const makeFold = (event: WireEvent) => new TurnFold({
+      push: (item) => {
+        if (!shown()) return 'stale'
+        const uid = push(item as LedgerItem)
+        turnItems.add(uid)
+        return uid
+      },
+      patch: (uid, patchObj) => {
+        if (!shown()) return
+        const patch = (item: LedgerItem) => item.uid === uid ? { ...item, ...patchObj } as LedgerItem : item
+        if (get().detail?.ledger.some(item => item.uid === uid)) {
+          set(s => ({ detail: s.detail && { ...s.detail, ledger: s.detail.ledger.map(patch) } }))
+        } else patchLive(patch)
+      },
+      done: () => {},
+    }, get().detail?.sessions.at(-1)?.agent ?? (event.event_kind === 'run_started' ? event.address.channel_tentacle_id : undefined), [...(get().detail?.ledger ?? []), ...get().live])
+    const reading = () => queryClient.isFetching({ queryKey: detailKey(thId, conversationId), exact: true }) > 0
     /** Read the thread again: the ledger takes over every card but the unfinished
      *  turn's and the artifacts, and those too where it holds the same card. */
     const reload = async () => {
-      const detail = await readThread(thId)
+      const detail = await readThread(thId, conversationId)
       if (!shown()) return
       const saved = new Set(detail.ledger.map((item) => item.uid))
       set((s) => ({
@@ -729,6 +751,22 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     }
     const onEvent = (event: WireEvent) => {
       if (!shown()) return
+      if (event.event_kind === 'subagent_started' || event.event_kind === 'subagent_settled') {
+        void invalidateThreadConversations(thId, 'active')
+      } else if (event.event_kind === 'run_ended' || event.event_kind === 'reflex_asleep') {
+        void invalidateThreadConversations(thId)
+      }
+      if (conversationId) {
+        if (event.event_kind === 'subagent_settled' || event.event_kind === 'run_ended' || event.event_kind === 'reflex_asleep') {
+          void reload()
+        }
+        return
+      }
+      // A native background child can finish after its parent's turn closed.
+      if (!fold && (event.event_kind === 'subagent_started' || event.event_kind === 'subagent_settled')) {
+        makeFold(event).feed(event)
+        return
+      }
       const joining = fold === undefined && ['part_start', 'part_delta', 'function_tool_call', 'output_tool_call'].includes(event.event_kind)
       if (event.event_kind === 'artifact_available') {
         set((s) => ({ live: withArtifact(s.live, event, s.detail?.ledger) }))
@@ -738,22 +776,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         turnItems.clear()
         reflex = event.event_kind === 'reflex_awake'
         joined = joining
-        fold = new TurnFold({
-          push: (item) => {
-            if (!shown()) return 'stale'
-            const uid = push(item as LedgerItem)
-            turnItems.add(uid)
-            return uid
-          },
-          patch: (uid, patchObj) => {
-            if (!shown()) return
-            const patch = (item: LedgerItem) => item.uid === uid ? { ...item, ...patchObj } as LedgerItem : item
-            if (get().detail?.ledger.some(item => item.uid === uid)) {
-              set(s => ({ detail: s.detail && { ...s.detail, ledger: s.detail.ledger.map(patch) } }))
-            } else patchLive(patch)
-          },
-          done: () => {},
-        }, get().detail?.sessions.at(-1)?.agent ?? (event.event_kind === 'run_started' ? event.address.channel_tentacle_id : undefined), [...(get().detail?.ledger ?? []), ...get().live])
+        fold = makeFold(event)
         set({ running: true })
         if (!reflex) fold.feed(event)
       } else if (event.event_kind === 'reflex_asleep' || (event.event_kind === 'run_ended' && !reflex)) {
@@ -834,7 +857,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     // The thread the run streams into, until a run starts in another.
     let selId = from
     streamStart(selId)
-    const here = () => get().selThreadId === selId
+    const here = () => get().selThreadId === selId && !get().selConversationId
     // The run's overlay: the open panel's while its thread is shown, else parked.
     const edit = (fn: (live: LedgerItem[]) => LedgerItem[]) => {
       if (here()) set((s) => ({ live: fn(s.live) }))
@@ -874,6 +897,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     let fold = turnFold()
     const feed = (event: CommandStreamEvent) => {
       received++
+      if (event.event_kind === 'subagent_started' || event.event_kind === 'subagent_settled') void invalidateThreadConversations(selId, 'active')
       if (event.event_kind === 'run_activity_changed' || event.event_kind === 'reflex_phase_changed') clearDots()
       if (event.event_kind === 'artifact_available') {
         clearDots()
@@ -890,6 +914,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     const held: CommandStreamEvent[] = []
     const openSummon = async () => {
       terminal = false
+      await invalidateThreadConversations(selId)
       const detail = await api.getThreadDetail(selId)
       if (here()) {
         const opening = detail.ledger.findLast((item) => item.kind === 'session-open')
@@ -1072,36 +1097,37 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         return { ...detail, reads, project: fresh.project, vscode: fresh.vscode }
       }
       queryClient.setQueryData<ThreadDetail>(queryKey, detail => {
-        const current = get().selThreadId === thId ? get().detail : null
+        const current = get().selThreadId === thId && !get().selConversationId ? get().detail : null
         return update(detail ?? current ?? undefined)
       })
       if (get().selThreadId === thId) set(s => ({ detail: update(s.detail ?? undefined) ?? null }))
     },
     /* ---------------------------------------------------- selection ------ */
-    async selectThread(chId: string, thId: string, direction = 'down') {
+    async selectThread(chId: string, thId: string, direction = 'down', conversationId?: string) {
       const selection = ++threadSelection
       threadTransition?.skipTransition()
       const panel = document.getElementById('trk-chathead')?.closest('main')
       panel?.style.removeProperty('view-transition-name')
-      const animate = panel && get().selThreadId !== thId && !get().mgmtSec
+      const animate = panel && (get().selThreadId !== thId || get().selConversationId !== conversationId) && !get().mgmtSec
         && typeof document.startViewTransition === 'function' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
       // A run still streaming into the thread left its overlay parked; it comes
       // back over the ledger it was built on, which a refetch would duplicate.
-      const resuming = parked.has(thId) && queryClient.getQueryData(['thread-detail', thId]) !== undefined
+      const resuming = !conversationId && parked.has(thId) && queryClient.getQueryData(detailKey(thId, conversationId)) !== undefined
       let watched: Promise<void> | undefined
       const update = () => {
         if (selection !== threadSelection) return
         clearTurnTimers()
         const leaving = get().selThreadId
-        if (leaving !== thId && streamingOn.has(leaving)) parked.set(leaving, get().live)
-        const live = parked.get(thId) ?? []
-        parked.delete(thId)
+        if (!get().selConversationId && (leaving !== thId || conversationId) && streamingOn.has(leaving)) parked.set(leaving, get().live)
+        const live = conversationId ? [] : parked.get(thId) ?? []
+        if (!conversationId) parked.delete(thId)
         set((s) => ({
           selChannel: chId,
           selThreadId: thId,
-          detail: queryClient.getQueryData<ThreadDetail>(['thread-detail', thId]) ?? null,
+          selConversationId: conversationId,
+          detail: queryClient.getQueryData<ThreadDetail>(detailKey(thId, conversationId)) ?? null,
           live,
-          running: streamingOn.has(thId),
+          running: !conversationId && streamingOn.has(thId),
           ledgerN: LEDGER_PAGE,
           notices: [],
           gatewayMode: null,
@@ -1133,16 +1159,12 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         // The thread is read while its socket opens, so neither waits for the
         // other. A run that ended between that read and the socket is in
         // neither: the watch reads the thread again once the socket is held.
-        const opened = readThread(thId).then((detail) => {
-          if (selection !== threadSelection || get().selThreadId !== thId) return
+        const opened = readThread(thId, conversationId).then((detail) => {
+          if (selection !== threadSelection || get().selThreadId !== thId || get().selConversationId !== conversationId) return
           showDetail(detail)
           scrollChatBottom()
         })
         await Promise.all([opened, watched])
-        if (selection !== threadSelection || get().selThreadId !== thId) return
-        void (async () => {
-          for (let page = 1; page < PRELOAD_PAGES; page++) await pageBack(thId)
-        })()
       }
       if (!animate) {
         update()
@@ -1209,7 +1231,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       const s = get()
       if (s.ntOn) return
       const log = document.getElementById('trk-chatlog')
-      if (log !== null && scrollTop < log.clientHeight * 2) actions.loadOlder()
+      if (log !== null && !nearChatBottom() && scrollTop < log.clientHeight * 2) actions.loadOlder()
     },
 
     /* ---------------------------------------------------- theme ---------- */
@@ -1347,7 +1369,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     reportThreadError(threadId, message) {
       const s = get()
       if (s.selThreadId !== threadId || s.ntOn) return
-      set({ notices: [...s.notices, { kind: 'notice', uid: nextUid(), text: message, tone: 'error' }] })
+      set({ notices: [...s.notices, { kind: 'notice', uid: nextUid(), text: message, tone: 'error', position: chatRows(s.detail?.ledger ?? [], s.live).length }] })
       scrollChatBottom(true)
     },
     setGatewayMode: (mode) => set({ gatewayMode: mode }),
@@ -1826,6 +1848,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         running: false,
         selChannel: 'trunkline',
         selThreadId: 'THR-NEW',
+        selConversationId: undefined,
         mgmtSec: '',
         pvOpen: false,
         sel: null,
@@ -1937,7 +1960,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
               },
               notices: [
                 ...x.notices,
-                { kind: 'notice', uid: nextUid(), text: `effort → ${stored.effort ?? 'auto'} · ${session.route}`, tone: 'info' },
+                { kind: 'notice', uid: nextUid(), text: `effort → ${stored.effort ?? 'auto'} · ${session.route}`, tone: 'info', position: chatRows(x.detail.ledger, x.live).length },
               ],
             },
       )
@@ -2011,6 +2034,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         ntStarted: true,
         ntTitle: started ? s.ntTitle : title,
         selThreadId: threadId,
+        selConversationId: undefined,
       })
       push({ kind: 'user', t: nowClock(), who: operator(), text: body } as LedgerItem)
       scrollChatBottom()
@@ -2036,6 +2060,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       clearTurnTimers()
       set({
         selThreadId: '',
+        selConversationId: undefined,
         detail: null,
         live: [],
         running: false,
@@ -2054,6 +2079,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   return {
     selChannel: 'trunkline',
     selThreadId: '',
+    selConversationId: undefined,
     detail: null,
     live: [],
     running: false,

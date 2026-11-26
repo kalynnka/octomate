@@ -11,7 +11,7 @@ from ipaddress import IPv4Address
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-import httpx
+import httpx2
 import pytest
 import yaml
 from alembic.config import Config
@@ -27,7 +27,9 @@ from starlette.responses import Response
 from starlette.routing import Route
 
 from octomate.config import CONFIG_FILES, AuthConfig, OAuthMcpConfig, OctomateConfig
+from octomate.config.acp import AcpAgentConfig
 from octomate.config.agents import AgentConfig, CodexConfig, DeepseekConfig
+from octomate.config.agents.inkling import InklingConfig
 from octomate.config.channels import ChannelConfig, TrunklineChannelConfig
 from octomate.config.database import database_settings
 from octomate.mcp.base import KnownBearers
@@ -66,6 +68,91 @@ def test_prepared_configuration_passes_subprocess_check(preparation: Path) -> No
         cwd=preparation,
         check=True,
     )
+    assert not (preparation / "octomate.db").exists()
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex", "deepseek"])
+def test_prepare_persists_sbx_and_the_selected_core_port(
+    preparation: Path, agent: str
+) -> None:
+    image = "example.test/agents@sha256:" + "a" * 64
+    deployment.prepare(8123, [], [agent], sandbox_image=image)
+    config = OctomateConfig()
+    assert config.habitat.mode == "sbx"
+    assert config.habitat.image == image
+    assert str(config.habitat.core_address) == "http://127.0.0.1:8123/"
+    assert not (preparation / "octomate.db").exists()
+
+
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_prepare_acp_persists_provider_and_channel_routing(
+    preparation: Path, monkeypatch: pytest.MonkeyPatch, sandbox: bool
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "octomate_cli.deployment",
+            "prepare",
+            "--port",
+            "8123",
+            "--agent",
+            "acp",
+            "--channel",
+            "trunkline",
+            "--acp-command",
+            "/opt/acp provider",
+            "--acp-arg=--stdio",
+            "--acp-arg=two words",
+            "--acp-arg=",
+            *(["--sandbox-image", "image@sha256:" + "a" * 64] if sandbox else []),
+        ],
+    )
+    deployment.main()
+    config = OctomateConfig()
+    agent = config.tentacles["acp"]
+    assert isinstance(agent, AcpAgentConfig)
+    assert agent.provider.command == "/opt/acp provider"
+    assert agent.provider.args == ["--stdio", "two words", ""]
+    assert agent.provider.env == {}
+    channel = config.tentacles["trunkline"]
+    assert isinstance(channel, TrunklineChannelConfig)
+    assert channel.agents == ["acp"]
+    assert config.habitat.mode == ("sbx" if sandbox else "native")
+    assert not (preparation / "octomate.db").exists()
+
+
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_prepare_inkling_persists_model_and_channel_routing(
+    preparation: Path, monkeypatch: pytest.MonkeyPatch, sandbox: bool
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "octomate_cli.deployment",
+            "prepare",
+            "--port",
+            "8123",
+            "--agent",
+            "inkling",
+            "--channel",
+            "trunkline",
+            "--inkling-model",
+            "openai:gpt-5-mini",
+            *(["--sandbox-image", "image@sha256:" + "a" * 64] if sandbox else []),
+        ],
+    )
+    deployment.main()
+    config = OctomateConfig()
+    agent = config.tentacles["inkling"]
+    assert isinstance(agent, InklingConfig)
+    assert [model.name for model in agent.models] == ["openai:gpt-5-mini"]
+    channel = config.tentacles["trunkline"]
+    assert isinstance(channel, TrunklineChannelConfig)
+    assert channel.agents == ["inkling"]
+    assert config.habitat.mode == ("sbx" if sandbox else "native")
+    assert "config/providers.yaml" in (preparation / "CONFIGURATION.md").read_text()
     assert not (preparation / "octomate.db").exists()
 
 
@@ -552,9 +639,9 @@ async def test_verification_checks_protected_mcp_and_console_routes(
         api.routes.append(Route("/api/trunkline/health", console))
         api.routes.append(Route("/api/trunkline/threads", console))
     monkeypatch.setattr(
-        httpx,
+        httpx2,
         "AsyncClient",
-        partial(httpx.AsyncClient, transport=httpx.ASGITransport(app=api)),
+        partial(httpx2.AsyncClient, transport=httpx2.ASGITransport(app=api)),
     )
     async with api.lifespan(api):
         if console_enabled != console_registered:

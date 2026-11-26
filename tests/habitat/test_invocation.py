@@ -1,12 +1,15 @@
 import asyncio
 from pathlib import Path, PurePosixPath
+from typing import Literal
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic_ai.models.test import TestModel
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
+from octomate.config.acp import AcpAgentConfig, AcpProvider
 from octomate.config.habitat import SbxHabitatConfig
 from octomate.habitat import Habitat, HabitatError, NativeHabitat
 from octomate.habitat.sbx import SbxHabitat
@@ -16,6 +19,9 @@ from octomate.schemas.thread import ThreadKey
 from octomate.schemas.volumes import GitVolume, UnregisteredProjectError
 from octomate.schemas.volumes.storage import HostDirectory
 from octomate.schemas.workspaces import Workspace
+from octomate.tentacles.acp.base import AcpAgentTentacle
+from octomate.tentacles.agent import AgentTentacle
+from octomate.tentacles.inkling import InklingTentacle
 from tests.support.agents import FakeAgent
 from tests.support.managers import a_project, a_registry, a_thread, a_workspace_manager
 from tests.support.users import a_user
@@ -162,6 +168,7 @@ async def test_invocation_borrows_the_habitat_without_managing_its_lifetime(
             "npm_config_store_dir": str(root / "cache" / "pnpm"),
             "CLAUDE_CONFIG_DIR": str(root / "config" / ".claude"),
             "CODEX_HOME": str(root / "config" / ".codex"),
+            "DSH_HOME": str(root / "config" / ".dsh"),
         }
         mirror = await workspace.volume.mirror
         assert mirror is not None
@@ -413,29 +420,22 @@ async def test_core_refuses_an_anonymous_project(
             pytest.fail("An anonymous project invocation must not start")
 
 
-class SandboxAgent(FakeAgent):
-    supports_managed_habitat = True
-
-
-@pytest.mark.parametrize("registered", [False, True])
 async def test_sandbox_dispatch_refuses_before_preparing_anything(
-    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch, registered: bool
+    in_memory_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = Octomate()
     app.habitats.config = SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64)
     prepare = AsyncMock()
     monkeypatch.setattr(SbxHabitat, "prepare", prepare)
     thread = await app.threads.ensure(ThreadKey("im", "thread", "room", "turn"))
-    # The manager refuses an unregistered sender whatever the agent; an agent
-    # that cannot run in a sandbox refuses a registered one itself.
-    agent = FakeAgent() if registered else SandboxAgent()
+    agent = FakeAgent()
     agent.habitats = app.habitats
-    message = "cannot run in a sandbox" if registered else "registered user"
-    with pytest.raises(HabitatError, match=message):
+    with pytest.raises(HabitatError, match="registered user"):
         async with agent.inhabit(
             thread=thread,
-            conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
-            owner_id=(await a_user()).id if registered else None,
+            conversation=Conversation(thread_id=thread.id, agent_tentacle_id=agent.id),
+            owner_id=None,
         ):
             pytest.fail("Sandbox execution must not fall back to the host")
     prepare.assert_not_awaited()
@@ -444,8 +444,11 @@ async def test_sandbox_dispatch_refuses_before_preparing_anything(
     assert not app.workspaces.host_storage.mirrors_dir.exists()
 
 
+@pytest.mark.parametrize("kind", ["fake", "acp", "inkling"])
 async def test_a_capable_agent_leases_the_owners_sandbox(
-    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+    in_memory_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: Literal["fake", "acp", "inkling"],
 ) -> None:
     app = Octomate()
     app.habitats.config = SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64)
@@ -453,12 +456,30 @@ async def test_a_capable_agent_leases_the_owners_sandbox(
     monkeypatch.setattr(SbxHabitat, "stop", AsyncMock())
     owner = await a_user()
     thread = await app.threads.ensure(ThreadKey("im", "thread", "room", "turn"))
-    agent = SandboxAgent()
-    agent.habitats = app.habitats
+    agent: AgentTentacle
+    if kind == "acp":
+        agent = AcpAgentTentacle(
+            kind,
+            app,
+            auth=app.auth,
+            habitats=app.habitats,
+            config=AcpAgentConfig(provider=AcpProvider(command="unused")),
+        )
+    elif kind == "inkling":
+        agent = InklingTentacle(
+            kind,
+            app,
+            auth=app.auth,
+            habitats=app.habitats,
+            models={"test": TestModel()},
+        )
+    else:
+        agent = FakeAgent()
+        agent.habitats = app.habitats
     try:
         async with agent.inhabit(
             thread=thread,
-            conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
+            conversation=Conversation(thread_id=thread.id, agent_tentacle_id=agent.id),
             owner_id=owner.id,
         ) as invocation:
             habitat = invocation.habitat

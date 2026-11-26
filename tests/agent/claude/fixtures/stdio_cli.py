@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from pydantic import JsonValue
@@ -41,8 +42,21 @@ def finish(text: str) -> None:
 
 
 with Path(os.environ["CLAUDE_TEST_LOG"]).open("w") as log:
-    log.write(json.dumps({"pid": os.getpid(), "argv": sys.argv}) + "\n")
+    log.write(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "argv": sys.argv,
+                "cwd": str(Path.cwd()),
+                "config": os.environ.get("CLAUDE_CONFIG_DIR"),
+                "environment": dict(os.environ),
+            }
+        )
+        + "\n"
+    )
     log.flush()
+    if diagnostic := os.getenv("CLAUDE_TEST_STDERR"):
+        print(diagnostic, file=sys.stderr, flush=True)
     for line in sys.stdin:
         message = json.loads(line)
         log.write(json.dumps(message) + "\n")
@@ -104,3 +118,9 @@ with Path(os.environ["CLAUDE_TEST_LOG"]).open("w") as log:
             )
         elif message["type"] == "control_response":
             finish("Approved")
+
+if delay := os.getenv("CLAUDE_TEST_EXIT_DELAY"):
+    os.close(0)
+    os.close(1)
+    time.sleep(float(delay))
+sys.exit(int(os.getenv("CLAUDE_TEST_EXIT_CODE", "0")))

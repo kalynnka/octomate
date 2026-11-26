@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
+from octomate.events import SubagentSettledEvent, SubagentStartedEvent
 from octomate.types.json import JsonObject
 
 # Which events the pipe registers, the route paths, and the hook timeout are the
 # client-side contract, and live with the installer that writes them: `octomate_cli.tentacles.claude`.
+
+
+class BackgroundTask(BaseModel):
+    id: str  # A subagent task's id is its agent id.
+    type: str
 
 
 class ClaudeHookInput(BaseModel):
@@ -37,6 +43,7 @@ class ClaudeHookInput(BaseModel):
     prompt: str | None = None
     # The turn's final answer, on `Stop`; the subagent's, on `SubagentStop`.
     last_assistant_message: str | None = None
+    background_tasks: list[BackgroundTask] = Field(default_factory=list)
     # Present iff the event fired inside a subagent — the discriminator that keeps a
     # subagent's events away from the parent-turn handlers. Matches the child
     # transcript's filename (`agent-<agent_id>.jsonl`).
@@ -47,3 +54,21 @@ class ClaudeHookInput(BaseModel):
     # call cannot say for itself.
     tool_name: str | None = None
     tool_input: JsonObject | None = None
+
+    @property
+    def subagent_activity(self) -> SubagentStartedEvent | SubagentSettledEvent | None:
+        if not self.agent_id:
+            return None
+        if self.hook_event_name == "SubagentStart":
+            return SubagentStartedEvent(
+                invocation_id=self.agent_id,
+                kind="subagent",
+                name=self.agent_type or "Claude",
+            )
+        if self.hook_event_name == "SubagentStop":
+            return SubagentSettledEvent(
+                invocation_id=self.agent_id,
+                status="completed",
+                response=self.last_assistant_message or "",
+            )
+        return None

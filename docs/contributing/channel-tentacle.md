@@ -74,10 +74,10 @@ platform actually pings; the default flattens segments to text.
 
 ## 3. The ink
 
-An `Ink[MessageT]` holds the platform client and does the I/O:
+An `ChannelInk[MessageT]` holds the platform client and does the I/O:
 
 ```python
-class MyInk(Ink[MyOutboundMessage]):
+class MyInk(ChannelInk[MyOutboundMessage]):
     async def inspect(self) -> UserProfile: ...  # the bot itself
     async def get_user_profile(self, user_id: str) -> UserProfile: ...
     async def get_group_name(self, chat_id: str) -> str | None: ...
@@ -144,13 +144,13 @@ an acknowledgement deadline, run `ingest` as a detached task; a turn parked on a
 approval must not hold the ack.
 
 Gateway moves use `ChannelAddress` throughout. Implement
-`Ink.suggest_addresses(address, source_address)` for optional discovery. The first
+`ChannelInk.suggest_addresses(address, source_address)` for optional discovery. The first
 address carries the connected channel and linked user; the source is the current
 conversation on this channel, or `None` when arriving from elsewhere. Return
 addresses without creating chats or posting. The gateway caches these suggestions
 per session; execution does not require discovery.
 
-Implement `Ink.list_addresses(address, inside)` when the platform's places can be
+Implement `ChannelInk.list_addresses(address, inside)` when the platform's places can be
 browsed. It lists one level at a time, only when someone opens it: the top level
 when `inside` is `None`, otherwise what a listed address's `metadata["inside"]`
 names. Set `inside` on a place to open, such as a server, and leave it off an
@@ -167,7 +167,7 @@ channel adds its own with a `TypedDict` extending `AddressMetadata` on its own
 excluded from equality and hashing, so a subclass with it is still the same
 address.
 
-Implement `Ink.prepare_address(address, source_address)` to validate one address
+Implement `ChannelInk.prepare_address(address, source_address)` to validate one address
 and return its platform-verified form. Check the parent type, requester and bot
 access, and shared visibility. Refuse an unsupported address without opening a
 thread. The base implementation refuses. `ChannelTentacle.prepare_address` checks

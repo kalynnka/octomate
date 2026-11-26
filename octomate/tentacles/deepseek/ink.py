@@ -5,23 +5,31 @@ import contextlib
 import logging
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import TracebackType
 from typing import Self
 
+import anyio
+import httpx2
 from octomate_protocol.deepseek import ErrResult, RpcError, RpcResult
 from pydantic_ai.exceptions import AgentRunError
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
+from octomate.config.agents.deepseek import DeepseekConfig
 from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
 )
+from octomate.habitat import Habitat, ManagedHabitat
+from octomate.habitat.sbx import SbxHabitat
+from octomate.tentacles.agent import AgentInk
 from octomate.tentacles.deepseek.catalog import (
     DeepseekCommandDescriptor,
     command_descriptors_adapter,
 )
 from octomate.tentacles.deepseek.client import DeepseekApiClient
+from octomate.tentacles.deepseek.process import DeepseekProcess
 from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
     CommandExecutionValue,
@@ -51,7 +59,7 @@ type InteractionHandler = Callable[
 
 
 @dataclass
-class DeepseekInk:
+class DeepseekConnection:
     """Own Remote transport; receive decisions and invalidation callbacks per start."""
 
     client: DeepseekApiClient
@@ -86,8 +94,10 @@ class DeepseekInk:
             with contextlib.suppress(Exception):
                 await self.mux_socket.close()
             self.mux_socket = None
-        for task in list(self.interaction_tasks.values()):
+        tasks = list(self.interaction_tasks.values())
+        for task in tasks:
             task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         self.interaction_tasks.clear()
         await self.client.__aexit__(exc_type, exc_value, traceback)
 
@@ -291,3 +301,141 @@ class DeepseekInk:
         if result.value is None:
             return None
         return CommandExecutionValue.model_validate(result.value)
+
+
+@dataclass
+class DeepseekInk(AgentInk):
+    """Pool of owned DSH Web connections, one per habitat plus core discovery."""
+
+    config: DeepseekConfig
+    answer_interaction: InteractionHandler
+    invalidate_commands: Callable[[], None]
+    connections: dict[str, DeepseekConnection] = field(default_factory=dict, init=False)
+    processes: dict[str, DeepseekProcess] = field(default_factory=dict, init=False)
+    sessions: dict[str, DeepseekConnection] = field(default_factory=dict, init=False)
+    native: bool = True
+    started: bool = field(default=False, init=False)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+
+    async def __aenter__(self) -> Self:
+        self.started = True
+        try:
+            await self.acquire()
+        except BaseException:
+            self.started = False
+            raise
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc_value: BaseException | None = None,
+        traceback: TracebackType | None = None,
+    ) -> None:
+        self.started = False
+        for name in list(self.connections):
+            await self.close(name)
+        self.sessions.clear()
+
+    async def close(self, name: str) -> None:
+        connection = self.connections.pop(name, None)
+        process = self.processes.pop(name, None)
+        with anyio.CancelScope(shield=True):
+            try:
+                if connection is not None:
+                    await connection.__aexit__()
+            finally:
+                if process is not None:
+                    await process.stop()
+
+    async def acquire(
+        self,
+        habitat: Habitat | None = None,
+        *,
+        env: dict[str, str] | None = None,
+        session_id: str | None = None,
+    ) -> DeepseekConnection:
+        """Select core discovery or the runtime owned by the prepared habitat."""
+        if not self.started:
+            raise RuntimeError(
+                "DeepseekTentacle.run requires the tentacle to be entered"
+            )
+        if habitat is None and session_id is not None:
+            connection = self.sessions.get(session_id)
+            if connection is None and self.native:
+                connection = self.connections.get("core")
+            if connection is None or not connection.running:
+                raise AgentRunError("DSH session has no active habitat connection")
+            return connection
+        if isinstance(habitat, ManagedHabitat) and not isinstance(habitat, SbxHabitat):
+            raise ValueError("DSH currently supports native and sbx habitats only")
+        name = habitat.name if isinstance(habitat, SbxHabitat) else "core"
+        async with self.lock:
+            connection = self.connections.get(name)
+            if connection is None:
+                connection = await self.open(name, habitat, env)
+            elif not connection.running:
+                raise AgentRunError("DSH event stream is closed")
+            if session_id is not None:
+                previous = self.sessions.get(session_id)
+                if (
+                    previous is not None
+                    and previous is not connection
+                    and previous.running
+                ):
+                    raise ValueError("DSH session is already open in another habitat")
+                self.sessions[session_id] = connection
+            return connection
+
+    async def open(
+        self, name: str, habitat: Habitat | None, env: dict[str, str] | None
+    ) -> DeepseekConnection:
+        if isinstance(habitat, SbxHabitat):
+            if env is None:
+                raise ValueError("A DSH habitat connection requires its environment")
+        process = DeepseekProcess(
+            executable=self.config.executable,
+            port=self.config.port,
+            extra_args=list(self.config.extra_args),
+            dsh_home=Path(env["DSH_HOME"])
+            if isinstance(habitat, SbxHabitat) and env is not None
+            else self.config.dsh_home,
+            ready_timeout=self.config.ready_timeout,
+            browser_url=self.config.browser_url,
+            habitat=habitat if isinstance(habitat, SbxHabitat) else None,
+            env=env or {},
+        )
+        endpoint = await process.start()
+        connection = DeepseekConnection(
+            DeepseekApiClient(
+                base_url=endpoint,
+                http_client=httpx2.AsyncClient(base_url=str(endpoint)),
+            )
+        )
+        try:
+            await connection.__aenter__()
+            if process.launch_token is not None:
+                await connection.client.authenticate(process.launch_token)
+            if not await connection.client.answering():
+                raise RuntimeError(f"dsh reported {endpoint} but does not answer there")
+
+            async def answer(
+                frame: ApprovalRequestedFrame | QuestionRequestedFrame,
+            ) -> RpcResult | None:
+                if self.sessions.get(frame.session_id) is not connection:
+                    return None
+                return await self.answer_interaction(frame)
+
+            await connection.start(
+                answer_interaction=answer,
+                invalidate_commands=self.invalidate_commands,
+            )
+        except BaseException:
+            await connection.__aexit__()
+            await process.stop()
+            raise
+        self.connections[name] = connection
+        self.processes[name] = process
+        if isinstance(habitat, SbxHabitat):
+            habitat.resources.push_async_callback(self.close, name)
+        return connection

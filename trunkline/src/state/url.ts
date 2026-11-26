@@ -22,7 +22,7 @@ const isSection = (name: string): name is Exclude<ControlSection, ''> =>
 export function pathOf(state: ConsoleState): string | null {
   if (state.mgmtSec) return `/control/${state.mgmtSec}`
   if (state.ntOn) return '/threads/new'
-  return state.selThreadId ? `/threads/${state.selThreadId}` : null
+  return state.selThreadId ? `/threads/${state.selThreadId}${state.selConversationId ? `/conversations/${state.selConversationId}` : ''}` : null
 }
 
 /** The newest thread, or the new-thread flow on an empty or unreachable relay. */
@@ -40,14 +40,14 @@ async function openNewest() {
  */
 export async function openPath(path: string) {
   const { selectThread, startNewThread, openControl } = useConsole.getState().actions
-  const [, head = '', tail = ''] = path.split('/')
+  const [, head = '', tail = '', section, conversationId] = path.split('/')
   if (head === 'threads' && tail === 'new') return startNewThread()
   if (head === 'control' && isSection(tail)) {
     if (!useConsole.getState().selThreadId) await openNewest()
     return openControl(tail)
   }
   const thread = head === 'threads' && tail ? await fetchThread(tail).catch(() => null) : null
-  if (thread) return selectThread(thread.channel_tentacle_id, thread.id)
+  if (thread) return selectThread(thread.channel_tentacle_id, thread.id, 'down', section === 'conversations' ? conversationId : undefined)
   await openNewest()
 }
 
@@ -63,13 +63,16 @@ export function followAddress(): () => void {
     reading = true
     void openPath(window.location.pathname).finally(() => {
       reading = false
+      const path = pathOf(useConsole.getState())
+      if (path !== null && path !== window.location.pathname) window.history.replaceState(null, '', path)
     })
   }
   const unsubscribe = useConsole.subscribe((state, previous) => {
+    if (reading) return
     const path = pathOf(state)
     if (path === null || path === window.location.pathname) return
     const before = pathOf(previous)
-    const replace = reading || before === null || before === '/threads/new'
+    const replace = before === null || before === '/threads/new'
     if (replace) window.history.replaceState(null, '', path)
     else window.history.pushState(null, '', path)
   })

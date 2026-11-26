@@ -126,7 +126,7 @@ async def scenario(
             endpoint == "commands/execute"
             and isinstance(line, str)
             and line.startswith("/permission ")
-            and not agent.ink.subscribers
+            and not (await agent.ink.acquire()).subscribers
         ):
             FakeDeepseekApi.calls.append((endpoint, {"args": args}))
             return OkResult(
@@ -168,7 +168,7 @@ async def scenario(
     try:
         async with agent:
             yield app, agent, channel, signal
-            assert not agent.ink.subscribers
+            assert not (await agent.ink.acquire()).subscribers
             assert not agent.bridge_contexts
             assert not agent.driven_sessions
     finally:

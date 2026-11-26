@@ -7,7 +7,7 @@ import logging
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, patch
 
-import httpx
+import httpx2
 import pytest
 from octomate_protocol.deepseek import (
     ClientRequest,
@@ -72,8 +72,8 @@ async def test_only_command_execution_can_outlast_the_read_timeout(method: str) 
         server,
         DeepseekApiClient(
             HttpUrl(url),
-            httpx.AsyncClient(
-                base_url=url, timeout=httpx.Timeout(1, read=0.025), trust_env=False
+            httpx2.AsyncClient(
+                base_url=url, timeout=httpx2.Timeout(1, read=0.025), trust_env=False
             ),
         ) as client,
     ):
@@ -97,7 +97,7 @@ async def test_mux_preserves_registry_change_notifications() -> None:
         '{"type":"emit","event":"commands/change","args":[]}}'
     ]
     async with DeepseekApiClient(
-        HttpUrl(BASE_URL), httpx.AsyncClient(base_url=BASE_URL)
+        HttpUrl(BASE_URL), httpx2.AsyncClient(base_url=BASE_URL)
     ) as client:
         frames = [frame async for frame in client.mux_frames(socket)]
     assert frames == [
@@ -106,10 +106,10 @@ async def test_mux_preserves_registry_change_notifications() -> None:
 
 
 async def test_cookie_exchange_authenticates_http_and_websocket_requests() -> None:
-    def respond(request: httpx.Request) -> httpx.Response:
+    def respond(request: httpx2.Request) -> httpx2.Response:
         if request.method == "GET":
             assert request.url.params["token"] == "launch-token"
-            return httpx.Response(
+            return httpx2.Response(
                 303,
                 headers={
                     "Location": "/",
@@ -118,7 +118,7 @@ async def test_cookie_exchange_authenticates_http_and_websocket_requests() -> No
             )
         assert request.headers["cookie"] == "dsh-auth-test=signed-cookie"
         message = ClientRequest.model_validate_json(request.content)
-        return httpx.Response(
+        return httpx2.Response(
             200,
             json={
                 "type": "server-response",
@@ -129,7 +129,7 @@ async def test_cookie_exchange_authenticates_http_and_websocket_requests() -> No
 
     client = DeepseekApiClient(
         HttpUrl(BASE_URL),
-        httpx.AsyncClient(base_url=BASE_URL, transport=httpx.MockTransport(respond)),
+        httpx2.AsyncClient(base_url=BASE_URL, transport=httpx2.MockTransport(respond)),
     )
     async with client:
         await client.authenticate(SecretStr("launch-token"))
@@ -155,9 +155,9 @@ async def test_cookie_exchange_authenticates_http_and_websocket_requests() -> No
 async def test_authentication_requires_a_cookie_exchange(status: int) -> None:
     client = DeepseekApiClient(
         HttpUrl(BASE_URL),
-        httpx.AsyncClient(
+        httpx2.AsyncClient(
             base_url=BASE_URL,
-            transport=httpx.MockTransport(lambda request: httpx.Response(status)),
+            transport=httpx2.MockTransport(lambda request: httpx2.Response(status)),
         ),
     )
     async with client:
@@ -166,12 +166,12 @@ async def test_authentication_requires_a_cookie_exchange(status: int) -> None:
 
 
 async def test_authentication_transport_error_does_not_expose_the_token() -> None:
-    def fail(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError(str(request.url), request=request)
+    def fail(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError(str(request.url), request=request)
 
     client = DeepseekApiClient(
         HttpUrl(BASE_URL),
-        httpx.AsyncClient(base_url=BASE_URL, transport=httpx.MockTransport(fail)),
+        httpx2.AsyncClient(base_url=BASE_URL, transport=httpx2.MockTransport(fail)),
     )
     async with client:
         with pytest.raises(RuntimeError) as caught:
@@ -184,9 +184,9 @@ async def test_authentication_transport_error_does_not_expose_the_token() -> Non
 async def test_readiness_still_requires_authentication() -> None:
     client = DeepseekApiClient(
         HttpUrl(BASE_URL),
-        httpx.AsyncClient(
+        httpx2.AsyncClient(
             base_url=BASE_URL,
-            transport=httpx.MockTransport(lambda request: httpx.Response(401)),
+            transport=httpx2.MockTransport(lambda request: httpx2.Response(401)),
         ),
     )
     async with client:
@@ -212,10 +212,10 @@ async def test_unavailable_readiness_probe_warns_and_allows_connection(
     }
     async with DeepseekApiClient(
         HttpUrl(BASE_URL),
-        httpx.AsyncClient(
+        httpx2.AsyncClient(
             base_url=BASE_URL,
-            transport=httpx.MockTransport(
-                lambda request: httpx.Response(status, json=response)
+            transport=httpx2.MockTransport(
+                lambda request: httpx2.Response(status, json=response)
             ),
         ),
     ) as client:
@@ -242,13 +242,13 @@ async def test_remote_event_results_use_the_active_client_identity(
     result: RpcResult | None,
     outcome: JsonObject,
 ) -> None:
-    def respond(request: httpx.Request) -> httpx.Response:
+    def respond(request: httpx2.Request) -> httpx2.Response:
         message = ClientRequest.model_validate_json(request.content)
         assert message.method == "$events/result"
         assert message.payload == {
             "args": {"clientId": "client-1", "eventId": "event-1", "outcome": outcome}
         }
-        return httpx.Response(
+        return httpx2.Response(
             200,
             json={
                 "type": "server-response",
@@ -259,7 +259,7 @@ async def test_remote_event_results_use_the_active_client_identity(
 
     async with DeepseekApiClient(
         HttpUrl(BASE_URL),
-        httpx.AsyncClient(base_url=BASE_URL, transport=httpx.MockTransport(respond)),
+        httpx2.AsyncClient(base_url=BASE_URL, transport=httpx2.MockTransport(respond)),
     ) as client:
         client.client_id = "client-1"
         assert (await client.respond("event-1", result)).accepted
@@ -274,7 +274,7 @@ async def test_session_stream_waits_for_snapshot_and_keeps_chunks_cursorless() -
 
     socket = AsyncMock()
     socket.__aiter__.side_effect = frames
-    client = DeepseekApiClient(HttpUrl(BASE_URL), httpx.AsyncClient(base_url=BASE_URL))
+    client = DeepseekApiClient(HttpUrl(BASE_URL), httpx2.AsyncClient(base_url=BASE_URL))
     observed: list[MuxFrame] = []
 
     async def receive() -> None:
@@ -348,11 +348,11 @@ async def test_session_stream_waits_for_snapshot_and_keeps_chunks_cursorless() -
 
 
 async def test_connection_refused_reports_an_absent_harness() -> None:
-    def refused(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("Connection refused")
+    def refused(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ConnectError("Connection refused")
 
     async with DeepseekApiClient(
         HttpUrl(BASE_URL),
-        httpx.AsyncClient(base_url=BASE_URL, transport=httpx.MockTransport(refused)),
+        httpx2.AsyncClient(base_url=BASE_URL, transport=httpx2.MockTransport(refused)),
     ) as client:
         assert not await client.answering()

@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from types import SimpleNamespace, TracebackType
 from typing import cast
 
-import httpx
+import httpx2
 import pytest
 from pydantic import SecretStr
 from websockets.asyncio.client import ClientConnection
@@ -39,20 +39,20 @@ from tests.support.scenarios import plain_answer, play
 
 @pytest.mark.parametrize("chat_type", ["group", "dm"])
 async def test_napcat_quotes_replies_and_normalizes_numeric_ids(chat_type: str) -> None:
-    requests: list[httpx.Request] = []
+    requests: list[httpx2.Request] = []
 
-    def respond(request: httpx.Request) -> httpx.Response:
+    def respond(request: httpx2.Request) -> httpx2.Response:
         requests.append(request)
-        return httpx.Response(
+        return httpx2.Response(
             200, json={"status": "ok", "retcode": 0, "data": {"message_id": 123}}
         )
 
     ink = NapcatInk("http://napcat.test", SecretStr("token"))
     await ink.httpx.aclose()
-    async with httpx.AsyncClient(
+    async with httpx2.AsyncClient(
         base_url=ink.http_url,
         headers={"Authorization": "Bearer token"},
-        transport=httpx.MockTransport(respond),
+        transport=httpx2.MockTransport(respond),
     ) as client:
         ink.httpx = client
         message = NapcatOutboundMessage(
@@ -95,10 +95,10 @@ async def test_napcat_send_rejects_unsuccessful_onebot_responses(
 ) -> None:
     ink = NapcatInk("http://napcat.test")
     await ink.httpx.aclose()
-    async with httpx.AsyncClient(
+    async with httpx2.AsyncClient(
         base_url=ink.http_url,
-        transport=httpx.MockTransport(
-            lambda request: httpx.Response(200, json=response)
+        transport=httpx2.MockTransport(
+            lambda request: httpx2.Response(200, json=response)
         ),
     ) as client:
         ink.httpx = client
@@ -129,9 +129,9 @@ async def test_napcat_rejects_subthread_destinations() -> None:
 
 
 async def test_napcat_inspect_uses_login_identity() -> None:
-    def respond(request: httpx.Request) -> httpx.Response:
+    def respond(request: httpx2.Request) -> httpx2.Response:
         assert request.url.path == "/get_login_info"
-        return httpx.Response(
+        return httpx2.Response(
             200,
             json={
                 "status": "ok",
@@ -142,8 +142,8 @@ async def test_napcat_inspect_uses_login_identity() -> None:
 
     ink = NapcatInk("http://napcat.test")
     await ink.httpx.aclose()
-    async with httpx.AsyncClient(
-        base_url=ink.http_url, transport=httpx.MockTransport(respond)
+    async with httpx2.AsyncClient(
+        base_url=ink.http_url, transport=httpx2.MockTransport(respond)
     ) as client:
         ink.httpx = client
         profile = await ink.inspect()
@@ -155,7 +155,7 @@ async def test_napcat_inspect_uses_login_identity() -> None:
 async def test_napcat_ink_sends_group_private_and_reply_messages() -> None:
     http = FakeNapcatHTTP()
     ink = object.__new__(NapcatInk)
-    ink.httpx = cast(httpx.AsyncClient, http)
+    ink.httpx = cast(httpx2.AsyncClient, http)
     message = NapcatOutboundMessage(
         segments=[{"type": "text", "data": {"text": "hello"}}]
     )
@@ -194,7 +194,7 @@ async def test_napcat_ink_sends_group_private_and_reply_messages() -> None:
 async def test_napcat_segments_feeler_delivers_native_media(tmp_path) -> None:
     http = FakeNapcatHTTP()
     ink = object.__new__(NapcatInk)
-    ink.httpx = cast(httpx.AsyncClient, http)
+    ink.httpx = cast(httpx2.AsyncClient, http)
     feeler = DefaultSegmentsFeeler(ink=ink, chromo=NapcatChromo())
     image = tmp_path / "pic.png"
     image.write_bytes(b"image-bytes")
@@ -232,7 +232,7 @@ async def test_napcat_segments_feeler_delivers_native_media(tmp_path) -> None:
 async def test_napcat_segments_feeler_empty_sends_nothing() -> None:
     http = FakeNapcatHTTP()
     ink = object.__new__(NapcatInk)
-    ink.httpx = cast(httpx.AsyncClient, http)
+    ink.httpx = cast(httpx2.AsyncClient, http)
     feeler = DefaultSegmentsFeeler(ink=ink, chromo=NapcatChromo())
     address = ChannelAddress(
         channel_tentacle_id="napcat",
@@ -351,7 +351,7 @@ async def test_napcat_context_manager_runs_serve_until_exit(monkeypatch) -> None
 async def test_napcat_consume_renders_plain_answer_via_default_timeline() -> None:
     http = FakeNapcatHTTP()
     ink = object.__new__(NapcatInk)
-    ink.httpx = cast(httpx.AsyncClient, http)
+    ink.httpx = cast(httpx2.AsyncClient, http)
     chromo = NapcatChromo()
     channel = object.__new__(NapcatTentacle)
     channel.id = "napcat"

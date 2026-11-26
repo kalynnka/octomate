@@ -76,7 +76,18 @@ def main() -> None:
     with Path(os.environ["ACP_TEST_LOG"]).open("w") as log:
         for line in sys.stdin:
             message = json.loads(line)
-            log.write(json.dumps({"pid": os.getpid(), "message": message}) + "\n")
+            log.write(
+                json.dumps(
+                    {
+                        "pid": os.getpid(),
+                        "message": message,
+                        "cwd": os.getcwd(),
+                        "home": os.environ.get("HOME"),
+                        "codex_home": os.environ.get("CODEX_HOME"),
+                    }
+                )
+                + "\n"
+            )
             log.flush()
             match message.get("method"):
                 case "initialize":
@@ -98,7 +109,8 @@ def main() -> None:
                                     os.getenv("ACP_TEST_VERSION", "1")
                                 ),
                                 "agentCapabilities": {
-                                    "loadSession": not disabled,
+                                    "loadSession": not disabled
+                                    and os.getenv("ACP_TEST_LOAD") != "0",
                                     "sessionCapabilities": {}
                                     if disabled
                                     else {

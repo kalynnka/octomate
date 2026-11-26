@@ -18,7 +18,6 @@ from typing import Self, cast
 from urllib.parse import parse_qs
 
 import anyio
-import httpx
 import httpx2
 import pytest
 from fastapi import FastAPI
@@ -195,9 +194,9 @@ def button_url(ink: FakeSlackInk) -> str:
     return url
 
 
-def browser(app: FastAPI) -> httpx.AsyncClient:
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://localhost:8000"
+def browser(app: FastAPI) -> httpx2.AsyncClient:
+    return httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="http://localhost:8000"
     )
 
 
@@ -213,7 +212,7 @@ async def connected(app: Octomate, ink: FakeSlackInk, client: Client) -> None:
     async with browser(app) as http:
         opened = await http.get(button_url(ink))
         assert opened.status_code == 307
-        query = parse_qs(httpx.URL(opened.headers["location"]).query.decode())
+        query = parse_qs(httpx2.URL(opened.headers["location"]).query.decode())
         returned = await http.get(
             "/oauth/slack/callback",
             params={"state": query["state"][0], "code": "auth-code"},

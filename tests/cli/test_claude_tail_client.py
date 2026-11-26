@@ -13,8 +13,16 @@ import octomate_cli.streaming.files as tail_mod
 import pytest
 from octomate_cli.config import CLISettings
 from octomate_cli.streaming.files import FileCursor, SessionTail, main, tail_path
-from octomate_protocol.stream import StreamLine, client_message_adapter
+from octomate_protocol.stream import (
+    StreamLine,
+    StreamOpenSubagent,
+    StreamSubagentOpened,
+    client_message_adapter,
+)
+from uuid_utils.compat import uuid7
 from websockets.asyncio.client import ClientConnection
+
+ROOT = uuid7()
 
 
 @pytest.fixture(autouse=True)
@@ -62,7 +70,7 @@ def test_a_missing_file_yields_nothing_and_truncation_resets(tmp_path: Path) -> 
     assert cursor.read_lines() == [(0, 8, b'{"c":3}')]
 
 
-def test_session_tail_discovers_subagent_files_and_seeds_server_offsets(
+async def test_session_tail_discovers_subagent_files_and_seeds_server_offsets(
     tmp_path: Path,
 ) -> None:
     transcript = tmp_path / "sess-1.jsonl"
@@ -71,28 +79,33 @@ def test_session_tail_discovers_subagent_files_and_seeds_server_offsets(
     subagents.mkdir(parents=True)
     (subagents / "agent-abc.jsonl").write_bytes(b"")
 
-    tail = SessionTail("sess-1", transcript, offsets={"abc": 5})
-    assert tail.discover() == ["", "abc"]
-    assert tail.cursor("abc").path == subagents / "agent-abc.jsonl"
-    assert tail.cursor("abc").offset == 5  # the server's welcome named the resume
-    assert tail.cursor("").offset == 0
+    child = uuid7()
+    tail = SessionTail("sess-1", transcript, ROOT, {ROOT: 0, child: 5}, {"abc": child})
+    path = subagents / "agent-abc.jsonl"
+    assert tail.discover() == {"abc": path}
+    socket = AsyncMock(spec=ClientConnection)
+    await tail.open_subagent(socket, "abc", path)
+    socket.send.assert_not_awaited()
+    assert tail.files[child] == FileCursor(path, 5)
+    assert tail.files[ROOT] == FileCursor(transcript, 0)
 
 
-def test_a_spooled_codex_child_ships_keyed_by_its_basename(tmp_path: Path) -> None:
+def test_codex_discovers_spooled_children_by_basename(tmp_path: Path) -> None:
     """Codex writes a child rollout as a sibling file only its content identifies, so
-    the launcher spools the exact paths the SubagentStop hooks name; the tail ships
-    each under its basename and leaves classification to the server."""
+    the launcher spools the exact paths the SubagentStop hooks name; the server
+    classifies each discovered file from its opening record."""
     transcript = tmp_path / "rollout-parent.jsonl"
     child = tmp_path / "rollout-child.jsonl"
     spool = tmp_path / "session.paths"
     spool.write_text(f"{child}\n")
 
-    tail = SessionTail("sess-1", transcript, spool=spool)
-    assert tail.discover() == ["", "rollout-child.jsonl"]
-    assert tail.cursor("rollout-child.jsonl").path == child
+    tail = SessionTail("sess-1", transcript, ROOT, {ROOT: 0}, spool=spool)
+    assert tail.discover() == {child.name: child}
 
-    tail = SessionTail("sess-1", transcript, spool=tmp_path / "absent.paths")
-    assert tail.discover() == [""]  # no spool yet: just the session's own file
+    tail = SessionTail(
+        "sess-1", transcript, ROOT, {ROOT: 0}, spool=tmp_path / "absent.paths"
+    )
+    assert tail.discover() == {}  # no spool yet: just the session's own file
 
 
 async def test_main_refuses_to_run_without_the_hook_credential(
@@ -246,19 +259,36 @@ async def test_file_pump_interleaves_parent_backlog_and_children(
     children = tmp_path / "session" / "subagents"
     children.mkdir(parents=True)
     (children / "agent-b.jsonl").write_text("b1\nb2\n")
+    # Claude names the spawning call and the task beside the child; an older one
+    # wrote no such file.
+    (children / "agent-b.meta.json").write_text(
+        '{"toolUseId": "toolu_b", "description": "Count the files"}'
+    )
     (children / "agent-c.jsonl").write_text("c1\n")
     socket = AsyncMock(spec=ClientConnection)
-    tail = SessionTail("session", transcript)
+    tail = SessionTail("session", transcript, ROOT, {ROOT: 0})
+    b, c = uuid7(), uuid7()
+    for child in (b, c):
+        tail.receipts.put_nowait(StreamSubagentOpened(conversation_id=child, offset=0))
     assert await tail.pump(socket)
     lines = [
         client_message_adapter.validate_json(call.args[0])
         for call in socket.send.await_args_list
     ]
-    assert [line.line for line in lines if isinstance(line, StreamLine)] == [
-        "parent1",
-        "b1",
-        "c1",
-        "parent2",
-        "b2",
-        "parent3",
+    assert [
+        (line.name, line.tool_call_id, line.description)
+        for line in lines
+        if isinstance(line, StreamOpenSubagent)
+    ] == [("b", "toolu_b", "Count the files"), ("c", None, None)]
+    assert [
+        (line.conversation_id, line.line)
+        for line in lines
+        if isinstance(line, StreamLine)
+    ] == [
+        (ROOT, "parent1"),
+        (b, "b1"),
+        (c, "c1"),
+        (ROOT, "parent2"),
+        (b, "b2"),
+        (ROOT, "parent3"),
     ]

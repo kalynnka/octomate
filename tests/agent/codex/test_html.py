@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 from unittest.mock import AsyncMock
 
-import httpx
+import httpx2
 import pytest
 from openai_codex.generated.v2_all import AgentMessageDeltaNotification
 from pydantic import AnyHttpUrl
@@ -27,7 +27,7 @@ from octomate.schemas.messages import ModelResponse
 from octomate.schemas.thread import MessageBinding, ThreadArtifact
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.codex import CodexTentacle
-from octomate.tentacles.codex import ink as codex_ink
+from octomate.tentacles.codex import pool as codex_pool
 from octomate.tentacles.codex.adapter import CodexRunAccumulator
 from octomate.tentacles.codex.html import HtmlReference, visualization_text
 from tests.agent.codex.test_tentacle import (
@@ -133,7 +133,7 @@ async def test_driven_html_reaches_the_owned_viewer_and_channel_card(
     caption: str,
     mode: Literal["wide"] | None,
 ) -> None:
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex([])
     host = Octomate(config=OctomateConfig(auth=auth_config()))
     host.config.artifacts.viewer_origin = AnyHttpUrl("https://console.example")
@@ -266,8 +266,8 @@ async def test_driven_html_reaches_the_owned_viewer_and_channel_card(
         AsyncMock(side_effect=AssertionError("HTML must not contact MCP")),
     )
     host.dependency_overrides[current_user] = lambda: owner
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=host), base_url="https://console.example"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=host), base_url="https://console.example"
     ) as client:
         response = await client.get(f"/api/artifacts/{artifact.id}")
         assert response.status_code == 200

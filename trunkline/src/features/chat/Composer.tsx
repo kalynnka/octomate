@@ -726,6 +726,13 @@ export function Composer() {
     },
   } as const
 
+  if (detail?.reads?.conversationId) return (
+    <div className="trk-conversation-footer">
+      <span>This task is directed by its parent thread.</span>
+      <button type="button" className="trk-nav-button" onClick={() => void useConsole.getState().actions.selectThread(selChannel, selThreadId)}>Open parent thread →</button>
+    </div>
+  )
+
   return (
     <div className="lt-fade-in" style={{ flexShrink: 0 }}>
       <div className="trk-composer-frame" style={{ position: 'relative', borderTop: `2px solid ${mode || line ? 'var(--color-teal)' : 'var(--trk-bracket)'}` }}>

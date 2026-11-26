@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import cached_property
+from typing import Literal
 
 from pydantic import UUID7, BaseModel, Field
 
@@ -20,6 +21,7 @@ class UserMessageSignal:
     messages: list[MessageEvent]
     trigger_thread_message_id: UUID7 | None = None
     agent_id: str | None = None  # Caller-selected executor; otherwise Route selects it.
+    event_kind: Literal["user_message_signal"] = "user_message_signal"
 
     def __bool__(self) -> bool:
         return bool(self.messages)
@@ -45,6 +47,7 @@ class DeferredActionBatchResponse(BaseModel):
     answers: dict[UUID7, QuestionAnswer] = Field(default_factory=dict)
     approvals: dict[UUID7, bool] = Field(default_factory=dict)
     allow_session: bool = False
+    event_kind: Literal["action_batch_response"] = "action_batch_response"
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,7 @@ class NativeGatewaySignal:
     # pseudo-address on the native id, for the crossing announce to speak to and
     # any failure to land back against.
     source: ChannelAddress | None = None
+    event_kind: Literal["native_gateway_signal"] = "native_gateway_signal"
 
 
 @dataclass(frozen=True)
@@ -75,6 +79,7 @@ class CommandSignal:
     context: CommandContext
     intent: CommandIntent
     delivery_id: str  # Stable across retries of the same explicit request.
+    event_kind: Literal["command_signal"] = "command_signal"
 
 
 @dataclass(frozen=True)
@@ -86,6 +91,7 @@ class DrivenGatewaySignal:
     agent_id: str
     user_profile: UserProfile
     source: ChannelAddress
+    event_kind: Literal["driven_gateway_signal"] = "driven_gateway_signal"
 
 
 @dataclass(frozen=True)
@@ -103,6 +109,7 @@ class SummonSignal:
     source_conversation_id: UUID7 | None = None
     project: str | None = None  # The validated project to bind the new thread to.
     ref: str | None = None  # The validated starting ref for that project's workspace.
+    event_kind: Literal["summon_signal"] = "summon_signal"
 
 
 type AwakeSignal = (

@@ -10,8 +10,8 @@ Subagent file discovery differs between agents. Claude keeps them under
 `<session-id>/subagents/`, discoverable by glob and keyed by agent id. Codex writes a
 child rollout as a sibling file only its content identifies, so the launcher hook
 spools the exact path each `SubagentStop` names into a per-session file here, and the
-tail ships every spooled file keyed by its basename — the server classifies each from
-its own opening `session_meta` line, keeping even that parsing server-side.
+tail registers each spooled basename and opening `session_meta` with the server.
+All transcript lines use the conversation UUID returned by the server.
 
 Spawned per session by the launcher hook (`launch.py`), detached so the turn never
 waits on it; one instance per config scope, agent and session, enforced with a file
@@ -42,17 +42,19 @@ from time import monotonic
 from typing import Literal
 
 from octomate_protocol.stream import (
-    SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
     StreamFinalize,
     StreamHello,
     StreamLine,
+    StreamOpenSubagent,
     StreamSnapshotStart,
     StreamSnapshotStored,
+    StreamSubagentOpened,
     StreamWelcome,
     server_message_adapter,
 )
+from pydantic import UUID7, BaseModel, Field, ValidationError
 from uuid_utils.compat import uuid7
 from watchfiles import awatch
 from websockets.asyncio.client import ClientConnection, connect
@@ -87,13 +89,20 @@ LOCK_GRACE = 15.0
 LOCK_POLL = 0.2
 
 SNAPSHOT_CHUNK_SIZE = 64 * 1024
-SNAPSHOT_ACK_TIMEOUT = 60.0
+STREAM_ACK_TIMEOUT = 60.0
 
 try:
     CLIENT_VERSION = version("octomate-cli")
 except PackageNotFoundError:
     # Running from an uninstalled source tree; version-less beats not streaming.
     CLIENT_VERSION = "unknown"
+
+
+class SubagentMeta(BaseModel):
+    """What Claude records beside a child's transcript, as far as the tail reads it."""
+
+    tool_use_id: str | None = Field(default=None, alias="toolUseId")
+    description: str | None = None
 
 
 @dataclass
@@ -104,6 +113,39 @@ class FileCursor:
 
     path: Path
     offset: int = 0
+
+    @staticmethod
+    def size(path: Path) -> int:
+        """A missing transcript has no catch-up prefix yet."""
+        try:
+            return path.stat().st_size
+        except FileNotFoundError:
+            return 0
+
+    @staticmethod
+    def opening_line(path: Path) -> str | None:
+        try:
+            with path.open("rb") as handle:
+                line = handle.readline()
+        except FileNotFoundError:
+            return None
+        return (
+            line[:-1].decode("utf-8", errors="replace")
+            if line.endswith(b"\n")
+            else None
+        )
+
+    @staticmethod
+    def meta(path: Path) -> SubagentMeta:
+        """What Claude says of a child: the parent's call it answers and what that
+        call named the task. Claude writes it to a meta file before the child's
+        transcript; older versions and other harnesses do not."""
+        try:
+            return SubagentMeta.model_validate_json(
+                path.with_suffix(".meta.json").read_bytes()
+            )
+        except (OSError, ValidationError):
+            return SubagentMeta()
 
     def read_lines(self) -> list[tuple[int, int, bytes]]:
         """New complete lines as (start, end, raw) — offsets in this file's own byte
@@ -140,35 +182,35 @@ def tail_path(agent: Literal["claude", "codex", "deepseek"], session_id: str) ->
 
 @dataclass
 class SessionTail:
-    """One session's cursors: the transcript's own, and one per subagent file, each
-    seeded from the offset the server's welcome named for it.
+    """Tail each transcript from the offset core gives for its conversation UUID.
 
-    Subagent files come from the agent's own layout. With no `spool` (Claude), they
-    appear under `<session-id>/subagents/` and key by agent id. With one (Codex),
-    they are the sibling rollouts the spool names, keyed by basename — a label in
-    this machine's namespace the server classifies by content."""
+    Claude discovers children in the session's subagents directory. Codex discovers
+    sibling rollouts through its spool and registers their opening metadata.
+    """
 
     session_id: str
     transcript_path: Path
-    offsets: dict[str, int] = field(default_factory=dict)
-    files: dict[str, FileCursor] = field(default_factory=dict)
+    conversation_id: UUID7
+    offsets: dict[UUID7, int]
+    subagents: dict[str, UUID7] = field(default_factory=dict)
+    files: dict[UUID7, FileCursor] = field(default_factory=dict, init=False)
+    ignored: set[str] = field(default_factory=set, init=False)
     last_active: float = field(default_factory=monotonic)
     spool: Path | None = None
     stored_offset: int | None = None  # None disables transcript uploads.
-    receipts: asyncio.Queue[StreamSnapshotStored | ConnectionClosed | ValueError] = (
-        field(default_factory=asyncio.Queue)
-    )
+    receipts: asyncio.Queue[
+        StreamSubagentOpened | StreamSnapshotStored | ConnectionClosed | ValueError
+    ] = field(default_factory=asyncio.Queue)
     spooled: dict[str, Path] = field(default_factory=dict)
     cwd: str = ""  # Working directory reported by the native session.
 
-    @property
-    def subagents_dir(self) -> Path:
-        return self.transcript_path.with_suffix("") / "subagents"
+    def __post_init__(self) -> None:
+        self.files[self.conversation_id] = FileCursor(
+            self.transcript_path, self.offsets[self.conversation_id]
+        )
 
-    def discover(self) -> list[str]:
-        """The file keys present right now: the session itself, plus every subagent
-        file — new children join the pump the moment they exist (or are spooled)."""
-        keys = [SESSION_FILE]
+    def discover(self) -> dict[str, Path]:
+        """Find child files by their harness name on this machine."""
         if self.spool is not None:
             try:
                 lines = self.spool.read_text().splitlines()
@@ -178,40 +220,74 @@ class SessionTail:
                 if entry:
                     path = Path(entry)
                     self.spooled[path.name] = path
-            keys += sorted(self.spooled)
-        elif self.subagents_dir.is_dir():
-            keys += sorted(
-                path.stem.removeprefix("agent-")
-                for path in self.subagents_dir.glob("agent-*.jsonl")
-            )
-        return keys
+            return self.spooled
+        children = self.transcript_path.with_suffix("") / "subagents"
+        return {
+            path.stem.removeprefix("agent-"): path
+            for path in sorted(children.glob("agent-*.jsonl"))
+        }
 
-    def cursor(self, key: str) -> FileCursor:
-        cursor = self.files.get(key)
-        if cursor is None:
-            if key == SESSION_FILE:
-                path = self.transcript_path
-            elif self.spool is not None:
-                path = self.spooled[key]
-            else:
-                path = self.subagents_dir / f"agent-{key}.jsonl"
-            cursor = FileCursor(path, self.offsets.get(key, 0))
-            self.files[key] = cursor
-        return cursor
+    async def open_subagent(
+        self, websocket: ClientConnection, name: str, path: Path
+    ) -> None:
+        """Bind a discovered file to its durable conversation before reading from its offset."""
+        if name in self.ignored:
+            return
+        id_ = self.subagents.get(name)
+        if id_ is None:
+            first_line = None
+            if self.spool is not None:
+                if not self.files[self.conversation_id].offset:
+                    return
+                first_line = await asyncio.to_thread(FileCursor.opening_line, path)
+                if first_line is None:
+                    return
+            meta = await asyncio.to_thread(FileCursor.meta, path)
+            await websocket.send(
+                StreamOpenSubagent(
+                    name=name,
+                    first_line=first_line,
+                    tool_call_id=meta.tool_use_id,
+                    description=meta.description,
+                    catchup_end=await asyncio.to_thread(FileCursor.size, path),
+                ).model_dump_json()
+            )
+            async with asyncio.timeout(STREAM_ACK_TIMEOUT):
+                opened = await self.receipts.get()
+            if isinstance(opened, (ConnectionClosed, ValueError)):
+                raise opened
+            if not isinstance(opened, StreamSubagentOpened):
+                raise ValueError("Expected a subagent registration")
+            if opened.conversation_id is None:
+                self.ignored.add(name)
+                return
+            id_ = opened.conversation_id
+            self.subagents[name] = id_
+            self.offsets[id_] = opened.offset
+        if id_ not in self.files:
+            self.files[id_] = FileCursor(path, self.offsets[id_])
 
     async def pump(self, websocket: ClientConnection) -> bool:
-        """Ship every complete new line of every file; True if anything went out."""
-        sent = False
-        keys = self.discover()
-        # Interleave files without reordering any file's lines. A parent's backfill
-        # must not sit ahead of every live child on the shared connection.
-        batches = zip_longest(*(self.cursor(key).read_lines() for key in keys))
-        for batch in batches:
-            for key, line in zip(keys, batch, strict=True):
+        """Send complete lines under their conversation UUID, interleaving files."""
+        root = self.conversation_id
+        root_lines = iter(self.files[root].read_lines())
+        first = next(root_lines, None)
+        sent = first is not None
+        if first is not None:
+            # Codex identifies children from the parent rollout's opening metadata.
+            await websocket.send((await self.frame(root, *first)).model_dump_json())
+        for name, path in self.discover().items():
+            await self.open_subagent(websocket, name, path)
+        children = [id_ for id_ in self.files if id_ != root]
+        keys = [*children, root]
+        streams = [iter(self.files[id_].read_lines()) for id_ in children]
+        streams.append(root_lines)
+        for batch in zip_longest(*streams):
+            for id_, line in zip(keys, batch, strict=True):
                 if line is None:
                     continue
                 start, end, raw = line
-                frame = await self.frame(key, start, end, raw)
+                frame = await self.frame(id_, start, end, raw)
                 await websocket.send(frame.model_dump_json())
                 sent = True
         if sent:
@@ -220,10 +296,12 @@ class SessionTail:
             await self.upload_snapshot(websocket, start=self.stored_offset)
         return sent
 
-    async def frame(self, key: str, start: int, end: int, raw: bytes) -> StreamLine:
+    async def frame(
+        self, conversation_id: UUID7, start: int, end: int, raw: bytes
+    ) -> StreamLine:
         """Frame an unchanged transcript line; agent tails may attach local content."""
         return StreamLine(
-            agent_id=key or None,
+            conversation_id=conversation_id,
             start=start,
             end=end,
             line=raw.decode("utf-8", errors="replace"),
@@ -231,7 +309,7 @@ class SessionTail:
 
     def snapshot(self, end: int, *, start: int = 0) -> Iterator[bytes]:
         """Read an already streamed range without resending the stored prefix."""
-        if start < 0 or end <= start or end > self.cursor(SESSION_FILE).offset:
+        if start < 0 or end <= start or end > self.files[self.conversation_id].offset:
             raise ValueError("Snapshot boundary must be within the streamed transcript")
         with self.transcript_path.open("rb") as handle:
             if start:
@@ -256,20 +334,28 @@ class SessionTail:
 
     async def upload_snapshot(self, websocket: ClientConnection, *, start: int) -> None:
         """Upload only new transcript bytes and require their acknowledgment."""
-        end = self.cursor(SESSION_FILE).offset
+        end = self.files[self.conversation_id].offset
         if start == end:
             return
         if start > end:
             raise ValueError("Transcript was truncated since its last upload")
-        request = StreamSnapshotStart(transfer_id=uuid7(), start=start, end=end)
+        request = StreamSnapshotStart(
+            conversation_id=self.conversation_id,
+            transfer_id=uuid7(),
+            start=start,
+            end=end,
+        )
         await websocket.send(request.model_dump_json())
         for chunk in self.snapshot(request.end, start=request.start):
             await websocket.send(chunk)
-        async with asyncio.timeout(SNAPSHOT_ACK_TIMEOUT):
+        async with asyncio.timeout(STREAM_ACK_TIMEOUT):
             stored = await self.receipts.get()
         if isinstance(stored, (ConnectionClosed, ValueError)):
             raise stored
-        if stored.transfer_id != request.transfer_id:
+        if (
+            not isinstance(stored, StreamSnapshotStored)
+            or stored.transfer_id != request.transfer_id
+        ):
             raise ValueError("Expected acknowledgment for the requested snapshot")
         self.stored_offset = end
 
@@ -296,6 +382,7 @@ async def stream_session(
                 transcript_path=str(transcript_path),
                 cwd=cwd,
                 client_version=CLIENT_VERSION,
+                catchup_end=await asyncio.to_thread(FileCursor.size, transcript_path),
             ).model_dump_json()
         )
         welcome = server_message_adapter.validate_json(await websocket.recv())
@@ -304,7 +391,9 @@ async def stream_session(
         tail = tail_type(
             session_id,
             transcript_path,
+            conversation_id=welcome.conversation_id,
             offsets=dict(welcome.offsets),
+            subagents={name: id_ for id_, name in welcome.subagents.items()},
             spool=spool,
             cwd=cwd,
         )
@@ -331,7 +420,9 @@ async def stream_session(
                     if isinstance(message, StreamFinalize):
                         finalized.set()
                         stop.set()
-                    elif isinstance(message, StreamSnapshotStored):
+                    elif isinstance(
+                        message, (StreamSubagentOpened, StreamSnapshotStored)
+                    ):
                         tail.receipts.put_nowait(message)
                     else:
                         raise ValueError(f"Unexpected server message: {message.type}")

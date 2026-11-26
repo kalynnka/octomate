@@ -9,7 +9,7 @@ from dataclasses import replace
 from typing import Self
 
 import aiohttp
-import httpx
+import httpx2
 from pydantic import SecretStr
 from slack_sdk.errors import SlackApiError
 from slack_sdk.models.messages.chunk import Chunk
@@ -20,8 +20,8 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import ImageSegment
 from octomate.telemetry import slack_logfire
 from octomate.tentacles.channel import (
+    ChannelInk,
     DownloadedImage,
-    Ink,
 )
 from octomate.tentacles.feelers.output import IMMessageID, MarkdownChunker
 from octomate.tentacles.slack.schema import (
@@ -49,7 +49,7 @@ SLACK_MARKDOWN_CHUNKER = MarkdownChunker(limit=SLACK_MARKDOWN_TEXT_LIMIT)
 THREAD_PARENT_TYPES = "public_channel,private_channel"
 
 
-class SlackInk(Ink[SlackOutboundMessage]):
+class SlackInk(ChannelInk[SlackOutboundMessage]):
     """Slack Web API transport over one pooled aiohttp session, with chat streams
     for the timeline and a file upload for a reply too long for a message."""
 
@@ -236,7 +236,7 @@ class SlackInk(Ink[SlackOutboundMessage]):
         resource_id: str,
     ) -> tuple[bytes, str] | None:
         try:
-            async with httpx.AsyncClient() as http:
+            async with httpx2.AsyncClient() as http:
                 resp = await http.get(
                     resource_id,
                     headers={

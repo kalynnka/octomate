@@ -12,14 +12,14 @@ from typing import TypedDict
 from urllib.parse import urlparse
 
 import discord
-import httpx
+import httpx2
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import ImageSegment
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import (
+    ChannelInk,
     DownloadedImage,
-    Ink,
 )
 from octomate.tentacles.discord.schema import (
     DiscordAddress,
@@ -45,7 +45,7 @@ class DiscordSendKwargs(TypedDict, total=False):
     mention_author: bool
 
 
-class DiscordInk(Ink[DiscordOutboundMessage]):
+class DiscordInk(ChannelInk[DiscordOutboundMessage]):
     """Discord transport over a logged-in discord.py client; edits a message in
     place for streaming and opens a public thread for a sub-thread."""
 
@@ -53,10 +53,10 @@ class DiscordInk(Ink[DiscordOutboundMessage]):
         self,
         client: discord.Client,
         *,
-        http: httpx.AsyncClient | None = None,
+        http: httpx2.AsyncClient | None = None,
     ) -> None:
         self.client = client
-        self.http = http or httpx.AsyncClient(follow_redirects=True)
+        self.http = http or httpx2.AsyncClient(follow_redirects=True)
 
     async def __aexit__(self, *exc: object) -> None:
         await self.http.aclose()

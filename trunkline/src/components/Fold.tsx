@@ -13,7 +13,7 @@ export function Fold({ open, children }: { open: boolean; children: ReactNode })
 export function Disclose({ open, style }: { open?: boolean; style?: CSSProperties }) {
   return (
     <span className="lt-disclose" data-open={open ? '' : undefined} style={style}>
-      ▸
+      <svg width="8" height="8" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true"><path d="m4 2 5 4-5 4Z" /></svg>
     </span>
   )
 }

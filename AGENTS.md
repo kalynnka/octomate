@@ -39,6 +39,7 @@
 6. When undoing a commit for review, preserve its changes in the working tree unless the user explicitly asks to discard them.
 7. A branch is named `<kind>/<slug>`, taking `kind` from the same set the commit subjects use — `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `perf`. Never put a person in a branch name: git already records the author, and the name should say what the work is. Include the issue identifier when there is one, so Linear links the branch to it — `feat/octo-29-project-registry`. A tool that suggests a branch name, Linear included, does not override this.
 8. Pull request titles must follow Conventional Commits: `<kind>: <description>` or `<kind>(<scope>): <description>`, using the same kinds as branch names. Add `!` immediately before `:` for a breaking change. Describe the final change and start the description with a lowercase letter. Check `.github/workflows/pr-title.yml` before creating or editing a PR title, and verify the PR title check passes before reporting completion.
+9. To save time, run only the tests a change can affect: those of the modules it touches and of the callers that depend on them. Do not run the full suite after each change, even a small one; `.github/workflows/checks.yml` runs it on every pull request. Run the full suite once, before opening a pull request. In each report, say which tests ran and that the full suite did not.
 
 ## Typing
 
@@ -63,6 +64,7 @@ Always generate UUIDs with `uuid7` from `uuid_utils.compat`, including in tests.
 4. Keep batch/action ownership clear: batches group actions; each action represents exactly one user-facing approval or one user-facing question. Do not wrap multiple logical actions inside one action's metadata.
 5. Use polymorphic ORM/schema mappings when persisted variants share a table but have distinct types. The ORM inheritance, schema classes, and status types should line up with the domain variants.
 6. Preserve platform callback state as typed action data where practical. Cards and blocks may serialize ids and fields, but callback handlers should rehydrate typed actions before applying business logic.
+7. Create reusable `TypeAdapter` instances at module scope alongside the types they validate. Do not construct a disposable adapter inline or recreate it inside a function on each call; reuse the named adapter for validation and serialization.
 
 ## Persistence
 
@@ -82,9 +84,10 @@ Always generate UUIDs with `uuid7` from `uuid_utils.compat`, including in tests.
 
 1. Web APIs are FastAPI routers owned by the single project-level Octomate instance; do not force web routes into the channel tentacle lifecycle.
 2. Channel tentacles are for long-lived IM platform connections and translation only. They call Octomate directly for dispatch: an inbound message becomes a kick, never an object queued for another task to pick up.
-3. The nerve is the one event stream in the tree, and it runs one way. The reflex graph and the tailers publish what a run does onto it; a reader subscribes to a channel or a thread and reads what is published from then on. Nothing is kept for a reader that is not there, so one that opens late reads the ledger first. Publishing knows nothing of readers, nothing is answered over it, and no channel or agent is driven through it. A new reader subscribes to the nerve rather than being handed a sink by the producer.
+3. A nerve runs one way and carries one kind of envelope. The outbound nerve is the one event stream in the tree. The reflex graph and the tailers publish what a run does onto it; a reader subscribes to a channel or a thread and reads what is published from then on. Nothing is kept for a reader that is not there, so one that opens late reads the ledger first. Publishing knows nothing of readers, and a new reader subscribes to the nerve rather than being handed a sink by the producer. Signals travel the other way, on a nerve of their own, from core to the agent tentacle that is to act on them. Nothing is answered over either nerve: what a tentacle does with a signal shows in the events it publishes. An event never travels inbound, a signal never outbound, and no channel is driven through a nerve.
 4. Use the concrete tentacle base class hierarchy for Octomate-managed agents and channels. Do not introduce extra Protocol wrappers for Octomate, tentacle, or channel lifecycle contracts with out permit.
 5. Before adding a feature to Inkling, check `pydantic-ai-harness` documentation and source for existing support, verifying what is available in the installed version. When upstream supports the feature, use its implementation and follow its lifecycle and storage contracts, adapting persistence through Arcanus and preserving Octomate's thread/conversation ownership. Identify the concrete upstream gap before introducing custom behavior.
+6. Treat volumes as storage independent of the core service's host. A volume may be mounted only inside a habitat. To deliver a transcript or other file, send its contents or a storage reference the habitat is authorized to read. Resolve the destination path inside the habitat.
 
 ## Documentation
 

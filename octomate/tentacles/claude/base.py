@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 from collections.abc import AsyncGenerator, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from functools import cached_property
 from io import BytesIO
 from pathlib import Path
@@ -40,16 +41,23 @@ from claude_agent_sdk import (
     ToolPermissionContext,
 )
 from claude_agent_sdk.types import Message, SystemPromptPreset
-from fastapi import APIRouter, Depends, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import JSONResponse
 from octomate_protocol.gateway import GatewayTool, gateway_tool
 from octomate_protocol.stream import (
-    SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
     StreamFinalize,
     StreamHello,
     StreamLine,
+    StreamOpenSubagent,
+    StreamSubagentOpened,
     StreamWelcome,
     client_message_adapter,
 )
@@ -79,11 +87,13 @@ from starlette.datastructures import Headers
 from uuid_utils.compat import uuid7
 
 from octomate.config.agents import Claim, ClaudeCodeConfig
-from octomate.config.channels import TrunklineChannelConfig
 from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
+    SubagentSettledEvent,
+    SubagentStartedEvent,
 )
+from octomate.habitat import HabitatError, ManagedHabitat
 from octomate.managers.habitat import Invocation
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
 from octomate.nerve import Impulse
@@ -105,7 +115,7 @@ from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
     QuestionRequest,
 )
-from octomate.schemas.messages import ModelRequest
+from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadKey
@@ -117,23 +127,23 @@ from octomate.telemetry import (
     octomate_trace_environment,
 )
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
-from octomate.tentacles.channel import ChannelTentacle
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.catalog import (
     CONTROL_COMMANDS,
     HOST_COMMANDS,
     ClaudeCommandDescriptor,
+    ClaudeServerInfo,
     claude_effort_adapter,
 )
 from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.claude.ink import ClaudeInk
 from octomate.tentacles.claude.mcp import octomate_mcp_server
+from octomate.tentacles.claude.subagents import DrivenSubagents
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
 from octomate.tentacles.claude.transcript import (
     CompactBoundary,
-    relocate_session,
-    transcripts_dir,
+    retained_compaction_summaries,
 )
 from octomate.tentacles.deferred import DeferredSuspender, Interjections
 from octomate.tentacles.hooks import hook_guard, hook_sender
@@ -164,12 +174,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# How long a tail that attaches to an ended session is left before it is told to
+# drain: long enough for the hook of a prompt that reopens the session to arrive.
+LATE_TAIL_GRACE = 5.0
+
+# A stream's lines are kept a burst at a time: when the socket goes quiet, or once
+# this many bytes wait. Storing each line on its own cost a backfill about 15 ms a
+# line, which fell far enough behind the client to time out its keepalive.
+KEEP_BATCH = 256 * 1024
+# Frames taken off the socket ahead of the loop that reads them.
+INBOX_FRAMES = 256
+
 
 @dataclass
 class ClaudeTentacle(AgentTentacle[str, None]):
     """Claude Agent SDK runner exposed as an Octomate agent tentacle.
 
-    A run drives a `ClaudeSDKClient` over a local subprocess, translating its
+    A run drives a `ClaudeSDKClient` over the CLI's stdio, a local subprocess
+    or one inside the owner's sandbox, translating its
     message stream through `ClaudeRunAccumulator` into live
     stream events (proxied to the channel feelers) and persisted
     `ModelMessage`s. The Claude session id is stored on the conversation as
@@ -187,6 +209,8 @@ class ClaudeTentacle(AgentTentacle[str, None]):
     id: ClassVar[str] = type
     config: ClaudeCodeConfig = field(init=False)
     ink: ClaudeInk = field(init=False, repr=False)
+    server_info: ClaudeServerInfo | None = field(default=None, init=False, repr=False)
+    inspection_lock: asyncio.Lock = field(init=False, repr=False)
     conversations: ConversationManager = field(init=False, repr=False)
     deferred_actions: DeferredActionManager = field(init=False, repr=False)
     workspaces: WorkspaceManager = field(init=False, repr=False)
@@ -268,6 +292,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         self.claims = dict(config.claims)
         self.gateway = config.gateway
         self.ink = ClaudeInk()
+        self.inspection_lock = asyncio.Lock()
         self.models = {}
         self.model_aliases = {}
         # Per-session locks shared by the hook ingest and the transcript tailer, so a
@@ -295,18 +320,10 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         return {
             ThreadKey.from_address(state.address)
             for state in self.session_tailer.sessions.values()
-            if state.open_turn is not None and state.open_turn.native is not None
+            if state.open_turn is not None
+            and state.open_turn.native is not None
+            and not state.open_turn.native.replay
         }
-
-    def routers(self) -> tuple[APIRouter]:
-        """The tentacle's HTTP surface, mounted by `Octomate.connect`: the hook router
-        native Claude clients (app / CLI / VSCode) POST their session events into, and
-        the stream endpoint every session's client-side tail feeds raw transcript
-        lines through (`octomate claude tail`) — the server never reads a transcript
-        from disk, this machine's sessions included. `octomate claude hooks install`
-        writes the client-side settings that point a session at both.
-        """
-        return (self.hook_router,)
 
     @cached_property
     def hook_router(self) -> APIRouter:
@@ -321,11 +338,21 @@ class ClaudeTentacle(AgentTentacle[str, None]):
 
         @router.post(
             "/hooks/claude",
-            dependencies=[Depends(resolve_sender)],
             summary="Claude Code native-session hook pipe",
         )
-        async def receive_hook(event: ClaudeHookInput) -> JSONResponse:
+        async def receive_hook(
+            event: ClaudeHookInput,
+            # FastAPI resolves this custom profile dependency per request.
+            sender: UserProfile = Depends(resolve_sender),  # noqa: B008
+        ) -> JSONResponse:
             await self.session_ingest.handle(event)
+            if activities := self.subagent_activities(event):
+                address = ThreadKey(self.id, "thread", event.session_id).address(
+                    sender.channel_user_id
+                )
+                async with self.nerve.publish(address) as impulses:
+                    for activity in activities:
+                        await impulses.send(Impulse(activity, address))
             teleport = gateway_tool(GatewayTool.TELEPORT)
             if (
                 event.hook_event_name == "PreToolUse"
@@ -357,6 +384,33 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             await self.stream_session(websocket, sender)
 
         return router
+
+    def subagent_activities(
+        self, event: ClaudeHookInput
+    ) -> list[SubagentStartedEvent | SubagentSettledEvent]:
+        """What a native session's hook says about its subagents: the start or
+        settle it reports, and a settle for each one a stopped turn or an ended
+        session left open. Claude fires no `SubagentStop` for one it interrupts."""
+        working = self.session_tailer.working_subagents.pop(event.session_id, [])
+        activities: list[SubagentStartedEvent | SubagentSettledEvent] = []
+        if activity := event.subagent_activity:
+            activities.append(activity)
+            if isinstance(activity, SubagentStartedEvent):
+                working.append(activity.invocation_id)
+            elif activity.invocation_id in working:
+                working.remove(activity.invocation_id)
+        if event.hook_event_name in {"Stop", "SessionEnd"}:
+            # A background subagent outlives the turn that started it.
+            running = {task.id for task in event.background_tasks}
+            activities.extend(
+                SubagentSettledEvent(invocation_id=agent_id, status="cancelled")
+                for agent_id in working
+                if agent_id not in running
+            )
+            working = [agent_id for agent_id in working if agent_id in running]
+        if working:
+            self.session_tailer.working_subagents[event.session_id] = working
+        return activities
 
     async def stream_session(self, websocket: WebSocket, sender: UserProfile) -> None:
         """Validate the remote tail's protocol and attach it as an external session.
@@ -391,7 +445,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         try:
             async with (
                 self.driving(hello.session_id, native=True),
-                self.octomate.nerve.publish(address) as impulses,
+                self.nerve.publish(address) as impulses,
             ):
                 await self.stream_attached(websocket, hello, sender, address, impulses)
         except WebSocketDisconnect:
@@ -434,31 +488,56 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         state, offsets = await self.session_tailer.attach_remote(
             hello.session_id, Path(hello.transcript_path), sender, address, impulses
         )
+        state.catchup_end = hello.catchup_end
         conversation = state.conversation
         if conversation is None:
             raise RuntimeError(f"session {hello.session_id} attached without a home")
-        # How much of the session file is kept, so the session can be forked onto
-        # another surface; only its owner's bytes, and only a registered owner's.
-        # Read before the welcome, so a client leaving at once cancels no read.
+        # The transcripts this stream carries, by conversation: the session's own
+        # and one per subagent file the client has opened.
+        transcripts = {conversation.id: conversation} | {
+            tail.conversation.id: tail.conversation
+            for tail in state.subagents.values()
+            if tail.conversation is not None
+        }
+        # How much of each file is kept, so the session can be forked onto another
+        # surface; only its owner's bytes, and only a registered owner's. Read
+        # before the welcome, so a client leaving at once cancels no read.
         kept = (
             (
-                await self.files.get(
-                    conversation.transcript_file_id,
+                await self.conversations.transcript_offsets(
+                    conversation,
                     owner_id=sender.user_id,
+                    provider=self.files.provider,
                 )
-            ).size
-            if conversation.transcript_file_id is not None
-            and sender.user_id is not None
-            else 0
+            ).offsets
+            if sender.user_id is not None
+            else {}
         )
         logger.info(
             "session %s: remote tail connected (octomate %s)",
             hello.session_id,
             hello.client_version or "unversioned",
         )
-        await websocket.send_text(StreamWelcome(offsets=offsets).model_dump_json())
+        await websocket.send_text(
+            StreamWelcome(
+                conversation_id=conversation.id,
+                offsets=offsets,
+                subagents={
+                    child.id: child.subagent_id
+                    for child in transcripts.values()
+                    if child.subagent_id
+                },
+            ).model_dump_json()
+        )
 
         async def relay_finalize() -> None:
+            if hello.session_id in self.session_tailer.ended:
+                # A hand-back fires the launcher mid-turn, and the tail it starts can
+                # arrive after the session is over. A prompt that reopens the session
+                # is announced by its own hook well inside this wait.
+                await asyncio.sleep(LATE_TAIL_GRACE)
+                if hello.session_id in self.session_tailer.ended:
+                    state.stop_event.set()
             await state.stop_event.wait()
             try:
                 await websocket.send_text(StreamFinalize().model_dump_json())
@@ -476,47 +555,116 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         # doubles as the tracker.
         expected_offsets = offsets
         clean = False
+        inbox: asyncio.Queue[str | Exception] = asyncio.Queue(INBOX_FRAMES)
+
+        async def read_socket() -> None:
+            """Take frames off the socket as they come, so the loop below can tell
+            a burst from a pause. What ends the reading is raised where it is read."""
+            try:
+                while True:
+                    await inbox.put(await websocket.receive_text())
+            # Raised again by the loop that reads the inbox, not swallowed.
+            except Exception as error:
+                await inbox.put(error)
+
+        batch: list[tuple[Conversation, StreamLine]] = []
+        waiting = 0
+
+        async def process_batch() -> None:
+            """Keep, then feed, the lines received so far. Kept first, so no run is
+            committed past the bytes that are stored; one write per file, so a long
+            transcript catches up."""
+            nonlocal waiting
+            if sender.user_id is not None:
+                files: dict[UUID7, list[StreamLine]] = {}
+                for target, line in batch:
+                    files.setdefault(target.id, []).append(line)
+                for key, lines in files.items():
+                    kept[key] = await self.keep_transcript(
+                        transcripts[key],
+                        lines,
+                        kept.get(key, 0),
+                        owner_id=sender.user_id,
+                    )
+            for target, line in batch:
+                await self.session_tailer.feed_remote(
+                    state, target.subagent_id or None, line.line, line.start, line.end
+                )
+            batch.clear()
+            waiting = 0
+
+        reader = asyncio.create_task(read_socket())
         try:
             while True:
-                message = client_message_adapter.validate_json(
-                    await websocket.receive_text()
-                )
+                try:
+                    raw = inbox.get_nowait()
+                except asyncio.QueueEmpty:
+                    await process_batch()
+                    raw = await inbox.get()
+                if isinstance(raw, Exception):
+                    await process_batch()
+                    raise raw
+                message = client_message_adapter.validate_json(raw)
                 if isinstance(message, StreamEof):
+                    await process_batch()
                     clean = True
                     return
                 if isinstance(message, StreamHello):
                     await websocket.close(code=1008, reason="hello already received")
                     return
+                if isinstance(message, StreamOpenSubagent):
+                    await process_batch()
+                    tail = self.session_tailer.subagent_tail(state, message.name)
+                    tail.call_id = message.tool_call_id
+                    tail.catchup_end = message.catchup_end
+                    child = (
+                        tail.conversation
+                        or await self.session_tailer.prepare_subagent(state, tail)
+                    )
+                    if message.description:
+                        await self.conversations.set_name(child, message.description)
+                    transcripts[child.id] = child
+                    await websocket.send_text(
+                        StreamSubagentOpened(
+                            conversation_id=child.id,
+                            offset=expected_offsets.setdefault(child.id, tail.offset),
+                        ).model_dump_json()
+                    )
+                    continue
                 if not isinstance(message, StreamLine):
                     await websocket.close(
                         code=1008, reason="expected a transcript line"
                     )
                     return
-                key = message.agent_id or SESSION_FILE
-                want = expected_offsets.get(key, 0)
+                key = message.conversation_id
+                target = transcripts.get(key)
+                if target is None:
+                    await websocket.close(
+                        code=1008, reason="unopened transcript conversation"
+                    )
+                    return
+                want = expected_offsets[key]
                 if message.start != want:
                     await websocket.close(
                         code=4000,
-                        reason=f"offset gap for {key or 'session'}: expected {want}, "
+                        reason=f"offset gap for {key}: expected {want}, "
                         f"got {message.start}",
                     )
                     return
                 expected_offsets[key] = message.end
-                await self.session_tailer.feed_remote(
-                    state, message.agent_id, message.line, message.start, message.end
-                )
-                if message.agent_id is None and sender.user_id is not None:
-                    kept = await self.keep_transcript(
-                        conversation, message, kept, owner_id=sender.user_id
-                    )
+                batch.append((target, message))
+                waiting += message.end - message.start
+                if waiting >= KEEP_BATCH:
+                    await process_batch()
         except WebSocketDisconnect:
             pass
         except ValidationError:
             await websocket.close(code=1008, reason="unparseable stream message")
         finally:
-            relay.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await relay
+            for task in (relay, reader):
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
             if clean:
                 await self.session_tailer.finish_remote(state)
                 with contextlib.suppress(Exception):
@@ -527,39 +675,48 @@ class ClaudeTentacle(AgentTentacle[str, None]):
     async def keep_transcript(
         self,
         conversation: Conversation,
-        line: StreamLine,
+        lines: list[StreamLine],
         kept: int,
         *,
         owner_id: UUID7,
     ) -> int:
-        """Append one session-file line to the native conversation's stored
-        transcript, and answer how far the stored bytes now reach.
+        """Append session-file lines to the native conversation's stored transcript,
+        in one write, and answer how far the stored bytes now reach.
 
         A line already kept is skipped, as a reconnect resends the turn it was in.
-        One that does not start where the stored bytes end is not kept at all: the
-        file has to be the session's own bytes, or a fork of it would replay
-        something Claude never wrote.
+        From the first one that does not start where the stored bytes end, nothing
+        is kept: the file has to be the session's own bytes, or a fork of it would
+        replay something Claude never wrote.
         """
-        data = line.line.encode() + b"\n"
-        if line.start != kept or len(data) != line.end - line.start:
+        data = bytearray()
+        end = kept
+        for line in lines:
+            if line.end <= end:
+                continue
+            raw = line.line.encode() + b"\n"
+            if line.start != end or len(raw) != line.end - line.start:
+                break
+            data += raw
+            end = line.end
+        if not data:
             return kept
         await self.conversations.store_transcript(
             UploadFile(
-                BytesIO(data),
+                BytesIO(bytes(data)),
                 filename=f"{conversation.external_id or conversation.id}.jsonl",
                 headers=Headers({"content-type": "application/jsonl"}),
             ),
-            line.start,
+            kept,
             conversation=conversation,
             files=self.files,
             owner_id=owner_id,
         )
-        return line.end
+        return end
 
-    async def read_fork_transcript(
+    async def native_fork_point(
         self, source: Conversation, *, owner_id: UUID7
-    ) -> tuple[bytes, ExternalAgentRun]:
-        """The stored history up to the latest turn kept whole, and that turn."""
+    ) -> tuple[UUID7, int, ExternalAgentRun]:
+        """The retained transcript and the latest turn it contains in full."""
         if source.agent_tentacle_id != self.id or source.subagent_id:
             raise ValueError("Only root native Claude Code sessions can be forked here")
         thread = await self.threads.get(source.thread_id, with_messages=False)
@@ -567,7 +724,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             raise ValueError("Transcript imports require a tailed thread")
         if source.transcript_file_id is None or source.external_id is None:
             raise ValueError("Native Claude Code history has not been uploaded")
-        data = await self.files.read(source.transcript_file_id, owner_id=owner_id)
+        file = await self.files.get(source.transcript_file_id, owner_id=owner_id)
         completed = max(
             (
                 run
@@ -575,14 +732,24 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                 if isinstance(run, ExternalAgentRun)
                 and run.native_session_id == source.external_id
                 and run.end_offset is not None
-                and run.end_offset <= len(data)
+                and run.end_offset <= file.size
             ),
             key=lambda run: run.end_offset or 0,
             default=None,
         )
         if completed is None or completed.end_offset is None:
             raise ValueError("Native Claude Code history has no completed turn yet")
-        return data[: completed.end_offset], completed
+        return file.id, completed.end_offset, completed
+
+    async def read_fork_transcript(
+        self, source: Conversation, *, owner_id: UUID7
+    ) -> tuple[bytes, ExternalAgentRun]:
+        """The stored history up to the latest turn kept whole, and that turn."""
+        file_id, end, completed = await self.native_fork_point(
+            source, owner_id=owner_id
+        )
+        data = await self.files.read(file_id, owner_id=owner_id)
+        return data[:end], completed
 
     async def fork_transcript(
         self,
@@ -592,8 +759,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         owner_id: UUID7,
         cwd: Path,
     ) -> Conversation:
-        """Lay the kept history where `cwd` files Claude's sessions and fork it there
-        with fresh message ids, for this tentacle to resume; the staged copy goes."""
+        """Fork retained history into the target runtime and persist its lineage."""
         conversations = self.conversations
         async with conversations.lock(target.key):
             target = await conversations.get(target.id, with_runs=False)
@@ -602,15 +768,19 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             if source.external_id is None:
                 raise ValueError("Native Claude Code history has not been uploaded")
             data, completed = await self.read_fork_transcript(source, owner_id=owner_id)
-            staged = transcripts_dir(cwd) / f"{source.external_id}.jsonl"
-            staged.parent.mkdir(parents=True, exist_ok=True)
-            staged.write_bytes(data)
-            try:
+            thread = await self.threads.get(target.thread_id, with_messages=False)
+            if thread is None:
+                raise FileNotFoundError("No destination thread")
+            async with self.inhabit(
+                thread=thread, conversation=target, owner_id=owner_id
+            ) as invocation:
                 external_id = await self.ink.fork_session(
-                    source.external_id, cwd=cwd, source_cwd=cwd
+                    source.external_id,
+                    cwd=invocation.cwd,
+                    habitat=invocation.habitat,
+                    env=invocation.environment,
+                    transcript=data,
                 )
-            finally:
-                staged.unlink()
             await conversations.fork(
                 source,
                 target,
@@ -620,26 +790,14 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             )
             return await conversations.get(target.id)
 
-    async def fork_session(self, conversation: Conversation, *, cwd: Path) -> str:
-        """Fork Claude's transcript without changing the source session."""
-        if not conversation.external_id:
-            raise ValueError("Cannot fork a Claude conversation without a session id")
-        return await self.ink.fork_session(conversation.external_id, cwd=cwd)
-
-    async def relocate(self, conversation: Conversation, *, cwd: Path) -> None:
-        """Claude files a session under the cwd it ran in and resumes it only from
-        there, so the transcript goes where the next run will look for it. A
-        conversation with no session yet has nothing to move."""
-        if conversation.external_id is None:
-            return
-        relocate_session(conversation.external_id, cwd=cwd)
-
     async def _await_human(
         self,
         requests: DeferredToolRequests,
         *,
         suspender: DeferredSuspender | None,
-        interjections: Interjections[Message],
+        interjections: Interjections[
+            Message | SubagentStartedEvent | SubagentSettledEvent
+        ],
     ) -> tuple[ActionBatchEvent, DeferredActionBatchResponse | None]:
         """Pause the run on a human through the graph's suspender, putting the
         batch on this run's stream. The reply waiter
@@ -681,47 +839,35 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         interjections.interject(ActionBatchAnsweredEvent.of(response))
         return batch, response
 
-    async def probe_commands(self, context: CommandContext) -> CommandCatalog:
-        """Initialize a non-persisting SDK client in the resolved workspace.
+    async def host_catalog(self, *, refresh: bool = False) -> ClaudeServerInfo:
+        """Read the host CLI's models and built-in commands once for all conversations."""
+        async with self.inspection_lock:
+            if self.server_info is not None and not refresh:
+                return self.server_info
+            session_id = str(uuid7())
+            async with (
+                anyio.TemporaryDirectory(prefix="octomate-claude-") as cwd,
+                self.driving(session_id),
+            ):
+                info = await self.ink.inspect(
+                    ClaudeAgentOptions(
+                        cwd=cwd,
+                        session_id=session_id,
+                        extra_args={"safe-mode": None, "no-session-persistence": None},
+                        strict_mcp_config=True,
+                    )
+                )
+            self.server_info = info
+            if refresh:
+                self.commands.invalidate(agent_id=self.id)
+            return info
 
-        The SDK caches initialize metadata, so an explicit refresh needs a new
-        client. Match driven settings and resume identity without sending a query
-        or preparing the workspace. Octomate's SDK MCP server exposes tools only;
-        there are no MCP prompts to add to this catalog.
-        """
+    async def probe_commands(self, context: CommandContext) -> CommandCatalog:
+        """Expose the host command list in this caller's authorized context."""
+        info = await self.host_catalog()
         catalog = CommandCatalog(
             context=context, status="ready", descriptors=set(CONTROL_COMMANDS.values())
         )
-        if context.cwd is None or not await anyio.Path(context.cwd).is_dir():
-            catalog.limitations.append(
-                "Claude native command discovery requires an existing workspace."
-            )
-            return catalog
-        conversation = context.conversation
-        project = (
-            await self.run_project(conversation.thread_id)
-            if conversation is not None
-            else None
-        )
-        external_id = conversation.external_id if conversation is not None else None
-        session_id = external_id or str(uuid7())
-        async with self.driving(session_id):
-            info = await self.ink.inspect(
-                ClaudeAgentOptions(
-                    cwd=str(context.cwd),
-                    add_dirs=[str(root) for root in project.extra_roots]
-                    if project
-                    else [],
-                    model=context.model,
-                    permission_mode=context.permission_mode
-                    if is_claude_mode(context.permission_mode)
-                    else self.config.permission_mode,
-                    resume=external_id,
-                    session_id=None if external_id else session_id,
-                    extra_args={"safe-mode": None, "no-session-persistence": None},
-                    strict_mcp_config=True,
-                )
-            )
         if info.commands is None:
             catalog.limitations.append(
                 "This Claude runtime does not expose native command metadata."
@@ -745,38 +891,41 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         return catalog
 
     def needs_invocation(self, descriptor: CommandDescriptor) -> bool:
-        return (
-            isinstance(descriptor, ClaudeCommandDescriptor)
-            and descriptor.id not in CONTROL_COMMANDS
-        )
+        return isinstance(descriptor, ClaudeCommandDescriptor)
 
     async def record_compaction(
-        self, conversation: Conversation, message: Message, *, cwd: Path
+        self,
+        conversation: Conversation,
+        boundary: CompactBoundary,
+        messages: list[ModelRequest | ModelResponse] | None = None,
     ) -> None:
-        """Persist the SDK's completed boundary before yielding its presentation."""
-        if (
-            not isinstance(message, SystemMessage)
-            or message.subtype != "compact_boundary"
-        ):
-            return
-        boundary = CompactBoundary.model_validate(message.data)
         await self.conversations.record_driven_compaction(
             conversation,
             native_session_id=boundary.session_id,
             native_compaction_id=boundary.uuid,
             trigger=boundary.metadata.trigger,
             happened_at=boundary.timestamp,
+            messages=messages,
         )
-        messages = await self.ink.compaction_messages(boundary, cwd=cwd)
-        if messages:
-            await self.conversations.record_driven_compaction(
-                conversation,
-                native_session_id=boundary.session_id,
-                native_compaction_id=boundary.uuid,
-                trigger=boundary.metadata.trigger,
-                happened_at=boundary.timestamp,
-                messages=messages,
-            )
+
+    async def record_retained_summaries(
+        self, invocation: Invocation, boundaries: list[CompactBoundary]
+    ) -> None:
+        """Read the owner's retained transcript after the guest finishes its upload hooks."""
+        if not boundaries:
+            return
+        conversation = await self.conversations.get(
+            invocation.conversation.id, with_runs=False
+        )
+        if conversation.transcript_file_id is None:
+            return
+        transcript = await self.files.read(
+            conversation.transcript_file_id, owner_id=invocation.owner_id
+        )
+        for boundary, summary in await asyncio.to_thread(
+            retained_compaction_summaries, transcript, boundaries
+        ):
+            await self.record_compaction(conversation, boundary, [summary])
 
     async def execute_command(
         self,
@@ -803,9 +952,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                 status="stale", message="This command changed; refresh commands."
             )
             return
-        if descriptor.id in CONTROL_COMMANDS:
-            yield await self.command_control(context, intent)
-            return
         prompt = f"/{descriptor.name}"
         if intent.arguments:
             prompt += f" {intent.arguments}"
@@ -829,76 +975,8 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             except LookupError as error:
                 yield CommandError(status="stale", message=str(error))
 
-    async def command_control(
-        self, context: CommandContext, intent: CommandIntent
-    ) -> CommandOutcome:
-        """Apply persistent planning permissions or fork without submitting a turn."""
-        conversation = context.conversation
-        assert conversation is not None
-        argument = intent.arguments.strip()
-        if intent.command_id == "plan":
-            if argument not in {"", "on", "off"}:
-                return CommandError(status="unsupported", message="Use /plan [on|off].")
-            mode = "default" if argument == "off" else "plan"
-            await self.set_permission_mode(conversation, mode)
-            return CommandResult(
-                segments=[TextSegment(data={"text": f"Permission mode: {mode}."})]
-            )
-        if argument:
-            return CommandError(
-                status="unsupported", message="/fork takes no arguments."
-            )
-        if conversation.external_id is None:
-            return CommandError(
-                status="unavailable", message="Run this conversation before forking it."
-            )
-        profile = await self.users.profile(
-            context.address.channel_tentacle_id, context.address.user_id
-        )
-        channel = self.octomate.tentacles[context.address.channel_tentacle_id]
-        if profile is None or profile.user_id != context.user_id:
-            raise ValueError("The source conversation is no longer available.")
-        if not isinstance(channel, ChannelTentacle):
-            raise ValueError("Forking requires a channel that can open a thread.")
-        source_thread = await self.threads.get(
-            conversation.thread_id, with_messages=False
-        )
-        if source_thread is None:
-            raise FileNotFoundError("No conversation")
-        parent = replace(context.address, channel_thread_id=None)
-        if parent.chat_type == "thread" and not isinstance(
-            channel.config, TrunklineChannelConfig
-        ):
-            parent = replace(parent, chat_type="group")
-        destination = await channel.start_thread(
-            parent, self.threads.fork_title(conversation, source_thread) or "Fork"
-        )
-        target = await self.fork(
-            conversation,
-            ThreadKey.from_address(destination),
-            sender=profile,
-            model=context.model,
-        )
-        return CommandResult(
-            segments=[
-                TextSegment(
-                    data={
-                        "text": f"Forked into a new thread ({target.id}). Select it to continue; this conversation is unchanged."
-                    }
-                )
-            ]
-        )
-
     async def discover_models(self) -> None:
-        session_id = str(uuid7())
-        async with self.driving(session_id):
-            info = await self.ink.inspect(
-                ClaudeAgentOptions(
-                    session_id=session_id,
-                    extra_args={"safe-mode": None},
-                    strict_mcp_config=True,
-                )
-            )
+        info = await self.host_catalog(refresh=True)
         provider = info.account.api_provider
         if provider is None or provider == "firstParty":
             provider = "anthropic"
@@ -951,7 +1029,6 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         return max(windows, key=lambda key: "[" in key, default=None)
 
     async def __aenter__(self) -> ClaudeTentacle:
-        self.commands.invalidate(agent_id=self.id)
         await self.discover_models()
         return await super().__aenter__()
 
@@ -964,6 +1041,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         """Cancel any approvals/questions still awaiting a human so their parked
         runs unblock instead of hanging shutdown. The pending tools are denied as
         the cancellation unwinds; the live sessions are not durable across this."""
+        self.server_info = None
         self.commands.invalidate(agent_id=self.id)
         await super().__aexit__(exc_type, exc_value, traceback)
         for future in list(self.pendings.values()):
@@ -1001,9 +1079,16 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             # A resumed run. The CLI takes no tool result back, so the graph's
             # resolution of the deferral is this turn's prompt, ledgered as one.
             user_prompt = self.resumed_prompt(deferred_tool_results)
+        children = DrivenSubagents(
+            conversations=self.conversations,
+            parent=conversation,
+            cwd=Path(invocation.cwd),
+        )
         accumulator = ClaudeRunAccumulator()
         accumulator.begin(user_prompt)
-        interjections = Interjections[Message]()
+        interjections = Interjections[
+            Message | SubagentStartedEvent | SubagentSettledEvent
+        ]()
         # Tools the user already granted "allow for session" on this conversation
         # auto-approve without a card; new grants extend the set and persist.
         session_allowed: set[str] = set(conversation.allowed_tools)
@@ -1155,8 +1240,16 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             prompt_id = event.prompt_id
             return {}
 
+        async def subagent_activity(
+            hook_input: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> HookJSONOutput:
+            if activity := ClaudeHookInput.model_validate(hook_input).subagent_activity:
+                interjections.interject(activity)
+            return {}
+
         project = invocation.project
-        run_cwd = str(invocation.workspace.path)
+        managed = isinstance(invocation.habitat, ManagedHabitat)
+        run_cwd = str(invocation.cwd)
         octomate_session = self.octomate.gateway.get(conversation.id)
         # The turn's server, mounted in process with the session closed over —
         # identity by closure, nothing on the wire names it. Its tools take the
@@ -1187,6 +1280,34 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             # them past the turn that started them.
             "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
         }
+        settings = None
+        if managed:
+            key = await self.runtime_api_key(invocation.owner_id)
+            if key is None:
+                raise HabitatError("Claude transcript upload requires authentication")
+            env.update(
+                OCTOMATE_CLI_URL=invocation.habitat.core_url,
+                OCTOMATE_CLI_TOKEN=key.token.get_secret_value(),
+            )
+            settings = json.dumps(
+                {
+                    "hooks": {
+                        event: [
+                            {
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": "octomate claude upload "
+                                        f"--conversation {conversation.id}",
+                                        "timeout": 60,
+                                    }
+                                ]
+                            }
+                        ]
+                        for event in ("SubagentStop", "Stop", "SessionEnd")
+                    }
+                }
+            )
         if self.config.instrument:
             trace_environment = octomate_trace_environment()
             if trace_environment is not None:
@@ -1197,9 +1318,13 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                 )
         options = ClaudeAgentOptions(
             cwd=run_cwd,
+            settings=settings,
             # A project's other roots are directories this work legitimately spans —
             # a settings tree, a sibling checkout — so Claude may reach them too.
-            add_dirs=[str(root) for root in project.extra_roots] if project else [],
+            # A sandbox mounts the owner's storage alone, so they are not there.
+            add_dirs=[str(root) for root in project.extra_roots]
+            if project and not managed
+            else [],
             model=cli_model,
             effort=claude_effort_adapter.validate_python(effort)
             if effort is not None
@@ -1216,12 +1341,17 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             can_use_tool=can_use_tool,
             hooks={
                 "UserPromptSubmit": [HookMatcher(hooks=[remember_prompt])],
+                "SubagentStart": [HookMatcher(hooks=[subagent_activity])],
+                "SubagentStop": [HookMatcher(hooks=[subagent_activity])],
                 "PreToolUse": [
                     HookMatcher(matcher="AskUserQuestion", hooks=[ask_user_question])
                 ],
             },
             mcp_servers=mcp_servers,
-            extra_args={"safe-mode": None, "thinking-display": "summarized"},
+            extra_args={
+                **({} if managed else {"safe-mode": None}),
+                "thinking-display": "summarized",
+            },
             strict_mcp_config=True,
             output_format=output_format,
             # Stream partial assistant messages so the accumulator can emit token
@@ -1262,16 +1392,20 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             run_name=run_name or self.id,
             conversation_address=str(conversation_address),
             **agent_input_message_attributes(user_prompt),
-            transport="local",
+            habitat=invocation.habitat.name,
+            habitat_mode=self.habitats.config.mode,
+            habitat_managed=managed,
         ):
             # The SDK injects the active W3C context when connecting. Starting a
             # client inside each run's span also reparents resumed sessions.
             async with (
                 self.driving(session_id),
+                contextlib.AsyncExitStack() as after_stream,
                 contextlib.aclosing(
                     self.ink.stream(
                         prompt_text,
                         options=options,
+                        habitat=invocation.habitat,
                         conversation_id=conversation.id,
                         should_interrupt=lambda: (
                             octomate_session is not None
@@ -1280,28 +1414,45 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                         command=command,
                     )
                 ) as native_messages,
-                contextlib.aclosing(interjections.around(native_messages)) as messages,
+                contextlib.aclosing(interjections.around(native_messages)) as merged,
+                contextlib.aclosing(children.watch(merged)) as messages,
             ):
                 self.commands.invalidate(
                     agent_id=self.id, conversation_id=conversation.id
                 )
                 command_result: ResultMessage | None = None
-                compacted = False
+                boundaries: list[CompactBoundary] = []
+                if managed:
+                    after_stream.push_async_callback(
+                        self.record_retained_summaries, invocation, boundaries
+                    )
                 async for message in messages:
-                    if isinstance(message, ActionBatchEvent | ActionBatchAnsweredEvent):
+                    if isinstance(
+                        message,
+                        ActionBatchEvent
+                        | ActionBatchAnsweredEvent
+                        | SubagentStartedEvent
+                        | SubagentSettledEvent,
+                    ):
                         yield message
                         continue
                     if command is not None and isinstance(message, ResultMessage):
                         command_result = message
-                    compacted |= (
+                    if (
                         isinstance(message, SystemMessage)
                         and message.subtype == "compact_boundary"
-                    )
-                    await self.record_compaction(
-                        conversation,
-                        message,
-                        cwd=invocation.workspace.path,
-                    )
+                    ):
+                        boundary = CompactBoundary.model_validate(message.data)
+                        boundaries.append(boundary)
+                        await self.record_compaction(conversation, boundary)
+                        if not managed and (
+                            summaries := await self.ink.compaction_messages(
+                                boundary, cwd=invocation.workspace.path
+                            )
+                        ):
+                            await self.record_compaction(
+                                conversation, boundary, summaries
+                            )
                     for event in accumulator.consume(
                         message, command=command is not None
                     ):
@@ -1329,7 +1480,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                     external_id=accumulator.session_id,
                     native_turn_id=prompt_id,
                 )
-            if compacted and accumulator.session_id:
+            if boundaries and accumulator.session_id:
                 await self.conversations.record_native_memberships(
                     conversation, accumulator.session_id
                 )

@@ -54,12 +54,12 @@ for (const width of [1280, 390]) {
     await expect(page).toHaveTitle('Trunkline · Octomate')
     const log = page.locator('#trk-chatlog')
     await expect(log.locator('.trk-agent-message')).toHaveCount(40)
-    await expect.poll(() => cursors.filter(cursor => cursor !== '120')).toEqual(['80', '40'])
     await page.evaluate(async () => {
       await document.fonts.ready
       await Promise.allSettled(document.getAnimations().filter(a => a.effect?.getComputedTiming().iterations !== Infinity).map(a => a.finished))
     })
-    // Still a viewport from the boundary: cached history should be inserted
+    expect(cursors).toEqual(['120'])
+    // Still a viewport from the boundary: older history should be fetched
     // now, with the same message staying under the reader's eye.
     const anchor = await log.evaluate(el => {
       el.scrollTop = el.clientHeight
@@ -67,6 +67,7 @@ for (const width of [1280, 390]) {
       return { id: row.id, top: row.getBoundingClientRect().top }
     })
     await expect(log.locator('.trk-agent-message')).toHaveCount(80)
+    expect(cursors).toEqual(['120', '80'])
     await expect.poll(async () => Math.abs(await page.locator(`[id="${anchor.id}"]`).evaluate(el => el.getBoundingClientRect().top) - anchor.top)).toBeLessThan(2)
 
     // The next page arrives late while the reader continues to move. Restoring
@@ -77,6 +78,7 @@ for (const width of [1280, 390]) {
       return { id: row.id, top: row.getBoundingClientRect().top }
     })
     await log.evaluate(el => { el.scrollTop -= 75 })
+    await expect.poll(() => cursors).toEqual(['120', '80', '40'])
     const expected = await page.locator(`[id="${waiting.id}"]`).evaluate(el => el.getBoundingClientRect().top)
     const arrival = page.locator(`[id="${waiting.id}"]`).evaluate(el => new Promise<number[]>(resolve => {
       const samples: number[] = []
@@ -133,5 +135,24 @@ for (const width of [1280, 390]) {
     await expect(page.locator('vite-error-overlay')).toHaveCount(0)
     expect(errors).toEqual([])
     await page.screenshot({ path: `/private/tmp/inky-scroll-paging-${width}.png` })
+
+    // A page too short to scroll still waits for an explicit history request.
+    const shortReads: (string | null)[] = []
+    await page.route('**/api/trunkline/threads/thread-a/conversations/messages*', route => {
+      const cursor = new URL(route.request().url()).searchParams.get('cursor')
+      shortReads.push(cursor)
+      const items = cursor === null ? [{ ...messages[119], parts: [{ part_kind: 'text', content: 'Latest message.' }] }] : messages.slice(79, 119).reverse()
+      return route.fulfill({ json: { items, total: 120, has_more: cursor === null, next_cursor: cursor === null ? '119' : null } })
+    })
+    await page.reload()
+    await expect(log.locator('.trk-agent-message')).toHaveCount(1)
+    await page.evaluate(async () => {
+      await Promise.allSettled(document.getAnimations().filter(a => a.effect?.getComputedTiming().iterations !== Infinity).map(a => a.finished))
+    })
+    expect(shortReads).toEqual([null])
+    await log.getByRole('button', { name: '↑ load earlier messages', exact: true }).click()
+    await expect(log.locator('.trk-agent-message')).toHaveCount(41)
+    expect(shortReads).toEqual([null, '119'])
+    expect(errors).toEqual([])
   })
 }

@@ -12,6 +12,10 @@ class TracedCodexClient(CodexClient):
     """Propagate the current kick on each request, including reused SDK processes."""
 
     def _write_message(self, payload: JsonObject) -> None:
+        super()._write_message(self.trace_message(payload))
+
+    def trace_message(self, payload: JsonObject) -> JsonObject:
+        """Attach the current request's trace to the native JSON-RPC message."""
         # openai-codex 0.160.0 has no public trace-context argument or envelope hook.
         # Keep the SDK transport and add the app-server's top-level W3C `trace`.
         # Replace this override when the SDK exposes propagation; see
@@ -23,4 +27,4 @@ class TracedCodexClient(CodexClient):
                 # The comprehension widens values to JsonValue; dict(carrier) does not.
                 context: JsonObject = {key: value for key, value in carrier.items()}  # noqa: C416
                 payload = {**payload, "trace": context}
-        super()._write_message(payload)
+        return payload

@@ -3,6 +3,8 @@
 
 ::: octomate.tentacles.acp.base
 
+::: octomate.tentacles.acp.ink
+
 ::: octomate.tentacles.acp.broker
 
 ::: octomate.tentacles.acp.routes

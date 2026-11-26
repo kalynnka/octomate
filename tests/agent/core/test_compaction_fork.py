@@ -31,6 +31,7 @@ async def test_native_forks_share_compactions_without_reviving_unknown_context(
     source = await manager.ensure(await a_thread("source"), agent_tentacle_id=agent)
     target = await manager.ensure(await a_thread("fork"), agent_tentacle_id=agent)
     await manager.set_external_id(source, "source-session")
+    source = await manager.get(source.id)
     child = await manager.ensure(
         source.thread_id,
         agent_tentacle_id=agent,
@@ -101,6 +102,7 @@ async def test_transcript_fork_keeps_only_compactions_within_its_session_cut(
     )
     target = await manager.ensure(await a_thread("fork"), agent_tentacle_id="codex")
     await manager.set_external_id(source, "current-session")
+    source = await manager.get(source.id)
     earlier = Compaction(
         conversation_id=ancestor.id, native_session_id="earlier-session"
     )
@@ -156,6 +158,7 @@ async def test_transcript_fork_refuses_an_unknown_compaction_boundary(
     target = await manager.ensure(await a_thread("fork"), agent_tentacle_id="claude")
     if source_session_id is not None:
         await manager.set_external_id(source, source_session_id)
+        source = await manager.get(source.id)
     async with async_session() as session:
         session.add(
             Compaction(conversation_id=source.id, native_session_id=native_session_id)

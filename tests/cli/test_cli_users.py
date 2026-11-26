@@ -2,7 +2,7 @@ import asyncio
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-import httpx
+import httpx2
 import pytest
 from click import unstyle
 from octomate_cli import users as user_cli
@@ -100,8 +100,8 @@ async def test_create_consumes_the_code_and_can_sign_in_through_the_ui(
         assert await session.list(UserSession) == []
         assert await session.list(UserApiKey) == []
     app = Octomate(config=OctomateConfig(auth=auth_config()))
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app),
         base_url="https://testserver",
         headers={"X-Octomate-Request": "1"},
     ) as client:

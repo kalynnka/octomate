@@ -66,8 +66,7 @@ class Siphon:
     async def __aenter__(self) -> Self:
         """Subscribe to the channel's addresses now, so nothing published from
         here on is missed, and read in the background until the context exits."""
-        nerve = self.channel.octomate.nerve
-        self.subscription = nerve.subscribe(ChannelTopic(self.channel.id))
+        self.subscription = self.channel.nerve.subscribe(ChannelTopic(self.channel.id))
         impulses = await self.subscription.__aenter__()
         self.reading = asyncio.create_task(self.read(impulses))
         return self

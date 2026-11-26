@@ -1,6 +1,8 @@
 """Opt-in verification of kit resources and per-sandbox outbound TCP policy."""
 
+import asyncio
 import os
+from contextlib import AsyncExitStack
 
 import pytest
 from pydantic import TypeAdapter
@@ -12,12 +14,15 @@ from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
 from octomate.schemas.habitat import InvocationScope
 from octomate.types.json import JsonObject
+from tests.integration.sbx import remove_sandbox
 from tests.support.managers import a_workspace_manager
 
 
 @pytest.mark.timeout(300)
 @pytest.mark.parametrize("internet_access", [True, False])
-async def test_internet_access_is_applied_at_creation(internet_access: bool) -> None:
+async def test_internet_access_is_applied_at_creation(
+    internet_access: bool, sbx_cleanup: AsyncExitStack
+) -> None:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
@@ -36,14 +41,14 @@ async def test_internet_access_is_applied_at_creation(internet_access: bool) -> 
     assert isinstance(sandbox, SbxHabitat)
     assert (
         sandbox.name
-        not in (await sandbox.command("ls", quiet=True)).decode().splitlines()
+        not in (await sandbox.control("ls", quiet=True)).decode().splitlines()
     )
     try:
         async with manager.enter(scope, uuid7()):
-            await sandbox.command(
+            await sandbox.control(
                 "exec",
                 sandbox.name,
-                "/opt/octomate/.venv/bin/python",
+                "python",
                 "-c",
                 "import os; from pathlib import Path; "
                 "assert os.cpu_count() == 1; "
@@ -52,26 +57,28 @@ async def test_internet_access_is_applied_at_creation(internet_access: bool) -> 
                 "assert 768 < int(memory.split()[1]) / 1024 <= 1024, memory",
             )
             for host in ("example.com:443", "api.anthropic.com:443"):
-                process = sandbox.cli()(
-                    "policy",
-                    "check",
-                    "network",
-                    "--json",
-                    "--sandbox",
-                    sandbox.name,
-                    host,
-                    _ok_code=(0, 1),
-                    _timeout=30,
-                )
-                await process
-                policy = TypeAdapter(JsonObject).validate_json(process.stdout)
+                async with (
+                    asyncio.timeout(30),
+                    sandbox.cli(
+                        "policy",
+                        "check",
+                        "network",
+                        "--json",
+                        "--sandbox",
+                        sandbox.name,
+                        host,
+                    ) as process,
+                ):
+                    stdout, stderr = await process.communicate()
+                assert process.returncode in (0, 1), stderr.decode()
+                policy = TypeAdapter(JsonObject).validate_json(stdout)
                 assert policy["allowed"] is internet_access
                 if not internet_access:
                     assert policy["deny_kind"] == "explicit"
-            status = await sandbox.command(
+            status = await sandbox.control(
                 "exec",
                 sandbox.name,
-                "/opt/octomate/.venv/bin/python",
+                "python",
                 "-c",
                 "import urllib.error, urllib.request\n"
                 "try:\n"
@@ -85,11 +92,8 @@ async def test_internet_access_is_applied_at_creation(internet_access: bool) -> 
             )
             assert status.strip() == (b"200" if internet_access else b"403")
     finally:
-        try:
-            await manager.close()
-        finally:
-            if (
-                sandbox.name
-                in (await sandbox.command("ls", quiet=True)).decode().splitlines()
-            ):
-                await sandbox.command("rm", "--force", sandbox.name)
+        for state in manager.residences.values():
+            backend = state.habitat
+            if isinstance(backend, SbxHabitat) and backend.managed:
+                sbx_cleanup.push_async_callback(remove_sandbox, backend)
+        sbx_cleanup.push_async_callback(manager.close)

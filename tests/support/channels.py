@@ -44,12 +44,12 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment, MessageSegment
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import (
+    ChannelInk,
     ChannelOutput,
     ChannelSurfaces,
     ChannelTentacle,
     Chromo,
     DownloadedImage,
-    Ink,
     ThreadStrategy,
 )
 from octomate.tentacles.feelers.base import Feelers
@@ -146,7 +146,7 @@ class RecordingDeferredActions(DeferredActionManager):
 
 
 @dataclass
-class RecordingInk(Ink[NativeMessage]):
+class RecordingInk(ChannelInk[NativeMessage]):
     self_profile: UserProfile = field(
         default_factory=lambda: UserProfile(channel_user_id="bot", name="Bot")
     )
@@ -517,7 +517,7 @@ class RecordingOAuthFeeler(OAuthFeeler[NativeMessage]):
     """Records each authorization presented, event and all, instead of rendering
     it — what a test of the linking tools reads back."""
 
-    def __init__(self, ink: Ink[NativeMessage]) -> None:
+    def __init__(self, ink: ChannelInk[NativeMessage]) -> None:
         super().__init__(ink)
         self.presented: list[tuple[ChannelAddress, AuthorizationEvent]] = []
 

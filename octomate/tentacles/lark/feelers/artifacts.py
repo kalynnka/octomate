@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from octomate.schemas.artifacts import ArtifactOverview
 from octomate.schemas.conversation import ChannelAddress
 from octomate.telemetry import lark_logfire
-from octomate.tentacles.channel import Ink
+from octomate.tentacles.channel import ChannelInk
 from octomate.tentacles.feelers.artifacts import ArtifactFeeler
 from octomate.tentacles.feelers.output import IMMessageID
 from octomate.tentacles.lark.feelers import cards
@@ -30,10 +30,10 @@ class LarkArtifactFeeler(ArtifactFeeler):
         *,
         artifacts: ArtifactManager,
         users: UserManager,
-        ink: Ink[LarkOutboundMessage],
+        ink: ChannelInk[LarkOutboundMessage],
     ) -> None:
         super().__init__(artifacts=artifacts, users=users)
-        self.ink: Ink[LarkOutboundMessage] = ink
+        self.ink: ChannelInk[LarkOutboundMessage] = ink
 
     @lark_logfire.instrument("lark.artifact.send", extract_args=False)
     async def send(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gc
 import json
 from collections.abc import AsyncIterator, Callable
@@ -42,6 +43,7 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config.agents import Claim, ClaudeCodeConfig
+from octomate.events import SubagentSettledEvent, SubagentStartedEvent
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision, TeleportDecision
@@ -53,7 +55,8 @@ from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.transcript import transcripts_dir
 from octomate.types.json import JsonObject
-from tests.support.invocations import invocation_for
+from tests.agent.claude.test_native_fork import a_native_session
+from tests.support.invocations import a_native_invocation, invocation_for
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
@@ -79,10 +82,6 @@ KEY = ChannelAddress(
 
 
 _THREAD = uuid7()
-
-
-class IdentifiedPromptHook(UserPromptSubmitHookInput):
-    prompt_id: str
 
 
 class FakeClaudeClient:
@@ -300,7 +299,7 @@ async def test_prompt_hook_identity_is_retained_on_the_driven_run(
             options = self.last_options
             assert isinstance(options, ClaudeAgentOptions)
             assert options.hooks is not None
-            hook_input: IdentifiedPromptHook = {
+            hook_input: UserPromptSubmitHookInput = {
                 "hook_event_name": "UserPromptSubmit",
                 "session_id": "sess-xyz",
                 "transcript_path": "/client/transcript.jsonl",
@@ -324,6 +323,187 @@ async def test_prompt_hook_identity_is_retained_on_the_driven_run(
     assert fake.agent_tentacle_id == "claude"
     assert run.native_session_id == "sess-xyz"
     assert run.native_turn_id == "native-prompt-id"
+
+
+async def test_driven_children_keep_their_own_messages_and_spawn_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    in_memory_engine: AsyncEngine,
+) -> None:
+    class WithChildren(FakeClaudeClient):
+        async def receive_response(self) -> AsyncIterator[Message]:
+            options = self.last_options
+            assert isinstance(options, ClaudeAgentOptions)
+            assert options.hooks is not None
+            ids = ("first", "second")
+            yield AssistantMessage(
+                model="parent-model",
+                content=[
+                    ToolUseBlock(
+                        id=key,
+                        name="Agent",
+                        input={
+                            "prompt": f"check {key}",
+                            "description": f"Review {key}",
+                        },
+                    )
+                    for key in ids
+                ],
+            )
+            for key in ids:
+                await options.hooks["SubagentStart"][0].hooks[0](
+                    {
+                        "hook_event_name": "SubagentStart",
+                        "cwd": "/repo",
+                        "transcript_path": "main",
+                        "session_id": "session",
+                        "agent_id": f"child-{key}",
+                        "agent_type": "Explore",
+                    },
+                    None,
+                    HookContext(signal=None),
+                )
+            for key in reversed(ids):
+                yield AssistantMessage(
+                    model="child-model",
+                    parent_tool_use_id=key,
+                    content=[TextBlock(text=f"private {key}")],
+                )
+                await options.hooks["SubagentStop"][0].hooks[0](
+                    {
+                        "hook_event_name": "SubagentStop",
+                        "cwd": "/repo",
+                        "transcript_path": "main",
+                        "session_id": "session",
+                        "agent_id": f"child-{key}",
+                        "agent_type": "Explore",
+                        "agent_transcript_path": f"{key}.jsonl",
+                        "stop_hook_active": False,
+                    },
+                    None,
+                    HookContext(signal=None),
+                )
+                yield UserMessage(
+                    content=[ToolResultBlock(tool_use_id=key, content="checked")],
+                    tool_use_result={"agentId": f"child-{key}"},
+                )
+            yield ResultMessage(
+                subtype="success",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=False,
+                num_turns=1,
+                session_id="session",
+                result="done",
+            )
+
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", WithChildren)
+    octomate, tentacle, _ = await a_native_session()
+    thread_id = await a_thread()
+    async with invocation_for(
+        tentacle, conversation_address=KEY, thread_id=thread_id
+    ) as invocation:
+        async with tentacle.run_stream_events(
+            "go", conversation_address=KEY, invocation=invocation
+        ) as stream:
+            events = [event async for event in stream]
+    assert [
+        event.invocation_id
+        for event in events
+        if isinstance(event, SubagentStartedEvent)
+    ] == ["child-first", "child-second"]
+    assert [
+        event.invocation_id
+        for event in events
+        if isinstance(event, SubagentSettledEvent)
+    ] == ["child-second", "child-first"]
+    parent = await octomate.conversations.get(invocation.conversation.id)
+    [parent_run] = parent.runs
+    assert "private" not in str(parent_run.messages)
+    children = await octomate.conversations.subagents(parent.id)
+    assert {child.subagent_id for child in children} == {"child-first", "child-second"}
+    for child in children:
+        [run] = child.runs
+        key = child.subagent_id.removeprefix("child-")
+        assert child.name == f"Review {key}"
+        assert (run.parent_run_id, run.parent_tool_call_id, run.model_name) == (
+            parent_run.id,
+            key,
+            "child-model",
+        )
+        assert [message.message_text for message in run.messages] == [
+            f"check {key}",
+            f"private {key}",
+        ]
+
+
+@pytest.mark.parametrize(
+    ("crashed", "status"), [(False, "cancelled"), (True, "failed")]
+)
+async def test_a_driven_subagent_left_open_settles_with_its_run(
+    monkeypatch: pytest.MonkeyPatch,
+    in_memory_engine: AsyncEngine,
+    crashed: bool,
+    status: str,
+) -> None:
+    class LeftOpen(FakeClaudeClient):
+        async def receive_response(self) -> AsyncIterator[Message]:
+            options = self.last_options
+            assert isinstance(options, ClaudeAgentOptions)
+            assert options.hooks is not None
+            yield AssistantMessage(
+                model="parent-model",
+                content=[
+                    ToolUseBlock(id="call", name="Agent", input={"prompt": "check"})
+                ],
+            )
+            await options.hooks["SubagentStart"][0].hooks[0](
+                {
+                    "hook_event_name": "SubagentStart",
+                    "cwd": "/repo",
+                    "transcript_path": "main",
+                    "session_id": "session",
+                    "agent_id": "child",
+                    "agent_type": "Explore",
+                },
+                None,
+                HookContext(signal=None),
+            )
+            if crashed:
+                raise RuntimeError("the CLI died")
+            # An interrupt refuses the call in plain text and ends the turn with
+            # no SubagentStop.
+            yield UserMessage(
+                content=[ToolResultBlock(tool_use_id="call", content="refused")],
+                # The CLI sends text here; that mismatch is the input under test.
+                tool_use_result="User rejected tool use",  # pyright: ignore[reportArgumentType]
+            )
+            yield ResultMessage(
+                subtype="error_during_execution",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=True,
+                num_turns=1,
+                session_id="session",
+            )
+
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", LeftOpen)
+    _, tentacle, _ = await a_native_session()
+    thread_id = await a_thread()
+    events: list[object] = []
+    async with invocation_for(
+        tentacle, conversation_address=KEY, thread_id=thread_id
+    ) as invocation:
+        with pytest.raises(RuntimeError) if crashed else contextlib.nullcontext():
+            async with tentacle.run_stream_events(
+                "go", conversation_address=KEY, invocation=invocation
+            ) as stream:
+                async for event in stream:
+                    events.append(event)
+    assert [
+        (event.invocation_id, event.status)
+        for event in events
+        if isinstance(event, SubagentSettledEvent)
+    ] == [("child", status)]
 
 
 async def test_a_run_addressed_by_conversation_id_lands_there(
@@ -1229,19 +1409,21 @@ async def test_relocating_a_conversation_moves_its_session_by_id(
     # on record. Nothing to move before a session exists.
     relocated: list[tuple[str, Path]] = []
     monkeypatch.setattr(
-        claude_base,
-        "relocate_session",
+        claude_ink,
+        "relocate_session_files",
         lambda session_id, *, cwd: relocated.append((session_id, cwd)),
     )
     tentacle = _tentacle(FakeConversationManager())
 
-    await tentacle.relocate(
-        cast(claude_base.Conversation, FakeConversation(external_id="prev-sess")),
-        cwd=Path("/workspaces/t1"),
-    )
-    await tentacle.relocate(
-        cast(claude_base.Conversation, FakeConversation()), cwd=Path("/workspaces/t1")
-    )
+    for external_id in ("prev-sess", None):
+        conversation = claude_base.Conversation(
+            thread_id=_THREAD, agent_tentacle_id="claude", external_id=external_id
+        )
+        await tentacle.ink.relocate_session(
+            conversation.external_id,
+            cwd=Path("/workspaces/t1"),
+            habitat=a_native_invocation(conversation, Path("/workspaces/t1")).habitat,
+        )
 
     assert relocated == [("prev-sess", Path("/workspaces/t1"))]
 
@@ -1285,11 +1467,19 @@ async def test_claude_fork_preserves_source_and_relocates_only_the_new_session(
     )
     tentacle = _tentacle(FakeConversationManager())
 
-    fork_id = await tentacle.fork_session(source, cwd=destination)
+    fork_id = await tentacle.ink.fork_session(
+        source.external_id,
+        cwd=destination,
+        habitat=a_native_invocation(source, destination).habitat,
+    )
     target = claude_base.Conversation(
         thread_id=uuid7(), agent_tentacle_id="claude", external_id=fork_id
     )
-    await tentacle.relocate(target, cwd=destination)
+    await tentacle.ink.relocate_session(
+        target.external_id,
+        cwd=destination,
+        habitat=a_native_invocation(target, destination).habitat,
+    )
 
     assert fork_id != session_id
     assert source.external_id == session_id
@@ -1310,6 +1500,53 @@ async def test_claude_cannot_fork_without_a_session_id(external_id: str | None) 
         thread_id=_THREAD, agent_tentacle_id="claude", external_id=external_id
     )
     with pytest.raises(ValueError, match="without a session id"):
-        await _tentacle(FakeConversationManager()).fork_session(
-            source, cwd=Path("/new")
+        await _tentacle(FakeConversationManager()).ink.fork_session(
+            source.external_id,
+            cwd=Path("/new"),
+            habitat=a_native_invocation(source, Path("/new")).habitat,
         )
+
+
+@pytest.mark.parametrize("empty", [False, True])
+async def test_ink_import_cleans_staging_after_success_or_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, empty: bool
+) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    session_id, message_id = str(uuid7()), str(uuid7())
+    source = claude_base.Conversation(
+        thread_id=_THREAD, agent_tentacle_id="claude", external_id=session_id
+    )
+    invocation = a_native_invocation(source, tmp_path)
+    data = (
+        b""
+        if empty
+        else (
+            json.dumps(
+                {
+                    "type": "user",
+                    "sessionId": session_id,
+                    "uuid": message_id,
+                    "parentUuid": None,
+                    "message": {"role": "user", "content": "retained history"},
+                }
+            )
+            + "\n"
+        ).encode()
+    )
+    ink = claude_ink.ClaudeInk()
+    if empty:
+        with pytest.raises(FileNotFoundError, match="not found"):
+            await ink.fork_session(
+                session_id, cwd=tmp_path, habitat=invocation.habitat, transcript=data
+            )
+        assert list(transcripts_dir(tmp_path).glob("*.jsonl")) == []
+    else:
+        forked = await ink.fork_session(
+            session_id, cwd=tmp_path, habitat=invocation.habitat, transcript=data
+        )
+        [message] = get_session_messages(forked, directory=str(tmp_path))
+        assert message.message == {"role": "user", "content": "retained history"}
+        assert message.uuid != message_id
+        assert forked != session_id
+    assert not (transcripts_dir(tmp_path) / f"{session_id}.jsonl").exists()
+    assert source.external_id == session_id

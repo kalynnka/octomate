@@ -14,8 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from anyio.abc import ObjectSendStream
-from octomate_protocol.stream import SESSION_FILE
-from pydantic import ValidationError
+from pydantic import UUID7, ValidationError
 from pydantic_ai.messages import ModelMessage
 
 from octomate.managers.conversation import ConversationManager
@@ -207,7 +206,7 @@ class DeepseekEventTailer:
         sender: UserProfile,
         address: ChannelAddress,
         impulses: ObjectSendStream[Impulse],
-    ) -> tuple[TailState, dict[str, int]]:
+    ) -> tuple[TailState, dict[UUID7, int]]:
         """Register a streamed session and answer where it resumes: the seq
         after the committed floor, recomputed from the durable runs — the
         client holds no cursor of its own. A lingering registration (its
@@ -233,7 +232,7 @@ class DeepseekEventTailer:
         state.floor = committed_floor(state.conversation)
         self.sessions[session_id] = state
         logger.info("session %s: remote tail attached", session_id)
-        return state, {SESSION_FILE: state.floor + 1}
+        return state, {state.conversation.id: state.floor + 1}
 
     async def feed_remote(self, state: TailState, raw: str) -> None:
         """Fold one history entry; the route validates the sequence framing."""

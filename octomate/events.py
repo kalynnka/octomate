@@ -21,6 +21,12 @@ One stream, with these event families:
   handoffs, ledger entries and command outcomes published by the thread manager.
 - **Subagent lifecycle** (`SubagentStartedEvent`/`SubagentSettledEvent`) — an
   accomplice's run opening and finishing around its `commission` or `whisper` call.
+- **Agent messages** (`AgentMessageEvent`) — another agent session's words
+  reaching a native run as its prompt, published by the tailer.
+- **System messages** (`SystemMessageEvent`) — a line the harness wrote into a
+  native run in the person's place, published by the tailer.
+- **Habitat lifecycle** (`HabitatEvent`) — the phases a user's habitat passes
+  through, published by the habitat manager.
 
 Display, action and subagent events are emitted by capabilities (a capability
 bundles a tool + instructions + `wrap_run_event_stream`) or the suspender; the
@@ -44,6 +50,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -60,6 +67,7 @@ from pydantic_ai.result import FinalResult
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.usage import RunUsage
 
+from octomate.schemas.annotations import MessageAgent
 from octomate.schemas.auth import LinkProfileAuthorization
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import CommandOutcome
@@ -70,7 +78,6 @@ from octomate.schemas.deferred import (
     DeferredQuestion,
     QuestionAnswer,
 )
-from octomate.schemas.habitat import HabitatFailed, HabitatProgress
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.thread import Handoff
 from octomate.schemas.todos import Todo
@@ -79,7 +86,7 @@ from octomate.schemas.user import UserProfile
 from octomate.types.deferred import DeferredResponseMode
 from octomate.types.threads import KickOutcome
 
-SubagentActivityKind = Literal["commission", "whisper"]
+SubagentActivityKind = Literal["commission", "whisper", "subagent"]
 SubagentActivityStatus = Literal["completed", "failed", "timed_out", "cancelled"]
 
 
@@ -101,6 +108,31 @@ class SubagentSettledEvent(BaseModel):
     status: SubagentActivityStatus
     detail: str | None = None
     response: str = ""
+
+
+class AgentMessageEvent(BaseModel):
+    """Another agent session's words reached a native run as its prompt: a
+    subagent handing its report back, or a peer writing in. No person said them."""
+
+    event_kind: Literal["agent_message"] = "agent_message"
+    message_id: UUID7 = Field(
+        description="The ledger row the message is on, for a reader to reconcile "
+        "the live message with."
+    )
+    agent: MessageAgent
+    text: str
+
+
+class SystemMessageEvent(BaseModel):
+    """A line the harness wrote into a native run in the person's place: the mark
+    Claude leaves where the person stopped a turn. Kept as a `system` row."""
+
+    event_kind: Literal["system_message"] = "system_message"
+    message_id: UUID7 = Field(
+        description="The ledger row the line is on, for a reader to reconcile the "
+        "live line with."
+    )
+    text: str
 
 
 class ReflexAwakeEvent(BaseModel):
@@ -197,6 +229,35 @@ type ThreadEvent = (
 )
 
 
+class HabitatObservation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    user_id: UUID7
+    habitat: str
+    sequence: int = Field(ge=0, description="Monotonic within this manager lifetime.")
+    updated_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
+    invocation_id: UUID7 | None = None
+    thread_id: UUID7 | None = None
+
+
+class HabitatProgressEvent(HabitatObservation):
+    event_kind: Literal["habitat_progress"] = "habitat_progress"
+    phase: Literal["unknown", "preparing", "starting", "ready", "stopping", "stopped"]
+
+
+class HabitatFailedEvent(HabitatObservation):
+    event_kind: Literal["habitat_failed"] = "habitat_failed"
+    phase: Literal["failed"] = "failed"
+    message: str = Field(
+        description="Operator-actionable text without guest diagnostics."
+    )
+
+
+type HabitatEvent = Annotated[
+    HabitatProgressEvent | HabitatFailedEvent, Field(discriminator="event_kind")
+]
+
+
 class RunStartedEvent(BaseModel):
     """An agent run beginning, before anything it streams: the thread it reports
     into — another than the one asked about when a move carried the turn there.
@@ -217,6 +278,13 @@ class RunStartedEvent(BaseModel):
 
 
 RunActivity = Literal["working", "thinking", "using_tools", "writing", "compacting"]
+
+
+class HabitatPreparationEvent(BaseModel):
+    """The run entered or completed preparation of its habitat."""
+
+    event_kind: Literal["habitat_preparation"] = "habitat_preparation"
+    phase: Literal["preparing", "ready"]
 
 
 class RunActivityChangedEvent(BaseModel):
@@ -547,6 +615,7 @@ type StreamEvents[OutputT] = (
     | ActionBatchUpdatedEvent
     | SubagentStartedEvent
     | SubagentSettledEvent
+    | HabitatPreparationEvent
     | RunActivityChangedEvent
 )
 
@@ -581,18 +650,20 @@ type WireEvent = (
     | ActionBatchUpdatedEvent
     | SubagentStartedEvent
     | SubagentSettledEvent
+    | AgentMessageEvent
+    | SystemMessageEvent
     | RunResultEvent
     | ReflexAwakeEvent
     | ReflexAsleepEvent
     | ReflexPhaseChangedEvent
     | ThreadEvent
     | RunStartedEvent
+    | HabitatPreparationEvent
     | RunActivityChangedEvent
     | RunEndedEvent
     | RunErrorEvent
     | GatewayEvent
-    | HabitatProgress
-    | HabitatFailed
+    | HabitatEvent
 )
 
 # Serialization-only: wire consumers never validate events back in, so the

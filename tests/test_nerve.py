@@ -11,25 +11,27 @@ from anyio.abc import ObjectReceiveStream, ObjectSendStream
 from pydantic_ai.messages import PartDeltaEvent, TextPartDelta
 from uuid_utils.compat import uuid7
 
-from octomate.events import MessageSentEvent
+from octomate.events import HabitatFailedEvent, HabitatProgressEvent, MessageSentEvent
 from octomate.fibers import MemoryFiber
 from octomate.nerve import (
     ChannelTopic,
     HabitatTopic,
     Impulse,
     Nerve,
+    Stimulus,
     ThreadTopic,
     UserTopic,
 )
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.habitat import HabitatFailed, HabitatProgress
 from octomate.schemas.thread import ThreadKey
+from octomate.signals import InterruptRunSignal
 from tests.support.nerve import held
 
 HERE = ChannelAddress("web", "thread", "lu", "lu", channel_thread_id="t1")
 THERE = ChannelAddress("web", "thread", "lu", "lu", channel_thread_id="t2")
 FAR = ChannelAddress("slack", "dm", "D1", "U1")
 EVENT = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="hi"))
+SIGNAL = InterruptRunSignal(invocation_id=uuid7())
 LATER = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="there"))
 
 
@@ -37,7 +39,7 @@ LATER = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="there"))
 async def test_specialized_nerve_preserves_fiber_and_stream_event_types(
     supplied: bool,
 ) -> None:
-    nerve = Nerve[PartDeltaEvent]()
+    nerve = Nerve[Impulse[PartDeltaEvent]]()
     topic = UserTopic(uuid7())
     async with (
         MemoryFiber[Impulse[PartDeltaEvent]]() as publisher,
@@ -412,12 +414,12 @@ async def test_habitat_lifecycle_events_share_the_same_subscribers() -> None:
     topic = HabitatTopic(uuid7())
     sent: list[Impulse] = [
         Impulse(
-            HabitatProgress(
+            HabitatProgressEvent(
                 user_id=topic.user_id, habitat="local", sequence=1, phase="preparing"
             )
         ),
         Impulse(
-            HabitatFailed(
+            HabitatFailedEvent(
                 user_id=topic.user_id, habitat="local", sequence=2, message="failed"
             )
         ),
@@ -488,3 +490,21 @@ async def test_supplied_memory_fibers_use_the_same_api_and_remain_caller_owned(
     finally:
         publisher.close()
         subscriber.close()
+
+
+async def test_a_stimulus_reaches_the_subscribers_of_its_topic() -> None:
+    signals = Nerve[Stimulus]()
+    topic = ThreadTopic(ThreadKey.from_address(HERE))
+    first, second, other = (MemoryFiber[Stimulus]() for _ in range(3))
+    with (
+        signals.accept(topic, first),
+        signals.accept(topic, second),
+        signals.accept(ThreadTopic(ThreadKey.from_address(THERE)), other),
+    ):
+        signals.deliver(topic, Stimulus(SIGNAL))
+        assert held(first) == [Stimulus(SIGNAL)]
+        assert held(second) == [Stimulus(SIGNAL)]
+        assert held(other) == []
+    assert not signals.subscribers
+    # Leaving keeps each fiber open for its owner.
+    assert [first.closed, second.closed, other.closed] == [False] * 3

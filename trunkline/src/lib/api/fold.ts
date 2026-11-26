@@ -331,10 +331,25 @@ function toolPresentation(name: string, args: ToolCallPart['args']): Pick<Extrac
   return presentation
 }
 
+/** The task label on a spawning call in a legacy conversation's parent history. */
+export function spawnTitle(name: string, args: ToolCallPart['args']): string | undefined {
+  let input: unknown = args
+  if (typeof args === 'string') {
+    try { input = JSON.parse(args) } catch { return undefined }
+  }
+  if (!input || typeof input !== 'object') return undefined
+  const key = name === 'spawn_agent' ? 'task_name' : name === 'Skill' ? 'skill' : name === 'commission' ? 'name' : 'description'
+  const value: unknown = Reflect.get(input, key)
+  return typeof value === 'string' ? value.trim() || undefined : undefined
+}
+
 /** A child run reachable from a parent's spawn call, keyed by that call's id —
  * how the replay knows a tool card is really a subagent card. */
 export interface ReplayChild {
   agentId: string
+  name?: string | null
+  /** What the child handed back as a message of its own; the call's result then only points at it. */
+  report?: string
 }
 
 /** One replayed card with the message that produced it, which is where it sorts:
@@ -437,18 +452,27 @@ export function replayRun(
     child: ReplayChild,
   ): LedgerItemDraft => {
     const settled = returns.get(callId)
-    const route =
-      typeof args === 'object' && args !== null && typeof args.subagent_type === 'string'
-        ? args.subagent_type
-        : name
+    const said = (key: string) =>
+      typeof args === 'object' && args !== null && typeof args[key] === 'string' ? args[key] : undefined
+    // A harness may hand prose back as a list of text blocks.
+    let report = child.report ?? settled?.result
+    try {
+      const blocks: unknown = JSON.parse(report ?? '')
+      if (Array.isArray(blocks) && blocks.every(block => typeof block === 'string')) report = blocks.join('\n').trim()
+    } catch { /* plain text already */ }
     return {
       kind: 'sub',
+      invocationId: child.agentId,
       id: child.agentId.slice(-6).toUpperCase(),
-      route,
+      route: said('subagent_type') ?? name,
+      status: settled === undefined ? 'running' : settled.failed ? 'failed' : 'completed',
+      brief: child.name || spawnTitle(name, args),
+      prompt: said('prompt'),
+      report: report && clip(report),
       note:
         settled === undefined
           ? 'running'
-          : clip(settled.result) || '(no output)',
+          : clip(report ?? '') || '(no output)',
     }
   }
 
@@ -470,7 +494,7 @@ export function replayRun(
     if (message.kind !== 'response') continue
     for (const [n, part] of message.parts.entries()) {
       const push = (item: LedgerItemDraft) => {
-        if (item.kind === 'agent' || item.kind === 'stream' || item.kind === 'think' || item.kind === 'tool') item.agentId = agent
+        if (item.kind === 'agent' || item.kind === 'stream' || item.kind === 'think' || item.kind === 'tool' || item.kind === 'sub') item.agentId = agent
         cards.push({ id: `${message.id}.${n}`, message: message.id, item })
       }
       switch (part.part_kind) {
@@ -535,6 +559,7 @@ export class TurnFold {
     this.sink = sink
     this.nativeAgent = nativeAgent
     for (const item of history) {
+      if (item.kind === 'sub' && item.invocationId) this.subUids.set(item.invocationId, item.uid)
       if (item.kind === 'ask' && item.nativeCallId) this.questions.set(item.nativeCallId, item)
     }
   }
@@ -823,24 +848,55 @@ export class TurnFold {
           this.sink.push(item)
         }
         break
-      case 'subagent_started':
+      case 'subagent_started': {
+        const running = { status: 'running', note: event.kind === 'subagent' ? 'running' : `${event.name} · running` } as const
+        // A card already on show is the same subagent, started again or announced twice.
+        const known = this.subUids.get(event.invocation_id)
+        if (known !== undefined) {
+          this.sink.patch(known, running)
+          break
+        }
         this.subUids.set(
           event.invocation_id,
           this.sink.push({
             kind: 'sub',
+            agentId: this.nativeAgent,
+            invocationId: event.invocation_id,
             id: event.invocation_id.slice(-6).toUpperCase(),
-            route: event.kind,
-            note: `${event.name} · running`,
+            route: event.kind === 'subagent' ? event.name : event.kind,
+            ...running,
           }),
         )
         break
+      }
       case 'subagent_settled': {
         const uid = this.subUids.get(event.invocation_id)
         if (uid !== undefined) {
-          this.sink.patch(uid, { note: event.detail || event.status })
+          this.sink.patch(uid, {
+            status: event.status === 'timed_out' ? 'failed' : event.status,
+            note: event.detail || event.status,
+            ...(event.response ? { report: event.response } : {}),
+          })
         }
         break
       }
+      case 'agent_message': {
+        this.closeThink()
+        this.closeStream()
+        this.sink.push({ kind: 'agent', uid: event.message_id, subagentId: event.agent.id, label: event.agent.name, blocks: [{ type: 'p', text: event.text }] })
+        // What a subagent hands back is also its card's report, as a reload reads it.
+        const card = this.subUids.get(event.agent.id)
+        if (card !== undefined) this.sink.patch(card, { report: event.text })
+        break
+      }
+      case 'system_message':
+        this.closeThink()
+        this.closeStream()
+        // The row reads back as one bullet per paragraph, keyed the same way.
+        for (const [n, paragraph] of event.text.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean).entries()) {
+          this.sink.push({ kind: 'system', uid: `${event.message_id}.${n}`, text: paragraph, tone: n === 0 ? 'info' : undefined })
+        }
+        break
       case 'run_result': {
         if (this.ended) break
         this.closeThink()

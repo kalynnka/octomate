@@ -25,6 +25,14 @@ test('prompt context starts the assistant side before thinking and tools', () =>
   assert.deepEqual(traceRows([prompt], true), rows.slice(0, 2))
 })
 
+test('a prompt that is only harness context shows the context alone', () => {
+  const notification = { title: 'Task notification', text: '<task-id>a1</task-id>', rollout_ids: [] }
+  const prompt: LedgerItem = { kind: 'user', uid: 'prompt', t: '', who: 'operator', text: '', annotations: { source: 'claude', raw: '<task-notification>…', contexts: [notification], references: [] } }
+  const rows = traceRows([prompt], false)
+  assert.deepEqual(rows.map(row => row.kind), ['context'])
+  assert.equal(rows[0].kind === 'context' && rows[0].context, notification)
+})
+
 for (const kind of ['agent', 'stream'] as const) {
   test(`${kind} keeps prepended context before its content and memory sources after it`, () => {
     const withMemory: MessageAnnotations = { ...annotations, contexts: [...annotations.contexts, { title: 'Memory sources', text: 'Memory citation', rollout_ids: [] }] }

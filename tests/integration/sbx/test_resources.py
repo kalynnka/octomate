@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import platform
+from contextlib import AsyncExitStack
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import monotonic
@@ -19,6 +20,7 @@ from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
 from octomate.schemas.habitat import InvocationScope
+from tests.integration.sbx import remove_sandbox
 from tests.support.managers import a_workspace_manager
 
 
@@ -60,10 +62,10 @@ async def sample_load(sandbox: SbxHabitat, pids: set[int]) -> float:
     peak_rss_mib = 0.0
     async with asyncio.TaskGroup() as tasks:
         load = tasks.create_task(
-            sandbox.command(
+            sandbox.control(
                 "exec",
                 sandbox.name,
-                "/opt/octomate/.venv/bin/python",
+                "python",
                 "-c",
                 "import hashlib,time; data=bytearray(256*1024*1024); "
                 "end=time.monotonic()+5\n"
@@ -78,7 +80,9 @@ async def sample_load(sandbox: SbxHabitat, pids: set[int]) -> float:
 
 
 @pytest.mark.timeout(600)
-async def test_single_user_resource_cost(tmp_path: Path) -> None:
+async def test_single_user_resource_cost(
+    tmp_path: Path, sbx_cleanup: AsyncExitStack
+) -> None:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
@@ -89,7 +93,7 @@ async def test_single_user_resource_cost(tmp_path: Path) -> None:
     assert isinstance(sandbox, SbxHabitat)
     assert (
         sandbox.name
-        not in (await sandbox.command("ls", quiet=True)).decode().splitlines()
+        not in (await sandbox.control("ls", quiet=True)).decode().splitlines()
     )
     before = await host_usage()
     started = monotonic()
@@ -97,8 +101,8 @@ async def test_single_user_resource_cost(tmp_path: Path) -> None:
         async with manager.enter(scope, uuid7()):
             startup_seconds = monotonic() - started
             invoked = monotonic()
-            async with sandbox.execute(
-                "/opt/octomate/.venv/bin/python",
+            async with sandbox.resident(
+                "python",
                 "-c",
                 "import os,sys; print(os.getpid(), flush=True); sys.stdin.buffer.read()",
                 workdir="/home/agent/workspace",
@@ -127,10 +131,10 @@ async def test_single_user_resource_cost(tmp_path: Path) -> None:
                 / (monotonic() - sampled)
             )
             guest = GuestMemory.model_validate_json(
-                await sandbox.command(
+                await sandbox.control(
                     "exec",
                     sandbox.name,
-                    "/opt/octomate/.venv/bin/python",
+                    "python",
                     "-c",
                     "import json,sys; from pathlib import Path; "
                     "assert not Path('/proc', sys.argv[1]).exists(), 'Guest process survived disconnect'; "
@@ -171,6 +175,8 @@ async def test_single_user_resource_cost(tmp_path: Path) -> None:
         print(output.read_text())
         print(f"Resource report: {output}")
     finally:
-        await manager.close()
-        if sandbox.managed:
-            await sandbox.command("rm", "--force", sandbox.name)
+        for state in manager.residences.values():
+            backend = state.habitat
+            if isinstance(backend, SbxHabitat) and backend.managed:
+                sbx_cleanup.push_async_callback(remove_sandbox, backend)
+        sbx_cleanup.push_async_callback(manager.close)

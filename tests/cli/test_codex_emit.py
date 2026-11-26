@@ -135,6 +135,33 @@ def test_an_undriven_session_is_not_marked(router: tuple[str, Received]) -> None
     assert "octomate_driven" not in received.body
 
 
+def test_claude_hooks_work_without_the_codex_extra(
+    router: tuple[str, Received], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url, received = router
+    payload = {"hook_event_name": "Stop", "session_id": "s1"}
+    monkeypatch.setitem(sys.modules, "openai_codex", None)
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+
+    assert emit_module.main(url.replace(CODEX_HOOK_PATH, "/hooks/claude"), SECRET) == 0
+    assert received.body == payload
+
+
+def test_codex_lookup_names_the_missing_extra(
+    router: tuple[str, Received],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    url, received = router
+    payload = {"hook_event_name": "Stop", "session_id": "s1"}
+    monkeypatch.setitem(sys.modules, "openai_codex", None)
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+
+    assert emit_module.main(url, SECRET) == 1
+    assert "install octomate-cli[codex]" in capsys.readouterr().err
+    assert received.body is None
+
+
 def test_forwarding_preserves_unmodeled_fields_and_explicit_nulls(
     router: tuple[str, Received],
 ) -> None:
@@ -168,7 +195,7 @@ def test_invalid_hook_payloads_fail_before_sdk_or_http_calls(
 ) -> None:
     monkeypatch.setattr(sys, "stdin", StringIO(raw))
     with (
-        patch.object(emit_module, "CodexClient") as client,
+        patch("openai_codex.client.CodexClient") as client,
         patch.object(emit_module.urllib.request, "urlopen") as post,
         pytest.raises(ValidationError),
     ):
@@ -209,7 +236,7 @@ def test_codex_hooks_read_the_name_through_the_sdk(
             }
         }
     )
-    with patch.object(emit_module, "CodexClient", autospec=True) as factory:
+    with patch("openai_codex.client.CodexClient", autospec=True) as factory:
         client = factory.return_value.__enter__.return_value
         client.thread_read.return_value = response
 
@@ -237,7 +264,7 @@ def test_a_name_lookup_failure_still_delivers_the_hook(
     url, received = router
     payload = {**PAYLOAD, "hook_event_name": "Stop"}
     monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
-    with patch.object(emit_module, "CodexClient", autospec=True) as factory:
+    with patch("openai_codex.client.CodexClient", autospec=True) as factory:
         client = factory.return_value.__enter__.return_value
         client.thread_read.side_effect = error
 
@@ -258,7 +285,7 @@ def test_codex_names_are_not_requested_for_claude_or_child_hooks(
     if child:
         payload["agent_id"] = "child"
     monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
-    with patch.object(emit_module, "CodexClient", autospec=True) as factory:
+    with patch("openai_codex.client.CodexClient", autospec=True) as factory:
         assert emit_module.main(base_of(url) + path, SECRET) == 0
 
         factory.assert_not_called()

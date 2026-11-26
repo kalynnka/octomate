@@ -98,6 +98,7 @@ class ClaudeHookIngest:
         "claude.hook UserPromptSubmit [{event.session_id}]", extract_args=["event"]
     )
     async def on_user_prompt_submit(self, event: ClaudeHookInput) -> None:
+        self.tailer.ended.discard(event.session_id)
         async with self.locks.hold(event.session_id):
             await self.start_session(event)
             await self.ensure_run(event)
@@ -112,7 +113,10 @@ class ClaudeHookIngest:
         # The turn is over and its transcript flushed: let the tail commit it now
         # rather than at the next prompt — a remote one drains out and exits. Outside
         # the lock, because a local close takes the same session lock to commit.
-        await self.tailer.stop_turn(event.session_id, event.prompt_id)
+        # A background child can outlive the parent turn. Its stream must stay
+        # attached; the parent's stop_hook_summary still closes that turn.
+        if not any(task.type == "subagent" for task in event.background_tasks):
+            await self.tailer.stop_turn(event.session_id, event.prompt_id)
 
     @claude_logfire.instrument(
         "claude.hook SessionEnd [{event.session_id}]", extract_args=["event"]
@@ -152,11 +156,14 @@ class ClaudeHookIngest:
         # fires — and a Claude child's own file never closes its last turn — so wait
         # for the streamed answer and commit the open turn now. A session no stream
         # covers has nothing to settle.
-        await self.tailer.finish_subagent(
+        answer = await self.tailer.finish_subagent(
             event.session_id,
             event.agent_id,
             final_answer=event.last_assistant_message,
         )
+        # Claude names no answer for a child that handed it back through a tool call.
+        if not event.last_assistant_message:
+            event.last_assistant_message = answer
         logger.info("session %s: subagent %s stopped", event.session_id, event.agent_id)
 
     async def ensure_subagent_run(self, event: ClaudeHookInput) -> None:

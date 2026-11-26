@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import httpx
+import httpx2
 import pytest
 from uuid_utils.compat import uuid7
 
@@ -42,8 +42,8 @@ async def test_frontend_uses_the_enabled_channels_static_directory(
             )
         )
     app = octomate
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="http://test"
     ) as client:
         index = await client.get("/")
         asset = await client.get("/app.js")
@@ -90,8 +90,8 @@ async def test_a_console_page_reloads_into_the_console(tmp_path: Path) -> None:
         )
     )
     page = {"Accept": "text/html,application/xhtml+xml"}
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=octomate), base_url="http://test"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=octomate), base_url="http://test"
     ) as client:
         thread = await client.get(
             "/threads/01a117fb-8ed6-7b82-be5f-6db7923b94d9", headers=page

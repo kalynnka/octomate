@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 from unittest.mock import AsyncMock
 
-import httpx
+import httpx2
 import pytest
 from anyio.abc import ObjectReceiveStream
 from fastapi import HTTPException
@@ -80,7 +80,7 @@ from tests.support.nerve import drawing, held
 from tests.support.users import a_user
 
 
-def command_outcome(response: httpx.Response) -> CommandOutcomeEvent:
+def command_outcome(response: httpx2.Response) -> CommandOutcomeEvent:
     """Decode the endpoint's answer through the public outcome contract."""
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/json"
@@ -244,8 +244,8 @@ async def test_http_direct_command_before_conversation_creates_no_runtime_record
     async with app.nerve.subscribe(
         ThreadTopic(ThreadKey.from_address(address))
     ) as live:
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        async with httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app), base_url="http://test"
         ) as client:
             response = await client.post(
                 "/api/commands/execute",
@@ -319,8 +319,8 @@ async def test_http_composer_execution_checks_scope_membership_and_identity(
         address = replace(address, user_id=str(uuid7()))
     elif refusal == "foreign_chat":
         address = replace(address, chat_id=str(uuid7()))
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="http://test"
     ) as client:
         response = await client.post(
             "/api/commands/execute",
@@ -351,8 +351,8 @@ async def test_http_catalog_preserves_extensions_and_omits_runtime_history(
     address: ChannelAddress,
     conversation: Conversation,
 ) -> None:
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="http://test"
     ) as client:
         response = await client.post(
             "/api/commands/catalog",
@@ -403,8 +403,8 @@ async def test_http_uses_injected_managers(
         "address": asdict(address),
         "conversation_id": str(conversation.id),
     }
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="http://test"
     ) as client:
         response = await client.post(
             "/api/commands/catalog", headers={"X-Octomate-Request": "1"}, json=body
@@ -434,8 +434,8 @@ async def test_http_requires_login_and_browser_header(
                 api_key_salt=SecretStr("test-api-key-salt-only"),
             )
         )
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="http://test"
     ) as client:
         response = await client.post(
             f"/api/commands/{endpoint}",
@@ -459,8 +459,8 @@ async def test_http_ignores_runtime_context_overrides(
     address: ChannelAddress,
     field: str,
 ) -> None:
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="http://test"
     ) as client:
         response = await client.post(
             "/api/commands/catalog",
@@ -769,8 +769,8 @@ async def test_subthread_uses_surface_model_but_its_own_workspace(
     assert result.context.conversation is not None
     assert result.context.conversation.id == child_conversation.id
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="http://test"
     ) as client:
         response = await client.post(
             "/api/commands/execute",
@@ -863,8 +863,8 @@ async def test_http_execution_preserves_arguments_and_replays_saved_outcome(
     ) as live:
         async with (
             drawing(*app.channels.values()),
-            httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            httpx2.AsyncClient(
+                transport=httpx2.ASGITransport(app=app), base_url="http://test"
             ) as client,
         ):
             response = await client.post(
@@ -926,8 +926,8 @@ async def test_http_execution_rejects_invalid_intent_before_dispatch(
     value: JsonValue,
 ) -> None:
     command_body[field] = value
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="http://test"
     ) as client:
         response = await client.post(
             "/api/commands/execute",
@@ -960,8 +960,8 @@ async def test_http_execution_uses_manager_refusals(
     async with app.nerve.subscribe(
         ThreadTopic(ThreadKey.from_address(address))
     ) as live:
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        async with httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app), base_url="http://test"
         ) as client:
             response = await client.post(
                 "/api/commands/execute",
@@ -1024,8 +1024,8 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
     ) as live:
         async with (
             drawing(*app.channels.values()),
-            httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            httpx2.AsyncClient(
+                transport=httpx2.ASGITransport(app=app), base_url="http://test"
             ) as client,
         ):
             response = await client.post(
@@ -1124,8 +1124,8 @@ async def test_command_presents_a_persisted_reflex_approval(
     ) as live:
         async with (
             drawing(*app.channels.values()),
-            httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            httpx2.AsyncClient(
+                transport=httpx2.ASGITransport(app=app), base_url="http://test"
             ) as client,
         ):
             response = await client.post(
@@ -1170,8 +1170,8 @@ async def test_http_stream_failure_does_not_report_completion(
     command_body: dict[str, JsonValue],
 ) -> None:
     agent.behavior = "stream_raise"
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="http://test"
     ) as client:
         with pytest.raises(RuntimeError):
             await client.post(
@@ -1203,8 +1203,8 @@ async def test_http_execution_openapi_describes_intent_and_response_types(
         yield AgentRunResultEvent(AgentRunResult("Done"))
 
     monkeypatch.setattr(agent, "events", events)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="http://test"
     ) as client:
         schema = (await client.get("/openapi.json")).json()
         agent.behavior = "stream_complete"
@@ -1265,8 +1265,8 @@ async def test_foreign_agent_conversation_is_rejected_before_discovery_or_execut
     app.channels[address.channel_tentacle_id].config.agents.append(other.id)
     kick = AsyncMock()
     monkeypatch.setattr(app, "kick", kick)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="http://test"
     ) as client:
         response = await client.post(
             f"/api/commands/{endpoint}",

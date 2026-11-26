@@ -6,6 +6,7 @@ import type { ApiThread, ApiThreadMessage, WireDeferredQuestion, WireEvent } fro
 import type { OlderPage } from '../src/lib/api/live.ts'
 import type { LedgerItem, ThreadDetail } from '../src/lib/api/types.ts'
 import { LiveSocket, installLiveSocket } from './liveSocket.ts'
+import { chatRows } from '../src/features/chat/ledger.ts'
 
 let server: ViteDevServer
 let api: typeof import('../src/lib/api/index.ts').api
@@ -263,7 +264,7 @@ const settle = async () => {
   for (let tick = 0; tick < 5; tick++) await new Promise((done) => setTimeout(done, 0))
 }
 
-test('a thread opens on three pages and leaves the rest to scrolling', async () => {
+test('a thread opens on one page and reads older pages only when requested', async () => {
   const pages: Record<string, OlderPage> = { c4: older('m3', 'c3'), c3: older('m2', 'c2'), c2: older('m1', null) }
   const asked: string[] = []
   mock.method(api, 'getThreadDetail', () => Promise.resolve(opened([said('m4')], 'c4')))
@@ -273,12 +274,34 @@ test('a thread opens on three pages and leaves the rest to scrolling', async () 
   })
   await useConsole.getState().actions.selectThread('trunkline', 'thread-a')
   await settle()
-  assert.deepEqual(asked, ['unbound:c4', 'unbound:c3'])
+  assert.deepEqual(asked, [])
+  assert.deepEqual(useConsole.getState().detail?.ledger.map(item => item.kind === 'user' && item.text), ['m4'])
+  useConsole.getState().actions.reportThreadError('thread-a', 'An error after m4')
+  useConsole.getState().actions.loadOlder()
+  useConsole.getState().actions.loadOlder()
+  await settle()
+  assert.deepEqual(asked, ['unbound:c4'])
   const held = useConsole.getState().detail
-  assert.deepEqual(held?.ledger.map((item) => item.kind === 'user' && item.text), ['m2', 'm3', 'm4'])
+  assert.deepEqual(held?.ledger.map((item) => item.kind === 'user' && item.text), ['m3', 'm4'])
+  assert.deepEqual(chatRows(held?.ledger ?? [], [], useConsole.getState().notices).map(item => 'text' in item ? item.text : ''), ['m3', 'm4', 'An error after m4'])
   assert.equal(held?.earlier, true)
   // A revisit opens on what was read, not on the first page alone.
-  assert.equal(queryClient.getQueryData<ThreadDetail>(['thread-detail', 'thread-a'])?.ledger.length, 3)
+  assert.equal(queryClient.getQueryData<ThreadDetail>(['thread-detail', 'thread-a'])?.ledger.length, 2)
+})
+
+test('opening a short ledger at its bottom does not fetch older pages', async () => {
+  mock.method(api, 'getThreadDetail', async () => opened([said('m4')], 'c4'))
+  const readOlder = mock.method(api, 'olderPage', async () => older('m3', null))
+  await useConsole.getState().actions.selectThread('trunkline', 'thread-a')
+  const log = { scrollHeight: 1600, clientHeight: 900, scrollTop: 700 }
+  mock.method(document, 'getElementById', (id: string) => id === 'trk-chatlog' ? log : null)
+  useConsole.getState().actions.onChatScroll(log.scrollTop)
+  await settle()
+  assert.equal(readOlder.mock.callCount(), 0)
+  log.scrollTop = 500
+  useConsole.getState().actions.onChatScroll(log.scrollTop)
+  await settle()
+  assert.equal(readOlder.mock.callCount(), 1)
 })
 
 test('a page landing after the reader moved on is dropped', async () => {
@@ -287,6 +310,7 @@ test('a page landing after the reader moved on is dropped', async () => {
     Promise.resolve(id === 'thread-a' ? opened([said('m4')], 'c4') : { ...detail, key: id }))
   mock.method(api, 'olderPage', () => new Promise((done) => { land = done }))
   await useConsole.getState().actions.selectThread('trunkline', 'thread-a')
+  useConsole.getState().actions.loadOlder()
   await useConsole.getState().actions.selectThread('codex', 'thread-b')
   land(older('m3', null))
   await settle()
@@ -797,6 +821,65 @@ for (const saved of [false, true]) {
   })
 }
 
+test("another agent's message opens a tailed turn under that agent's name", async () => {
+  const opening = { ...detail, key: 'native-agent-message', ledger: [] }
+  mock.method(api, 'getThreadDetail', async () => opening)
+  queryClient.setQueryData(['thread-detail', opening.key], opening)
+  await useConsole.getState().actions.selectThread('claude', opening.key)
+  const watching = await socketOn(`thread_id=${opening.key}`)
+  watching.deliver(
+    { event_kind: 'run_started', address: { channel_tentacle_id: 'claude', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false } },
+    { event_kind: 'agent_message', message_id: 'handback', agent: { id: 'a1', name: 'general-purpose' }, text: 'two findings' },
+  )
+  assert.deepEqual(useConsole.getState().live, [
+    { kind: 'agent', uid: 'handback', subagentId: 'a1', label: 'general-purpose', blocks: [{ type: 'p', text: 'two findings' }] },
+  ])
+  watching.deliver({ event_kind: 'run_ended', thread_message_id: null })
+  for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
+  assert.equal(useConsole.getState().running, false)
+})
+
+test('a re-streamed turn brings its subagent back, and the hand-back becomes its report', async () => {
+  const opening = { ...detail, key: 'native-restreamed', ledger: [] }
+  mock.method(api, 'getThreadDetail', async () => opening)
+  queryClient.setQueryData(['thread-detail', opening.key], opening)
+  await useConsole.getState().actions.selectThread('claude', opening.key)
+  const watching = await socketOn(`thread_id=${opening.key}`)
+  const started = { event_kind: 'run_started', address: { channel_tentacle_id: 'claude', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false } } as const
+  const spawned = { event_kind: 'subagent_started', invocation_id: 'a1', kind: 'subagent', name: 'general-purpose' } as const
+  const cards = () => useConsole.getState().live.flatMap((item) => item.kind === 'sub' ? [[item.invocationId, item.status, item.report]] : [])
+  watching.deliver(started, spawned)
+  assert.deepEqual(cards(), [['a1', 'running', undefined]])
+  // The tail reconnected: the turn starts over, and the server announces the child again.
+  watching.deliver(started, spawned, spawned)
+  assert.deepEqual(cards(), [['a1', 'running', undefined]])
+  watching.deliver(
+    { event_kind: 'subagent_settled', invocation_id: 'a1', status: 'completed', response: '' },
+    { event_kind: 'agent_message', message_id: 'handback', agent: { id: 'a1', name: 'general-purpose' }, text: 'two findings' },
+  )
+  assert.deepEqual(cards(), [['a1', 'completed', 'two findings']])
+  watching.deliver({ event_kind: 'run_ended', thread_message_id: null })
+  for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
+})
+
+test('an interrupted tailed turn shows the mark the harness left, as a reload does', async () => {
+  const opening = { ...detail, key: 'native-interrupted', ledger: [] }
+  mock.method(api, 'getThreadDetail', async () => opening)
+  queryClient.setQueryData(['thread-detail', opening.key], opening)
+  await useConsole.getState().actions.selectThread('claude', opening.key)
+  const watching = await socketOn(`thread_id=${opening.key}`)
+  watching.deliver(
+    { event_kind: 'run_started', address: { channel_tentacle_id: 'claude', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false } },
+    { event_kind: 'system_message', message_id: 'mark', text: '[Request interrupted by user for tool use]' },
+    { event_kind: 'run_ended', thread_message_id: null, outcome: 'cancelled' },
+  )
+  for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
+  assert.deepEqual(useConsole.getState().live.map((item) => item.kind === 'system' ? [item.uid, item.text] : item.kind), [
+    ['mark.0', '[Request interrupted by user for tool use]'],
+    'end',
+  ])
+})
+
 for (const reflex of [false, true]) {
   test(`an enqueued prompt stays between replies inside ${reflex ? 'a reflex' : 'a tailed turn'}`, async () => {
     const opening = { ...detail, key: `native-steering-${reflex}`, ledger: [] }
@@ -958,3 +1041,28 @@ for (const saved of [false, true]) {
     assert.equal(card?.kind === 'ask' && card.questions[0].answer, 'Yes')
   })
 }
+
+
+test('a child opens and reconnects its own ledger without folding its parent’s live messages', async () => {
+  const child = { ...detail, key: 'child', ledger: [{ kind: 'agent', uid: 'child-answer', label: 'Claude', blocks: [{ type: 'p', text: 'Child answer' }] }] } satisfies ThreadDetail
+  const read = mock.method(api, 'getThreadDetail', async (_id: string, conversationId?: string) => conversationId ? child : detail)
+  const actions = useConsole.getState().actions
+  await actions.selectThread('claude', 'parent')
+  await actions.selectThread('claude', 'parent', 'down', 'child')
+  assert.deepEqual(useConsole.getState().detail, child)
+  const socket = await socketOn('thread_id=parent')
+  socket.deliver({ event_kind: 'part_start', index: 0, part: { part_kind: 'text', content: 'Parent answer' } })
+  assert.deepEqual(useConsole.getState().live, [])
+  assert.deepEqual(queryClient.getQueryData(['thread-detail', 'parent', 'child']), child)
+  socket.close()
+  await tick()
+  await actions.resumeLiveUpdates()
+  assert.deepEqual(read.mock.calls.at(-1)?.arguments, ['parent', 'child'])
+  assert.deepEqual(useConsole.getState().detail, child)
+  const reconnected = await socketOn('thread_id=parent')
+  reconnected.deliver({ event_kind: 'part_start', index: 0, part: { part_kind: 'text', content: 'Parent replay' } })
+  assert.deepEqual(useConsole.getState().live, [])
+  await actions.selectThread('claude', 'parent')
+  assert.deepEqual(useConsole.getState().detail, detail)
+  assert.equal(useConsole.getState().selConversationId, undefined)
+})

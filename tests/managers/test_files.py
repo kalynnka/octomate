@@ -16,7 +16,7 @@ from starlette.datastructures import Headers
 from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
-from octomate.managers.files import FileManager
+from octomate.managers.files import FileManager, FileOffsetConflict
 from octomate.schemas.files import (
     Binary,
     File,
@@ -102,9 +102,10 @@ async def test_append_refuses_a_stale_offset(
     original = await files.write(UploadFile(BytesIO(b"first\n"), filename="note"))
     await files.append(original.id, BytesIO(b"second\n"), offset=original.size)
 
-    with pytest.raises(ValueError, match="Append offset"):
+    with pytest.raises(FileOffsetConflict, match="Append offset") as conflict:
         await files.append(original.id, BytesIO(b"again\n"), offset=original.size)
 
+    assert conflict.value.size == len(b"first\nsecond\n")
     assert await files.read(original.id) == b"first\nsecond\n"
 
 

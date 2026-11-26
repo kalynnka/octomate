@@ -14,6 +14,7 @@ import typer
 
 from octomate_cli.cli import upgrade
 from octomate_cli.config import configure
+from octomate_cli.habitat import habitat_typer
 from octomate_cli.mcp import mcp_typer
 from octomate_cli.service import service_typer
 from octomate_cli.tentacles.claude import claude_typer
@@ -25,6 +26,7 @@ app.command("upgrade")(upgrade)
 # The client API token is read by each agent's hooks, tail and MCP entry.
 app.command("configure")(configure)
 app.add_typer(service_typer, name="service")
+app.add_typer(habitat_typer, name="habitat")
 app.add_typer(mcp_typer, name="mcp")
 app.add_typer(claude_typer, name="claude")
 app.add_typer(codex_typer, name="codex")

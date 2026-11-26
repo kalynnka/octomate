@@ -9,7 +9,7 @@ from typing import NamedTuple
 from unittest.mock import AsyncMock
 
 import pytest
-from httpx import URL
+from httpx2 import URL
 from openai_codex import CodexConfig
 from openai_codex._message_router import _TurnSubscription
 from openai_codex.async_client import AsyncCodexClient
@@ -237,9 +237,9 @@ async def command_transport(
         mcp_url=URL("http://example.com/mcp"),
         handler=AsyncMock(return_value={}),
     )
-    ink.client = client
+    ink.pool.core_client = client
     async with client:
-        reader = asyncio.create_task(asyncio.to_thread(client.transport._reader_loop))
+        reader = asyncio.create_task(asyncio.to_thread(client.transport.reader_loop))
         try:
             yield CommandTransport(ink, incoming, outgoing)
         finally:
@@ -272,14 +272,17 @@ def mcp_app_call() -> JsonObject:
 
 @pytest.mark.parametrize("source", ["current", "context", "legacy"])
 @pytest.mark.parametrize("encoded", [False, True])
+@pytest.mark.parametrize("environment", [None, "guest-a"])
 async def test_app_resource_reads_advertised_ui_with_original_scope(
     command_transport: CommandTransport,
     mcp_app_call: JsonObject,
     source: str,
     encoded: bool,
+    environment: str | None,
 ) -> None:
     ink, incoming, outgoing = command_transport
     item = McpToolCallThreadItem.model_validate(mcp_app_call)
+    item.environment_id = environment
     if source != "current":
         item.mcp_app_ui = None
     if source == "legacy":
@@ -289,13 +292,16 @@ async def test_app_resource_reads_advertised_ui_with_original_scope(
     reading = asyncio.create_task(ink.app_resource("thread-a", item))
     request = await asyncio.to_thread(outgoing.get, True, 1)
     assert request["method"] == "mcpServer/resource/read"
-    assert request["params"] == {
+    expected: JsonObject = {
         "threadId": "thread-a",
         "server": "apps",
         "uri": uri,
         "originCallId": "call-a",
         "target": {"connectorId": "weather", "linkId": "account-a"},
     }
+    if environment is not None:
+        expected["environmentId"] = environment
+    assert request["params"] == expected
     html = "<html><body>上海</body></html>"
     content: JsonObject = {
         "uri": uri,
@@ -492,7 +498,7 @@ async def test_command_turn_retains_events_before_and_after_ack(
     assert handle.id == "turn-a"
     events = [event async for event in handle.stream()]
     assert [event.method for event in events] == ["turn/started", "turn/completed"]
-    assert not ink.client.transport.compact_starts
+    assert not ink.pool.core_client.transport.compact_starts
 
 
 async def test_compaction_does_not_return_at_ack_or_take_another_threads_turn(
@@ -512,12 +518,12 @@ async def test_compaction_does_not_return_at_ack_or_take_another_threads_turn(
         {"method": "turn/started", "params": {"threadId": "bob", "turn": turn}}
     )
     incoming.put({"method": "skills/changed", "params": {}})
-    await asyncio.wait_for(ink.client._client.next_notification(), 1)
+    await asyncio.wait_for(ink.pool.core_client._client.next_notification(), 1)
     assert not starting.done()
     incoming.put(None)
     with pytest.raises(TransportClosedError, match="before compaction started"):
         await asyncio.wait_for(starting, 1)
-    assert not ink.client.transport.compact_starts
+    assert not ink.pool.core_client.transport.compact_starts
 
 
 async def test_review_rejects_another_thread_in_the_response(
@@ -574,8 +580,8 @@ async def test_canceled_command_start_releases_late_subscription(
     )
     incoming.put({"id": request["id"], "result": {}})
     await asyncio.wait_for(closed.wait(), 1)
-    assert not ink.client.transport._router._pending_turn_requests
-    assert not ink.client.transport._router._turn_states
+    assert not ink.pool.core_client.transport._router._pending_turn_requests
+    assert not ink.pool.core_client.transport._router._turn_states
 
 
 def test_constructing_shared_client_needs_no_event_loop_or_process() -> None:
@@ -584,6 +590,7 @@ def test_constructing_shared_client_needs_no_event_loop_or_process() -> None:
 
     client = SharedCodex(CodexConfig(), approve, instrument=False)
     assert client.transport._proc is None
+    assert client.transport.token is None
     assert not client._initialized
 
 
@@ -619,7 +626,7 @@ async def test_reader_delivers_other_responses_and_events_during_approval(
     )
     client = SharedCodex(CodexConfig(), approve, instrument=False)
     await client.__aenter__()
-    reader = asyncio.create_task(asyncio.to_thread(client.transport._reader_loop))
+    reader = asyncio.create_task(asyncio.to_thread(client.transport.reader_loop))
     try:
         incoming.put(
             {
@@ -646,6 +653,7 @@ async def test_reader_delivers_other_responses_and_events_during_approval(
         incoming.put(None)
         await reader
         await client.close()
+    assert client.transport.token is None
 
 
 async def test_closing_shared_client_cancels_and_drains_approval() -> None:

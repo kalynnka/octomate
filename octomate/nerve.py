@@ -32,6 +32,12 @@ what is kept.
 `Nerve.deliver` reaches every subscriber of exactly one topic. A publisher sends
 user notifications by delivering separately to each authorized user's topic.
 `Nerve.publish` owns channel and thread routing for kicks and native tails.
+
+A nerve runs one way and carries one kind of envelope. Events run outbound, as
+impulses, from whoever acted to whoever watches. Signals run inbound, as
+stimuli, to whoever is to act, on a nerve of their own over the same topics, so
+a subscriber of one direction never reads the other. Kick routing belongs to
+the outbound nerve alone: `Nerve.publish` takes impulses.
 """
 
 from __future__ import annotations
@@ -39,8 +45,8 @@ from __future__ import annotations
 import asyncio
 import math
 from collections import Counter, defaultdict
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager, suppress
+from collections.abc import AsyncGenerator, Generator
+from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, replace
 from typing import Generic
 
@@ -59,9 +65,11 @@ from octomate.fibers import FIBER_BUFFER as FIBER_BUFFER
 from octomate.fibers import Fiber, FiberError, MemoryFiber, ReplayFiber
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
+from octomate.signals import Priming, Signal
 
 EventT = TypeVar("EventT", default=WireEvent, covariant=True)
 NerveEventT = TypeVar("NerveEventT", default=WireEvent)
+SignalT = TypeVar("SignalT", default=Signal, covariant=True)
 
 
 # Python 3.12 needs typing_extensions for a type parameter with a default.
@@ -84,6 +92,23 @@ class Impulse(Generic[EventT]):
     # The thread Nerve.publish stamps on the event: the asking thread
     # for a kick, the native thread for a tail, or None when neither names a thread.
     origin: ThreadKey | None = None
+    replay: bool = False  # Historical transcript events must not animate live activity.
+
+
+@with_config(
+    ConfigDict(
+        extra="forbid",
+        ser_json_bytes="base64",
+        val_json_bytes="base64",
+    )
+)
+@dataclass(frozen=True)
+class Stimulus(Generic[SignalT]):
+    """One signal on its way in, to whoever is to act on it."""
+
+    signal: SignalT
+    # What core resolved for the turn the signal asks for; None when it asks for none.
+    priming: Priming | None = None
 
 
 @dataclass(frozen=True)
@@ -118,23 +143,58 @@ type EventTopic = ChannelTopic | ThreadTopic | UserTopic
 type Topic = EventTopic | HabitatTopic
 
 
+SentT = TypeVar("SentT", default=Impulse[WireEvent])
+
 impulse_adapter: TypeAdapter[Impulse[WireEvent]] = TypeAdapter(Impulse[WireEvent])
 
 
-class Nerve(Generic[NerveEventT]):
-    """Route impulses through publishers and subscribers backed by any fiber."""
+class Nerve(Generic[SentT]):
+    """Route one kind of envelope, impulses or stimuli, through publishers and
+    subscribers backed by any fiber."""
 
     def __init__(self) -> None:
         # Each subscriber's fiber, by the topic it hears.
-        self.subscribers: defaultdict[Topic, set[Fiber[Impulse[NerveEventT]]]] = (
-            defaultdict(set)
-        )
-        # What retaining publishers have routed to the thread they were asked
-        # on, in order, by the thread's topic, for as long as one of them is open
-        # there. A subscriber's `replay` counts into it.
-        self.retained: dict[Topic, list[Impulse[NerveEventT]]] = {}
-        # How many retaining publishers are open on a thread, by its topic.
+        self.subscribers: defaultdict[Topic, set[Fiber[SentT]]] = defaultdict(set)
+        # Retained envelopes live until the last retaining publisher closes.
+        self.retained: dict[Topic, list[SentT]] = {}
         self.retaining: Counter[Topic] = Counter()
+
+    @contextmanager
+    def accept(self, topic: Topic, fiber: Fiber[SentT]) -> Generator[None]:
+        """Have a fiber accept what is delivered to the topic, for the block.
+
+        The fiber stays its caller's to buffer and close; leaving only ends
+        its deliveries.
+        """
+        if fiber.closed or fiber in self.subscribers.get(topic, set()):
+            raise ValueError("Fiber is already subscribed or closed")
+        self.subscribers[topic].add(fiber)
+        try:
+            yield
+        finally:
+            self.subscribers[topic].discard(fiber)
+            if not self.subscribers[topic]:
+                del self.subscribers[topic]
+
+    def deliver(self, topic: Topic, sent: SentT) -> None:
+        """Fan out to every subscriber of one topic.
+
+        A slow local subscriber is cut off at its backlog. A full or broken peer
+        fiber is disconnected independently; other subscribers keep receiving.
+        Message handling belongs to receivers; unobserved publications are dropped.
+        """
+        recipients = self.subscribers.get(topic, set())
+        for fiber in recipients:
+            if fiber.closed:
+                continue
+            try:
+                fiber.send_nowait(sent)
+            except (
+                anyio.WouldBlock,
+                anyio.BrokenResourceError,
+                anyio.ClosedResourceError,
+            ):
+                fiber.fail(FiberError("Subscriber fiber cannot accept publication"))
 
     @asynccontextmanager
     async def subscribe(
@@ -142,13 +202,12 @@ class Nerve(Generic[NerveEventT]):
         topic: Topic,
         *,
         backlog: float = math.inf,
-        fiber: Fiber[Impulse[NerveEventT]] | None = None,
+        fiber: Fiber[SentT] | None = None,
         replay: int | None = None,
-    ) -> AsyncGenerator[ObjectReceiveStream[Impulse[NerveEventT]]]:
-        """The receive end of a stream of the topic's impulses, from now until
+    ) -> AsyncGenerator[ObjectReceiveStream[SentT]]:
+        """The receive end of a stream of what the topic is sent, from now until
         the block ends. Nothing is dropped: a reader that falls more than
-        `backlog` impulses behind reads what was held for it, and then its
-        stream ends.
+        `backlog` behind reads what was held for it, and then its stream ends.
 
         With `replay`, the stream starts with what is `retained` for the topic
         past that many impulses, before what arrives; 0 starts with all of it.
@@ -161,7 +220,7 @@ class Nerve(Generic[NerveEventT]):
         Publishers choose authorized topics before publishing; the nerve does
         not filter subscribers within a topic.
 
-        A supplied fiber receives the same impulses as a local subscription.
+        A supplied fiber receives the same as a local subscription.
         Its caller owns its buffering and closure; leaving only unsubscribes it.
         """
         if fiber is not None and replay is not None:
@@ -170,26 +229,18 @@ class Nerve(Generic[NerveEventT]):
         # so the subscriber neither misses an impulse nor reads one twice.
         replayed = [] if replay is None else self.retained.get(topic, [])[replay:]
         subscriber = (
-            fiber
-            if fiber is not None
-            else ReplayFiber[Impulse[NerveEventT]](replayed, backlog)
+            fiber if fiber is not None else ReplayFiber[SentT](replayed, backlog)
         )
-        recipients = self.subscribers.get(topic, set())
-        if subscriber.closed or subscriber in recipients:
-            raise ValueError("Fiber is already subscribed or closed")
-        self.subscribers[topic].add(subscriber)
         try:
-            yield subscriber
+            with self.accept(topic, subscriber):
+                yield subscriber
         finally:
-            self.subscribers[topic].discard(subscriber)
-            if not self.subscribers[topic]:
-                del self.subscribers[topic]
             if fiber is None:
                 subscriber.close()
 
     @asynccontextmanager
     async def publish(
-        self,
+        self: Nerve[Impulse[NerveEventT]],
         origin: ChannelAddress | Topic | None,
         *,
         fiber: Fiber[Impulse[NerveEventT]] | None = None,
@@ -277,27 +328,3 @@ class Nerve(Generic[NerveEventT]):
                     await pumping
                 finally:
                     publisher.close()
-
-    def deliver(
-        self,
-        topic: Topic,
-        impulse: Impulse[NerveEventT],
-    ) -> None:
-        """Fan out to every subscriber of one topic.
-
-        A slow local subscriber is cut off at its backlog. A full or broken peer
-        fiber is disconnected independently; other subscribers keep receiving.
-        Message handling belongs to receivers; unobserved publications are dropped.
-        """
-        recipients = self.subscribers.get(topic, set())
-        for fiber in recipients:
-            if fiber.closed:
-                continue
-            try:
-                fiber.send_nowait(impulse)
-            except (
-                anyio.WouldBlock,
-                anyio.BrokenResourceError,
-                anyio.ClosedResourceError,
-            ):
-                fiber.fail(FiberError("Subscriber fiber cannot accept publication"))

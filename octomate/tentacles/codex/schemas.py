@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Literal, NamedTuple
 
 from openai_codex.generated.v2_all import Model, ReasoningEffort, SkillScope
+from openai_codex.generated.v2_all import ThreadForkParams as SdkThreadForkParams
 from openai_codex.generated.v2_all import ThreadResumeParams as SdkThreadResumeParams
 from openai_codex.generated.v2_all import ThreadStartParams as SdkThreadStartParams
 from openai_codex.generated.v2_all import TurnStartParams as SdkTurnStartParams
@@ -26,6 +27,14 @@ class ThreadStartParams(SdkThreadStartParams):
 
 class ThreadResumeParams(SdkThreadResumeParams):
     """Native thread resume with the permission-profile field omitted by the SDK."""
+
+    permissions: PermissionProfile = Field(
+        description="Native permission profile to select."
+    )
+
+
+class ThreadForkParams(SdkThreadForkParams):
+    """Native thread fork with the permission-profile field omitted by the SDK."""
 
     permissions: PermissionProfile = Field(
         description="Native permission profile to select."

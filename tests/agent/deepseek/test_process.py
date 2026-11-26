@@ -239,7 +239,7 @@ async def test_launch_url_is_logged_once_without_writing_a_file(
 @pytest.mark.parametrize(
     ("version", "expected", "level"),
     [
-        ("0.2.2-rc.1", "matches Octomate's tested release", logging.INFO),
+        ("0.2.3-alpha.2", "matches Octomate's tested release", logging.INFO),
         ("0.2.1-alpha.2", "differs from Octomate's tested version", logging.WARNING),
         ("unknown", "Could not determine dsh version", logging.WARNING),
     ],
@@ -301,3 +301,30 @@ async def test_startup_failure_keeps_cause_without_flooding_logs(
     assert len(message.splitlines()) <= 31
     assert "private-token" not in caplog.text
     assert len(caplog.records) <= 2
+
+
+async def test_successful_startup_and_model_listing_are_debug_diagnostics(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    binary, _ = fake_dsh(tmp_path)
+    binary.write_text(
+        binary.read_text().replace(
+            'echo "dsh web:', 'echo "Loading extensions"\necho "dsh web:'
+        )
+    )
+    dsh = process(binary, tmp_path, [])
+    caplog.set_level(logging.DEBUG, logger="octomate.tentacles.deepseek.process")
+    try:
+        assert await dsh.launch(suppress_browser=True) == BASE_URL
+        stderr = asyncio.StreamReader()
+        stderr.feed_data(
+            b"[llm-deepseek-api-key] model listing from "
+            b"https://api.deepseek.com/models loaded 2 model(s), skipped 0 row(s)\n"
+        )
+        stderr.feed_eof()
+        await dsh.watch_stderr(stderr)
+        assert "Loading extensions" in caplog.text
+        assert "loaded 2 model(s)" in caplog.text
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    finally:
+        await dsh.stop()

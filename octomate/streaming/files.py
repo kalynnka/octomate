@@ -8,15 +8,16 @@ from io import BytesIO
 
 from fastapi import UploadFile, WebSocket, WebSocketDisconnect
 from octomate_protocol.stream import (
-    SESSION_FILE,
     StreamEof,
     StreamFinalize,
     StreamHello,
     StreamLine,
+    StreamOpenSubagent,
     StreamSnapshotStart,
     StreamSnapshotStored,
     client_message_adapter,
 )
+from pydantic import UUID7
 from starlette.datastructures import Headers
 
 from octomate.schemas.files import FileVariant
@@ -44,6 +45,7 @@ class FileTransferSlot:
     """
 
     websocket: WebSocket
+    conversation_id: UUID7
     persist: Callable[[UploadFile, int], Awaitable[FileVariant]] | None
     filename: str
     content_type: str
@@ -56,7 +58,9 @@ class FileTransferSlot:
         """Ask the client to drain, upload its transcript, then send EOF."""
         await self.websocket.send_text(StreamFinalize().model_dump_json())
 
-    async def receive(self) -> StreamHello | StreamLine | StreamEof:
+    async def receive(
+        self,
+    ) -> StreamHello | StreamOpenSubagent | StreamLine | StreamEof:
         """Consume upload frames, returning ordinary transcript messages to the caller."""
         while True:
             frame = await self.websocket.receive()
@@ -86,6 +90,7 @@ class FileTransferSlot:
             if isinstance(message, StreamSnapshotStart):
                 if (
                     self.persist is None
+                    or message.conversation_id != self.conversation_id
                     or message.start != self.stored_offset
                     or message.end != self.offset
                     or message.end <= message.start
@@ -102,10 +107,10 @@ class FileTransferSlot:
                     ),
                 )
                 continue
-            if isinstance(message, StreamLine) and message.agent_id in {
-                None,
-                SESSION_FILE,
-            }:
+            if (
+                isinstance(message, StreamLine)
+                and message.conversation_id == self.conversation_id
+            ):
                 self.offset = message.end
             return message
 

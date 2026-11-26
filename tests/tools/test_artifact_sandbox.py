@@ -3,7 +3,7 @@
 import json
 from urllib.parse import urlencode
 
-import httpx
+import httpx2
 import pytest
 from pydantic import AnyHttpUrl, ValidationError
 
@@ -27,8 +27,8 @@ from octomate.schemas.artifacts import ArtifactSandboxPolicy
 async def test_sandbox_origin_exposes_no_console_routes(path: str) -> None:
     app = Octomate()
     app.config.artifacts.sandbox_origin = AnyHttpUrl("https://sandbox.example")
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="https://sandbox.example"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="https://sandbox.example"
     ) as client:
         response = await client.get(path)
     assert response.status_code == 404
@@ -41,8 +41,8 @@ async def test_sandbox_origin_exposes_no_console_routes(path: str) -> None:
 async def test_proxy_is_not_available_on_other_origins(origin: str) -> None:
     app = Octomate()
     app.config.artifacts.sandbox_origin = AnyHttpUrl("https://sandbox.example")
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url=origin
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url=origin
     ) as client:
         response = await client.get("/artifacts/sandbox.js")
     assert response.status_code == 404
@@ -51,8 +51,8 @@ async def test_proxy_is_not_available_on_other_origins(origin: str) -> None:
 async def test_sandbox_hostname_cannot_reach_accounts_over_plain_http() -> None:
     app = Octomate()
     app.config.artifacts.sandbox_origin = AnyHttpUrl("https://sandbox.example")
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://sandbox.example"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="http://sandbox.example"
     ) as client:
         response = await client.get("/api/artifacts/config")
     assert response.status_code == 404
@@ -71,8 +71,8 @@ async def test_sandbox_returns_policy_headers_and_only_bundled_script() -> None:
             },
         }
     )
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://localhost:8000"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="http://localhost:8000"
     ) as client:
         response = await client.get(
             "/artifacts/sandbox?"
@@ -141,8 +141,8 @@ async def test_policy_cannot_allow_console_or_its_subdomain(source: str) -> None
 async def test_proxy_refuses_invalid_policy(policy: str) -> None:
     app = Octomate()
     app.config.artifacts.sandbox_origin = AnyHttpUrl("https://sandbox.example")
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="https://sandbox.example"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="https://sandbox.example"
     ) as client:
         response = await client.get("/artifacts/sandbox", params={"policy": policy})
     assert response.status_code == 422
@@ -167,8 +167,8 @@ def test_inner_policy_has_no_undeclared_frames_network_or_base_uri() -> None:
 async def test_viewer_configuration_uses_the_configured_path() -> None:
     app = Octomate()
     app.config.artifacts.path = "/work/artifacts"
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="https://console.example"
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="https://console.example"
     ) as client:
         response = await client.get("/api/artifacts/config")
     assert response.status_code == 200

@@ -9,6 +9,7 @@ import { markdownText } from '@/lib/markdown'
 import type { AgentBlock, AskAnswer, LedgerItem, MessageReply, QueueChip, ToolDetail } from '@/lib/api/types'
 import { useAuth } from '@/state/auth'
 import { useConsole } from '@/state/console'
+import { useNestedSessions } from '@/lib/api/hooks'
 import { TextSwap } from '@/components/TextSwap'
 import { Brackets } from '@/components/Brackets'
 import { Icon } from '@/components/Icon'
@@ -52,11 +53,11 @@ function CapsLabel({ children, style }: { children: ReactNode; style?: CSSProper
   return <span style={{ ...metaLine, color: 'var(--fg-3)', ...style }}>{typeof children === 'string' || typeof children === 'number' ? <TextSwap>{children}</TextSwap> : children}</span>
 }
 
-export function AgentLabel({ label, iconUrl }: { label: string; iconUrl?: string | null }) {
+export function AgentLabel({ label, iconUrl, subagent = false }: { label: string; iconUrl?: string | null; subagent?: boolean }) {
   const [failed, setFailed] = useState<string>()
   const icon = iconUrl && failed !== iconUrl
   return <span className="trk-agent-label" data-agent-label="" style={{ ...metaLine, color: 'var(--fg-3)', textTransform: 'none' }}>
-    {icon ? <><span className="trk-agent-icon" role="img" aria-label={label} title={label} style={{ maskImage: `url(${JSON.stringify(iconUrl)})` }}>
+    {subagent ? <><Icon name="gitBranch" size={11} />{label}</> : icon ? <><span className="trk-agent-icon" role="img" aria-label={label} title={label} style={{ maskImage: `url(${JSON.stringify(iconUrl)})` }}>
       <img src={iconUrl} alt="" aria-hidden="true" crossOrigin="anonymous" referrerPolicy="no-referrer" onError={() => setFailed(iconUrl)} />
     </span>{label.replace(/\([^()]*\)$/, '')}</> : label}
   </span>
@@ -205,7 +206,7 @@ function DiffBlock({ uid, index, diff }: { uid: string; index: number; diff: Ext
 function AgentRow({ item, cardMax, showAgentLabel, showCopy, children }: { item: Extract<LedgerItem, { kind: 'agent' }>; cardMax: string; showAgentLabel: boolean; showCopy: boolean; children?: ReactNode }) {
   return (
     <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry trk-agent-message" style={{ maxWidth: children ? '100%' : cardMax }}>
-      {showAgentLabel && <AgentLabel label={item.label} />}
+      {showAgentLabel && <AgentLabel label={item.label} subagent={!!item.subagentId} />}
       <div style={{ minWidth: 0, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)', textWrap: 'pretty' }}>
         {item.reply && <ReplyPreview reply={item.reply} />}
         {item.blocks.map((b, i) => {
@@ -703,31 +704,48 @@ function FileRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'file' }
   )
 }
 
+/** A compact task row linking to the child conversation. */
 function SubRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'sub' }>; cardMax: string }) {
+  const threadId = useConsole(s => s.selThreadId)
+  const channel = useConsole(s => s.selChannel)
+  const { selectThread } = useConsole(s => s.actions)
+  const status = item.status ?? 'completed'
+  const sessions = useNestedSessions(threadId, Boolean(threadId), false)
+  const child = sessions.data?.find(session => session.invocationId === item.invocationId)
+  const [opening, setOpening] = useState(false)
+  const [error, setError] = useState<string>()
+  const title = item.brief || child?.title || `${item.route} task`
+  const color = { running: 'var(--color-teal)', completed: 'var(--color-sage)', failed: 'var(--color-red)', cancelled: 'var(--fg-3)' }[status]
+  const openThread = async () => {
+    setOpening(true)
+    setError(undefined)
+    try {
+      const target = child ?? (await sessions.refetch()).data?.find(session => session.subagent_id === item.invocationId)
+      if (!target) throw new Error('This subagent’s thread is not available yet.')
+      await selectThread(channel, threadId, 'down', target.id)
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure))
+    } finally {
+      setOpening(false)
+    }
+  }
   return (
-    <div
-      id={`pm-${item.uid}`}
-      className="lt-fade-in"
-      style={{
-        maxWidth: cardMax,
-        marginLeft: 24,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        padding: '5px 11px',
-        boxSizing: 'border-box',
-        border: '1px dashed color-mix(in srgb, var(--color-teal) 45%, transparent)',
-        background: 'color-mix(in srgb, var(--color-teal) 4%, transparent)',
-      }}
-    >
-      <span style={{ ...mono(9), ...ghost3, flexShrink: 0 }}>↳</span>
-      <span style={{ ...mono(7, 700), letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--color-teal)', border: '1px solid var(--color-teal)', padding: '0 3px', flexShrink: 0 }}>
-        subagent
-      </span>
-      <span style={{ ...mono(8.5, 700), color: 'var(--color-accent)', flexShrink: 0 }}>{item.id}</span>
-      <span style={{ ...mono(8.5), color: 'var(--fg-2)', whiteSpace: 'nowrap', flexShrink: 0 }}>{item.route}</span>
-      <span style={{ flex: 1, minWidth: 0, ...mono(8), ...ghost3, ...ellipsis, textAlign: 'right' }}>{item.note}</span>
-    </div>
+    <article id={`pm-${item.uid}`} className="trk-trace-row trk-subagent-card"
+      style={{ '--trk-trace-max': cardMax, '--trk-subagent-status': color } as CSSProperties}>
+      <button type="button" className="trk-tool-toggle trk-subagent-toggle hov-wash" aria-label={`Open thread: ${title}`}
+        title={opening ? 'Opening conversation…' : 'Open subagent conversation'} disabled={opening} aria-busy={opening}
+        onClick={() => void openThread()}>
+        <span className="trk-trace-hover-brackets" aria-hidden="true"><Brackets size={6} /></span>
+        <Icon name="gitBranch" size={13} />
+        <span className="trk-subagent-title" title={title}>{title}</span>
+        <span className="trk-subagent-meta">
+          <span className="trk-subagent-agent" title={item.route}>{item.route}</span>
+          <span className="trk-subagent-id">{item.id}</span>
+          <span className="trk-subagent-status"><i aria-hidden="true" /><TextSwap>{status}</TextSwap></span>
+        </span>
+      </button>
+      {error && <p className="trk-subagent-error" role="alert">{error}</p>}
+    </article>
   )
 }
 

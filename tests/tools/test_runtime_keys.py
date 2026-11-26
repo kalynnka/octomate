@@ -1,4 +1,4 @@
-"""Agent MCP credentials reuse the existing scoped API-key lifecycle."""
+"""Agent runtime credentials reuse the existing scoped API-key lifecycle."""
 
 import asyncio
 from datetime import UTC, datetime, timedelta
@@ -46,14 +46,17 @@ async def test_inkling_reuses_one_scoped_key_per_user_and_revokes_on_exit(
             )
             assert authenticated is not None
             assert authenticated.user_id == owner.id
+            hook_key = await host.auth.authenticate_api_key(issued.token, scope="hooks")
+            assert hook_key is not None
+            assert hook_key.id == authenticated.id
             assert (
-                await host.auth.authenticate_api_key(issued.token, scope="hooks")
-                is None
+                await host.auth.authenticate_api_key(issued.token, scope="acp") is None
             )
 
     assert not agent.api_keys
     for issued in (first, other):
         assert await host.auth.authenticate_api_key(issued.token, scope="mcp") is None
+        assert await host.auth.authenticate_api_key(issued.token, scope="hooks") is None
 
 
 async def test_inkling_refreshes_expired_credentials_once(

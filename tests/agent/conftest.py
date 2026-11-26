@@ -10,7 +10,7 @@ from openai_codex.generated.v2_all import ConfigReadResponse, ModelListResponse
 from openai_codex.models import Notification
 
 from octomate.nerve import Impulse, Nerve
-from octomate.tentacles.codex import ink as codex_ink
+from octomate.tentacles.codex import pool as codex_pool
 
 
 @pytest.fixture(autouse=True)
@@ -59,7 +59,7 @@ def codex_catalog(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
 
     runtime.__aenter__.side_effect = enter
     runtime.close = client.close
-    monkeypatch.setattr(codex_ink, "SharedCodex", MagicMock(return_value=runtime))
+    monkeypatch.setattr(codex_pool, "SharedCodex", MagicMock(return_value=runtime))
     return client
 
 

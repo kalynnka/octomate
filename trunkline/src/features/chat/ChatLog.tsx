@@ -5,6 +5,7 @@ import { botLabel } from '@/lib/api/fold'
 import { AgentLabel, LedgerRow, TraceGroupRow } from './cards'
 import { MessageContext } from './MessageReferences'
 import { traceRows } from './trace'
+import { chatRows } from './ledger'
 import { label, mono, display, statusNote } from '@/components/text'
 
 const CARD_MAX = 'var(--trk-card-max)'
@@ -24,7 +25,7 @@ export function ChatLog() {
   const mgmtOpen = useConsole((s) => s.mgmtOpen)
   const traceOn = useConsole((s) => s.traceOn) ?? true
   const pvOpen = useConsole((s) => s.pvOpen)
-  const { onChatScroll } = useConsole((s) => s.actions)
+  const { onChatScroll, loadOlder } = useConsole((s) => s.actions)
   const logRef = useRef<HTMLDivElement>(null)
   const ledgerRef = useRef<HTMLDivElement>(null)
   const following = useRef(true)
@@ -111,8 +112,10 @@ export function ChatLog() {
   // them off the relay once the ones in hand run out.
   const visible = ledger.slice(-ledgerN)
   const saved = new Set(ledger.map((item) => item.uid))
-  const rows = [...visible, ...live.filter((item) => !saved.has(item.uid))]
-  const items = rows.filter((item) => item.kind !== 'dots')
+  const hidden = ledger.length - visible.length
+  const items = chatRows(visible, live.filter(item => !saved.has(item.uid)), notices
+    .filter(notice => notice.position >= hidden)
+    .map(notice => ({ ...notice, position: notice.position - hidden })))
   const renderedRows = traceRows(items, running)
   const firstLive = live.find(item => item.kind !== 'dots' && !saved.has(item.uid))
   const copyable = new Set<string>()
@@ -204,9 +207,10 @@ export function ChatLog() {
         </div>
       )}
       {ledger.length > 0 && !ntOn && earlier && (
-        <div style={{ textAlign: 'center', ...statusNote, color: 'var(--fg-3)', padding: '2px 0' }}>
-          ↑ scroll — earlier messages load step by step
-        </div>
+        <button type="button" className="trk-nav-button" onClick={loadOlder}
+          style={{ textAlign: 'center', ...statusNote, color: 'var(--fg-3)', padding: '2px 0' }}>
+          ↑ load earlier messages
+        </button>
       )}
       <div ref={ledgerRef} className="trk-ledger-col">
         {blank && (
@@ -236,12 +240,12 @@ export function ChatLog() {
         {renderedRows.map((item, i) => {
           const first = item.kind === 'trace' ? item.items[0] : item.kind === 'annotated' ? item.item : item
           let heading
-          if (first.kind === 'agent' || first.kind === 'stream' || first.kind === 'think' || first.kind === 'tool' || first.kind === 'context') {
+          if (first.kind === 'agent' || first.kind === 'stream' || first.kind === 'think' || first.kind === 'tool' || first.kind === 'sub' || first.kind === 'context') {
             const label = first.kind === 'agent' || first.kind === 'stream' ? first.label ?? botLabel(first.agentId) : botLabel(first.agentId)
-            const author = first.agentId ?? label
+            const author = (first.kind === 'agent' ? first.subagentId : undefined) ?? first.agentId ?? label
             if (author !== assistantLabel) {
               const agent = agents?.find(agent => agent.id === first.agentId)
-              heading = <AgentLabel label={label} iconUrl={agent?.icon_url} />
+              heading = <AgentLabel label={label} iconUrl={agent?.icon_url} subagent={first.kind === 'agent' && !!first.subagentId} />
             }
             assistantLabel = author
           } else if (first.kind === 'user' || first.kind === 'end' || first.kind === 'session-open') {
@@ -255,9 +259,6 @@ export function ChatLog() {
               {item.kind === 'annotated' && item.after.map(context => <MessageContext key={context.uid} item={context} cardMax={CARD_MAX} />)}
             </LedgerRow>}</Fragment>
         })}
-        {notices.map((item) => (
-          <LedgerRow key={item.uid} item={item} cardMax={CARD_MAX} />
-        ))}
       </div>
     </div>
   )

@@ -7,6 +7,7 @@
  * Every request goes through `apiFetch`: the reads are private to the signed-in
  * account, and the writes must carry the same-origin header (see lib/api/auth).
  */
+import { queryClient } from '../queryClient'
 import { apiFetch, fetchMe, refuse } from './auth'
 import type {
   ApiAgentInfo,
@@ -178,11 +179,13 @@ export const fetchThread = (id: string) => threadRead<ApiThread>(id, '')
 
 /** A page of the model messages of the thread's own conversations, newest first,
  *  each with the chat rows bound to it; `cursor` reads on from a page's end. */
-export const fetchThreadModelMessages = (id: string, cursor?: string) =>
-  threadRead<ApiPage<ApiModelMessage>>(
+export const modelMessagePage = (id: string, cursor?: string, conversationId?: string) => ({
+  queryKey: ['model-messages', id, conversationId, cursor],
+  queryFn: () => threadRead<ApiPage<ApiModelMessage>>(
     id,
-    `/conversations/messages${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`,
-  )
+    `/conversations${conversationId === undefined ? '' : `/${encodeURIComponent(conversationId)}`}/messages${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`,
+  ),
+})
 
 /** A page of the thread's chat rows no model message carries — its notices, or a
  *  chat room's talk — newest first. */
@@ -194,11 +197,21 @@ export const fetchThreadUnbound = (id: string, cursor?: string) =>
 
 /** What the thread's own conversations spent, summed by the relay — the pages
  *  in hand are never the whole thread. */
-export const fetchThreadUsage = (id: string) => threadRead<ApiUsage>(id, '/usage')
+export const fetchThreadUsage = (id: string, conversationId?: string) => threadRead<ApiUsage>(
+  id,
+  `${conversationId === undefined ? '' : `/conversations/${encodeURIComponent(conversationId)}`}/usage`,
+)
 
 /** The thread's conversations, each carrying its runs. */
-export const fetchThreadConversations = (id: string) =>
-  threadRead<ApiConversation[]>(id, '/conversations')
+export const threadConversations = (id: string) => ({
+  queryKey: ['thread-conversations', id],
+  queryFn: async () => await threadRead<ApiConversation[]>(id, '/conversations') ?? [],
+  staleTime: 60_000,
+})
+
+export function invalidateThreadConversations(id: string, refetchType: 'none' | 'active' = 'none') {
+  return queryClient.invalidateQueries({ queryKey: threadConversations(id).queryKey, refetchType })
+}
 
 /** Null both when the thread is unknown and when no project claims it — the
  *  console renders the same "unattributed" strip either way. */

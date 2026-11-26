@@ -9,7 +9,7 @@ import discord
 from octomate.schemas.artifacts import ArtifactOverview
 from octomate.schemas.conversation import ChannelAddress
 from octomate.telemetry import channel_logfire
-from octomate.tentacles.channel import Ink
+from octomate.tentacles.channel import ChannelInk
 from octomate.tentacles.discord.schema import DiscordOutboundMessage
 from octomate.tentacles.feelers.artifacts import ArtifactFeeler
 from octomate.tentacles.feelers.output import IMMessageID
@@ -31,10 +31,10 @@ class DiscordArtifactFeeler(ArtifactFeeler):
         *,
         artifacts: ArtifactManager,
         users: UserManager,
-        ink: Ink[DiscordOutboundMessage],
+        ink: ChannelInk[DiscordOutboundMessage],
     ) -> None:
         super().__init__(artifacts=artifacts, users=users)
-        self.ink: Ink[DiscordOutboundMessage] = ink
+        self.ink: ChannelInk[DiscordOutboundMessage] = ink
 
     @channel_logfire.instrument("discord.artifact.send", extract_args=False)
     async def send(

@@ -36,7 +36,33 @@ permissions:
   network:
     allow:
       - "**"
+      - api.openai.com
 credentials:
+  - service: deepseek
+    apiKey:
+      name: DEEPSEEK_API_KEY
+      proxyManaged: true
+      inject:
+        - domain: api.deepseek.com
+          header: Authorization
+          format: Bearer %s
+  - service: openai
+    apiKey:
+      name: OPENAI_API_KEY
+      proxyManaged: true
+      inject:
+        - domain: api.openai.com
+          header: Authorization
+          format: Bearer %s
+    oauth:
+      tokenEndpoint:
+        host: auth.openai.com
+        path: /oauth/token
+      resourceHosts:
+        - chatgpt.com
+      sentinels:
+        accessToken: oai-oat01-proxy-managed
+        refreshToken: oai-ort01-proxy-managed
   - service: anthropic
     oauth:
       tokenEndpoint:
@@ -55,3 +81,8 @@ credentials:
             refreshToken: "{{.RefreshToken}}"
             expiresAt: "{{.ExpiresAt}}"
             scopes: "{{.Scopes}}"
+setup:
+  install:
+    - command: sh "$HOME/setup-codex.sh"
+      user: "1000"
+      description: Seed kit-managed Codex config/auth from the sbx credential mode

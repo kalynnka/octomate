@@ -1,25 +1,22 @@
-"""Host-owned Claude controls preserve settings and independent session history."""
+"""Claude receives fixed slash commands in the configured habitat."""
 
-import json
-from dataclasses import replace
-from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
-from pydantic_ai.messages import ModelRequest, UserPromptPart
-from uuid_utils.compat import uuid7
 
-from octomate.managers.conversation import ConversationManager
+from octomate.config.habitat import SbxHabitatConfig
+from octomate.habitat.sbx import SbxHabitat
+from octomate.managers.auth import AuthManager
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
     CommandIntent,
     CommandResult,
 )
-from octomate.schemas.thread import ThreadCommand
+from octomate.schemas.segments import TextSegment
 from octomate.tentacles.claude import ClaudeTentacle
-from octomate.tentacles.claude.transcript import transcripts_dir
+from octomate.tentacles.claude.transport import HabitatTransport
 from octomate.types.json import JsonObject
 from tests.agent.claude.test_command_execution import (
     execution as execution,
@@ -33,7 +30,8 @@ from tests.agent.claude.test_command_execution import (
 from tests.agent.claude.test_command_execution import (
     streams as streams,
 )
-from tests.support.invocations import invocation_for
+from tests.habitat.test_contracts import IMAGE
+from tests.support.users import auth_config
 
 
 async def deliver(
@@ -55,177 +53,36 @@ async def deliver(
             return result
 
 
-@pytest.mark.parametrize(
-    ("argument", "mode"), [("", "plan"), ("on", "plan"), ("off", "default")]
-)
-async def test_plan_updates_live_permissions_and_persists_for_next_run(
-    execution: tuple[
-        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
-    ],
-    streams: dict[str, list[JsonObject]],
-    argument: str,
-    mode: str,
-) -> None:
-    agent, context, client, options = execution
-    conversation = context.conversation
-    assert conversation is not None
-    agent.config.permission_mode = "plan"
-    await agent.conversations.set_permission_mode(conversation, "acceptEdits")
-    context = replace(context, permission_mode="acceptEdits")
-    agent.ink.live_clients[conversation.id] = client
-    outcome = await deliver(agent, context, "plan", argument)
-    assert isinstance(outcome, CommandResult)
-    context = replace(context, permission_mode=mode)
-    assert await deliver(agent, context, "plan", argument) == outcome
-    client.set_permission_mode.assert_awaited_once_with(mode)
-    client.query.assert_not_called()
-    stored = await agent.conversations.get(conversation.id)
-    assert stored.permission_mode == mode
-    assert not await stored.runs
-    receipt = await agent.threads.find_message(
-        conversation.thread_id, "control", "inbound"
-    )
-    assert isinstance(receipt, ThreadCommand)
-    assert receipt.outcome == outcome
-    agent.ink.live_clients.clear()
-    client.receive_response.side_effect = lambda: native_messages(streams["skill"])
-    async with invocation_for(
-        agent,
-        conversation_address=context.address,
-        thread_id=conversation.thread_id,
-        conversation_id=conversation.id,
-        owner_id=context.user_id,
-    ) as invocation:
-        await agent.run(
-            "continue",
-            conversation_address=context.address,
-            invocation=invocation,
-        )
-    assert options[-1].permission_mode == mode
-
-
-@pytest.mark.parametrize(
-    ("command", "argument", "status"),
-    [
-        ("plan", "maybe", "unsupported"),
-        ("fork", "other", "unsupported"),
-        ("fork", "", "unavailable"),
-    ],
-)
-async def test_controls_reject_invalid_input_without_starting_a_run(
-    execution: tuple[
-        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
-    ],
-    command: str,
-    argument: str,
-    status: str,
-) -> None:
-    agent, context, client, _ = execution
-    outcome = await deliver(agent, context, command, argument)
-    assert outcome.status == status
-    client.query.assert_not_called()
-    client.set_permission_mode.assert_not_called()
-    assert context.conversation is not None
-    stored = await agent.conversations.get(context.conversation.id)
-    assert stored.permission_mode is None
-    assert not await stored.runs
-    assert len(await agent.threads.list_threads(user_id=context.user_id)) == 1
-
-
-async def test_fork_copies_sdk_transcript_and_resumes_from_destination(
+@pytest.mark.parametrize(("command", "arguments"), [("plan", "off"), ("fork", "topic")])
+async def test_fixed_command_reaches_the_configured_habitat(
     execution: tuple[
         ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
     ],
     streams: dict[str, list[JsonObject]],
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    command: str,
+    arguments: str,
 ) -> None:
-    agent, context, client, options = execution
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
-    conversation = context.conversation
-    assert conversation is not None
-    assert context.cwd is not None
-    session_id = str(uuid7())
-    prompt_id = str(uuid7())
-    source_bytes = (
-        json.dumps(
-            {
-                "type": "user",
-                "uuid": prompt_id,
-                "parentUuid": None,
-                "sessionId": session_id,
-                "cwd": str(context.cwd),
-                "message": {"role": "user", "content": "Earlier work"},
-            }
-        )
-        + "\n"
-    ).encode()
-    source_file = transcripts_dir(context.cwd) / f"{session_id}.jsonl"
-    source_file.parent.mkdir(parents=True)
-    source_file.write_bytes(source_bytes)
-    await agent.conversations.record_agent_run(
-        conversation,
-        run_id="previous",
-        external_id=session_id,
-        messages=[ModelRequest(parts=[UserPromptPart(content="Earlier work")])],
-    )
-    await agent.conversations.set_external_id(conversation, session_id)
-    await agent.conversations.set_permission_mode(conversation, "plan")
-    await agent.conversations.set_effort(conversation, "max")
-    context = replace(context, permission_mode="plan")
-    source_thread = await agent.threads.get(conversation.thread_id)
-    assert source_thread is not None
-    await agent.conversations.set_name(conversation, "Original")
-    outcome = await deliver(agent, context, "fork")
+    agent, context, client, host_options = execution
+    agent.habitats.config = SbxHabitatConfig(image=IMAGE)
+    agent.auth = AuthManager(auth_config())
+    monkeypatch.setattr(SbxHabitat, "prepare", AsyncMock())
+    monkeypatch.setattr(SbxHabitat, "stop", AsyncMock())
+    transport = MagicMock(return_value=client)
+    monkeypatch.setattr(HabitatTransport, "client", transport)
+    result = {**streams["compact_empty"][-1], "result": "Reply from Claude"}
+    client.receive_response.side_effect = lambda: native_messages([result])
+    try:
+        outcome = await deliver(agent, context, command, arguments)
+    finally:
+        await agent.revoke_runtime_keys()
+        await agent.habitats.close()
+    transport.assert_called_once()
+    habitat, _ = transport.call_args.args
+    assert isinstance(habitat, SbxHabitat)
+    assert habitat.user_id == context.user_id
+    assert not host_options
+    client.query.assert_awaited_once_with(f"/{command} {arguments}")
     assert isinstance(outcome, CommandResult)
-    assert await deliver(agent, context, "fork") == outcome
-    client.query.assert_not_called()
-    threads = await agent.threads.list_threads(user_id=context.user_id)
-    [target] = [thread for thread in threads if thread.id != source_thread.id]
-    assert target.title == "Original"
-    copied = await agent.conversations.ensure(target.id, agent_tentacle_id=agent.id)
-    assert copied.external_id is not None
-    assert copied.external_id != session_id
-    copied = await agent.conversations.get(copied.id)
-    source = await agent.conversations.get(conversation.id)
-    assert source.external_id == session_id
-    assert copied.permission_mode == source.permission_mode == "plan"
-    assert copied.effort == source.effort == "max"
-    assert [
-        message.parts for message in (await ConversationManager().history(copied.id))
-    ] == [message.parts for message in (await ConversationManager().history(source.id))]
-    target_cwd = (await agent.workspaces.resolve(target.id, None, context.user_id)).path
-    assert target_cwd != context.cwd
-    fork_file = transcripts_dir(target_cwd) / f"{copied.external_id}.jsonl"
-    assert fork_file.is_file()
-    assert source_file.read_bytes() == source_bytes
-    assert not (source_file.parent / fork_file.name).exists()
-    assert not (transcripts_dir(target_cwd) / source_file.name).exists()
-    entries = [json.loads(line) for line in fork_file.read_text().splitlines()]
-    [prompt] = [entry for entry in entries if entry.get("type") == "user"]
-    assert prompt["uuid"] != prompt_id
-    assert prompt["sessionId"] == copied.external_id
-    assert prompt["message"]["content"] == "Earlier work"
-    assert len(await source.runs) == 1
-    client.receive_response.side_effect = lambda: native_messages(streams["skill"])
-    async with invocation_for(
-        agent,
-        conversation_address=replace(
-            context.address, channel_thread_id=target.channel_thread_id
-        ),
-        thread_id=target.id,
-        conversation_id=copied.id,
-        owner_id=context.user_id,
-    ) as invocation:
-        await agent.run(
-            "continue the fork",
-            conversation_address=replace(
-                context.address, channel_thread_id=target.channel_thread_id
-            ),
-            invocation=invocation,
-            model=context.model,
-        )
-    assert options[-1].resume == copied.external_id
-    assert options[-1].cwd == str(target_cwd)
-    assert options[-1].permission_mode == "plan"
-    assert options[-1].effort == "max"
+    assert outcome.segments == [TextSegment(data={"text": "Reply from Claude"})]
+    assert len(await agent.threads.list_threads(user_id=context.user_id)) == 1

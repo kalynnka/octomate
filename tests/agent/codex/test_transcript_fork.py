@@ -22,6 +22,7 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.config.agents import CodexConfig
 from octomate.database import async_session
+from octomate.habitat import NativeHabitat
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.files import FileManager
 from octomate.schemas.conversation import Conversation
@@ -75,6 +76,8 @@ async def case(
         auth=octomate.auth,
         gateway_manager=octomate.gateway,
     )
+    client = await tentacle.ink.pool.acquire()
+    client.transport.config = tentacle.config.runtime
     # The model the native session ran, which its fork resumes on.
     tentacle.models = {"openai:gpt-6-luna": "gpt-6-luna"}
     owner = await a_user()
@@ -159,7 +162,7 @@ async def case(
     )
     source = await octomate.conversations.get(source.id)
     fork = AsyncMock(return_value=str(uuid7()))
-    monkeypatch.setattr(tentacle, "fork_session", fork)
+    monkeypatch.setattr(tentacle.ink, "fork_session", fork)
     return ForkCase(tentacle, source, target, owner.id, prefix, pending, home, fork)
 
 
@@ -214,12 +217,14 @@ async def test_fork_copies_only_completed_uploaded_history(
     assert remainder == (case.prefix + case.pending).split(b"\n", 1)[1]
     assert imported.stat().st_mode & 0o777 == 0o600
     assert imported.parent.stat().st_mode & 0o777 == 0o700
-    assert case.fork.call_args.args[0].external_id == import_id
+    assert case.fork.call_args.args[0] == import_id
     completed_id = json.loads(case.prefix.splitlines()[-1])["payload"]["turn_id"]
-    assert case.fork.call_args.kwargs == {
-        "cwd": tmp_path,
-        "last_turn_id": completed_id,
-    }
+    workspace = await tentacle.workspaces.resolve(
+        case.target.thread_id, None, case.owner_id
+    )
+    assert case.fork.call_args.kwargs["cwd"] == workspace.path
+    assert isinstance(case.fork.call_args.kwargs["habitat"], NativeHabitat)
+    assert case.fork.call_args.kwargs["last_turn_id"] == completed_id
     assert case.target.external_id is None
     assert case.target.transcript_file_id is None
     assert case.target.permission_mode is None
@@ -265,10 +270,7 @@ async def test_two_destinations_have_distinct_imports(
     assert first.external_id != second.external_id
     assert first.transcript_file_id != second.transcript_file_id
     assert len(list(case.home.glob("sessions/users/*/*.jsonl"))) == 2
-    assert (
-        case.fork.call_args_list[0].args[0].external_id
-        != case.fork.call_args_list[1].args[0].external_id
-    )
+    assert case.fork.call_args_list[0].args[0] != case.fork.call_args_list[1].args[0]
 
 
 async def test_another_owner_cannot_import_the_transcript(
@@ -293,9 +295,14 @@ async def test_fork_failure_publishes_no_target_or_file(
     if failure == "fork":
         case.fork.side_effect = RuntimeError("fork failed")
     else:
-        monkeypatch.setattr(
-            AsyncSession, "commit", AsyncMock(side_effect=RuntimeError("commit failed"))
-        )
+        original_commit = AsyncSession.commit
+
+        async def fail_fork_commit(session: AsyncSession) -> None:
+            if case.fork.await_count:
+                raise RuntimeError("commit failed")
+            await original_commit(session)
+
+        monkeypatch.setattr(AsyncSession, "commit", fail_fork_commit)
     with pytest.raises(RuntimeError, match=r"fork failed|commit failed"):
         await case.tentacle.fork_transcript(
             case.source,
@@ -578,10 +585,12 @@ async def test_invalid_import_fails_without_creating_a_rollout(
     with pytest.raises(
         ValueError, match=r"line boundary|source session|ancestor files"
     ):
-        async with case.tentacle.import_transcript(
+        async with case.tentacle.ink.import_transcript(
             data,
             external_id=case.source.external_id,
             owner_id=case.owner_id,
+            habitat=NativeHabitat(),
+            env={},
         ):
             pytest.fail("Invalid history must not reach Codex")
     assert not case.home.exists()

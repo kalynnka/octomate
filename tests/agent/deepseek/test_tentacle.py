@@ -36,6 +36,7 @@ from octomate import Octomate
 from octomate.config.agents import DeepseekConfig
 from octomate.database import async_session
 from octomate.events import ActionBatchEvent
+from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -47,7 +48,9 @@ from octomate.schemas.deferred import (
 from octomate.schemas.volumes.storage import HostDirectory
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.deepseek import base as deepseek_base
+from octomate.tentacles.deepseek import ink as deepseek_ink
 from octomate.tentacles.deepseek.client import DeepseekApiClient
+from octomate.tentacles.deepseek.ink import DeepseekConnection
 from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
     MuxFrame,
@@ -129,6 +132,8 @@ class FakeDeepseekProcess:
         dsh_home: Path,
         ready_timeout: float,
         browser_url: HttpUrl | None,
+        habitat: SbxHabitat | None = None,
+        env: dict[str, str] | None = None,
     ) -> None:
         self.executable = executable
         self.port = port
@@ -324,8 +329,8 @@ class RecordingDeferredActions:
 
 
 def patch_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(deepseek_base, "DeepseekProcess", FakeDeepseekProcess)
-    monkeypatch.setattr(deepseek_base, "DeepseekApiClient", FakeDeepseekApi)
+    monkeypatch.setattr(deepseek_ink, "DeepseekProcess", FakeDeepseekProcess)
+    monkeypatch.setattr(deepseek_ink, "DeepseekApiClient", FakeDeepseekApi)
     FakeDeepseekProcess.started = []
     FakeDeepseekProcess.stopped = 0
     FakeDeepseekProcess.fail_start = False
@@ -602,8 +607,18 @@ async def test_run_stream_events_creates_session_proxies_events_and_persists(
     ]
     assert driving_span.context is not None
     assert driving_span.context.trace_id == 91
-    assert driving_span.parent is not None
-    assert driving_span.parent.span_id == 92
+    [invocation_span] = [
+        span
+        for span in capfire.exporter.exported_spans
+        if span.name == "habitat.invoke"
+        and span.attributes
+        and span.attributes.get("logfire.span_type") == "span"
+    ]
+    assert invocation_span.context is not None
+    assert invocation_span.context.trace_id == 91
+    assert invocation_span.parent is not None
+    assert invocation_span.parent.span_id == 92
+    assert driving_span.parent == invocation_span.context
     for record in records:
         assert record.context is not None
         assert record.context.trace_id == 91
@@ -1101,7 +1116,7 @@ async def test_driving_covers_runtime_cleanup_before_persistence_and_workspace_e
                 await tentacle.run(
                     "go", conversation_address=KEY, invocation=invocation
                 )
-        assert tentacle.ink.subscribers == {}
+        assert (await tentacle.ink.acquire()).subscribers == {}
         assert tentacle.bridge_contexts == {}
         assert tentacle.driven_sessions == {}
 
@@ -1221,6 +1236,9 @@ async def test_an_approval_mid_run_bridges_to_a_card_and_back(
 
 async def test_a_declined_approval_answers_rejected() -> None:
     FakeDeepseekApi.reset()
+    connection = DeepseekConnection(
+        cast(DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None))
+    )
     approval = DeferredApproval(
         tool_name="bash", tool_call_id="ap-1", args=ApprovalRequest(tool_name="bash")
     )
@@ -1231,9 +1249,6 @@ async def test_a_declined_approval_answers_rejected() -> None:
     octomate = interaction_octomate(deferred_actions)
     tentacle = _tentacle(FakeConversationManager(), octomate=octomate)
     octomate.connect(tentacle)
-    tentacle.ink.client = cast(
-        DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None)
-    )
     conversation = FakeConversation(thread_id=_THREAD)
     tentacle.bridge_contexts["sess-1"] = bridge_context(conversation, suspender)
     frame = ApprovalRequestedFrame(
@@ -1244,7 +1259,7 @@ async def test_a_declined_approval_answers_rejected() -> None:
     )
 
     task = asyncio.create_task(
-        tentacle.ink.respond(
+        connection.respond(
             "rpc-9", frame, answer_interaction=tentacle.answer_interaction
         )
     )
@@ -1262,6 +1277,9 @@ async def test_a_declined_approval_answers_rejected() -> None:
 
 async def test_an_expired_approval_answers_cancelled() -> None:
     FakeDeepseekApi.reset()
+    connection = DeepseekConnection(
+        cast(DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None))
+    )
     approval = DeferredApproval(
         tool_name="bash", tool_call_id="ap-1", args=ApprovalRequest(tool_name="bash")
     )
@@ -1276,9 +1294,6 @@ async def test_an_expired_approval_answers_cancelled() -> None:
         octomate=octomate,
     )
     octomate.connect(tentacle)
-    tentacle.ink.client = cast(
-        DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None)
-    )
     tentacle.bridge_contexts["sess-1"] = bridge_context(
         FakeConversation(thread_id=_THREAD), suspender
     )
@@ -1289,7 +1304,7 @@ async def test_an_expired_approval_answers_cancelled() -> None:
         tool_name="bash",
     )
 
-    await tentacle.ink.respond(
+    await connection.respond(
         "rpc-9", frame, answer_interaction=tentacle.answer_interaction
     )
 
@@ -1302,6 +1317,9 @@ async def test_an_expired_approval_answers_cancelled() -> None:
 
 async def test_allow_session_short_circuits_the_next_approval() -> None:
     FakeDeepseekApi.reset()
+    connection = DeepseekConnection(
+        cast(DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None))
+    )
     approval = DeferredApproval(
         tool_name="bash", tool_call_id="ap-1", args=ApprovalRequest(tool_name="bash")
     )
@@ -1313,9 +1331,6 @@ async def test_allow_session_short_circuits_the_next_approval() -> None:
     octomate = interaction_octomate(deferred_actions, conversations)
     tentacle = _tentacle(conversations, octomate=octomate)
     octomate.connect(tentacle)
-    tentacle.ink.client = cast(
-        DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None)
-    )
     conversation = FakeConversation(thread_id=_THREAD)
     tentacle.bridge_contexts["sess-1"] = bridge_context(conversation, suspender)
     frame = ApprovalRequestedFrame(
@@ -1326,7 +1341,7 @@ async def test_allow_session_short_circuits_the_next_approval() -> None:
     )
 
     task = asyncio.create_task(
-        tentacle.ink.respond(
+        connection.respond(
             "rpc-1", frame, answer_interaction=tentacle.answer_interaction
         )
     )
@@ -1343,7 +1358,7 @@ async def test_allow_session_short_circuits_the_next_approval() -> None:
         approval_id="ap-2",
         tool_name="bash",
     )
-    await tentacle.ink.respond(
+    await connection.respond(
         "rpc-2", second, answer_interaction=tentacle.answer_interaction
     )
 
@@ -1359,19 +1374,19 @@ async def test_allow_session_short_circuits_the_next_approval() -> None:
 
 async def test_a_non_interactive_run_declines_without_a_card() -> None:
     FakeDeepseekApi.reset()
+    connection = DeepseekConnection(
+        cast(DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None))
+    )
     suspender = RecordingSuspender(agent_tentacle_id="deepseek")
     deferred_actions = RecordingDeferredActions(batch=suspender.batch)
     octomate = interaction_octomate(deferred_actions)
     tentacle = _tentacle(FakeConversationManager(), octomate=octomate)
     octomate.connect(tentacle)
-    tentacle.ink.client = cast(
-        DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None)
-    )
     tentacle.bridge_contexts["sess-1"] = bridge_context(
         FakeConversation(thread_id=_THREAD), suspender, interactive=False
     )
 
-    await tentacle.ink.respond(
+    await connection.respond(
         "rpc-9",
         ApprovalRequestedFrame(
             type="approval/requested",
@@ -1390,12 +1405,12 @@ async def test_a_non_interactive_run_declines_without_a_card() -> None:
 
 async def test_a_request_nobody_drives_is_delegated_to_other_clients() -> None:
     FakeDeepseekApi.reset()
-    tentacle = _tentacle(FakeConversationManager())
-    tentacle.ink.client = cast(
-        DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None)
+    connection = DeepseekConnection(
+        cast(DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None))
     )
+    tentacle = _tentacle(FakeConversationManager())
 
-    await tentacle.ink.respond(
+    await connection.respond(
         "rpc-9",
         ApprovalRequestedFrame(
             type="approval/requested",
@@ -1412,6 +1427,9 @@ async def test_a_request_nobody_drives_is_delegated_to_other_clients() -> None:
 
 async def test_questions_map_labels_to_selected_and_text_to_custom() -> None:
     FakeDeepseekApi.reset()
+    connection = DeepseekConnection(
+        cast(DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None))
+    )
     first = DeferredQuestion(
         tool_name="deepseek_user_input",
         tool_call_id="ask-1",
@@ -1432,9 +1450,6 @@ async def test_questions_map_labels_to_selected_and_text_to_custom() -> None:
     octomate = interaction_octomate(deferred_actions)
     tentacle = _tentacle(FakeConversationManager(), octomate=octomate)
     octomate.connect(tentacle)
-    tentacle.ink.client = cast(
-        DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None)
-    )
     tentacle.bridge_contexts["sess-1"] = bridge_context(
         FakeConversation(thread_id=_THREAD), suspender
     )
@@ -1454,7 +1469,7 @@ async def test_questions_map_labels_to_selected_and_text_to_custom() -> None:
     )
 
     task = asyncio.create_task(
-        tentacle.ink.respond(
+        connection.respond(
             "rpc-9", frame, answer_interaction=tentacle.answer_interaction
         )
     )
@@ -1482,6 +1497,9 @@ async def test_questions_map_labels_to_selected_and_text_to_custom() -> None:
 
 async def test_a_multi_select_answer_comes_back_as_its_picks() -> None:
     FakeDeepseekApi.reset()
+    connection = DeepseekConnection(
+        cast(DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None))
+    )
     question = DeferredQuestion(
         tool_name="deepseek_user_input",
         tool_call_id="ask-1",
@@ -1494,9 +1512,6 @@ async def test_a_multi_select_answer_comes_back_as_its_picks() -> None:
     octomate = interaction_octomate(RecordingDeferredActions(batch=suspender.batch))
     tentacle = _tentacle(FakeConversationManager(), octomate=octomate)
     octomate.connect(tentacle)
-    tentacle.ink.client = cast(
-        DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None)
-    )
     tentacle.bridge_contexts["sess-1"] = bridge_context(
         FakeConversation(thread_id=_THREAD), suspender
     )
@@ -1520,7 +1535,7 @@ async def test_a_multi_select_answer_comes_back_as_its_picks() -> None:
     )
 
     task = asyncio.create_task(
-        tentacle.ink.respond(
+        connection.respond(
             "rpc-9", frame, answer_interaction=tentacle.answer_interaction
         )
     )
@@ -1549,9 +1564,9 @@ async def test_starts_its_own_runtime_beside_native_dsh(
     tentacle = _tentacle(FakeConversationManager())
 
     async with tentacle:
-        assert tentacle.process is not None
-        assert tentacle.ink.client is not None
-        assert tentacle.ink.client.base_url == HttpUrl("http://127.0.0.1:3081")
+        assert FakeDeepseekProcess.started
+        connection = await tentacle.ink.acquire()
+        assert connection.client.base_url == HttpUrl("http://127.0.0.1:3081")
         async with invocation_for(
             tentacle, conversation_address=KEY, thread_id=_THREAD
         ) as invocation:
@@ -1630,7 +1645,7 @@ async def test_start_failure_never_attaches_to_another_runtime(
     with pytest.raises(RuntimeError, match="exited before reporting a URL"):
         await tentacle.__aenter__()
 
-    assert tentacle.process is None
+    assert not tentacle.ink.connections
     assert not calls_of("settings/describe")
     assert FakeDeepseekProcess.stopped == 0
 
@@ -1714,11 +1729,12 @@ async def test_detached_run_collects_through_turn_end(
 
             assert not task.done()
             assert tentacle.driven_sessions == {"sess-1": 1}
-            assert "sess-1" in tentacle.ink.subscribers
+            assert "sess-1" in (await tentacle.ink.acquire()).subscribers
             assert "sess-1" in tentacle.bridge_contexts
             assert len(tentacle.run_tasks) == 1
-            assert tentacle.ink.mux_task is not None
-            assert not tentacle.ink.mux_task.done()
+            mux_task = (await tentacle.ink.acquire()).mux_task
+            assert mux_task is not None
+            assert not mux_task.done()
             assert not calls_of("session/cancel")
             assert discarded == []
             assert conversations.runs == []
@@ -1734,7 +1750,7 @@ async def test_detached_run_collects_through_turn_end(
                     await task
 
         assert tentacle.driven_sessions == {}
-        assert tentacle.ink.subscribers == {}
+        assert (await tentacle.ink.acquire()).subscribers == {}
         assert tentacle.bridge_contexts == {}
         assert tentacle.run_tasks == set()
         assert len(discarded) == 1
@@ -1853,12 +1869,13 @@ async def test_aexit_drains_live_sessions_before_closing_the_mux(
             shutdown.cancel()
             await asyncio.sleep(0)
         assert not shutdown.done()
-        assert not tentacle.ink.closing
+        assert not (await tentacle.ink.acquire()).closing
         assert tentacle.driven_sessions == {"sess-1": 1}
-        assert "sess-1" in tentacle.ink.subscribers
+        assert "sess-1" in (await tentacle.ink.acquire()).subscribers
         assert "sess-1" in tentacle.bridge_contexts
-        assert tentacle.ink.mux_task is not None
-        assert not tentacle.ink.mux_task.done()
+        mux_task = (await tentacle.ink.acquire()).mux_task
+        assert mux_task is not None
+        assert not mux_task.done()
         assert not calls_of("session/cancel")
         assert FakeDeepseekProcess.stopped == 0
     finally:
@@ -1874,8 +1891,7 @@ async def test_aexit_drains_live_sessions_before_closing_the_mux(
     assert len(conversations.runs) == 1
     assert not calls_of("session/cancel")
     assert FakeDeepseekProcess.stopped == 1
-    assert tentacle.ink.mux_task is None
-    assert tentacle.process is None
+    assert not tentacle.ink.connections
     assert tentacle.driven_sessions == {}
 
 
@@ -1885,15 +1901,15 @@ async def test_rejected_interaction_reply_fails_its_run(
     FakeDeepseekApi.reset()
     tentacle = _tentacle(FakeConversationManager())
     api = FakeDeepseekApi(HttpUrl("http://t"), None)
-    tentacle.ink.client = cast(DeepseekApiClient, api)
+    connection = DeepseekConnection(cast(DeepseekApiClient, api))
     queue: asyncio.Queue[deepseek_base.TurnFrame] = asyncio.Queue()
-    tentacle.ink.subscribers["sess-1"] = queue
+    connection.subscribers["sess-1"] = queue
 
     async def refuse(event_id: str, result: RpcResult | None) -> RpcReceipt:
         return RpcReceipt(accepted=False, reason="HTTP 500")
 
     monkeypatch.setattr(api, "respond", refuse)
-    await tentacle.ink.respond(
+    await connection.respond(
         "event-1",
         ApprovalRequestedFrame(
             type="approval/requested",

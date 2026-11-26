@@ -50,11 +50,11 @@ from octomate.schemas.segments import (
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import (
+    ChannelInk,
     ChannelTentacle,
     Chromo,
     DownloadedImage,
     IMMessageID,
-    Ink,
     ThreadStrategy,
 )
 from octomate.tentacles.siphon import Siphon
@@ -98,7 +98,7 @@ class TrunklineSeamNotWired(NotImplementedError):
         )
 
 
-class TrunklineInk(Ink[WireEvent]):
+class TrunklineInk(ChannelInk[WireEvent]):
     """Console identity and thread locations; output streams inline."""
 
     async def inspect(self) -> UserProfile:
@@ -200,7 +200,7 @@ class TrunklineSiphon(Siphon):
         the other. A console `CONSOLE_BACKLOG` events behind is closed with 1013
         to read its state again; one that is gone ends the same way, once its
         close is read."""
-        nerve = self.channel.octomate.nerve
+        nerve = self.channel.nerve
         kept = nerve.retained.get(topic, []) if replay else []
         # A run is in the ledger by the time it ends, and the console reads it
         # there, so the socket starts past the last one that ended. It is sought

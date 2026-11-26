@@ -37,7 +37,7 @@ from octomate.schemas.deferred import (
     QuestionRequest,
 )
 from octomate.schemas.segments import MarkdownSegment, TextSegment
-from octomate.tentacles.channel import ChannelSurfaces, Ink
+from octomate.tentacles.channel import ChannelInk, ChannelSurfaces
 from octomate.tentacles.feelers.base import Feelers
 from octomate.tentacles.feelers.deferred import (
     PlainTextApprovalFeeler,
@@ -303,7 +303,7 @@ async def test_feelers_present_actions_splits_and_marks() -> None:
         approvals=approvals,
         ask_questions=ask_questions,
         oauth=PlainTextOAuthFeeler(
-            cast(Ink[str], FakeOAuthInk()), RecordingMarkdownFeeler()
+            cast(ChannelInk[str], FakeOAuthInk()), RecordingMarkdownFeeler()
         ),
     ).present_actions(
         target_address,
@@ -344,7 +344,7 @@ def plain_feelers() -> Feelers:
         approvals=RecordingApprovalFeeler(),
         ask_questions=RecordingQuestionFeeler(),
         oauth=PlainTextOAuthFeeler(
-            cast(Ink[str], FakeOAuthInk()), RecordingMarkdownFeeler()
+            cast(ChannelInk[str], FakeOAuthInk()), RecordingMarkdownFeeler()
         ),
     )
 

@@ -15,7 +15,6 @@ from contextlib import asynccontextmanager
 from typing import Literal, Self
 from unittest.mock import AsyncMock
 
-import httpx
 import httpx2
 import pytest
 from fastapi import FastAPI
@@ -273,8 +272,8 @@ async def test_a_bare_deployment_is_served_locked() -> None:
     # No registered user: the endpoint still exists, and nothing at all opens
     # it — every bearer there is names a person, and none is registered.
     async with served() as (_, app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://octomate"
+        async with httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app), base_url="http://octomate"
         ) as http:
             response = await http.post(
                 OCTOMATE_MCP_PATH,
@@ -297,8 +296,8 @@ async def test_the_server_refuses_an_unauthenticated_call(
 ) -> None:
     async with (
         served() as (_, app),
-        httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://octomate"
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app), base_url="http://octomate"
         ) as http,
     ):
         response = await http.post(

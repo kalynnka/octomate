@@ -241,6 +241,15 @@ class StreamingBlock:
     part: TextPart | ThinkingPart
 
 
+def subagent_name(block: ToolUseBlock | AnthropicToolUseBlock) -> str | None:
+    if block.name not in {"Agent", "Task", "Skill"}:
+        return None
+    name = block.input.get("skill" if block.name == "Skill" else "description")
+    if isinstance(name, str):
+        return name.strip() or None
+    return None
+
+
 @dataclass
 class ClaudeRunAccumulator:
     """Translates a Claude Agent SDK message stream into Octomate's two
@@ -557,6 +566,10 @@ class ClaudeRunAccumulator:
                 )
                 parts.append(call)
                 self.tool_names[block.id] = block.name
+                # A subagent can hand its answer back through this call, not as text.
+                report = block.input.get("message")
+                if block.name == "SubagentHandback" and isinstance(report, str):
+                    self.result_text = report
                 yield FunctionToolCallEvent(part=call)
             elif isinstance(block, ServerToolUseBlock):
                 # Server-side tools (advisor, web_search, …) are run by the API, so

@@ -15,11 +15,12 @@ import type {
   ApiThreadMessage,
   ApiUsage,
 } from './events'
-import { batchFeelers, botLabel, nativeQuestionAnswered, nativeQuestionReplies, promptText, promptContent, replayRun, segmentText, type NativeQuestionReply, type ReplayChild } from './fold'
+import { batchFeelers, botLabel, nativeQuestionAnswered, nativeQuestionReplies, promptText, promptContent, replayRun, segmentText, spawnTitle, type NativeQuestionReply, type ReplayChild } from './fold'
 import type {
   ChannelMeta,
   LedgerItem,
   MessageReply,
+  NestedSession,
   SessionInfo,
   ThreadDetail,
   ThreadSummary,
@@ -138,6 +139,7 @@ export function liveThreadSummary(t: ApiThread): ThreadSummary {
     channelId: t.channel_tentacle_id,
     key: t.channel_thread_id ?? '',
     title: threadLabel(t),
+    nestedCount: t.nested_session_count ?? 0,
     tone: t.kind === 'native_thread' ? 'native' : t.status === 'active' ? 'active' : 'idle',
     // Nothing routed a native session — the runtime it ran in is its agent, and
     // "unrouted" would read as a routing decision that never happened.
@@ -169,6 +171,56 @@ function threadTag(threadId: string): string {
 /** The 4-hex chip a session goes by, off the tail of the conversation it is. */
 function sessionTag(conversationId: string): string {
   return `SES-${conversationId.replaceAll('-', '').slice(-4).toUpperCase()}`
+}
+
+export interface UnnamedSpawn {
+  id: string
+  scope?: string
+  run: string
+  call: string
+}
+
+/** Match both IDs: tool-call IDs can repeat across parent runs. */
+export function resolveSpawnNames(messages: ApiModelMessage[], pending: UnnamedSpawn[], titles: Record<string, string>) {
+  for (const message of messages) {
+    if (message.kind !== 'response') continue
+    const inRun = pending.filter(target => target.run === message.run_id)
+    if (!inRun.length) continue
+    for (const part of message.parts) {
+      if (part.part_kind !== 'tool-call' && part.part_kind !== 'builtin-tool-call') continue
+      const match = inRun.find(target => target.call === part.tool_call_id)
+      if (!match) continue
+      const title = spawnTitle(part.tool_name, part.args)
+      if (title) titles[match.id] = title
+      pending = pending.filter(target => target !== match && !titles[target.id])
+    }
+  }
+  return pending
+}
+
+/** Each top-level session contributes its spawned subagents to the thread's tree. */
+export function nestedSessions(conversations: ApiConversation[], names?: Record<string, string>): NestedSession[] {
+  const ordered = [...conversations].sort((a, b) => a.id.localeCompare(b.id))
+  const rows: NestedSession[] = []
+  const spawnedBy = (parent: string, depth: number) => {
+    for (const child of ordered) {
+      if (child.parent_conversation_id !== parent) continue
+      rows.push({
+        id: child.id,
+        agent: child.agent_tentacle_id,
+        depth,
+        title: child.name || names?.[child.id] || 'subagent',
+        tag: child.subagent_id.slice(-6).toUpperCase(),
+        running: child.runs.some((run) => run.kind === 'external' && run.end_offset == null),
+        invocationId: child.subagent_id,
+      })
+      spawnedBy(child.id, depth + 1)
+    }
+  }
+  for (const conversation of ordered) {
+    if (conversation.parent_conversation_id === null) spawnedBy(conversation.id, 0)
+  }
+  return rows
 }
 
 /**
@@ -242,6 +294,8 @@ function liveSessions(
  *  two paged reads, and the sub-resources that hang off it, each its own request. */
 export interface ThreadReads {
   thread: ApiThread
+  /** The selected conversation, or all parent conversations when absent. */
+  conversationId?: string
   /** the model messages of the thread's own conversations read so far, oldest first */
   modelMessages: ApiModelMessage[]
   /** its chat rows no model message carries, read so far, oldest first */
@@ -314,7 +368,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
   type Keyed = { key: string; item: LedgerItem; session?: string }
   const keyed: Keyed[] = []
 
-  thread.handoffs.forEach((handoff, index) => {
+  thread.handoffs.filter(handoff => !reads.conversationId || handoff.target_conversation_id === reads.conversationId).forEach((handoff, index) => {
     const opened = handoff.target_conversation_id
     keyed.push({
       key: handoff.id,
@@ -334,13 +388,19 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
   // The agent's own conversations: a subagent's runs surface through the
   // parent's tool call, not as the thread's own history — the spawn call each
   // child run names is what the replay renders as its subagent card.
-  const own = conversations.filter((conversation) => !conversation.subagent_id)
+  const own = conversations.filter((conversation) => reads.conversationId ? conversation.id === reads.conversationId : !conversation.subagent_id)
+  // A child that handed its report back as a message of its own left the call's
+  // result only pointing at it.
+  const reports = new Map(messages.flatMap((message) => {
+    const agent = message.segments.find(segment => segment.data.annotations)?.data.annotations?.agent
+    return agent ? [[agent.id, message.message_text ?? ''] as const] : []
+  }))
   const children = new Map<string, ReplayChild>()
   for (const conversation of conversations) {
     if (!conversation.subagent_id) continue
     for (const run of conversation.runs) {
       if (run.parent_tool_call_id) {
-        children.set(run.parent_tool_call_id, { agentId: conversation.subagent_id })
+        children.set(run.parent_tool_call_id, { agentId: conversation.subagent_id, name: conversation.name, report: reports.get(conversation.subagent_id) })
       }
     }
   }
@@ -390,6 +450,9 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
           ...(reply && { reply }),
         },
       })
+    } else if (annotations?.agent) {
+      // Another agent session's message is that agent's, not this thread's.
+      keyed.push({ key, session, item: { kind: 'agent', uid: message.id, subagentId: annotations.agent.id, label: annotations.agent.name, blocks: [{ type: 'p', text }] } })
     } else if (message.actor_kind === 'system') {
       // Each paragraph gets one bullet; line breaks within it stay together.
       for (const [n, paragraph] of text.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean).entries()) {
@@ -536,7 +599,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
 
   const { agent } = activeRoute(thread)
   return {
-    key: thread.channel_thread_id || threadTag(thread.id),
+    key: reads.conversationId ? sessionTag(reads.conversationId) : thread.channel_thread_id || threadTag(thread.id),
     kind: thread.kind,
     live: true,
     channel: thread.channel_tentacle_id,
@@ -559,7 +622,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     // Directives only go to the console's own channel; anything else is a
     // read-only view of that channel's thread.
     sendKey:
-      thread.kind !== 'native_thread' && thread.channel_tentacle_id === 'trunkline'
+      !reads.conversationId && thread.kind !== 'native_thread' && thread.channel_tentacle_id === 'trunkline'
         ? (thread.channel_thread_id ?? undefined)
         : undefined,
     msgCount: reads.totals.model + reads.totals.unbound,
@@ -567,19 +630,19 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     reads,
     sessions: liveSessions(thread.handoffs, own, anchors),
     ledger,
-    ...threadMetrics(conversations, spent),
+    ...threadMetrics(own, spent, reads.conversationId),
   }
 }
 
 /** Usage totals and the context of the newest parent run, without reading message pages. */
-export function threadMetrics(conversations: ApiConversation[], spent: ApiUsage): Pick<ThreadDetail, 'usage' | 'ctxK' | 'contextWindow'> {
+export function threadMetrics(conversations: ApiConversation[], spent: ApiUsage, conversationId?: string): Pick<ThreadDetail, 'usage' | 'ctxK' | 'contextWindow'> {
   const usage: ThreadUsage = {
     input: spent.input_tokens ?? 0, output: spent.output_tokens ?? 0,
     cacheRead: spent.cache_read_tokens ?? 0, cacheWrite: spent.cache_write_tokens ?? 0,
     cacheRate: null,
   }
   usage.cacheRate = usage.input > 0 ? usage.cacheRead / usage.input : null
-  const latest = conversations.filter(conversation => !conversation.subagent_id).flatMap(conversation => conversation.runs)
+  const latest = conversations.filter(conversation => conversationId ? conversation.id === conversationId : !conversation.subagent_id).flatMap(conversation => conversation.runs)
     .sort((a, b) => (a.started_at ? Date.parse(a.started_at) : 0) - (b.started_at ? Date.parse(b.started_at) : 0)).at(-1)
   return { usage, ctxK: Math.round((latest?.context_used ?? 0) / 1000), contextWindow: latest?.context_window ?? null }
 }

@@ -32,6 +32,7 @@ deferred_logfire = logfire.with_settings(custom_scope_suffix="deferred")
 react_logfire = logfire.with_settings(custom_scope_suffix="react")
 workspace_logfire = logfire.with_settings(custom_scope_suffix="workspace")
 volume_logfire = logfire.with_settings(custom_scope_suffix="volume")
+habitat_logfire = logfire.with_settings(custom_scope_suffix="habitat")
 
 # Channels: the shared plumbing every channel runs through, then the per-platform ones.
 channel_logfire = logfire.with_settings(custom_scope_suffix="channel")

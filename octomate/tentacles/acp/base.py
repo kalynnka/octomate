@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Sequence
-from contextlib import AsyncExitStack, aclosing, asynccontextmanager
+from contextlib import (
+    AsyncExitStack,
+    aclosing,
+    asynccontextmanager,
+)
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,7 +19,6 @@ from acp import schema
 from acp.connection import StreamDirection, StreamEvent
 from acp.utils import notify_model, request_model
 from anyio import CancelScope
-from httpx import URL
 from pydantic import UUID7, JsonValue
 from pydantic_ai import (
     AgentCapability,
@@ -48,6 +51,7 @@ from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
 )
+from octomate.habitat import Habitat, ManagedHabitat
 from octomate.managers.habitat import Invocation
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
@@ -60,6 +64,7 @@ from octomate.tentacles.acp.adapter import json_value_adapter
 from octomate.tentacles.acp.client import NativeAcpClient, NativeAcpSession
 from octomate.tentacles.acp.elicitation import AcpForm, AcpFormValidationError
 from octomate.tentacles.acp.history import AcpHistory
+from octomate.tentacles.acp.ink import AcpInk
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.deferred import DeferredSuspender
 from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
@@ -87,6 +92,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
     type: ClassVar[str] = "acp"
     in_process: ClassVar[bool] = True
     config: AcpAgentConfig
+    ink: AcpInk
     provider_permission_mode: str | None = None
 
     def __init__(
@@ -108,6 +114,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             auth=auth,
             habitats=habitats,
         )
+        self.ink = AcpInk()
         self.config = config
         self.gateway = config.gateway
         self.pendings = {}
@@ -345,6 +352,12 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             StreamEvent | ActionBatchEvent | ActionBatchAnsweredEvent | None
         ] = asyncio.Queue()
         session_id: str | None = None
+        env = invocation.environment
+        if isinstance(invocation.habitat, ManagedHabitat):
+            config = invocation.workspace.volumes.get("config")
+            if config is None:
+                raise ValueError("Managed ACP requires a configuration volume")
+            env["HOME"] = str(invocation.habitat.path(config))
 
         async def handle(
             method: str, params: JsonValue | None, notification: bool
@@ -393,36 +406,61 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                         else None,
                     ),
                 ),
+                habitat=invocation.habitat,
+                cwd=str(invocation.cwd),
+                env=env,
             ) as client,
         ):
             mcp_servers = await credentials.enter_async_context(
-                self.mcp_servers(client, invocation.owner_id, conversation.id)
+                self.mcp_servers(
+                    client,
+                    invocation.owner_id,
+                    conversation.id,
+                    habitat=invocation.habitat,
+                )
             )
             if conversation.external_id is None:
                 native = await client.new_session(
                     schema.NewSessionRequest(
-                        cwd=str(invocation.workspace.path), mcp_servers=[*mcp_servers]
+                        cwd=str(invocation.cwd), mcp_servers=[*mcp_servers]
                     )
                 )
                 session_id = native.session_id
                 await self.conversations.set_external_id(conversation, session_id)
             else:
                 capabilities = client.initialization.agent_capabilities
-                if capabilities is None or not capabilities.load_session:
-                    raise ValueError("The ACP provider cannot reopen this conversation")
                 session_id = conversation.external_id
-                response = await request_model(
-                    client.connection,
-                    acp.AGENT_METHODS["session_load"],
-                    schema.LoadSessionRequest(
-                        session_id=session_id,
-                        cwd=str(invocation.workspace.path),
-                        mcp_servers=[*mcp_servers],
-                    ),
-                    schema.LoadSessionResponse,
-                )
+                response: schema.LoadSessionResponse | schema.ResumeSessionResponse
+                if capabilities is not None and capabilities.load_session:
+                    response = await request_model(
+                        client.connection,
+                        acp.AGENT_METHODS["session_load"],
+                        schema.LoadSessionRequest(
+                            session_id=session_id,
+                            cwd=str(invocation.cwd),
+                            mcp_servers=[*mcp_servers],
+                        ),
+                        schema.LoadSessionResponse,
+                    )
+                elif (
+                    capabilities is not None
+                    and capabilities.session_capabilities is not None
+                    and capabilities.session_capabilities.resume is not None
+                ):
+                    response = await request_model(
+                        client.connection,
+                        acp.AGENT_METHODS["session_resume"],
+                        schema.ResumeSessionRequest(
+                            session_id=session_id,
+                            cwd=str(invocation.cwd),
+                            mcp_servers=[*mcp_servers],
+                        ),
+                        schema.ResumeSessionResponse,
+                    )
+                else:
+                    raise ValueError("The ACP provider cannot reopen this conversation")
                 native = NativeAcpSession(
-                    provider, str(invocation.workspace.path), session_id, response
+                    provider, str(invocation.cwd), session_id, response
                 )
             selected_model = await native.select_model(client.connection, model)
             await native.select_effort(client.connection, effort)
@@ -659,7 +697,12 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
 
     @asynccontextmanager
     async def mcp_servers(
-        self, client: NativeAcpClient, user_id: UUID7, conversation_id: UUID7
+        self,
+        client: NativeAcpClient,
+        user_id: UUID7,
+        conversation_id: UUID7,
+        *,
+        habitat: Habitat,
     ) -> AsyncGenerator[list[schema.HttpMcpServer]]:
         """Supply the caller's remote Octomate MCP, revoking its key after the turn."""
         if not self.gateway:
@@ -684,20 +727,12 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                 scopes=["mcp"],
                 expires_at=datetime.now(UTC) + auth.config.runtime_api_key_lifetime,
             )
-        config = self.octomate.config
         try:
             yield [
                 schema.HttpMcpServer(
                     name=OCTOMATE_SERVER_NAME,
                     type="http",
-                    url=str(
-                        URL(
-                            scheme="http",
-                            host=str(config.host),
-                            port=config.port,
-                            path=OCTOMATE_MCP_PATH,
-                        )
-                    ),
+                    url=f"{habitat.core_url}{OCTOMATE_MCP_PATH}",
                     headers=[
                         schema.HttpHeader(
                             name="Authorization",

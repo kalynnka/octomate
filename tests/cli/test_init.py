@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import TextIO
 from unittest.mock import Mock
+from unittest.mock import call as mock_call
 
 import pytest
 import typer
@@ -28,6 +29,232 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 runner = CliRunner()
+
+
+@pytest.mark.parametrize("yes", [False, True])
+@pytest.mark.parametrize(
+    ("agents", "services"),
+    [
+        (["codex"], ["openai"]),
+        (["claude", "codex", "deepseek"], ["anthropic", "openai", "deepseek"]),
+    ],
+)
+def test_sbx_selection_runs_shared_setup_and_passes_image_to_preparation(
+    tmp_path: Path,
+    commands: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+    yes: bool,
+    agents: list[str],
+    services: list[str],
+) -> None:
+    monkeypatch.setattr(wizard, "select_tentacles", Mock(return_value=agents))
+    sequence = Mock()
+    setup = sequence.host
+    credentials = sequence.credentials
+    monkeypatch.setattr(init_cli, "setup_habitat", setup)
+    monkeypatch.setattr(init_cli, "setup_credentials", credentials)
+    image = "example.test/agents@sha256:" + "a" * 64
+    result = runner.invoke(
+        service_typer,
+        [
+            "init",
+            "--prepare",
+            "--root",
+            str(tmp_path / "service"),
+            "--port",
+            "8123",
+            *(argument for name in agents for argument in ("--agent", name)),
+            "--channel",
+            "none",
+            *(["--habitat", "sbx", "--sandbox-image", image, "--yes"] if yes else []),
+        ],
+        input="" if yes else f"sbx\n{image}\ny\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert sequence.mock_calls == [
+        mock_call.host("sbx", check=yes),
+        *(
+            mock_call.credentials("sbx", service=service, check=yes)
+            for service in services
+        ),
+    ]
+    arguments = commands.call_args_list[2].args[0]
+    assert arguments[arguments.index("--sandbox-image") + 1] == image
+
+
+def test_declining_sbx_review_does_not_set_up_host(
+    tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(wizard, "select_tentacles", Mock(return_value=["codex"]))
+    setup = Mock()
+    monkeypatch.setattr(init_cli, "setup_habitat", setup)
+    credentials = Mock()
+    monkeypatch.setattr(init_cli, "setup_credentials", credentials)
+    result = runner.invoke(
+        service_typer,
+        ["init", "--prepare", "--root", str(tmp_path / "service"), "--port", "8123"],
+        input="sbx\nexample.test/agents@sha256:" + "a" * 64 + "\nn\n",
+    )
+    assert result.exit_code == 1
+    setup.assert_not_called()
+    credentials.assert_not_called()
+    commands.assert_not_called()
+
+
+@pytest.mark.parametrize("yes", [False, True])
+def test_acp_wizard_passes_provider_arguments_and_uses_shared_sbx_setup(
+    tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch, yes: bool
+) -> None:
+    monkeypatch.setattr(wizard, "select_tentacles", Mock(return_value=["acp"]))
+    setup = Mock()
+    monkeypatch.setattr(init_cli, "setup_habitat", setup)
+    credentials = Mock()
+    monkeypatch.setattr(init_cli, "setup_credentials", credentials)
+    image = "example.test/agents@sha256:" + "a" * 64
+    command = "/opt/acp provider"
+    result = runner.invoke(
+        service_typer,
+        [
+            "init",
+            "--prepare",
+            "--root",
+            str(tmp_path / "service"),
+            "--port",
+            "8123",
+            "--agent",
+            "acp",
+            "--channel",
+            "none",
+            "--habitat",
+            "sbx",
+            "--sandbox-image",
+            image,
+            *(
+                [
+                    "--acp-command",
+                    command,
+                    "--acp-arg=--stdio",
+                    "--acp-arg=two words",
+                    "--yes",
+                ]
+                if yes
+                else []
+            ),
+        ],
+        input="" if yes else f"{command}\n--stdio 'two words'\ny\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "ACP provider" in result.output
+    assert "two words" in result.output
+    setup.assert_called_once_with("sbx", check=yes)
+    credentials.assert_not_called()
+    arguments = commands.call_args_list[2].args[0]
+    assert arguments[arguments.index("--acp-command") + 1] == command
+    assert "--acp-arg=--stdio" in arguments
+    assert "--acp-arg=two words" in arguments
+    assert not (tmp_path / "service/octomate.db").exists()
+
+
+@pytest.mark.parametrize("yes", [False, True])
+def test_inkling_wizard_selects_model_and_uses_shared_sbx_setup(
+    tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch, yes: bool
+) -> None:
+    monkeypatch.setattr(wizard, "select_tentacles", Mock(return_value=["inkling"]))
+    setup = Mock()
+    monkeypatch.setattr(init_cli, "setup_habitat", setup)
+    credentials = Mock()
+    monkeypatch.setattr(init_cli, "setup_credentials", credentials)
+    image = "example.test/agents@sha256:" + "a" * 64
+    model = "openai:gpt-5-mini"
+    result = runner.invoke(
+        service_typer,
+        [
+            "init",
+            "--prepare",
+            "--root",
+            str(tmp_path / "service"),
+            "--port",
+            "8123",
+            "--agent",
+            "inkling",
+            "--channel",
+            "none",
+            "--habitat",
+            "sbx",
+            "--sandbox-image",
+            image,
+            *(
+                [
+                    "--inkling-model",
+                    model,
+                    "--yes",
+                ]
+                if yes
+                else []
+            ),
+        ],
+        input="" if yes else f"{model}\ny\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert "Inkling model" in result.output
+    assert model in result.output
+    setup.assert_called_once_with("sbx", check=yes)
+    credentials.assert_not_called()
+    arguments = commands.call_args_list[2].args[0]
+    assert arguments[arguments.index("--inkling-model") + 1] == model
+    assert not (tmp_path / "service/octomate.db").exists()
+
+
+@pytest.mark.parametrize(
+    ("agent", "options", "message"),
+    [
+        ("inkling", [], "non-empty --inkling-model"),
+        ("inkling", ["--inkling-model", " "], "non-empty --inkling-model"),
+        ("codex", ["--inkling-model", "openai:gpt-5-mini"], "requires --agent inkling"),
+        ("acp", [], "non-empty --acp-command"),
+        ("acp", ["--acp-command", " "], "non-empty --acp-command"),
+        ("codex", ["--acp-command", "provider"], "require --agent acp"),
+        ("codex", ["--acp-arg=--stdio"], "require --agent acp"),
+    ],
+)
+def test_invalid_agent_options_are_rejected_before_preparation(
+    tmp_path: Path, commands: Mock, agent: str, options: list[str], message: str
+) -> None:
+    result = runner.invoke(
+        service_typer,
+        [
+            "init",
+            "--prepare",
+            "--root",
+            str(tmp_path / "service"),
+            "--port",
+            "8123",
+            "--agent",
+            agent,
+            "--channel",
+            "none",
+            "--yes",
+            *options,
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert message in unstyle(result.output)
+    commands.assert_not_called()
+    assert not (tmp_path / "service").exists()
+
+
+def test_acp_wizard_rejects_unclosed_argument_quotes(
+    tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(wizard, "select_tentacles", Mock(return_value=["acp"]))
+    result = runner.invoke(
+        service_typer,
+        ["init", "--prepare", "--root", str(tmp_path / "service"), "--port", "8123"],
+        input="provider\n'unclosed\n",
+    )
+    assert result.exit_code == 2, result.output
+    assert "Invalid ACP arguments" in unstyle(result.output)
+    commands.assert_not_called()
 
 
 @pytest.mark.parametrize("target", ["systemd", "manual"])
@@ -247,7 +474,7 @@ def test_abort_leaves_installation_directory_absent(
             "--channel",
             "none",
         ],
-        input="n\n",
+        input="\nn\n",
     )
     assert result.exit_code == 1
     assert "Aborted" in result.output
@@ -263,7 +490,7 @@ def test_tentacles_are_selected_together_before_detail_steps(
     result = runner.invoke(
         service_typer,
         ["init", "--prepare", "--root", str(tmp_path / "service")],
-        input="8124\ny\n",
+        input="8124\n\ny\n",
     )
     assert result.exit_code == 0, result.output
     headings = [
@@ -655,7 +882,7 @@ def test_checkbox_requires_an_agent_but_channels_are_optional() -> None:
         create_pipe_input() as keys,
         create_app_session(input=keys, output=DummyOutput()),
     ):
-        keys.send_text("\r \x1b[B\x1b[B\x1b[B \r")
+        keys.send_text("\r " + "\x1b[B" * 5 + " \r")
         assert wizard.select_tentacles(None, None) == ["claude"]
 
 
@@ -809,7 +1036,7 @@ def test_wizard_collects_mcp_before_review_and_only_prepares_after_confirmation(
             "--channel",
             "none",
         ],
-        input="github_work\ntest-client\ny\n" + ("y\n" if confirm else "n\n"),
+        input="github_work\ntest-client\ny\n\n" + ("y\n" if confirm else "n\n"),
     )
     assert result.exit_code == (0 if confirm else 1), result.output
     assert "GitHub (github_work, read-only)" in result.output
@@ -871,7 +1098,7 @@ def test_checkbox_selects_github_alongside_an_agent() -> None:
         create_pipe_input() as keys,
         create_app_session(input=keys, output=DummyOutput()),
     ):
-        keys.send_text("\x1b[B" * 7 + " \r")
+        keys.send_text("\x1b[B" * 9 + " \r")
         assert wizard.select_tentacles(["codex"], []) == ["codex", "github"]
 
 
@@ -892,6 +1119,8 @@ def test_selection_shows_each_tentacle_with_its_capabilities(
         "Claude Code [Agent]",
         "Codex [Agent]",
         "DSH (experimental) [Agent]",
+        "ACP provider [Agent]",
+        "Inkling [Agent]",
         "Trunkline [Web] [Channel]",
         "Slack [Channel · MCP]",
         "Lark [Channel]",

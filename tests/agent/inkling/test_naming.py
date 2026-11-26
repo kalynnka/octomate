@@ -1,4 +1,4 @@
-"""Harness naming through real Inkling turns and disposable Arcanus persistence."""
+"""Session naming through real Inkling turns and disposable Arcanus persistence."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import ValidationError
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models import Model
@@ -15,7 +16,6 @@ from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai_harness.step_persistence.conversations import conversation_text
-from pydantic_ai_harness.step_persistence.naming import NamingResult
 
 from octomate import Octomate
 from octomate.managers.conversation import ConversationManager
@@ -23,6 +23,7 @@ from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling import base as inkling_base
 from octomate.tentacles.inkling.capabilities.ask import AskCapability
+from octomate.tentacles.inkling.naming import SessionName
 from tests.support.invocations import invocation_for
 
 pytestmark = pytest.mark.usefixtures("in_memory_engine")
@@ -32,9 +33,22 @@ ADDRESS = ChannelAddress(
 )
 
 
+def test_session_title_removes_controls_and_collapses_lines() -> None:
+    assert (
+        SessionName(title="  Fix\x00 gateway\n\t routing  ").title
+        == "Fix gateway routing"
+    )
+
+
+@pytest.mark.parametrize("title", ["\x00\n\t", "x" * 101])
+def test_session_title_rejects_empty_or_oversized_output(title: str) -> None:
+    with pytest.raises(ValidationError):
+        SessionName(title=title)
+
+
 @pytest.fixture(autouse=True)
 def inkling_session_names() -> None:
-    """Override the suite's isolation fixture: these tests run Harness naming."""
+    """Override the suite's isolation fixture: these tests run session naming."""
 
 
 @pytest.fixture
@@ -363,7 +377,7 @@ async def test_cancelling_a_run_cleans_up_its_naming_task(
     started = asyncio.Event()
     cancelled = asyncio.Event()
 
-    async def name(*, model: Model | str, prompt: str) -> NamingResult:
+    async def name(*, model: Model | str, prompt: str) -> SessionName:
         started.set()
         try:
             await asyncio.Event().wait()

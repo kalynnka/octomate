@@ -9,13 +9,14 @@ import pytest
 from uuid_utils.compat import uuid7
 
 from octomate.config.habitat import SbxHabitatConfig
+from octomate.events import HabitatProgressEvent
 from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatError, HabitatManager
 from octomate.nerve import Nerve, UserTopic
-from octomate.schemas.habitat import HabitatProgress, InvocationScope
+from octomate.schemas.habitat import InvocationScope
+from tests.habitat.test_contracts import IMAGE
 from tests.support.managers import a_workspace_manager
 from tests.support.nerve import held
-from tests.workspaces.test_habitat_contracts import IMAGE
 
 
 @pytest.fixture
@@ -114,8 +115,8 @@ async def test_idle_timer_resets_on_reuse_and_stopped_habitat_can_restart(
         async with asyncio.timeout(1):
             stopping = (await events.receive()).event
             stopped = (await events.receive()).event
-        assert isinstance(stopping, HabitatProgress)
-        assert isinstance(stopped, HabitatProgress)
+        assert isinstance(stopping, HabitatProgressEvent)
+        assert isinstance(stopped, HabitatProgressEvent)
         assert stopping.phase == "stopping"
         assert stopped.phase == "stopped"
     assert not state.needs_cleanup

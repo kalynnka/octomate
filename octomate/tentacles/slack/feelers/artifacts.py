@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from octomate.schemas.artifacts import ArtifactOverview
 from octomate.schemas.conversation import ChannelAddress
 from octomate.telemetry import slack_logfire
-from octomate.tentacles.channel import Ink
+from octomate.tentacles.channel import ChannelInk
 from octomate.tentacles.feelers.artifacts import ArtifactFeeler
 from octomate.tentacles.feelers.output import IMMessageID
 from octomate.tentacles.slack.feelers.actions import SlackBlockAction
@@ -31,10 +31,10 @@ class SlackArtifactFeeler(ArtifactFeeler):
         *,
         artifacts: ArtifactManager,
         users: UserManager,
-        ink: Ink[SlackOutboundMessage],
+        ink: ChannelInk[SlackOutboundMessage],
     ) -> None:
         super().__init__(artifacts=artifacts, users=users)
-        self.ink: Ink[SlackOutboundMessage] = ink
+        self.ink: ChannelInk[SlackOutboundMessage] = ink
 
     @slack_logfire.instrument("slack.artifact.send", extract_args=False)
     async def send(

@@ -1,4 +1,4 @@
-import { fetchThread } from '@/lib/api/client'
+import { fetchThread, invalidateThreadConversations } from '@/lib/api/client'
 import type { ApiThread, ThreadEvent, WireEvent } from '@/lib/api/events'
 import { api } from '@/lib/api'
 import { queryClient } from '@/lib/queryClient'
@@ -63,6 +63,9 @@ export function watchThreads(onError: (message: string) => void, onReady?: () =>
           queryClient.setQueryData<ApiThread[]>(['threads'], (rows = []) => [
             ...rows.filter(row => row.id !== updated.id), updated,
           ].sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at) || b.id.localeCompare(a.id)))
+          if (event.event_kind === 'thread_message_recorded' || event.event_kind === 'thread_handoff_recorded') {
+            await invalidateThreadConversations(event.thread_id, event.event_kind === 'thread_handoff_recorded' ? 'active' : 'none')
+          }
           if (event.event_kind === 'thread_project_bound') await useConsole.getState().actions.refreshThreadProject(event.thread_id)
         }).catch(fail)
     }

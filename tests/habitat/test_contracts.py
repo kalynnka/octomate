@@ -1,37 +1,51 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import Mock
+from contextlib import nullcontext
+from unittest.mock import AsyncMock, Mock
 
 import pytest
-from pydantic import ValidationError
+from pydantic import HttpUrl, ValidationError
 from pydantic_ai.messages import (
     PartDeltaEvent,
     TextPartDelta,
 )
-from pydantic_ai.models.test import TestModel
+from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.config.agents import InklingConfig
 from octomate.config.base import OctomateConfig
 from octomate.config.habitat import NativeHabitatConfig, SbxHabitatConfig
-from octomate.config.models import ModelConfig
+from octomate.events import HabitatProgressEvent
+from octomate.habitat import NativeHabitat
 from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatError, HabitatManager
 from octomate.nerve import (
     Impulse,
     impulse_adapter,
 )
-from octomate.schemas.habitat import (
-    HabitatProgress,
-    InvocationScope,
-)
+from octomate.schemas.habitat import InvocationScope
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.inkling import InklingTentacle
-from octomate.tentacles.inkling.agent import Agent
 
 IMAGE = "octomate-sandbox@sha256:" + "a" * 64
+
+
+@pytest.mark.parametrize(
+    ("address", "expected"),
+    [
+        ("http://192.0.2.10:8123", "http://192.0.2.10:8123"),
+        ("https://core.example:8443", "https://core.example:8443"),
+        ("http://0.0.0.0:8123", "http://127.0.0.1:8123"),
+        ("http://[::]:8123", "http://[::1]:8123"),
+    ],
+)
+def test_native_habitat_translates_its_core_address(
+    address: str, expected: str
+) -> None:
+    configured = NativeHabitatConfig(core_address=HttpUrl(address))
+    habitat = NativeHabitat(config=configured)
+    assert habitat.config is configured
+    assert habitat.core_url == expected
 
 
 async def test_native_default_constructs_an_idle_habitat_manager(
@@ -73,6 +87,8 @@ async def test_native_manager_refuses_vm_acquisition() -> None:
         {"internet_access": "yes"},
         {"version": "0.47.0"},
         {"unknown": "setting"},
+        {"core_address": "ftp://core.example:8000"},
+        {"core_address": "not a URL"},
     ],
 )
 def test_invalid_sbx_settings_are_rejected(
@@ -86,32 +102,48 @@ def test_sbx_internet_access_is_enabled_by_default() -> None:
     assert SbxHabitatConfig(image=IMAGE).internet_access
 
 
-async def test_sbx_cannot_silently_serve_native_before_dispatch_is_implemented() -> (
-    None
-):
-    app = Octomate(
-        config=OctomateConfig(
-            habitat=SbxHabitatConfig(image=IMAGE),
-            tentacles={
-                "inkling": InklingConfig(
-                    models=[ModelConfig(name="openai:gpt-4.1-mini")]
-                )
-            },
-        )
-    )
-    app.connect(
-        InklingTentacle(
-            "inkling",
-            app,
-            auth=app.auth,
-            habitats=app.habitats,
-            agent=Agent(TestModel()),
-        )
-    )
-    assert app.habitats.config is app.config.habitat
-    with pytest.raises(RuntimeError, match="not yet wired into React"):
+def test_sbx_idle_timeout_defaults_to_five_minutes() -> None:
+    assert SbxHabitatConfig(image=IMAGE).idle_timeout == 300
+
+
+async def test_sbx_application_lifespan_starts_without_allocating_a_vm(
+    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cli = Mock(side_effect=AssertionError("Startup must not launch sbx"))
+    monkeypatch.setattr(SbxHabitat, "cli", cli)
+    app = Octomate(config=OctomateConfig(habitat=SbxHabitatConfig(image=IMAGE)))
+    async with app.lifespan(app) as state:
+        assert state["octomate"] is app
+        assert app.habitats.config is app.config.habitat
+        assert app.habitats.residences == {}
+    cli.assert_not_called()
+
+
+@pytest.mark.parametrize("failed", [False, True])
+async def test_application_shutdown_releases_habitats(
+    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch, failed: bool
+) -> None:
+    prepare, stop, release = AsyncMock(), AsyncMock(), AsyncMock()
+    monkeypatch.setattr(SbxHabitat, "prepare", prepare)
+    monkeypatch.setattr(SbxHabitat, "stop", stop)
+    app = Octomate(config=OctomateConfig(habitat=SbxHabitatConfig(image=IMAGE)))
+    scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
+    with (
+        pytest.RaisesGroup(pytest.RaisesExc(RuntimeError, match="probe"))
+        if failed
+        else nullcontext()
+    ):
         async with app.lifespan(app):
-            pytest.fail("sbx must not reach native serving")
+            async with app.habitats.enter(scope, uuid7()) as residence:
+                residence.habitat.resources.push_async_callback(release)
+            assert residence.idle is not None
+            if failed:
+                raise RuntimeError("probe")
+    release.assert_awaited_once()
+    stop.assert_awaited_once()
+    assert app.habitats.closed
+    assert residence.idle is None
+    assert residence.status.phase == "stopped"
 
 
 def test_ownership_is_bound_to_the_registered_user() -> None:
@@ -142,7 +174,7 @@ def test_impulse_adapter_accepts_lifecycle_and_run_events_and_rejects_extra_fiel
 ):
     messages: list[Impulse] = [
         Impulse(
-            HabitatProgress(
+            HabitatProgressEvent(
                 user_id=uuid7(),
                 habitat="local",
                 sequence=1,

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import sys
 from pathlib import Path
 from typing import Annotated
+from uuid import UUID
 
 import typer
+from octomate_protocol.hooks import NativeHookEvent
 
 from octomate_cli.config import CLISettings, cli_settings
 from octomate_cli.tentacles.claude.hooks import (
@@ -15,12 +19,47 @@ from octomate_cli.tentacles.claude.hooks import (
     stream_url_for,
 )
 from octomate_cli.tentacles.claude.mcp import mcp_typer
+from octomate_cli.tentacles.claude.sessions import habitat_typer
+from octomate_cli.transcripts import upload_transcripts
 
 claude_typer = typer.Typer(
     help="Operate the native Claude Code integration.", no_args_is_help=True
 )
 claude_typer.add_typer(hooks_typer, name="hooks")
 claude_typer.add_typer(mcp_typer, name="mcp")
+claude_typer.add_typer(habitat_typer, name="habitat")
+
+
+@claude_typer.command("upload")
+def upload(
+    conversation: Annotated[
+        UUID, typer.Option(help="The conversation the session is driven for.")
+    ],
+) -> None:
+    """Upload the transcript named by Claude's hook payload and its subagent files."""
+    event = NativeHookEvent.model_validate_json(sys.stdin.read())
+    if event.hook_event_name == "SubagentStop":
+        if not event.agent_id or not event.agent_transcript_path:
+            raise typer.BadParameter(
+                "SubagentStop requires agent_id and agent_transcript_path"
+            )
+        path = None
+        subagents = {event.agent_id: Path(event.agent_transcript_path)}
+    else:
+        if not event.transcript_path:
+            raise typer.BadParameter("hook input requires transcript_path")
+        path = Path(event.transcript_path)
+        # A child's final line can land after its SubagentStop hook.
+        children = path.with_suffix("") / "subagents"
+        subagents = {
+            child.stem.removeprefix("agent-"): child
+            for child in children.glob("agent-*.jsonl")
+        }
+    asyncio.run(
+        upload_transcripts(
+            conversation, path, subagents=subagents, hook_path=CLAUDE_HOOK_PATH
+        )
+    )
 
 
 @claude_typer.command("tail")

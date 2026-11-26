@@ -11,7 +11,6 @@ import asyncio
 import contextlib
 import hashlib
 import logging
-import os
 import uuid
 from collections.abc import AsyncGenerator, Generator, Sequence
 from contextvars import Context, copy_context
@@ -35,13 +34,14 @@ import anyio
 from anyio.abc import ObjectSendStream
 from fastapi import APIRouter, Depends, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
-from httpx import URL
+from httpx2 import URL
 from octomate_protocol.stream import (
-    SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
     StreamHello,
+    StreamOpenSubagent,
     StreamSnapshotCursor,
+    StreamSubagentOpened,
     StreamWelcome,
     client_message_adapter,
 )
@@ -154,7 +154,7 @@ from octomate.tentacles.codex.ingest import CodexHookIngest
 from octomate.tentacles.codex.ink import CodexInk
 from octomate.tentacles.codex.schemas import CodexCommandDescriptor
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer
-from octomate.tentacles.codex.transcript import RolloutLine, rollout_line_adapter
+from octomate.tentacles.codex.transcript import rollout_line_adapter
 from octomate.tentacles.deferred import DeferredSuspender, Interjections
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
@@ -399,11 +399,10 @@ class CodexTentacle(AgentTentacle[str, None]):
         return {
             ThreadKey.from_address(state.address)
             for state in self.session_tailer.sessions.values()
-            if state.open_turn is not None and state.open_turn.native is not None
+            if state.open_turn is not None
+            and state.open_turn.native is not None
+            and not state.open_turn.native.replay
         }
-
-    def routers(self) -> tuple[APIRouter]:
-        return (self.hook_router,)
 
     @cached_property
     def hook_router(self) -> APIRouter:
@@ -471,7 +470,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         try:
             async with (
                 self.driving(hello.session_id, native=True),
-                self.octomate.nerve.publish(address) as impulses,
+                self.nerve.publish(address) as impulses,
             ):
                 await self.stream_attached(websocket, hello, sender, address, impulses)
         except WebSocketDisconnect:
@@ -529,10 +528,12 @@ class CodexTentacle(AgentTentacle[str, None]):
             hello.session_id,
             hello.client_version or "unversioned",
         )
+        state.catchup_end = hello.catchup_end
         conversation = state.conversation
         assert conversation is not None
         slot = FileTransferSlot(
             websocket=websocket,
+            conversation_id=conversation.id,
             persist=(
                 partial(
                     self.conversations.store_transcript,
@@ -545,7 +546,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             ),
             filename=Path(hello.transcript_path).name,
             content_type="application/jsonl",
-            offset=offsets.get(SESSION_FILE, 0),
+            offset=offsets[conversation.id],
         )
 
         async def relay_finalize() -> None:
@@ -568,6 +569,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 slot.prefix = await self.files.read(
                     conversation.transcript_file_id, owner_id=sender.user_id
                 )
+            state.catchup_end = max(state.catchup_end, len(slot.prefix))
             for raw in slot.prefix.split(b"\n")[:-1]:
                 end = slot.offset + len(raw) + 1
                 await self.session_tailer.feed_remote(
@@ -575,9 +577,10 @@ class CodexTentacle(AgentTentacle[str, None]):
                 )
                 slot.offset = end
             slot.stored_offset = len(slot.prefix)
-            offsets[SESSION_FILE] = slot.offset
+            offsets[conversation.id] = slot.offset
             await websocket.send_text(
                 StreamWelcome(
+                    conversation_id=conversation.id,
                     offsets=offsets,
                     transcript=StreamSnapshotCursor(
                         offset=len(slot.prefix),
@@ -590,6 +593,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             relay = asyncio.create_task(relay_finalize())
             # Each line must begin where the preceding line ended.
             expected_offsets = dict(offsets)
+            subagents: dict[UUID7, str] = {}
             while True:
                 message = await slot.receive()
                 if isinstance(message, StreamEof):
@@ -598,19 +602,37 @@ class CodexTentacle(AgentTentacle[str, None]):
                 if isinstance(message, StreamHello):
                     await websocket.close(code=1008, reason="hello already received")
                     return
-                key = message.agent_id or SESSION_FILE
-                want = expected_offsets.get(key, 0)
+                if isinstance(message, StreamOpenSubagent):
+                    tail = await self.session_tailer.remote_subagent(
+                        state, message.name, message.first_line or ""
+                    )
+                    child = tail.conversation if tail else None
+                    if child is not None:
+                        subagents[child.id] = message.name
+                        expected_offsets[child.id] = 0
+                    await websocket.send_text(
+                        StreamSubagentOpened(
+                            conversation_id=child.id if child else None, offset=0
+                        ).model_dump_json()
+                    )
+                    continue
+                key = message.conversation_id
+                if key not in expected_offsets or (
+                    message.visualizations and key != conversation.id
+                ):
+                    raise FileTransferError("Invalid transcript conversation")
+                want = expected_offsets[key]
                 if message.start != want:
                     await websocket.close(
                         code=4000,
-                        reason=f"offset gap for {key or 'session'}: expected {want}, "
+                        reason=f"offset gap for {key}: expected {want}, "
                         f"got {message.start}",
                     )
                     return
                 expected_offsets[key] = message.end
                 await self.session_tailer.feed_remote(
                     state,
-                    message.agent_id,
+                    None if key == conversation.id else subagents[key],
                     message.line,
                     message.start,
                     message.end,
@@ -630,16 +652,6 @@ class CodexTentacle(AgentTentacle[str, None]):
             if clean:
                 with contextlib.suppress(Exception):
                     await websocket.close()
-
-    async def fork_session(
-        self, conversation: Conversation, *, cwd: Path, last_turn_id: str | None = None
-    ) -> str:
-        """Copy Codex's stored history into an independent, durable thread."""
-        if not conversation.external_id:
-            raise ValueError("Cannot fork a Codex conversation without a session id")
-        return await self.ink.fork_thread(
-            conversation.external_id, cwd=cwd, last_turn_id=last_turn_id
-        )
 
     async def read_fork_transcript(
         self, source: Conversation, *, owner_id: UUID7
@@ -668,7 +680,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         completed_run: ExternalAgentRun | None = None
         for run in runs:
             offset = run.end_offset
-            assert offset is not None
+            if offset is None:
+                raise ValueError("Completed Codex turn has no transcript offset")
             if data[offset - 1 : offset] != b"\n":
                 raise ValueError("Turn offset must end at a transcript line boundary")
             start = data.rfind(b"\n", 0, offset - 1) + 1
@@ -688,7 +701,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
         # Uploads may stop inside the next record; Codex selects the turn boundary.
         data = data[: data.rfind(b"\n") + 1]
-        self.import_metadata(data, external_id=source.external_id)
+        self.ink.import_metadata(data, external_id=source.external_id)
         return data, completed_run
 
     async def fork_transcript(
@@ -719,25 +732,35 @@ class CodexTentacle(AgentTentacle[str, None]):
             data, completed_run = await self.read_fork_transcript(
                 source, owner_id=owner_id
             )
-            assert completed_run.end_offset is not None
+            if completed_run.end_offset is None:
+                raise ValueError("Completed Codex turn has no transcript offset")
+            thread = await self.threads.get(target.thread_id, with_messages=False)
+            if thread is None:
+                raise FileNotFoundError("No destination thread")
             async with (
+                self.inhabit(
+                    thread=thread, conversation=target, owner_id=owner_id
+                ) as invocation,
                 self.files.partial_copy(
                     source.transcript_file_id,
                     end=completed_run.end_offset,
                     owner_id=owner_id,
                     media_type="application/jsonl",
                 ) as snapshot,
-                self.import_transcript(
-                    data, external_id=source.external_id, owner_id=owner_id
+                self.ink.import_transcript(
+                    data,
+                    external_id=source.external_id,
+                    owner_id=owner_id,
+                    habitat=invocation.habitat,
+                    env=invocation.environment,
                 ) as imported_id,
             ):
-                imported_source = Conversation(
-                    thread_id=source.thread_id,
-                    agent_tentacle_id=self.id,
-                    external_id=imported_id,
-                )
-                external_id = await self.fork_session(
-                    imported_source, cwd=cwd, last_turn_id=completed_run.id
+                external_id = await self.ink.fork_session(
+                    imported_id,
+                    cwd=invocation.cwd,
+                    habitat=invocation.habitat,
+                    env=invocation.environment,
+                    last_turn_id=completed_run.id,
                 )
                 await conversations.fork(
                     source,
@@ -747,51 +770,6 @@ class CodexTentacle(AgentTentacle[str, None]):
                     permission_mode=completed_run.permission_mode,
                 )
             return await conversations.get(target.id)
-
-    @staticmethod
-    def import_metadata(data: bytes, *, external_id: str) -> RolloutLine:
-        """Require a complete snapshot with its own matching session metadata."""
-        if not data.endswith(b"\n"):
-            raise ValueError("Completed turn must end at a transcript line boundary")
-        opening = data.split(b"\n", 1)[0]
-        metadata = rollout_line_adapter.validate_json(opening)
-        if metadata.type != "session_meta" or metadata.payload.get("id") != external_id:
-            raise ValueError("Transcript metadata does not match the source session")
-        if metadata.payload.get("history_base") is not None:
-            raise ValueError(
-                "This transcript requires ancestor files before it can be imported"
-            )
-        return metadata
-
-    @contextlib.asynccontextmanager
-    async def import_transcript(
-        self, data: bytes, *, external_id: str, owner_id: UUID7
-    ) -> AsyncGenerator[str]:
-        """Keep a private Codex import on success; remove it if the fork fails."""
-        metadata = self.import_metadata(data, external_id=external_id)
-        _, remainder = data.split(b"\n", 1)
-        # Distinct imports of A must not compete for A's ID in Codex's rollout index.
-        imported_id = str(uuid7())
-        metadata.payload["id"] = imported_id
-        metadata.payload["session_id"] = imported_id
-        imported = metadata.model_dump_json().encode() + b"\n" + remainder
-        name = f"rollout-{metadata.timestamp:%Y-%m-%dT%H-%M-%S}-{imported_id}.jsonl"
-        home = await anyio.Path(
-            (self.config.runtime.env or {}).get("CODEX_HOME")
-            or os.environ.get("CODEX_HOME")
-            or Path.home() / ".codex"
-        ).expanduser()
-        path = await (home / "sessions" / "users" / owner_id.hex / name).absolute()
-        await path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        handle = await path.open("xb")
-        try:
-            async with handle:
-                await handle.write(imported)
-            await path.chmod(0o600)
-            yield imported_id
-        except BaseException:
-            await path.unlink(missing_ok=True)
-            raise
 
     async def probe_commands(self, context: CommandContext) -> CommandCatalog:
         """List app actions and inspect skills without preparing a workspace or turn."""
@@ -1081,15 +1059,17 @@ class CodexTentacle(AgentTentacle[str, None]):
             raise ValueError("This command requires a prepared invocation")
         async with (
             self.conversation_locks.hold(str(conversation.id)),
-            self.driving(thread_id),
+            contextlib.AsyncExitStack() as resources,
         ):
             api_key = await self.runtime_api_key(context.user_id)
-            await self.ink.open_thread(
+            codex_thread, _ = await self.ink.open_thread(
+                habitat=invocation.habitat,
+                env=invocation.environment,
                 thread_id=thread_id,
                 conversation_id=conversation.id,
                 api_key_id=api_key.key.id if api_key is not None else None,
                 mcp_bearer=api_key.token if api_key is not None else None,
-                cwd=str(invocation.workspace.path),
+                cwd=str(invocation.cwd),
                 approval_mode=ApprovalMode.auto_review
                 if permission_mode == "auto_review"
                 else ApprovalMode.deny_all
@@ -1107,6 +1087,13 @@ class CodexTentacle(AgentTentacle[str, None]):
                 if permission_mode == "full_access"
                 else Sandbox.workspace_write,
             )
+            thread_id = codex_thread.id
+            if conversation.external_id != thread_id:
+                await self.conversations.set_external_id(conversation, thread_id)
+                conversation = await self.conversations.get(
+                    conversation.id, with_runs=False
+                )
+            await resources.enter_async_context(self.driving(thread_id))
             if intent.command_id == "builtin:compact":
                 turn = await self.ink.start_command(thread_id)
                 completed = await turn.run()
@@ -1819,12 +1806,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         else:
             summary = ReasoningSummary(ReasoningSummaryValue(self.config.summary))
 
-        # The run's own workspace: a fork of the project's mirror, or of the empty
-        # repository when the thread is in none. `sandbox="workspace_write"` scopes
-        # writes to it, so for Codex the directory is the whole of running inside a
-        # project — and the workspace is what makes that boundary this run's rather
-        # than everyone's checkout.
-        run_cwd = str(invocation.workspace.path)
+        run_cwd = str(invocation.cwd)
 
         async with contextlib.AsyncExitStack() as resources:
             resources.enter_context(
@@ -1833,6 +1815,12 @@ class CodexTentacle(AgentTentacle[str, None]):
                     agent_id=self.id,
                     run_name=run_name or self.id,
                     conversation_address=str(conversation_address),
+                    invocation_id=invocation.id,
+                    thread_id=invocation.thread_id,
+                    conversation_id=conversation.id,
+                    native_thread_id=conversation.external_id,
+                    habitat=invocation.habitat.name,
+                    cwd=run_cwd,
                     **agent_input_message_attributes(user_prompt),
                 )
             )
@@ -1868,6 +1856,8 @@ class CodexTentacle(AgentTentacle[str, None]):
             session = self.gateway_manager.get(conversation.id)
             api_key = await self.runtime_api_key(invocation.owner_id)
             codex_thread, model_name = await self.ink.open_thread(
+                habitat=invocation.habitat,
+                env=invocation.environment,
                 thread_id=conversation.external_id,
                 conversation_id=conversation.id,
                 api_key_id=api_key.key.id if api_key is not None else None,
@@ -1885,6 +1875,9 @@ class CodexTentacle(AgentTentacle[str, None]):
             codex_thread_id = codex_thread.id
             if conversation.external_id != codex_thread_id:
                 await self.conversations.set_external_id(conversation, codex_thread_id)
+                conversation = await self.conversations.get(
+                    conversation.id, with_runs=False
+                )
             await resources.enter_async_context(self.driving(codex_thread_id))
             interjections = Interjections[Notification]()
             self.bridge_contexts[codex_thread_id] = CodexBridgeContext(

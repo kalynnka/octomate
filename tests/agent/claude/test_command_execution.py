@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from arcanus.materia.sqlalchemy import selectinload
-from claude_agent_sdk import ClaudeAgentOptions, project_key_for_directory
+from claude_agent_sdk import ClaudeAgentOptions, HookContext, project_key_for_directory
 from claude_agent_sdk._internal.message_parser import parse_message
 from claude_agent_sdk.types import Message, ResultMessage, SystemMessage
 from pydantic import TypeAdapter
@@ -36,6 +36,8 @@ from octomate import Octomate
 from octomate.config import ChannelConfig
 from octomate.config.agents import ClaudeCodeConfig
 from octomate.database import async_session
+from octomate.events import RunActivityChangedEvent
+from octomate.habitat.sbx import SbxHabitat
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
@@ -51,6 +53,8 @@ from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.types.json import JsonObject
+from tests.agent.claude.test_driven_transcript import AUTH, a_driven_turn
+from tests.agent.claude.test_tailer import prompt_record
 from tests.agent.claude.test_tentacle import KEY
 from tests.support.channels import FakeChannelTentacle
 from tests.support.invocations import invocation_for
@@ -185,6 +189,144 @@ async def test_driven_compaction_reads_its_summary_from_sdk_history(
     )
 
 
+@pytest.mark.parametrize("finish", ["success", "stream_error", "no_upload"])
+async def test_managed_compactions_read_the_summaries_uploaded_at_stream_exit(
+    in_memory_engine: AsyncEngine,
+    streams: dict[str, list[JsonObject]],
+    monkeypatch: pytest.MonkeyPatch,
+    finish: str,
+) -> None:
+    session_id = str(uuid7())
+    summaries = {str(uuid7()): str(uuid7()) for _ in range(2)}
+    records: list[JsonObject] = []
+    script: list[JsonObject] = []
+    for index, (boundary, summary) in enumerate(summaries.items()):
+        metadata: JsonObject = {"trigger": "auto"}
+        if index == 0:
+            metadata["preserved_segment"] = {"anchor_uuid": summary}
+        script.append(
+            {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "session_id": session_id,
+                "uuid": boundary,
+                "compact_metadata": metadata,
+            }
+        )
+        row = prompt_record("compact", f"Guest summary {index}", index)
+        row.update(
+            sessionId=session_id,
+            parentUuid=boundary,
+            uuid=summary,
+            isCompactSummary=True,
+        )
+        unrelated: JsonObject = {
+            **row,
+            "message": {"role": "user", "content": "Unrelated"},
+        }
+        if index == 0:
+            records.append({**unrelated, "uuid": str(uuid7())})
+        records.extend(
+            [
+                {**unrelated, "sessionId": str(uuid7())},
+                {**unrelated, "parentUuid": str(uuid7())},
+                {**unrelated, "isCompactSummary": False},
+                {**unrelated, "isSidechain": True},
+                row,
+            ]
+        )
+    async with a_driven_turn() as (client, app, conversation, owner):
+        agent = app.agents["claude"]
+        assert isinstance(agent, ClaudeTentacle)
+        finish_turn = asyncio.Event()
+
+        async def stream(options: ClaudeAgentOptions) -> AsyncGenerator[Message]:
+            assert options.hooks is not None
+            await options.hooks["SubagentStop"][0].hooks[0](
+                {
+                    "hook_event_name": "SubagentStop",
+                    "agent_id": "compact",
+                    "agent_type": "",
+                    "session_id": session_id,
+                    "cwd": "/repo",
+                    "transcript_path": "main",
+                    "agent_transcript_path": "compact",
+                    "stop_hook_active": False,
+                },
+                None,
+                HookContext(signal=None),
+            )
+            async for message in native_messages(script):
+                yield message
+            await finish_turn.wait()
+            if finish != "stream_error":
+                async for message in native_messages(
+                    [{**entry, "session_id": session_id} for entry in streams["skill"]]
+                ):
+                    yield message
+            if finish != "no_upload":
+                url = f"/hooks/claude/transcripts/{conversation.id}"
+                uploaded = await client.post(
+                    url,
+                    params={"offset": 0, "transcript_id": str(conversation.id)},
+                    headers=AUTH,
+                    content="".join(json.dumps(row) + "\n" for row in records).encode(),
+                )
+                assert uploaded.status_code == 200
+            if finish == "stream_error":
+                raise RuntimeError("Stream failed after compaction")
+
+        monkeypatch.setattr(SbxHabitat, "prepare", AsyncMock())
+        monkeypatch.setattr(SbxHabitat, "stop", AsyncMock())
+        monkeypatch.setattr(
+            agent.ink, "stream", lambda prompt, *, options, **kwargs: stream(options)
+        )
+        host_history = MagicMock(side_effect=AssertionError("Guest read host history"))
+        monkeypatch.setattr(claude_ink, "get_session_messages", host_history)
+        async with (
+            invocation_for(
+                agent,
+                conversation_address=KEY,
+                thread_id=conversation.thread_id,
+                conversation=conversation,
+                owner_id=owner.id,
+            ) as invocation,
+            agent.run_stream_events(
+                "continue", conversation_address=KEY, invocation=invocation
+            ) as events,
+        ):
+            for _ in summaries:
+                assert isinstance(await anext(events), RunActivityChangedEvent)
+            before = await app.conversations.native_compactions(
+                conversation, session_id
+            )
+            assert {row.native_compaction_id for row in before} == summaries.keys()
+            assert all(not row.messages for row in before)
+            finish_turn.set()
+            if finish == "stream_error":
+                with pytest.raises(
+                    RuntimeError, match="Stream failed after compaction"
+                ):
+                    await anext(events)
+            else:
+                async for _ in events:
+                    pass
+        host_history.assert_not_called()
+        rows = await app.conversations.native_compactions(conversation, session_id)
+        assert {row.native_compaction_id for row in rows} == summaries.keys()
+        for index, row in enumerate(sorted(rows)):
+            if finish == "no_upload":
+                assert not row.messages
+                continue
+            [message] = row.messages
+            assert message.message_text == f"Guest summary {index}"
+            assert row.native_compaction_id is not None
+            assert message.metadata == {
+                "native_item_ids": [summaries[row.native_compaction_id]]
+            }
+            assert message.run_id is None
+
+
 async def paused_native_messages(
     messages: list[JsonObject], release: asyncio.Event
 ) -> AsyncGenerator[Message]:
@@ -301,6 +443,8 @@ async def test_direct_commands_persist_receipts_and_native_session_without_model
         external_id="previous-session",
     )
     await agent.conversations.set_external_id(conversation, "previous-session")
+    conversation = await agent.conversations.get(conversation.id)
+    context = replace(context, conversation=conversation)
     client.receive_response.side_effect = lambda: native_messages(streams[script])
     intent = CommandIntent(command_id=command)
     async with AsyncExitStack() as stack:
@@ -476,6 +620,8 @@ async def test_model_command_preserves_arguments_context_stream_and_history(
     assert conversation is not None
     if resumed:
         await agent.conversations.set_external_id(conversation, "prior-session")
+        conversation = await agent.conversations.get(conversation.id)
+        context = replace(context, conversation=conversation)
     client.receive_response.side_effect = lambda: native_messages(streams["skill"])
     intent = CommandIntent(command_id="fixture-review", arguments=arguments)
     async with AsyncExitStack() as stack:
@@ -506,7 +652,7 @@ async def test_model_command_preserves_arguments_context_stream_and_history(
         "safe-mode": None,
         "thinking-display": "summarized",
     }
-    assert client.get_server_info.await_count == 2
+    client.get_server_info.assert_awaited_once_with()
     stored = await agent.conversations.get(conversation.id)
     [run] = await stored.runs
     assert run.native_session_id == streams["skill"][-1]["session_id"]
@@ -546,6 +692,7 @@ async def test_unknown_or_changed_commands_never_reach_query(
     command_id = "context"
     if change == "removed_before_discovery":
         client.get_server_info.return_value = changed
+        await agent.discover_models()
     elif change == "terminal_only":
         command_id = "theme"
     else:
@@ -553,7 +700,7 @@ async def test_unknown_or_changed_commands_never_reach_query(
             changed["commands"] = [
                 {"name": "context", "description": "Changed meaning"}
             ]
-        client.get_server_info.side_effect = [initial, changed]
+        client.get_server_info.return_value = changed
     intent = CommandIntent(command_id=command_id)
     async with AsyncExitStack() as stack:
         validated = await stack.enter_async_context(

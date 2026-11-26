@@ -1,6 +1,7 @@
 """Explicit local VM acceptance with disposable identities and no host mounts."""
 
 import os
+from contextlib import AsyncExitStack
 
 import pytest
 from anyio.streams.buffered import BufferedByteReceiveStream
@@ -11,11 +12,14 @@ from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
 from octomate.schemas.habitat import InvocationScope
+from tests.integration.sbx import remove_sandbox
 from tests.support.managers import a_workspace_manager
 
 
 @pytest.mark.timeout(600)
-async def test_command_attachment_reuse_and_stop_start_persistence() -> None:
+async def test_command_attachment_reuse_and_stop_start_persistence(
+    sbx_cleanup: AsyncExitStack,
+) -> None:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
@@ -26,12 +30,12 @@ async def test_command_attachment_reuse_and_stop_start_persistence() -> None:
     other = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
     sandbox = manager.residence(owner).habitat
     assert isinstance(sandbox, SbxHabitat)
-    existing = (await sandbox.command("ls", "--quiet")).decode().splitlines()
+    existing = (await sandbox.control("ls", "--quiet")).decode().splitlines()
     assert manager.residence(owner).habitat.name not in existing
     assert manager.residence(other).habitat.name not in existing
     try:
         async with manager.enter(owner, uuid7()) as first:
-            async with sandbox.execute(
+            async with sandbox.resident(
                 "cat", workdir="/home/agent/workspace"
             ) as stream:
                 await stream.send(b"ready\n")
@@ -47,12 +51,12 @@ async def test_command_attachment_reuse_and_stop_start_persistence() -> None:
                 assert len(first.invocations) == 2
             async with manager.enter(other, uuid7()) as second:
                 assert first.habitat.name != second.habitat.name
-            await sandbox.command(
+            await sandbox.control(
                 "exec",
                 "--workdir",
                 "/home/agent/workspace",
                 first.habitat.name,
-                "/opt/octomate/.venv/bin/python",
+                "python",
                 "-c",
                 "from pathlib import Path; "
                 "Path('uncommitted.txt').write_text('retained'); "
@@ -64,12 +68,12 @@ async def test_command_attachment_reuse_and_stop_start_persistence() -> None:
         await manager.stop(manager.residence(owner))
         assert manager.status(owner).phase == "stopped"
         async with manager.enter(owner, uuid7()) as restarted:
-            output = await sandbox.command(
+            output = await sandbox.control(
                 "exec",
                 "--workdir",
                 "/home/agent/workspace",
                 restarted.habitat.name,
-                "/opt/octomate/.venv/bin/python",
+                "python",
                 "-c",
                 "from pathlib import Path; "
                 "assert Path('uncommitted.txt').read_text() == 'retained'; "
@@ -79,14 +83,13 @@ async def test_command_attachment_reuse_and_stop_start_persistence() -> None:
             )
             assert output.strip() == b"persistent"
             assert (
-                await sandbox.command(
+                await sandbox.control(
                     "exec", restarted.habitat.name, "/home/agent/custom-tool"
                 )
             ).strip() == b"installed"
     finally:
-        await manager.close()
         for state in manager.residences.values():
             backend = state.habitat
-            assert isinstance(backend, SbxHabitat)
-            if backend.managed:
-                await backend.command("rm", "--force", backend.name)
+            if isinstance(backend, SbxHabitat) and backend.managed:
+                sbx_cleanup.push_async_callback(remove_sandbox, backend)
+        sbx_cleanup.push_async_callback(manager.close)

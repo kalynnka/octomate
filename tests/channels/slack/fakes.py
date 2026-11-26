@@ -18,7 +18,7 @@ from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import ImageSegment
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.channel import DownloadedImage, Ink
+from octomate.tentacles.channel import ChannelInk, DownloadedImage
 from octomate.tentacles.feelers.base import Feelers
 from octomate.tentacles.feelers.output import (
     DefaultMarkdownFeeler,
@@ -50,7 +50,7 @@ class FakeSlackStream:
 
 
 @dataclass
-class FakeSlackInk(Ink[SlackOutboundMessage]):
+class FakeSlackInk(ChannelInk[SlackOutboundMessage]):
     streams: list[dict[str, str | None]] = field(default_factory=list)
     stream_objects: list[FakeSlackStream] = field(default_factory=list)
     appends: list[str] = field(default_factory=list)

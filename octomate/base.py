@@ -431,11 +431,6 @@ class Octomate(FastAPI):
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI) -> AsyncGenerator[dict[str, Octomate]]:
-        if self.config.habitat.mode != "native":
-            raise RuntimeError(
-                f"Habitat mode {self.config.habitat.mode!r} is not enabled in this build; "
-                "prepared habitat invocations are not yet wired into React"
-            )
         with sqlalchemy_materia():
             # The project registry: reconciling here is what builds
             # the resolution index, so a declared project resolves before
@@ -470,9 +465,12 @@ class Octomate(FastAPI):
                     # after a cancellation, so shutdown stays prompt.
                     mirroring.cancel()
                     sweeping.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await mirroring
-                        await sweeping
+                    try:
+                        with suppress(asyncio.CancelledError):
+                            await mirroring
+                            await sweeping
+                    finally:
+                        await self.habitats.close()
 
     @asynccontextmanager
     async def run_tentacles(self) -> AsyncGenerator[None]:

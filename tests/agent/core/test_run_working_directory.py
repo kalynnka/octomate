@@ -36,7 +36,7 @@ from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
 from octomate.tentacles.codex import CodexTentacle
-from octomate.tentacles.codex import ink as codex_ink
+from octomate.tentacles.codex import pool as codex_pool
 from octomate.tentacles.codex.hooks import CodexHookInput
 from octomate.tentacles.codex.ingest import CodexHookIngest
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer
@@ -80,7 +80,7 @@ async def _db(in_memory_engine: AsyncEngine) -> None:
 @pytest.fixture
 def _fake_runtimes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", RecordingClaudeClient)
-    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_pool, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
 
 

@@ -20,18 +20,21 @@ from __future__ import annotations
 from typing import Annotated, Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, Field, TypeAdapter, model_validator
+from pydantic import (
+    UUID7,
+    BaseModel,
+    Field,
+    NonNegativeInt,
+    TypeAdapter,
+    model_validator,
+)
 
 from octomate_protocol.visualizations import HtmlSnapshot, codex_html_references
 
 # Bumped when a message's meaning changes. The server refuses a mismatch at hello and
 # names both versions, so a stale client surfaces as one clear line instead of being
 # half-understood; the session still degrades to hooks-only ingest.
-STREAM_PROTOCOL = 2
-
-# The key the session transcript itself streams under in per-file maps; a subagent's
-# file streams under its agent id.
-SESSION_FILE = ""
+STREAM_PROTOCOL = 3
 
 
 class StreamHello(BaseModel):
@@ -49,6 +52,10 @@ class StreamHello(BaseModel):
     # skew diagnosis. The Claude Code version is not carried here: it rides every
     # transcript line, which the server parses anyway.
     client_version: str = ""
+    catchup_end: NonNegativeInt = Field(
+        default=0,
+        description="Transcript byte length at connection time; earlier lines restore history.",
+    )
 
 
 class StreamLine(BaseModel):
@@ -62,9 +69,7 @@ class StreamLine(BaseModel):
     """
 
     type: Literal["line"] = "line"
-    # None: the session transcript; else the client's key for the subagent file this
-    # line is from — an agent id for Claude, a sibling rollout's basename for Codex.
-    agent_id: str | None = None
+    conversation_id: UUID7
     start: int
     end: int
     line: str
@@ -76,8 +81,7 @@ class StreamLine(BaseModel):
     @model_validator(mode="after")
     def snapshots_match_references(self) -> Self:
         if self.visualizations and (
-            self.agent_id is not None
-            or [snapshot.reference for snapshot in self.visualizations]
+            [snapshot.reference for snapshot in self.visualizations]
             != codex_html_references(self.line)
         ):
             raise ValueError("HTML snapshots must match the root assistant references")
@@ -101,22 +105,61 @@ class StreamSnapshotCursor(BaseModel):
     )
 
 
-class StreamWelcome(BaseModel):
-    """The server's answer to hello: where each file resumes, keyed by `SESSION_FILE`
-    or agent id. A file absent from the map starts at 0."""
+class TranscriptOffsets(BaseModel):
+    """Resume positions keyed by Octomate conversation UUID."""
+
+    offsets: dict[UUID7, NonNegativeInt]
+    subagents: dict[UUID7, str] = Field(
+        default_factory=dict, description="Local child file identifiers for discovery."
+    )
+
+
+class StreamWelcome(TranscriptOffsets):
+    """The session's conversation UUID and the resume positions for its files."""
 
     type: Literal["welcome"] = "welcome"
-    offsets: dict[str, int]
+    conversation_id: UUID7
     transcript: StreamSnapshotCursor | None = Field(
         default=None,
         description="Continuously upload bytes after this verified prefix; None disables upload.",
     )
 
 
+class StreamOpenSubagent(BaseModel):
+    """Resolve a newly discovered child before sending its transcript."""
+
+    type: Literal["open_subagent"] = "open_subagent"
+    name: str = Field(min_length=1)
+    first_line: str | None = Field(
+        default=None, description="Codex rollout metadata for parent verification."
+    )
+    catchup_end: NonNegativeInt = Field(
+        default=0, description="Child transcript byte length at registration time."
+    )
+    tool_call_id: str | None = Field(
+        default=None,
+        description="The parent's call a Claude child answers, from the meta file "
+        "beside its transcript. An interrupted call's result names no child.",
+    )
+    description: str | None = Field(
+        default=None,
+        description="What the parent called a Claude child's task, from the same file.",
+    )
+
+
+class StreamSubagentOpened(BaseModel):
+    """Registration result. A Codex rollout belonging to another session is skipped."""
+
+    type: Literal["subagent_opened"] = "subagent_opened"
+    conversation_id: UUID7 | None
+    offset: NonNegativeInt
+
+
 class StreamSnapshotStart(BaseModel):
     """Client announces the next transcript range before sending its bytes."""
 
     type: Literal["snapshot_start"] = "snapshot_start"
+    conversation_id: UUID7
     transfer_id: UUID
     start: int = Field(
         ge=0, description="Exclusive end of the previously stored prefix."
@@ -147,11 +190,12 @@ class StreamFinalize(BaseModel):
 
 
 StreamClientMessage = Annotated[
-    StreamHello | StreamLine | StreamSnapshotStart | StreamEof,
+    StreamHello | StreamOpenSubagent | StreamLine | StreamSnapshotStart | StreamEof,
     Field(discriminator="type"),
 ]
 StreamServerMessage = Annotated[
-    StreamWelcome | StreamFinalize | StreamSnapshotStored, Field(discriminator="type")
+    StreamWelcome | StreamSubagentOpened | StreamFinalize | StreamSnapshotStored,
+    Field(discriminator="type"),
 ]
 
 client_message_adapter: TypeAdapter[StreamClientMessage] = TypeAdapter(
@@ -160,3 +204,10 @@ client_message_adapter: TypeAdapter[StreamClientMessage] = TypeAdapter(
 server_message_adapter: TypeAdapter[StreamServerMessage] = TypeAdapter(
     StreamServerMessage
 )
+
+
+class TranscriptKept(BaseModel):
+    """How much of a driven session's transcript the server holds. It answers an
+    upload: stored, or refused because the bytes did not start where these end."""
+
+    size: int = Field(ge=0, description="Bytes kept; where the next upload starts.")

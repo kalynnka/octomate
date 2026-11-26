@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 
-import httpx
+import httpx2
 import pytest
 from pydantic import SecretStr, ValidationError
 from pydantic_ai.models import KnownModelName, parse_model_id
@@ -293,14 +293,14 @@ def test_provider_hosts_from_built_providers() -> None:
 
 
 def httpx_request_record(level: int, method: str, url: str) -> logging.LogRecord:
-    # Mirrors httpx's own request log call so the filter reads the URL from args[1].
+    # Mirrors HTTPX2's own request log call so the filter reads the URL from args[1].
     return logging.LogRecord(
-        "httpx",
+        "httpx2",
         level,
         __file__,
         1,
         'HTTP Request: %s %s "%s %d %s"',
-        (method, httpx.URL(url), "HTTP/1.1", 200, "OK"),
+        (method, httpx2.URL(url), "HTTP/1.1", 200, "OK"),
         None,
     )
 
@@ -319,7 +319,7 @@ def test_http_log_filter_keeps_providers_and_drops_others() -> None:
     lark_warning = httpx_request_record(
         logging.WARNING, "PUT", "https://open.feishu.cn/open-apis/cardkit/v1/cards/x"
     )
-    no_args = logging.LogRecord("httpx", logging.INFO, __file__, 1, "msg", None, None)
+    no_args = logging.LogRecord("httpx2", logging.INFO, __file__, 1, "msg", None, None)
 
     assert log_filter.filter(provider_call) is True
     assert log_filter.filter(lark_call) is False

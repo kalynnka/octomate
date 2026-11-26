@@ -100,11 +100,13 @@ async def test_catalog_discovery_closes_its_temporary_session_when_supported(
 
 
 @pytest.mark.parametrize("catalog", ["grouped", "flat", "none"])
+@pytest.mark.parametrize("reopen", ["load", "resume"])
 async def test_custom_harness_discovers_selects_and_reopens(
     custom_provider: AcpProvider,
     in_memory_engine: AsyncEngine,
     tmp_path: Path,
     catalog: str,
+    reopen: str,
 ) -> None:
     provider = AcpProvider.model_validate(
         {
@@ -113,6 +115,7 @@ async def test_custom_harness_discovers_selects_and_reopens(
                 **custom_provider.env,
                 "ACP_TEST_MODELS": "" if catalog == "none" else catalog,
                 "ACP_TEST_USAGE": "1",
+                "ACP_TEST_LOAD": "1" if reopen == "load" else "0",
             },
         }
     )
@@ -138,7 +141,7 @@ async def test_custom_harness_discovers_selects_and_reopens(
             {"default"} if catalog == "none" else {"fast", "careful"}
         )
         assert agent.default_model == (None if catalog == "none" else "fast")
-        assert not agent.routers()
+        assert not agent.hook_router.routes
         async with async_session() as session:
             assert not await session.list(Conversation)
             assert not await session.list(AgentRun)
@@ -186,7 +189,7 @@ async def test_custom_harness_discovers_selects_and_reopens(
         json.loads(line)["message"]
         for line in (tmp_path / "custom-requests.jsonl").read_text().splitlines()
     ]
-    assert messages[1]["method"] == "session/load"
+    assert messages[1]["method"] == f"session/{reopen}"
     assert "replayed history" not in result.output
     assert not agent.routes
 

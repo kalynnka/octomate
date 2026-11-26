@@ -26,7 +26,7 @@ from octomate.config.agents import CodexConfig
 from octomate.schemas.commands import CommandCatalog, CommandContext, CommandDescriptor
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.codex import CodexTentacle
-from octomate.tentacles.codex import ink as codex_ink
+from octomate.tentacles.codex import pool as codex_pool
 from octomate.tentacles.codex.catalog import APP_COMMANDS
 from octomate.tentacles.codex.schemas import CodexCommandDescriptor
 from octomate.types.json import JsonObject
@@ -76,7 +76,7 @@ def inspector(
 
     runtime.__aenter__.side_effect = enter
     runtime.close = client.close
-    monkeypatch.setattr(codex_ink, "SharedCodex", MagicMock(return_value=runtime))
+    monkeypatch.setattr(codex_pool, "SharedCodex", MagicMock(return_value=runtime))
     return client, notifications
 
 
@@ -146,17 +146,20 @@ async def test_models_and_skills_share_client(
         auth=host.auth,
         gateway_manager=host.gateway,
     )
-    shared = agent.ink.client
+    shared = agent.ink.pool.core_client
     client.start.assert_not_awaited()
 
     async with agent:
-        watcher = agent.ink.notification_task
+        watcher = agent.ink.pool.notification_readers.get(agent.ink.pool.core_client)
         catalog = await agent.discover_commands(context)
         await agent.discover_models()
         assert catalog.status == "ready"
         assert agent.models == {"openai:test-model": "test-model"}
-        assert agent.ink.notification_task is watcher
-        assert agent.ink.client is shared
+        assert (
+            agent.ink.pool.notification_readers.get(agent.ink.pool.core_client)
+            is watcher
+        )
+        assert agent.ink.pool.core_client is shared
         assert [call.args[0] for call in client.request.await_args_list] == [
             "config/read",
             "model/list",
@@ -171,7 +174,7 @@ async def test_models_and_skills_share_client(
     client.close.assert_awaited_once()
     assert watcher is not None
     assert watcher.done()
-    assert agent.ink.client is shared
+    assert agent.ink.pool.core_client is shared
 
 
 async def test_native_metadata_and_duplicate_names(
@@ -402,16 +405,16 @@ async def test_disconnect_invalidates_without_restarting_the_client(
     inspector: tuple[AsyncMock, asyncio.Queue[Notification | CodexError]],
 ) -> None:
     client, notifications = inspector
-    shared = agent.ink.client
+    shared = agent.ink.pool.core_client
     await agent.discover_commands(context)
     client.request.side_effect = TransportClosedError("runtime exited")
     notifications.put_nowait(TransportClosedError("runtime exited"))
-    assert agent.ink.notification_task is not None
-    await asyncio.wait_for(agent.ink.notification_task, 1)
+    reader = agent.ink.pool.notification_readers[agent.ink.pool.core_client]
+    await asyncio.wait_for(reader, 1)
     assert not agent.octomate.commands.catalogs
     catalog = await agent.discover_commands(context)
     assert catalog.status == "failed"
-    assert agent.ink.client is shared
+    assert agent.ink.pool.core_client is shared
     client.start.assert_awaited_once()
     client.initialize.assert_awaited_once()
 
@@ -450,14 +453,14 @@ async def test_shutdown_closes_the_notification_reader(
     inspector: tuple[AsyncMock, asyncio.Queue[Notification | CodexError]],
 ) -> None:
     await agent.discover_commands(context)
-    shared = agent.ink.client
-    watcher = agent.ink.notification_task
+    shared = agent.ink.pool.core_client
+    watcher = agent.ink.pool.notification_readers.get(agent.ink.pool.core_client)
     await asyncio.wait_for(agent.__aexit__(), 1)
     inspector[0].close.assert_awaited_once()
     assert watcher is not None
     assert watcher.done()
     assert not watcher.cancelled()
-    assert agent.ink.client is shared
+    assert agent.ink.pool.core_client is shared
     assert not agent.octomate.commands.catalogs
 
 
@@ -521,7 +524,7 @@ async def test_cancelled_startup_is_drained_before_close(
         auth=host.auth,
         gateway_manager=host.gateway,
     )
-    shared = agent.ink.client
+    shared = agent.ink.pool.core_client
     startup = asyncio.create_task(agent.__aenter__())
     await asyncio.wait_for(entered.wait(), 1)
     startup.cancel()
@@ -532,5 +535,5 @@ async def test_cancelled_startup_is_drained_before_close(
         await startup
     client.close.assert_awaited_once()
     client.initialize.assert_awaited_once()
-    assert agent.ink.client is shared
-    assert agent.ink.notification_task is None
+    assert agent.ink.pool.core_client is shared
+    assert agent.ink.pool.notification_readers.get(agent.ink.pool.core_client) is None

@@ -1016,6 +1016,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         text: str | TextContent,
         sender: UserProfile,
         timestamp: datetime,
+        actor_kind: ChannelActorKind = "human",
     ) -> ThreadMessage:
         """Record a transcript input once, before the run commits.
 
@@ -1050,6 +1051,10 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                 if isinstance(text, TextContent)
                 else [TextSegment(data={"text": text})],
             ),
+            actor_kind=actor_kind,
+            agent_tentacle_id=address.channel_tentacle_id
+            if actor_kind == "agent"
+            else None,
             happened_at=timestamp,
         )
 

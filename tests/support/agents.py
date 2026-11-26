@@ -16,7 +16,6 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import ClassVar, cast
 
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
@@ -55,7 +54,7 @@ from octomate.managers.gateway import OctomateSession
 from octomate.managers.habitat import HabitatManager, Invocation
 from octomate.managers.project import ProjectManager
 from octomate.managers.workspaces import WorkspaceManager
-from octomate.schemas.conversation import ChannelAddress, Conversation
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
     DIRECT_TARGET,
     TELEPORT_DEFER_KIND,
@@ -65,7 +64,7 @@ from octomate.schemas.triage import (
     SchemeTarget,
     SummonDecision,
 )
-from octomate.tentacles.agent import AgentTentacle
+from octomate.tentacles.agent import AgentInk, AgentTentacle
 from octomate.tentacles.channel import ChannelOutput
 from octomate.tentacles.deferred import DeferredSuspender
 from octomate.tentacles.inkling.agent import Agent
@@ -169,6 +168,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     `turns`.
     """
 
+    ink: AgentInk = field(default_factory=AgentInk)
     id: str = "inkling"
     description: str = "fake agent"
     octomate: Octomate | None = None
@@ -227,8 +227,6 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         }
     )
     turns: list[RecordedRun] = field(default_factory=list)
-    # Every `relocate` the graph asked for: the conversation's id and where to.
-    relocated: list[tuple[UUID7, Path]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.habitats = a_habitat_manager(self.workspaces)
@@ -246,15 +244,6 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         if not self.models:
             raise ValueError(f"agent {self.id!r} has no available model catalog")
         return self.default_model if model is None else super().resolve_model(model)
-
-    async def fork_session(
-        self, conversation: Conversation, *, cwd: Path
-    ) -> str | None:
-        """The fake has no external runtime session to fork."""
-        return None
-
-    async def relocate(self, conversation: Conversation, *, cwd: Path) -> None:
-        self.relocated.append((conversation.id, cwd))
 
     async def run(
         self,

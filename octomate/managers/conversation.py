@@ -12,6 +12,7 @@ from typing import ClassVar, Literal, TypeVar, cast
 from arcanus import Cursor, Page, RelationCollection
 from arcanus.materia.sqlalchemy import lazyload, noload, selectinload, undefer
 from fastapi import UploadFile
+from octomate_protocol.stream import TranscriptOffsets
 from pydantic import UUID7, AwareDatetime, NonNegativeInt, TypeAdapter, validate_call
 from pydantic_ai import Conversation as PydanticConversation
 
@@ -49,7 +50,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
-from octomate.managers.files import FileManager
+from octomate.managers.files import FileManager, FileOffsetConflict
 from octomate.schemas.compactions import (
     Compaction,
     CompactionMembership,
@@ -62,7 +63,7 @@ from octomate.schemas.conversation import (
     ConversationKey,
     ConversationRun,
 )
-from octomate.schemas.files import FileVariant, Jsonl
+from octomate.schemas.files import File, FileVariant, Jsonl
 from octomate.schemas.messages import ModelMessage, ModelRequest, ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
 from octomate.schemas.thread import (
@@ -77,6 +78,7 @@ from octomate.types.compactions import (
     CompactionStage,
     CompactionTrigger,
 )
+from octomate.types.files import FileProviderName
 from octomate.types.permissions import AgentPermissionMode
 
 RunT = TypeVar("RunT", bound=AgentRun)
@@ -84,15 +86,21 @@ RunT = TypeVar("RunT", bound=AgentRun)
 request_usage_adapter: TypeAdapter[RequestUsage] = TypeAdapter(RequestUsage)
 
 
-def own_runs(thread_id: UUID7) -> Select[tuple[str]]:
+def own_runs(
+    thread_id: UUID7, conversation_id: UUID7 | None = None
+) -> Select[tuple[str]]:
     """The runs in the history of the thread's own conversations — its agents', not
     the subagents' those agents spawned. A fork's history holds the runs it was
-    forked with, so those are its own too."""
+    forked with, so those are its own too. A selected conversation scopes the
+    read to that conversation, including a subagent."""
     return (
         select(ConversationRun["run_id"])
         .join(Conversation, Conversation["id"] == ConversationRun["conversation_id"])
         .where(
-            Conversation["thread_id"] == thread_id, Conversation["subagent_id"] == ""
+            Conversation["thread_id"] == thread_id,
+            Conversation["id"] == conversation_id
+            if conversation_id is not None
+            else Conversation["subagent_id"] == "",
         )
     )
 
@@ -997,6 +1005,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         *,
         agent_tentacle_id: str,
         subagent_id: str = "",
+        name: str | None = None,
         parent_conversation_id: UUID7 | None = None,
         with_runs: bool = True,
         native: bool = False,
@@ -1063,6 +1072,8 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                         parent_conversation_id=parent_conversation_id,
                     )
                     session.add(conversation)
+                if name and not conversation.name:
+                    conversation.name = name.strip() or None
                 await session.flush()
                 await session.commit()
             if with_runs:
@@ -1126,7 +1137,12 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         return list(rows)
 
     async def messages_page(
-        self, thread_id: UUID7, cursor: str | None = None, *, limit: int
+        self,
+        thread_id: UUID7,
+        cursor: str | None = None,
+        *,
+        limit: int,
+        conversation_id: UUID7 | None = None,
     ) -> Page[ModelRequest | ModelResponse]:
         """The model messages of the thread's own conversations, newest first, a
         page at a time and continued from an Arcanus `cursor`. Ids are uuid7 and a
@@ -1135,10 +1151,10 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
 
         Each carries the chat rows bound to it — the ones a request was built from,
         the ones a response was delivered as — so a reader has who said what
-        without the prompt's dressing. A subagent's messages stay out: they are its
-        own conversation's, and the spawn call in its parent's run stands for them.
+        without the prompt's dressing. Without `conversation_id`, subagents stay
+        out; selecting a conversation reads only its own messages.
         """
-        scope = ModelMessage["run_id"].in_(own_runs(thread_id))
+        scope = ModelMessage["run_id"].in_(own_runs(thread_id, conversation_id))
         bookmark = None if cursor is None else Cursor[ModelMessage](cursor).bookmark
         after = (
             []
@@ -1179,14 +1195,16 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
             has_more=len(rows) > limit,
         )
 
-    async def usage(self, thread_id: UUID7) -> RequestUsage:
+    async def usage(
+        self, thread_id: UUID7, *, conversation_id: UUID7 | None = None
+    ) -> RequestUsage:
         """The tokens the thread's own conversations spent, every response's usage
-        summed. A subagent's are left to its own conversation, as its messages are.
+        summed, or just the selected conversation's, including a subagent's.
         Only the usage column is read: summing a thread must not load its parts."""
         async with async_session() as session:
             usages = await session.scalars(
                 select(ModelResponse["usage"]).where(
-                    ModelResponse["run_id"].in_(own_runs(thread_id)),
+                    ModelResponse["run_id"].in_(own_runs(thread_id, conversation_id)),
                     ModelResponse["usage"].is_not(None),
                 )
             )
@@ -1197,7 +1215,9 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
 
     async def thread_id(self, conversation_id: UUID7) -> UUID7 | None:
         async with async_session() as session:
-            conversation = await session.get(Conversation, conversation_id)
+            conversation = await session.get(
+                Conversation, conversation_id, options=[lazyload(Conversation["runs"])]
+            )
         if conversation is None:
             return None
         return conversation.thread_id
@@ -1351,7 +1371,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
     ) -> ExternalAgentRun | None:
         """Reserve or complete a native turn without duplicating a driven run.
 
-        Empty input reserves its identity without changing an existing run.
+        Empty input reserves its identity and can identify its spawning call.
         A stored end_offset marks a completed transcript; replay returns None.
         Completing an unfinished run replaces provisional messages atomically.
 
@@ -1369,6 +1389,12 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                 return None
             if stored is not None:
                 if not messages and end_offset is None:
+                    if (
+                        parent_tool_call_id is not None
+                        and stored.parent_tool_call_id != parent_tool_call_id
+                    ):
+                        stored.parent_tool_call_id = parent_tool_call_id
+                        await session.commit()
                     return stored
                 if stored.end_offset is not None:
                     return None
@@ -1380,7 +1406,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                     native_session_id=native_session_id,
                     native_turn_id=run_id,
                     parent_run_id=parent_run_id,
-                    parent_tool_call_id=parent_tool_call_id,
+                    parent_tool_call_id=parent_tool_call_id or run.parent_tool_call_id,
                     name=name,
                     model_name=model_name,
                     context_window=context_window,
@@ -1748,6 +1774,37 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
         forked = [run.id for run in origin.runs if run.id not in dropped]
         return forked[-1] if forked else None
 
+    async def transcript_offsets(
+        self, conversation: Conversation, *, owner_id: UUID7, provider: FileProviderName
+    ) -> TranscriptOffsets:
+        """Read retained sizes for this invocation and its direct subagents."""
+        async with async_session() as session:
+            rows = await session.execute(
+                select(Conversation["id"], Conversation["subagent_id"], File["size"])
+                .outerjoin(
+                    File,
+                    and_(
+                        File["id"] == Conversation["transcript_file_id"],
+                        File["owner_id"] == owner_id,
+                        File["provider"] == provider,
+                    ),
+                )
+                .where(
+                    or_(
+                        Conversation["id"] == conversation.id,
+                        Conversation["parent_conversation_id"] == conversation.id,
+                    ),
+                    Conversation["agent_tentacle_id"] == conversation.agent_tentacle_id,
+                )
+            )
+            offsets: dict[UUID7, int] = {}
+            subagents: dict[UUID7, str] = {}
+            for id_, subagent_id, size in rows:
+                offsets[id_] = size or 0
+                if id_ != conversation.id:
+                    subagents[id_] = subagent_id
+            return TranscriptOffsets(offsets=offsets, subagents=subagents)
+
     async def store_transcript(
         self,
         uploaded: UploadFile,
@@ -1770,7 +1827,7 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
                     previous_id, uploaded.file, offset=start, owner_id=owner_id
                 )
             if start != 0:
-                raise ValueError("The first transcript upload must start at zero")
+                raise FileOffsetConflict(0)
             async with (
                 files.upload(uploaded, owner_id=owner_id) as transcript,
                 async_session() as session,
@@ -1791,14 +1848,15 @@ class ConversationManager(Manager, Locks[ConversationKey | CompactionSessionKey]
     async def set_external_id(
         self, conversation: Conversation, external_id: str
     ) -> None:
-        """Bind a conversation to its replacement runtime session."""
+        """Bind the runtime session, clearing its transcript reference when the ID changes."""
         async with async_session() as session:
             stored = await session.get(Conversation, conversation.id)
             if stored is None:
                 raise ValueError(f"unknown conversation {conversation.id}")
+            if stored.external_id != external_id:
+                stored.transcript_file_id = None
             stored.external_id = external_id
             await session.commit()
-        conversation.external_id = external_id
 
     async def set_permission_mode(
         self,

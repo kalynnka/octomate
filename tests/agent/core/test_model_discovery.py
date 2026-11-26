@@ -130,7 +130,7 @@ async def test_claude_discovery_claims_its_session_through_client_cleanup(
         options = factory.call_args.kwargs["options"]
         assert isinstance(options, ClaudeAgentOptions)
         assert options.session_id is not None
-        assert options.extra_args == {"safe-mode": None}
+        assert options.extra_args == {"safe-mode": None, "no-session-persistence": None}
         assert options.strict_mcp_config is True
         assert tentacle.driven_sessions == {options.session_id: 1}
         return client
@@ -343,7 +343,10 @@ async def test_codex_empty_catalog_fails_without_fabricating_models(
             pytest.fail("An empty catalog must not start successfully")
     assert tentacle.models == {}
     codex_catalog.close.assert_awaited_once()
-    assert tentacle.ink.notification_task is None
+    assert (
+        tentacle.ink.pool.notification_readers.get(tentacle.ink.pool.core_client)
+        is None
+    )
 
 
 async def test_deepseek_preserves_provider_pairs_and_native_effort_ids(

@@ -16,6 +16,8 @@ export interface FileReference {
 export interface MessageAnnotations {
   raw: string
   source: 'codex' | 'claude'
+  /** who wrote the prompt when no person did */
+  agent?: { id: string; name: string } | null
   contexts: { title: string; text: string; rollout_ids: string[] }[]
   references: FileReference[]
 }
@@ -341,7 +343,7 @@ export interface ActionBatchEvent {
 export interface SubagentStartedEvent {
   event_kind: 'subagent_started'
   invocation_id: string
-  kind: 'commission' | 'whisper'
+  kind: 'commission' | 'whisper' | 'subagent'
   name: string
 }
 
@@ -351,6 +353,23 @@ export interface SubagentSettledEvent {
   status: 'completed' | 'failed' | 'timed_out' | 'cancelled'
   detail?: string | null
   response: string
+}
+
+/** Another agent session's words reaching a native run as its prompt. */
+export interface AgentMessageEvent {
+  event_kind: 'agent_message'
+  /** the ledger row the message is on */
+  message_id: string
+  agent: { id: string; name: string }
+  text: string
+}
+
+/** A line the harness wrote into a native run in the person's place. */
+export interface SystemMessageEvent {
+  event_kind: 'system_message'
+  /** the ledger row the line is on */
+  message_id: string
+  text: string
 }
 
 export interface RunUsage {
@@ -370,6 +389,11 @@ export interface RunStartedEvent {
   address: ChannelAddress
   sender?: ApiUserProfile | null
   agent_tentacle_id?: string | null
+}
+
+export interface HabitatPreparationEvent {
+  event_kind: 'habitat_preparation'
+  phase: 'preparing' | 'ready'
 }
 
 export interface RunActivityChangedEvent {
@@ -498,7 +522,10 @@ export type WireEvent =
   | ActionBatchUpdatedEvent
   | SubagentStartedEvent
   | SubagentSettledEvent
+  | AgentMessageEvent
+  | SystemMessageEvent
   | RunStartedEvent
+  | HabitatPreparationEvent
   | RunActivityChangedEvent
   | RunEndedEvent
   | RunResultEvent
@@ -671,6 +698,7 @@ export interface ApiHandoff {
 }
 
 export interface ApiThread {
+  nested_session_count?: number
   /** Derived from an explicit handoff or the thread’s own conversation. */
   active_agent_tentacle_id?: string | null
   /** thread row id (uuid) — the read key for every /threads/{id} read */
@@ -741,6 +769,8 @@ export interface ApiAgentRun {
   parent_tool_call_id: string | null
   started_at: string | null
   native_session_id?: string | null
+  /** where an external run's transcript ended; null while the run is open */
+  end_offset?: number | null
 }
 
 export interface ApiConversation {

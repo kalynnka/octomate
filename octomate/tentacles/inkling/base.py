@@ -17,7 +17,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self, get_args, overload
 
 import anyio
-from httpx import URL
+from httpx2 import URL
 from opentelemetry.trace import get_tracer
 from pydantic import UUID7, TypeAdapter
 from pydantic_ai import (
@@ -48,10 +48,10 @@ from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, Shell
 from pydantic_ai_harness.step_persistence.conversations import conversation_text
-from pydantic_ai_harness.step_persistence.naming import generate_name
 from rich.style import Style
 
 from octomate.config.agents import AgentRouteModelName, InklingConfig
+from octomate.habitat import ManagedHabitat
 from octomate.managers.conversation import ConversationManager, ConversationStore
 from octomate.managers.habitat import Invocation
 from octomate.mcp.gateway import CONVERSATION_HEADER
@@ -71,6 +71,7 @@ from octomate.schemas.triage import Claim
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import inkling_logfire
 from octomate.tentacles.agent import (
+    AgentInk,
     AgentSpecInput,
     AgentTentacle,
 )
@@ -84,6 +85,7 @@ from octomate.tentacles.inkling.deferred import (
     PostureResolver,
 )
 from octomate.tentacles.inkling.mcp import OctomateTools
+from octomate.tentacles.inkling.naming import generate_name
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.inkling.react import (
     ReactDeps,
@@ -92,6 +94,7 @@ from octomate.tentacles.inkling.react import (
     StartTurn,
     iter_react_graph_events,
 )
+from octomate.tentacles.inkling.workspace import HabitatWorkspace
 from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from octomate.types.permissions import InklingPermissionMode, PermissionMode
 
@@ -180,6 +183,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     brand_color: ClassVar[Style | None] = Style(color="#C29145", bold=True)
     config: InklingConfig | None = None
 
+    ink: AgentInk = field(init=False)
     agent: Agent[None, InklingOutput] = field(init=False)
     mcp: McpManager = field(init=False)
     # Held on the tentacle, not baked into the Agent: every run decides what to
@@ -213,11 +217,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     @property
     def default_permission_mode(self) -> str | None:
         return self.permission_mode
-
-    async def fork_session(self, conversation: Conversation, *, cwd: Path) -> None:
-        """Inkling resumes the copied Octomate history without an external session."""
-        if conversation.external_id is not None:
-            raise ValueError("Inkling conversations cannot have an external session id")
 
     async def probe_commands(self, context: CommandContext) -> CommandCatalog:
         return CommandCatalog(
@@ -362,6 +361,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             auth=auth,
             habitats=habitats,
         )
+        self.ink = AgentInk()
         self.config = config
         self.mcp = octomate.mcp
         self.workspaces = octomate.workspaces
@@ -425,8 +425,10 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         )
         return [capability for capability in bound if capability is not None]
 
-    def workspace_capabilities(self, workspace: Path) -> list[AgentCapability[None]]:
-        """What a run gets for working in `workspace`: the project's instructions, as
+    def workspace_capabilities(
+        self, invocation: Invocation
+    ) -> list[AgentCapability[None]]:
+        """What a run gets in its invocation's workspace: the project's instructions, as
         that fork carries them, and the tools to act in it. A run in no project gets
         none of these and is a conversation.
 
@@ -439,11 +441,13 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         that protects.
         """
         return [
-            LocalWorkspace[None](workspace),
+            HabitatWorkspace[None](invocation)
+            if isinstance(invocation.habitat, ManagedHabitat)
+            else LocalWorkspace[None](str(invocation.cwd)),
             RepoContext[None](expose_inventory_tool=True),
             Toolset(
                 ApprovalRequiredToolset(
-                    wrapped=FileSystem[None](root_dir=workspace).get_toolset()
+                    wrapped=FileSystem[None](root_dir=str(invocation.cwd)).get_toolset()
                 )
             ),
             Toolset(
@@ -995,9 +999,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 max_retries=2,
             )
             capabilities.extend(OctomateTools.capabilities(client))
-        workspace = invocation.workspace.path
         if invocation.project is not None:
-            capabilities.extend(self.workspace_capabilities(workspace))
+            capabilities.extend(self.workspace_capabilities(invocation))
         graph_deps = ReactDeps(
             agent=self.agent,
             conversation_manager=self.conversation_manager,
@@ -1011,7 +1014,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             suspender=deferred_suspender,
             output_type=react_output_type,
             run_name=resolved_run_name,
-            cwd=workspace,
+            cwd=Path(invocation.cwd),
             model=model,
             permission_mode=self.permission_mode,
             instructions=instructions,
@@ -1103,7 +1106,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 "Inkling session naming failed for %s", conversation.id, exc_info=True
             )
             return
-        title = " ".join(named.name.title.split()[:8])
+        title = " ".join(named.title.split()[:8])
         await self.conversation_manager.set_name(conversation, title)
         if conversation.parent_conversation_id is not None:
             return

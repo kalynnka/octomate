@@ -13,12 +13,13 @@ from datetime import datetime
 from pathlib import Path
 from time import monotonic
 
+from anthropic.types import ToolUseBlock
 from anyio.abc import ObjectSendStream
-from octomate_protocol.stream import SESSION_FILE
-from pydantic import ValidationError
+from pydantic import UUID7, ValidationError
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
-from pydantic_ai.messages import UserPromptPart
+from pydantic_ai.messages import TextContent, UserPromptPart
 
+from octomate.events import RunEndedEvent, SubagentSettledEvent, SubagentStartedEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
 from octomate.nerve import Impulse
@@ -30,12 +31,13 @@ from octomate.schemas.thread import (
 )
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import claude_logfire
-from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
+from octomate.tentacles.claude.adapter import ClaudeRunAccumulator, subagent_name
 from octomate.tentacles.claude.content import prompt_content
 from octomate.tentacles.claude.transcript import (
     CompactMetadata,
     TranscriptAiTitleLine,
     TranscriptAssistantLine,
+    TranscriptAttachmentLine,
     TranscriptLine,
     TranscriptSystemLine,
     TranscriptUserLine,
@@ -66,6 +68,10 @@ SUBAGENT_SETTLE_POLL = 0.2
 # cannot, and the SessionEnd hook this wait sits under must not hang on it. Under the
 # hook's own 10s budget; an undrained session's turns wait for the next connect.
 REMOTE_DRAIN_TIMEOUT = 5.0
+
+# The user line Claude writes where the person stopped a turn; it ends
+# " for tool use]" when a tool was running.
+INTERRUPTED = "[Request interrupted by user"
 
 
 def stamp(messages: list[PydanticModelMessage], timestamp: datetime | None) -> None:
@@ -100,6 +106,9 @@ class OpenTurn:
     last_line_uuid: str | None
     permission_mode: str | None  # Permission mode on the turn's opening prompt.
     native: NativeTurn | None = None
+    interrupted: bool = False  # The person stopped it; Claude fires no `Stop` then.
+    # A child's assistant lines, by uuid: a result line names the one it answers.
+    calls: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -108,11 +117,15 @@ class SubagentTail:
     own file (`<session>/subagents/agent-<agentId>.jsonl`), so it gets its own byte
     cursor, conversation, and open turn. Its turns frame on `promptId` change: subagent files
     carry no `promptSource`, and a resumed subagent's next turn may open on a
-    tool-result line, not a prompt."""
+    tool-result line, not a prompt. A result that answers a call of the open turn
+    stays in it whatever id it carries."""
 
     agent_id: str
     path: Path
+    catchup_end: int = 0  # Child transcript length at registration.
     offset: int = 0
+    # The parent's call this child answers, when the client's meta file names it.
+    call_id: str | None = None
     conversation: Conversation | None = None
     recorded: set[str] = field(default_factory=set)  # child run ids already committed
     open_turn: OpenTurn | None = None
@@ -137,6 +150,9 @@ class TailState:
     sender: UserProfile
     address: ChannelAddress  # The native surface resolved by the tentacle.
     impulses: ObjectSendStream[Impulse]  # The publisher open for this connection.
+    catchup_end: int = (
+        0  # Initial root transcript length advertised by this connection.
+    )
     offset: int = 0
     conversation: Conversation | None = None
     recorded: set[str] = field(default_factory=set)  # prompt_ids already committed
@@ -146,8 +162,13 @@ class TailState:
     compactions_pending: bool = False
     omitted_uuids: set[str] = field(default_factory=set)
     subagents: dict[str, SubagentTail] = field(default_factory=dict)
-    # A parent's file may be ahead of its child, including resumed invocations.
-    subagent_calls: dict[tuple[str, str], str] = field(default_factory=dict)
+    # Claude can repeat the same Agent tool result under a later prompt ID.
+    spawn_agents: dict[str, str] = field(default_factory=dict)
+    # Task names waiting for the result or child metadata to identify the conversation.
+    spawn_names: dict[str, str] = field(default_factory=dict)
+    # The children already recorded when this connection attached, by spawning
+    # call: their hooks fired on an earlier one, so a re-streamed turn says so.
+    known_spawns: dict[str, str] = field(default_factory=dict)
     # The prompt id of a turn whose `Stop` hook fired (`stop_turn`): commit it without
     # waiting for the next prompt line — but commit nothing newer, so a prompt queued
     # into the drain window is left open for the next connect to re-stream.
@@ -205,6 +226,12 @@ class ClaudeTranscriptTailer:
         # run commit here can't race a hook reserving the same run. Its own registry when the tailer runs standalone.
         self.locks = locks if locks is not None else SessionLocks()
         self.sessions: dict[str, TailState] = {}
+        # Each session's subagents that started and have not settled, as its hooks
+        # report them. An interrupted one settles here, where its marker is read.
+        self.working_subagents: dict[str, list[str]] = {}
+        # Sessions whose `SessionEnd` fired and that no prompt has reopened: a tail
+        # that attaches to one has only its last lines to drain.
+        self.ended: set[str] = set()
 
     async def stop_turn(self, session_id: str, prompt_id: str | None) -> None:
         """The turn just stopped — its `Stop` hook fired: drain it now instead of
@@ -232,6 +259,7 @@ class ClaudeTranscriptTailer:
         `drained`. The wait is bounded: a client that is gone leaves its turns for
         the next connect, and the SessionEnd hook must not hang on it. A session no
         stream covers has nothing to finalize."""
+        self.ended.add(session_id)
         state = self.sessions.get(session_id)
         if state is None:
             return
@@ -256,13 +284,12 @@ class ClaudeTranscriptTailer:
         sender: UserProfile,
         address: ChannelAddress,
         impulses: ObjectSendStream[Impulse],
-    ) -> tuple[TailState, dict[str, int]]:
+    ) -> tuple[TailState, dict[UUID7, int]]:
         """Register a streamed session and answer where each of its files resumes.
 
         The offsets are recomputed from the committed runs, per file: the session
-        transcript under `SESSION_FILE`, each known subagent
-        under its agent id — so the client holds no durable cursor and a reconnect is
-        just re-asking. A lingering registration (its client died without a close) is
+        and each known subagent under its own conversation UUID. The client asks
+        again on reconnect. A lingering registration (its client died without a close) is
         replaced; the dead route feeds the state object it attached, and its commits
         are idempotent.
         """
@@ -287,7 +314,7 @@ class ClaudeTranscriptTailer:
             ),
             default=0,
         )
-        offsets: dict[str, int] = {SESSION_FILE: state.offset}
+        offsets: dict[UUID7, int] = {conversation.id: state.offset}
         for child in await self.conversation_manager.subagents(conversation.id):
             if not child.subagent_id:
                 continue
@@ -302,7 +329,13 @@ class ClaudeTranscriptTailer:
                 ),
                 default=0,
             )
-            offsets[child.subagent_id] = tail.offset
+            state.known_spawns.update(
+                (run.parent_tool_call_id, child.subagent_id)
+                for run in child.runs
+                if run.parent_tool_call_id
+            )
+            offsets[child.id] = tail.offset
+        state.spawn_agents.update(state.known_spawns)
         self.sessions[session_id] = state
         logger.info(
             "session %s: remote tail attached, resuming at %s", session_id, offsets
@@ -319,8 +352,16 @@ class ClaudeTranscriptTailer:
         if agent_id is None:
             state.offset = end
             line = self.parse_line(raw, state.session_id)
+            if state.open_turn is not None and state.open_turn.native is not None:
+                state.open_turn.native.replay = end <= state.catchup_end
             if line is not None:
                 await self.process_line(state, line, start, end)
+            if state.catchup_end and end >= state.catchup_end:
+                state.catchup_end = 0
+                if state.open_turn is not None and state.open_turn.native is not None:
+                    await state.open_turn.native.caught_up()
+                else:
+                    await state.impulses.send(Impulse(RunEndedEvent(), state.address))
             return
         tail = self.subagent_tail(state, agent_id)
         if tail.conversation is None:
@@ -426,6 +467,8 @@ class ClaudeTranscriptTailer:
                 state.open_turn = await self.begin_turn(state, line, start, end)
             elif state.open_turn is not None:
                 await self.fold(state, line, end)
+            if state.open_turn is not None and state.open_turn.interrupted:
+                await self.close_turn(state)
         elif isinstance(line, TranscriptAssistantLine):
             if line.is_sidechain:
                 return
@@ -443,6 +486,8 @@ class ClaudeTranscriptTailer:
                 await self.close_turn(state)
         elif isinstance(line, TranscriptAiTitleLine):
             await self.record_title(state, line.ai_title)
+        elif isinstance(line, TranscriptAttachmentLine) and not line.is_sidechain:
+            await self.fold_attachment(state, line, end)
 
     async def record_compaction(
         self,
@@ -537,9 +582,8 @@ class ClaudeTranscriptTailer:
     async def harvest_subagent_call(
         self, state: TailState, line: TranscriptUserLine
     ) -> None:
-        """Remember which parent tool call spawned which subagent: an `Agent` call's
-        tool-result line names the child (`toolUseResult.agentId`) while its content
-        block names the call. Stamps child runs' `parent_tool_call_id` at commit."""
+        """Record the spawn as soon as the parent's result identifies the child and
+        tool call. Its transcript can arrive on a different connection."""
         result = line.tool_use_result
         if not isinstance(result, dict):
             return
@@ -559,13 +603,30 @@ class ClaudeTranscriptTailer:
         )
         if not isinstance(tool_use_id, str):
             return
+        await self.record_spawn(
+            state, self.subagent_tail(state, agent_id), line.prompt_id, tool_use_id
+        )
+
+    async def record_spawn(
+        self, state: TailState, tail: SubagentTail, prompt_id: str, call_id: str
+    ) -> None:
+        """Reserve the child's run under the parent's turn, linked to the call it
+        answers. Once per call: two sources can name the same one."""
         async with self.locks.hold(state.session_id):
-            state.subagent_calls[agent_id, line.prompt_id] = tool_use_id
-            await self.conversation_manager.link_parent_run(
-                f"{agent_id}:{line.prompt_id}",
-                parent_run_id=line.prompt_id,
-                parent_tool_call_id=tool_use_id,
+            if call_id in state.spawn_agents:
+                return
+            conversation = tail.conversation or await self.prepare_subagent(state, tail)
+            name = state.spawn_names.pop(call_id, None)
+            if name and not conversation.name:
+                await self.conversation_manager.set_name(conversation, name)
+            await self.conversation_manager.record_external_run(
+                conversation,
+                run_id=f"{tail.agent_id}:{prompt_id}",
+                native_session_id=tail.agent_id,
+                parent_run_id=prompt_id,
+                parent_tool_call_id=call_id,
             )
+            state.spawn_agents[call_id] = tail.agent_id
 
     async def fold(
         self,
@@ -582,16 +643,87 @@ class ClaudeTranscriptTailer:
             return
         written = len(turn.accumulator.messages)
         if isinstance(line, TranscriptUserLine) and (text := prompt_text(line.message)):
+            turn.interrupted = text.startswith(INTERRUPTED)
             await turn.native.prompt(
                 message_id=line.uuid,
-                text=prompt_content(text),
+                text=prompt_content(text, line.origin),
                 timestamp=line.timestamp,
                 metadata={"native_item_ids": [line.uuid]},
+                actor_kind="system" if turn.interrupted else "human",
             )
         await turn.native.fold(turn.accumulator.consume(line))
         stamp(turn.accumulator.messages[written:], line.timestamp)
         turn.end_offset = end
         turn.last_line_uuid = line.uuid
+        if isinstance(line, TranscriptAssistantLine):
+            await self.observe_subagent_calls(state, line)
+
+    async def observe_subagent_calls(
+        self, state: TailState, line: TranscriptAssistantLine
+    ) -> None:
+        """Keep the task title until the child is identified, and announce a
+        previously recorded child again when its spawning call is re-streamed."""
+        working = self.working_subagents.get(state.session_id, [])
+        for block in line.message.content:
+            if not isinstance(block, ToolUseBlock):
+                continue
+            if name := subagent_name(block):
+                agent_id = state.spawn_agents.get(block.id)
+                if agent_id is None:
+                    state.spawn_names[block.id] = name
+                    continue
+                child = state.subagents[agent_id].conversation
+                if child is not None and not child.name:
+                    await self.conversation_manager.set_name(child, name)
+            if block.id not in state.known_spawns:
+                continue
+            agent_id = state.known_spawns[block.id]
+            kind = block.input.get("subagent_type")
+            await state.impulses.send(
+                Impulse(
+                    SubagentStartedEvent(
+                        invocation_id=agent_id,
+                        kind="subagent",
+                        name=kind if isinstance(kind, str) else "Claude",
+                    ),
+                    state.address,
+                    replay=state.offset <= state.catchup_end,
+                )
+            )
+            if agent_id not in working:
+                await state.impulses.send(
+                    Impulse(
+                        SubagentSettledEvent(
+                            invocation_id=agent_id, status="completed"
+                        ),
+                        state.address,
+                        replay=state.offset <= state.catchup_end,
+                    )
+                )
+
+    async def fold_attachment(
+        self, state: TailState, line: TranscriptAttachmentLine, end: int
+    ) -> None:
+        """Record what another agent session said while the turn ran. Claude queues a
+        foreground subagent's hand-back into the turn as an attachment, where a
+        background one's opens a turn as a prompt line. Any other attachment is the
+        harness's own context and is left out."""
+        turn = state.open_turn
+        attached = line.attachment
+        if turn is None or turn.native is None or not isinstance(attached.prompt, str):
+            return
+        if attached.origin is None or attached.origin.kind != "peer":
+            return
+        text = prompt_content(attached.prompt, attached.origin)
+        if not isinstance(text, TextContent):
+            return
+        await turn.native.prompt(
+            message_id=line.uuid,
+            text=text,
+            timestamp=line.timestamp,
+            metadata={"native_item_ids": [line.uuid]},
+        )
+        turn.end_offset = end
 
     async def record_permission_mode(
         self, state: TailState, permission_mode: str | None
@@ -639,12 +771,13 @@ class ClaudeTranscriptTailer:
             sender=state.sender,
             impulses=state.impulses,
             messages=accumulator.messages,
+            replay=end <= state.catchup_end,
         )
         text = prompt_text(line.message)
         if native is not None:
             await native.prompt(
                 message_id=line.prompt_id,
-                text=prompt_content(text),
+                text=prompt_content(text, line.origin),
                 timestamp=line.timestamp,
                 metadata={"native_item_ids": [line.uuid]},
             )
@@ -720,7 +853,10 @@ class ClaudeTranscriptTailer:
                     )
                     state.compactions_pending = False
                 await turn.native.close(
-                    run, run_id=turn.prompt_id, answer=turn.accumulator.result_text
+                    run,
+                    run_id=turn.prompt_id,
+                    answer=turn.accumulator.result_text,
+                    interrupted=turn.interrupted,
                 )
                 logger.info(
                     "session %s: turn %s synced — %d messages, bytes %d-%d",
@@ -744,7 +880,7 @@ class ClaudeTranscriptTailer:
 
     async def finish_subagent(
         self, session_id: str, agent_id: str, *, final_answer: str | None = None
-    ) -> None:
+    ) -> str:
         """Drain and commit one subagent on its `SubagentStop` — the child's
         `finalize`, which a Claude child needs: its turns frame on promptId change,
         so nothing in its own file closes the last one. The hook is synchronous but
@@ -753,10 +889,10 @@ class ClaudeTranscriptTailer:
         their own; when the event names the answer, wait until the stream yields it,
         bounded so a mismatch can never hang the pipe — `tail.offset` says whether
         the writer has gone quiet. A session no stream covers has nothing to
-        settle."""
+        settle. Returns the answer the committed turn ended on."""
         state = self.sessions.get(session_id)
         if state is None:
-            return
+            return ""
         if state.conversation is None:
             await self.prepare(state)
         tail = self.subagent_tail(state, agent_id)
@@ -781,8 +917,10 @@ class ClaudeTranscriptTailer:
             before = tail.offset
             await asyncio.sleep(SUBAGENT_SETTLE_POLL)
             quiet = quiet + 1 if tail.offset == before else 0
+        turn = target or tail.open_turn
         if target is None or tail.open_turn is target:
             await self.close_subagent_turn(state, tail)
+        return turn.accumulator.result_text if turn is not None else ""
 
     @staticmethod
     def subagent_settled(tail: SubagentTail, final_answer: str | None) -> bool:
@@ -798,7 +936,9 @@ class ClaudeTranscriptTailer:
             return False
         return turn.accumulator.result_text.strip() == final_answer.strip()
 
-    async def prepare_subagent(self, state: TailState, tail: SubagentTail) -> None:
+    async def prepare_subagent(
+        self, state: TailState, tail: SubagentTail
+    ) -> Conversation:
         """Resolve the child's conversation under the session's thread and seed its
         committed-turn guard — the first time this child's lines are fed."""
         parent = state.conversation
@@ -822,6 +962,7 @@ class ClaudeTranscriptTailer:
             default=None,
         )
         tail.last_item_id = previous.last_line_uuid if previous is not None else None
+        return tail.conversation
 
     async def process_subagent_line(
         self,
@@ -835,7 +976,11 @@ class ClaudeTranscriptTailer:
         carries (`promptSource` is absent, and every line is `is_sidechain`, so
         neither parent rule applies). Each turn's `promptId` is the *parent* turn
         that drove it; a resumed subagent opens its next turn on whatever user line
-        arrives first, which is measured to be a tool result, not a prompt."""
+        arrives first, which is measured to be a tool result, not a prompt.
+
+        A result stays with its call. A background child works on while its parent
+        takes the next prompt, and the results it writes then carry that prompt's
+        id: splitting there would cut one piece of work in two."""
         if (
             isinstance(line, TranscriptSystemLine)
             and line.subtype == "compact_boundary"
@@ -849,13 +994,36 @@ class ClaudeTranscriptTailer:
             tail.last_item_id = line.uuid
         elif isinstance(line, TranscriptSystemLine):
             tail.omitted_uuids.add(line.uuid)
+        if isinstance(line, TranscriptUserLine) and start == 0 and tail.call_id:
+            # An interrupted call's result never names this child; its meta file did.
+            await self.record_spawn(state, tail, line.prompt_id, tail.call_id)
         if isinstance(line, TranscriptUserLine):
             turn = tail.open_turn
-            if turn is None or line.prompt_id != turn.prompt_id:
+            if turn is not None and (
+                line.prompt_id == turn.prompt_id
+                or line.source_tool_assistant_uuid in turn.calls
+            ):
+                self.fold_subagent(tail, line, end)
+            else:
                 await self.close_subagent_turn(state, tail)
                 tail.open_turn = self.begin_subagent_turn(line, start, end)
-            else:
-                self.fold_subagent(tail, line, end)
+            working = self.working_subagents.get(state.session_id, [])
+            if (
+                prompt_text(line.message).startswith(INTERRUPTED)
+                and tail.agent_id in working
+            ):
+                # Claude writes the marker into the child's own file and fires no hook.
+                await self.close_subagent_turn(state, tail)
+                working.remove(tail.agent_id)
+                await state.impulses.send(
+                    Impulse(
+                        SubagentSettledEvent(
+                            invocation_id=tail.agent_id, status="cancelled"
+                        ),
+                        state.address,
+                        replay=end <= tail.catchup_end,
+                    )
+                )
         elif isinstance(line, TranscriptAssistantLine):
             if tail.open_turn is not None:
                 self.fold_subagent(tail, line, end)
@@ -902,6 +1070,8 @@ class ClaudeTranscriptTailer:
         stamp(turn.accumulator.messages[written:], line.timestamp)
         turn.end_offset = end
         turn.last_line_uuid = line.uuid
+        if isinstance(line, TranscriptAssistantLine):
+            turn.calls.add(line.uuid)
 
     async def close_subagent_turn(self, state: TailState, tail: SubagentTail) -> None:
         """Commit the child's open turn as a child run: keyed `<agentId>:<promptId>`
@@ -946,9 +1116,6 @@ class ClaudeTranscriptTailer:
                     end_offset=turn.end_offset,
                     last_line_uuid=turn.last_line_uuid,
                     parent_run_id=turn.prompt_id,
-                    parent_tool_call_id=state.subagent_calls.get(
-                        (tail.agent_id, turn.prompt_id)
-                    ),
                 )
                 span.set_attribute("committed", run is not None)
                 if run is None:

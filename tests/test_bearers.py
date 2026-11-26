@@ -16,7 +16,7 @@ from octomate.managers.auth import AuthManager
 from octomate.managers.user import UserManager
 from octomate.mcp.base import KnownBearers
 from octomate.schemas.auth import UserApiKey
-from octomate.tentacles.hooks import hook_guard, hook_sender
+from octomate.tentacles.hooks import hook_guard, hook_sender, verify_hook_key
 from tests.support.users import a_api_key, a_user, auth_config
 
 
@@ -123,3 +123,47 @@ async def test_hook_sender_demands_a_registered_username() -> None:
     resolve = hook_sender(UserManager(), "claude", hook_guard(KnownBearers()))
     with pytest.raises(RuntimeError, match="registry holds no such user"):
         await resolve("lu")
+
+
+async def test_api_key_dependency_returns_the_scoped_key(auth: AuthManager) -> None:
+    user = await a_user()
+    expected = await a_api_key(user, "runtime", scopes=["hooks"])
+    await a_api_key(user, "mcp", scopes=["mcp"])
+
+    key = await verify_hook_key(auth, "Bearer runtime")
+    assert key.id == expected.id
+    assert key.user_id == user.id
+    with pytest.raises(HTTPException) as denial:
+        await verify_hook_key(auth, "Bearer mcp")
+    assert denial.value.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "authorization", [None, "Bearer unknown", "Bearer ", "Basic runtime"]
+)
+async def test_api_key_dependency_refuses_invalid_credentials(
+    auth: AuthManager, authorization: str | None
+) -> None:
+    with pytest.raises(HTTPException) as denial:
+        await verify_hook_key(auth, authorization)
+    assert denial.value.status_code == 401
+
+
+@pytest.mark.parametrize("expired", [True, False])
+async def test_api_key_dependency_rechecks_expiry_and_revocation(
+    auth: AuthManager, expired: bool
+) -> None:
+    user = await a_user()
+    key = await a_api_key(user, "runtime", scopes=["hooks"])
+    assert (await verify_hook_key(auth, "Bearer runtime")).id == key.id
+    if expired:
+        async with async_session() as session:
+            stored = await session.get(UserApiKey, key.id)
+            assert stored is not None
+            stored.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            await session.commit()
+    else:
+        await auth.revoke_api_key(user.id, key.id)
+    with pytest.raises(HTTPException) as denial:
+        await verify_hook_key(auth, "Bearer runtime")
+    assert denial.value.status_code == 401

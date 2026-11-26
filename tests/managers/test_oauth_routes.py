@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
-import httpx
+import httpx2
 import pytest
 from fastapi import FastAPI
 from pydantic import AnyHttpUrl
@@ -36,18 +36,18 @@ async def database(in_memory_engine: AsyncEngine) -> None:
     return
 
 
-def browser(manager: OAuthManager) -> httpx.AsyncClient:
+def browser(manager: OAuthManager) -> httpx2.AsyncClient:
     app = FastAPI()
     app.include_router(oauth_router)
     app.dependency_overrides[oauth_manager] = lambda: manager
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
+    return httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app),
         base_url="http://127.0.0.1:8000",
     )
 
 
 async def linear_browser() -> tuple[
-    OAuthManager, UserProfile, FakeAuthorizationCodeFlow, httpx.AsyncClient
+    OAuthManager, UserProfile, FakeAuthorizationCodeFlow, httpx2.AsyncClient
 ]:
     manager, profile, flow = await linear_manager()
     manager.users.authorization_base_uri = AnyHttpUrl("https://octomate.example")
@@ -64,7 +64,7 @@ class ChannelOAuthConnector(OAuthConnector):
 
 
 async def channel_browser() -> tuple[
-    OAuthManager, UserProfile, FakeAuthorizationCodeFlow, httpx.AsyncClient
+    OAuthManager, UserProfile, FakeAuthorizationCodeFlow, httpx2.AsyncClient
 ]:
     manager, profile, flow, client = await linear_browser()
     connector = manager.connector(LINEAR_CONNECTOR_ID)

@@ -16,11 +16,15 @@ from contextlib import (
 )
 from datetime import UTC, datetime
 from functools import cached_property
-from pathlib import Path
+from io import BytesIO
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self, TypeVar, overload
 
 import anyio
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, Response
+from octomate_protocol.stream import TranscriptKept, TranscriptOffsets
 from pydantic import UUID7
 from pydantic_ai import (
     AgentCapability,
@@ -42,13 +46,15 @@ from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
+from starlette.datastructures import Headers
 
 from octomate.config.agents import AgentConfig, AgentRouteModelName
-from octomate.config.habitat import NativeHabitatConfig
-from octomate.habitat import HabitatError
+from octomate.habitat import Habitat
+from octomate.managers.conversation import ConversationNotFound
+from octomate.managers.files import FileOffsetConflict
 from octomate.managers.habitat import Invocation
 from octomate.schemas.agent import AgentInfo
-from octomate.schemas.auth import IssuedApiKey
+from octomate.schemas.auth import IssuedApiKey, UserApiKey
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
     CommandCatalog,
@@ -90,9 +96,36 @@ AgentDepsT = TypeVar("AgentDepsT")
 type AgentSpecInput = JsonObject | AgentSpec
 
 
+class AgentInk:
+    """Runtime session operations, independent of conversation persistence."""
+
+    supports_session_fork: ClassVar[bool] = True  # Independent history forks.
+
+    async def fork_session(
+        self,
+        session_id: str | None,
+        *,
+        cwd: Path | PurePosixPath,
+        habitat: Habitat,
+        env: dict[str, str] | None = None,
+    ) -> str | None:
+        """Octomate-owned history needs no external session copy."""
+        if not self.supports_session_fork:
+            raise NotImplementedError("This runtime does not support session forking")
+        if session_id is not None:
+            raise ValueError("This agent cannot have an external session id")
+        return None
+
+    async def relocate_session(
+        self, session_id: str | None, *, cwd: Path | PurePosixPath, habitat: Habitat
+    ) -> None:
+        """Move workspace-indexed history; runtimes with global IDs need no move."""
+
+
 class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     """Base class for Octomate agents wrapping pydantic-ai run entrypoints."""
 
+    ink: AgentInk  # Runtime operations, including a no-op adapter for Octomate history.
     commands: CommandManager
     projects: ProjectManager
     threads: ThreadManager
@@ -100,11 +133,9 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     conversations: ConversationManager
     workspaces: WorkspaceManager
     auth: AuthManager | None
-    api_keys: dict[UUID7, IssuedApiKey]  # One MCP credential per user for this agent.
+    api_keys: dict[UUID7, IssuedApiKey]  # One credential per user for this agent.
     api_key_lock: asyncio.Lock
     habitats: HabitatManager
-    # Whether a run can be hosted in a managed habitat instead of on the host.
-    supports_managed_habitat: ClassVar[bool] = False
     # Programmatically assembled agents may have no deployment config.
     config: AgentConfig | None = None
 
@@ -130,8 +161,146 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         self.api_key_lock = asyncio.Lock()
         self.habitats = habitats
 
+    def routers(self) -> tuple[APIRouter, ...]:
+        return self.hook_router, self.transcript_router
+
+    @cached_property
+    def hook_router(self) -> APIRouter:
+        """Harness-specific hook routes; empty for agents without hook endpoints."""
+        return APIRouter(tags=[self.id])
+
+    @cached_property
+    def transcript_router(self) -> APIRouter:
+        """Transcript transfers bound to this agent's conversations and storage."""
+        # Hook dependencies import the application, which imports this base class.
+        from octomate.tentacles.hooks import verify_hook_key
+
+        router = APIRouter(prefix=f"/hooks/{self.id}/transcripts", tags=[self.id])
+
+        async def active_conversation(
+            conversation_id: UUID7,
+            # FastAPI binds these router-local dependencies when registering the routes.
+            key: UserApiKey = Depends(verify_hook_key),  # noqa: B008
+        ) -> Conversation:
+            if not self.habitats.residenced(key.user_id, conversation_id):
+                raise HTTPException(
+                    404, "No active habitat invocation on that conversation"
+                )
+            conversation = await self.conversations.get(
+                conversation_id, with_runs=False
+            )
+            if conversation.agent_tentacle_id != self.id:
+                raise HTTPException(404, "Conversation belongs to another agent")
+            return conversation
+
+        @router.get("/{conversation_id}", response_class=Response)
+        async def download_transcript(
+            conversation_id: UUID7,
+            key: UserApiKey = Depends(verify_hook_key),  # noqa: B008
+        ) -> Response:
+            """Serve the authenticated owner's retained JSONL for this conversation."""
+            try:
+                conversation = await self.conversations.get(
+                    conversation_id, with_runs=False
+                )
+                if (
+                    conversation.agent_tentacle_id != self.id
+                    or conversation.transcript_file_id is None
+                ):
+                    raise HTTPException(404, "No such transcript")
+                data = await self.files.read(
+                    conversation.transcript_file_id, owner_id=key.user_id
+                )
+            except (ConversationNotFound, FileNotFoundError):
+                raise HTTPException(404, "No such transcript") from None
+            return Response(data, media_type="application/jsonl")
+
+        @router.post("/{conversation_id}/offsets")
+        async def transcript_offsets(
+            subagent_ids: list[str],
+            conversation: Conversation = Depends(active_conversation),  # noqa: B008
+            key: UserApiKey = Depends(verify_hook_key),  # noqa: B008
+        ) -> TranscriptOffsets:
+            """Where each of the conversation's transcripts resumes. A subagent named
+            for the first time gets its conversation here, and starts at zero."""
+            offsets = await self.conversations.transcript_offsets(
+                conversation, owner_id=key.user_id, provider=self.files.provider
+            )
+            async with asyncio.TaskGroup() as tasks:
+                children = {
+                    name: tasks.create_task(
+                        self.conversations.ensure(
+                            conversation.thread_id,
+                            agent_tentacle_id=self.id,
+                            subagent_id=name,
+                            parent_conversation_id=conversation.id,
+                            with_runs=False,
+                        )
+                    )
+                    for name in set(subagent_ids).difference(offsets.subagents.values())
+                }
+            for name, child in children.items():
+                offsets.subagents[child.result().id] = name
+                offsets.offsets[child.result().id] = 0
+            return offsets
+
+        @router.post(
+            "/{conversation_id}",
+            response_model=TranscriptKept,
+            responses={409: {"model": TranscriptKept}},
+        )
+        async def upload_transcript(
+            offset: int,
+            transcript_id: UUID7,
+            request: Request,
+            conversation: Conversation = Depends(active_conversation),  # noqa: B008
+            key: UserApiKey = Depends(verify_hook_key),  # noqa: B008
+        ) -> TranscriptKept | JSONResponse:
+            """Append complete transcript lines for the owner's active habitat invocation.
+
+            `transcript_id` names the conversation whose file this is: the invocation's
+            own, or one of its subagents'. The bytes must continue from `offset`, and
+            the harness's transcript contents are stored unchanged.
+            """
+            if transcript_id != conversation.id:
+                children = await self.conversations.subagents(conversation.id)
+                child = next(
+                    (
+                        child
+                        for child in children
+                        if child.id == transcript_id
+                        and child.agent_tentacle_id == self.id
+                    ),
+                    None,
+                )
+                if child is None:
+                    raise HTTPException(404, "No such subagent transcript")
+                conversation = child
+            data = await request.body()
+            if not data.endswith(b"\n"):
+                raise HTTPException(422, "A transcript upload ends at a line break")
+            try:
+                stored = await self.conversations.store_transcript(
+                    UploadFile(
+                        BytesIO(data),
+                        filename=f"{conversation.external_id or conversation.id}.jsonl",
+                        headers=Headers({"content-type": "application/jsonl"}),
+                    ),
+                    offset,
+                    conversation=conversation,
+                    files=self.files,
+                    owner_id=key.user_id,
+                )
+            except FileOffsetConflict as error:
+                return JSONResponse(
+                    TranscriptKept(size=error.size).model_dump(), status_code=409
+                )
+            return TranscriptKept(size=stored.size)
+
+        return router
+
     async def runtime_api_key(self, user_id: UUID7 | None) -> IssuedApiKey | None:
-        """Reuse the user's MCP credential, replacing it when its lifetime expires."""
+        """Reuse the user's runtime credential, replacing it when its lifetime expires."""
         auth = self.auth
         if user_id is None or auth is None:
             return None
@@ -148,7 +317,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
                 issued = await auth.create_api_key(
                     user_id,
                     name=f"{self.id} runtime",
-                    scopes=["mcp"],
+                    scopes=["hooks", "mcp"],
                     expires_at=datetime.now(UTC) + auth.config.runtime_api_key_lifetime,
                 )
                 self.api_keys[user_id] = issued
@@ -532,15 +701,8 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         """Prepare this agent's run in the service's habitat.
 
         Creating the context acquires nothing; the caller enters it and closes
-        it after the run is consumed. An agent that cannot run its harness in a
-        sandbox refuses here, so nothing is prepared and nothing falls back to
-        the host.
+        it after the run is consumed.
         """
-        if (
-            not isinstance(self.habitats.config, NativeHabitatConfig)
-            and not self.supports_managed_habitat
-        ):
-            raise HabitatError(f"Agent {self.id!r} cannot run in a sandbox yet")
         return self.habitats.invoke(
             thread=thread, conversation=conversation, owner_id=owner_id
         )
@@ -655,7 +817,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     ) -> Thread:
         """Fork owned native or driven history onto an independent surface.
 
-        Native imports use `fork_transcript`. Driven forks use `fork_session` and
+        Native imports use `fork_transcript`. Driven forks use Ink and
         copy the history, settings and project workspace, retaining the source
         session. The caller opens the destination and holds the runtime's turn
         guard while forking a driven conversation.
@@ -671,6 +833,10 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         if source_thread is None:
             raise FileNotFoundError("No conversation")
         driven = source_thread.kind != "native_thread"
+        if driven and not self.supports_session_fork:
+            raise NotImplementedError(
+                f"Agent {self.id!r} does not support session forking"
+            )
         surface = await threads.get(
             source_thread.parent_thread_id or source_thread.id,
             with_messages=False,
@@ -693,11 +859,17 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         if thread.id == source_thread.id:
             raise ValueError("A fork requires an independent destination thread")
         target = await self.conversations.ensure(thread.id, agent_tentacle_id=self.id)
-        workspace = await self.workspaces.resolve(thread.id, project, owner_id)
         if driven:
             await self.workspaces.carry(source_thread, thread, owner_id)
-            async with self.workspaces.enter(workspace):
-                external_id = await self.fork_session(source, cwd=workspace.path)
+            async with self.inhabit(
+                thread=thread, conversation=target, owner_id=owner_id
+            ) as invocation:
+                external_id = await self.ink.fork_session(
+                    source.external_id,
+                    cwd=invocation.cwd,
+                    habitat=invocation.habitat,
+                    env=invocation.environment,
+                )
             if source.external_id is not None and (
                 external_id is None or external_id == source.external_id
             ):
@@ -711,6 +883,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
                 target_conversation_id=target.id,
             )
         else:
+            workspace = await self.workspaces.resolve(thread.id, project, owner_id)
             await self.fork_transcript(
                 source, target, owner_id=owner_id, cwd=workspace.path
             )
@@ -760,25 +933,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     @property
     def supports_session_fork(self) -> bool:
         """Whether this harness implements independent runtime session creation."""
-        return type(self).fork_session is not AgentTentacle.fork_session
-
-    async def fork_session(
-        self, conversation: Conversation, *, cwd: Path
-    ) -> str | None:
-        """Fork the runtime session, or stop if this agent cannot fork safely."""
-        raise NotImplementedError(f"Agent {self.id!r} does not support session forking")
-
-    async def relocate(self, conversation: Conversation, *, cwd: Path) -> None:
-        """Relocate the runtime session behind `conversation` to `cwd`, where its next
-        run resumes. The graph's call, made once a teleport has settled where the
-        agent lands; the tentacle only knows how to move one.
-
-        Nothing to move for a runtime that resumes a session from anywhere. Claude
-        files one under the directory it ran in, and every teleport changes that
-        directory — a new thread's workspace, or the project's — so a driven Claude
-        session needs this on each. A native session's transcript is on its own
-        machine, so a native teleport has nothing here to move: bringing it over is
-        a rebuild from the ledger, still to come, and this is where it lands."""
+        return self.ink.supports_session_fork
 
     async def run_project(self, thread_id: UUID7) -> Project | None:
         """The project a run in this thread is in, or None when it is in none.

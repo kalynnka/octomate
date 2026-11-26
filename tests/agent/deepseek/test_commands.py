@@ -20,6 +20,7 @@ from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.deepseek.catalog import DeepseekCommandDescriptor
 from octomate.tentacles.deepseek.client import DeepseekApiClient
+from octomate.tentacles.deepseek.ink import DeepseekConnection
 from octomate.tentacles.deepseek.wire import MuxFrame, RemoteNotification
 from octomate.types.json import JsonObject
 from tests.agent.deepseek.test_tentacle import FakeDeepseekApi, patch_gateway
@@ -48,14 +49,16 @@ async def agent(client: AsyncMock) -> AsyncGenerator[DeepseekTentacle]:
         habitats=host.habitats,
         config=DeepseekConfig(),
     )
-    await agent.ink.client.http_client.aclose()
-    agent.ink.client = client
+    connection = DeepseekConnection(client)
+    agent.ink.started = True
+    agent.ink.connections["core"] = connection
+    agent.ink.sessions["session-1"] = connection
 
     async def connected() -> None:
         await asyncio.Event().wait()
 
     task = asyncio.create_task(connected())
-    agent.ink.mux_task = task
+    connection.mux_task = task
     try:
         yield agent
     finally:
@@ -117,7 +120,7 @@ async def test_discovery_does_not_create_a_missing_session_or_connection(
     elif missing == "session":
         context.conversation.external_id = None
     else:
-        agent.ink.mux_task = None
+        (await agent.ink.acquire()).mux_task = None
     catalog = await agent.discover_commands(context)
     assert catalog.status == "unavailable"
     assert catalog.message
@@ -283,11 +286,12 @@ async def test_registry_notifications_invalidate_without_eager_reprobing(
             incoming.task_done()
 
     client.mux_frames.side_effect = lambda socket: frames()
-    await agent.ink.start(
+    connection = await agent.ink.acquire()
+    await connection.start(
         answer_interaction=agent.answer_interaction,
         invalidate_commands=partial(agent.commands.invalidate, agent_id=agent.id),
     )
-    pump = agent.ink.mux_task
+    pump = connection.mux_task
     assert pump is not None
     try:
         await agent.discover_commands(context)

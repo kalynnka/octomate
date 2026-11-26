@@ -208,6 +208,16 @@ async def accessible_thread(
     return thread
 
 
+async def accessible_conversation_id(
+    conversation_id: UUID7,
+    thread: Annotated[Thread, Depends(accessible_thread)],
+    conversations: Annotated[ConversationManager, Depends(conversation_manager)],
+) -> UUID7:
+    if await conversations.thread_id(conversation_id) != thread.id:
+        raise HTTPException(status_code=404, detail="no conversation in this thread")
+    return conversation_id
+
+
 async def thread_gateway(
     thread: Annotated[Thread, Depends(accessible_thread)],
     user: Annotated[User, Depends(current_user)],
@@ -495,6 +505,39 @@ def build_trunkline_router(
         return await conversations.usage(thread.id)
 
     @router.get(
+        "/threads/{thread_id}/conversations/{conversation_id}/messages",
+        summary="The model messages of one conversation, newest first",
+        response_model=Page[ModelRequest | ModelResponse],
+        response_model_exclude={
+            "items": {"__all__": {"thread_messages": {"__all__": {"model_messages"}}}}
+        },
+    )
+    async def conversation_model_messages(
+        thread: Annotated[Thread, Depends(accessible_thread)],
+        conversation_id: Annotated[UUID7, Depends(accessible_conversation_id)],
+        conversations: Annotated[ConversationManager, Depends(conversation_manager)],
+        cursor: str | None = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    ) -> Page[ModelRequest | ModelResponse]:
+        """One conversation's runs, including the chat rows bound to each message.
+        `cursor` is a page's `next_cursor`, read further back."""
+        try:
+            return await conversations.messages_page(
+                thread.id, cursor, limit=limit, conversation_id=conversation_id
+            )
+        except ValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @router.get("/threads/{thread_id}/conversations/{conversation_id}/usage")
+    async def conversation_usage(
+        thread: Annotated[Thread, Depends(accessible_thread)],
+        conversation_id: Annotated[UUID7, Depends(accessible_conversation_id)],
+        conversations: Annotated[ConversationManager, Depends(conversation_manager)],
+    ) -> RequestUsage:
+        """Every token one conversation spent, summed over all its responses."""
+        return await conversations.usage(thread.id, conversation_id=conversation_id)
+
+    @router.get(
         "/threads/{thread_id}/conversations",
         summary="The thread's agent conversations, each with its runs",
         response_model_exclude={
@@ -728,7 +771,9 @@ def build_trunkline_live_router(channel: TrunklineTentacle) -> APIRouter:
         user: Annotated[User, Depends(current_user)],
         threads: Annotated[ThreadManager, Depends(thread_manager)],
     ) -> None:
-        await watch_activity(websocket, channel.octomate, threads, user.id, channel.id)
+        await watch_activity(
+            websocket, channel.octomate, channel.nerve, threads, user.id, channel.id
+        )
 
     @router.websocket("/live/user")
     async def watch_user(
