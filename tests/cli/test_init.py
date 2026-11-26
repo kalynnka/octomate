@@ -68,7 +68,7 @@ def test_sbx_selection_runs_shared_setup_and_passes_image_to_preparation(
             "none",
             *(["--habitat", "sbx", "--sandbox-image", image, "--yes"] if yes else []),
         ],
-        input="" if yes else f"sbx\n{image}\ny\n",
+        input="" if yes else "sbx\n" * len(agents) + f"{image}\ny\n",
     )
     assert result.exit_code == 0, result.output
     assert sequence.mock_calls == [
@@ -490,7 +490,7 @@ def test_tentacles_are_selected_together_before_detail_steps(
     result = runner.invoke(
         service_typer,
         ["init", "--prepare", "--root", str(tmp_path / "service")],
-        input="8124\n\ny\n",
+        input="8124\n\n\ny\n",
     )
     assert result.exit_code == 0, result.output
     headings = [
@@ -1142,3 +1142,66 @@ def test_selection_without_agent_does_not_start_details(
     assert "GitHub OAuth application client ID" not in result.output
     assert not root.exists()
     commands.assert_not_called()
+
+
+@pytest.mark.parametrize("interactive", [False, True])
+def test_mixed_habitats_compose_setup_and_only_selected_credentials(
+    tmp_path: Path,
+    commands: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+    interactive: bool,
+) -> None:
+    agents = ["claude", "codex", "deepseek"]
+    monkeypatch.setattr(wizard, "select_tentacles", Mock(return_value=agents))
+    setup = Mock()
+    credentials = Mock()
+    monkeypatch.setattr(init_cli, "setup_habitat", setup)
+    monkeypatch.setattr(init_cli, "setup_credentials", credentials)
+    image = "image@sha256:" + "a" * 64
+    result = runner.invoke(
+        service_typer,
+        [
+            "init",
+            "--prepare",
+            "--root",
+            str(tmp_path / "service"),
+            "--port",
+            "8123",
+            "--channel",
+            "none",
+            *(argument for name in agents for argument in ("--agent", name)),
+            *(
+                []
+                if interactive
+                else [
+                    "--yes",
+                    "--habitat",
+                    "sbx",
+                    "--agent-habitat",
+                    "claude=srt",
+                    "--sandbox-image",
+                    image,
+                ]
+            ),
+        ],
+        input=f"srt\nsbx\nsbx\n{image}\ny\n" if interactive else "",
+    )
+    assert result.exit_code == 0, result.output
+    assert setup.call_args_list == [
+        mock_call("srt", check=not interactive),
+        mock_call("sbx", check=not interactive),
+    ]
+    assert credentials.call_args_list == [
+        mock_call("sbx", service="openai", check=not interactive),
+        mock_call("sbx", service="deepseek", check=not interactive),
+    ]
+    arguments = commands.call_args_list[2].args[0]
+    assert [
+        arguments[i + 1]
+        for i, value in enumerate(arguments)
+        if value == "--agent-habitat"
+    ] == [
+        "claude=srt",
+        "codex=sbx",
+        "deepseek=sbx",
+    ]

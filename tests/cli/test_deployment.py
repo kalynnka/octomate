@@ -78,9 +78,10 @@ def test_prepare_persists_sbx_and_the_selected_core_port(
     image = "example.test/agents@sha256:" + "a" * 64
     deployment.prepare(8123, [], [agent], sandbox_image=image)
     config = OctomateConfig()
-    assert config.habitat.mode == "sbx"
-    assert config.habitat.image == image
-    assert str(config.habitat.core_address) == "http://127.0.0.1:8123/"
+    habitat = config.habitats["sbx"]
+    assert habitat.mode == "sbx"
+    assert habitat.image == image
+    assert str(habitat.core_address) == "http://127.0.0.1:8123/"
     assert not (preparation / "octomate.db").exists()
 
 
@@ -118,7 +119,7 @@ def test_prepare_acp_persists_provider_and_channel_routing(
     channel = config.tentacles["trunkline"]
     assert isinstance(channel, TrunklineChannelConfig)
     assert channel.agents == ["acp"]
-    assert config.habitat.mode == ("sbx" if sandbox else "native")
+    assert config.habitats[agent.habitat].mode == ("sbx" if sandbox else "native")
     assert not (preparation / "octomate.db").exists()
 
 
@@ -151,7 +152,7 @@ def test_prepare_inkling_persists_model_and_channel_routing(
     channel = config.tentacles["trunkline"]
     assert isinstance(channel, TrunklineChannelConfig)
     assert channel.agents == ["inkling"]
-    assert config.habitat.mode == ("sbx" if sandbox else "native")
+    assert config.habitats[agent.habitat].mode == ("sbx" if sandbox else "native")
     assert "config/providers.yaml" in (preparation / "CONFIGURATION.md").read_text()
     assert not (preparation / "octomate.db").exists()
 
@@ -753,3 +754,35 @@ def test_prepare_rejects_mcp_names_used_by_other_tentacles(
     with pytest.raises(ValueError, match="Tentacle names must be unique"):
         deployment.prepare(8123, ["trunkline"], ["codex"], [preset])
     assert list(preparation.iterdir()) == []
+
+
+@pytest.mark.parametrize("claude_habitat", ["srt", "native"])
+def test_prepare_mixed_habitats_share_one_sbx_definition(
+    preparation: Path, claude_habitat: str
+) -> None:
+    deployment.prepare(
+        8123,
+        ["trunkline"],
+        ["claude", "codex", "deepseek"],
+        sandbox_image="image@sha256:" + "a" * 64,
+        habitat_assignments=[f"claude={claude_habitat}", "codex=sbx", "deepseek=sbx"],
+    )
+    config = OctomateConfig()
+    assert set(config.habitats) == {claude_habitat, "sbx"}
+    for name, selected in (
+        ("claude", claude_habitat),
+        ("codex", "sbx"),
+        ("deepseek", "sbx"),
+    ):
+        agent = config.tentacles[name]
+        assert isinstance(agent, AgentConfig)
+        assert agent.habitat == selected
+        assert config.habitats[selected].mode == selected
+        if selected != "native":
+            assert (
+                str(config.habitats[selected].core_address) == "http://127.0.0.1:8123/"
+            )
+    payload = yaml.safe_load((preparation / "config/octomate.yaml").read_text())
+    assert "habitat" not in payload
+    assert "habitats" in payload
+    assert not (preparation / "octomate.db").exists()

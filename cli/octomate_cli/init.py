@@ -93,7 +93,13 @@ def init(
     habitat: Annotated[
         HabitatMode | None,
         typer.Option(
-            help="Execution habitat for every selected agent; prompts when omitted."
+            help="Default habitat for selected agents; prompts per agent when omitted."
+        ),
+    ] = None,
+    agent_habitat: Annotated[
+        list[str] | None,
+        typer.Option(
+            help="Per-agent habitat override: AGENT=MODE; repeat for multiple agents."
         ),
     ] = None,
     sandbox_image: Annotated[
@@ -161,13 +167,14 @@ def init(
             or agent is not None
             or channel is not None
             or habitat is not None
+            or agent_habitat is not None
             or sandbox_image is not None
             or acp_command is not None
             or acp_arg is not None
             or inkling_model is not None
         ):
             raise typer.BadParameter(
-                "Prepared installations retain their settings. Omit --source, --port, --agent, --channel, --habitat, --sandbox-image, --acp-command, --acp-arg and --inkling-model to validate again."
+                "Prepared installations retain their settings. Omit --source, --port, --agent, --channel, --habitat, --agent-habitat, --sandbox-image, --acp-command, --acp-arg and --inkling-model to validate again."
             )
         validate_existing(service, account.pw_dir)
         return
@@ -201,8 +208,13 @@ def init(
         interactive=not yes,
         console=console,
     )
-    sandbox_image = habitat_step(
-        tentacles.agents, habitat, sandbox_image, interactive=not yes, target=target
+    habitats, sandbox_image = habitat_step(
+        tentacles.agents,
+        habitat,
+        sandbox_image,
+        assignments=agent_habitat,
+        interactive=not yes,
+        target=target,
     )
     if target == DeploymentTarget.docker and "deepseek" in tentacles.agents:
         raise typer.BadParameter(
@@ -221,11 +233,14 @@ def init(
         acp_command,
         acp_args,
         inkling_model,
+        habitats,
     )
-    if sandbox_image is not None:
+    if HabitatMode.srt in habitats.values():
+        setup_habitat("srt", check=yes)
+    if HabitatMode.sbx in habitats.values():
         setup_habitat("sbx", check=yes)
         for name in tentacles.agents:
-            if name in AGENT_SERVICES:
+            if habitats[name] == HabitatMode.sbx and name in AGENT_SERVICES:
                 setup_credentials("sbx", service=AGENT_SERVICES[name], check=yes)
     prepare_step(
         service,
@@ -241,6 +256,7 @@ def init(
         acp_command,
         acp_args,
         inkling_model,
+        habitats,
     )
 
 
@@ -422,6 +438,7 @@ def review_step(
     acp_command: str | None = None,
     acp_args: list[str] | None = None,
     inkling_model: str | None = None,
+    habitats: dict[str, HabitatMode] | None = None,
 ) -> None:
     root = service.directory
     environment = service.environment
@@ -435,7 +452,14 @@ def review_step(
         ("Version", revision),
         ("Source", str(source) if source else "github.com/kalynnka/octomate"),
         ("Bind", f"127.0.0.1:{port}"),
-        ("Agent habitat", f"sbx · {sandbox_image}" if sandbox_image else "native"),
+        (
+            "Agent habitats",
+            ", ".join(
+                f"{name} → {backend}" for name, backend in (habitats or {}).items()
+            )
+            or "native",
+        ),
+        ("Sandbox image", sandbox_image or "None"),
         (
             "Agents Tentacles",
             ", ".join(AGENTS[name].label for name in agent),
@@ -521,6 +545,7 @@ def prepare_step(
     acp_command: str | None = None,
     acp_args: list[str] | None = None,
     inkling_model: str | None = None,
+    habitats: dict[str, HabitatMode] | None = None,
 ) -> None:
     root = service.directory
     environment = service.environment
@@ -597,6 +622,13 @@ def prepare_step(
                         ),
                         *(["--mcp-presets"] if mcps else []),
                         *(["--sandbox-image", sandbox_image] if sandbox_image else []),
+                        *(
+                            argument
+                            for name, backend in (habitats or {}).items()
+                            if backend != HabitatMode.native
+                            or sandbox_image is not None
+                            for argument in ("--agent-habitat", f"{name}={backend}")
+                        ),
                         *(
                             ["--acp-command", acp_command]
                             if acp_command is not None

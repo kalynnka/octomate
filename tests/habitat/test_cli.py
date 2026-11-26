@@ -7,7 +7,7 @@ from unittest.mock import Mock
 import pytest
 import typer
 import yaml
-from octomate_cli import credentials
+from octomate_cli import credentials, habitat
 from octomate_cli import sbx as sbx_cli
 from octomate_cli.habitat import HabitatMode
 from octomate_cli.installation import DeploymentTarget
@@ -198,16 +198,13 @@ def test_commands_require_their_own_inputs(sbx: Mock, arguments: list[str]) -> N
 @pytest.mark.parametrize("agent", ["claude", "codex", "deepseek", "acp", "inkling"])
 def test_sbx_selection_accepts_supported_agents(agent: str) -> None:
     image = "image@sha256:" + "a" * 64
-    assert (
-        habitat_step(
-            [agent],
-            HabitatMode.sbx,
-            image,
-            interactive=False,
-            target=DeploymentTarget.launchd,
-        )
-        == image
-    )
+    assert habitat_step(
+        [agent],
+        HabitatMode.sbx,
+        image,
+        interactive=False,
+        target=DeploymentTarget.launchd,
+    ) == ({agent: HabitatMode.sbx}, image)
 
 
 def test_domains_match_the_shipped_kit() -> None:
@@ -243,3 +240,58 @@ def test_sbx_selection_rejects_unsupported_runtime(
             interactive=False,
             target=target,
         )
+
+
+@pytest.mark.parametrize(
+    ("assignments", "message"),
+    [
+        (["codex=srt"], "only for Claude"),
+        (["claude=unknown"], "native, srt or sbx"),
+        (["other=native"], "selected AGENT=MODE"),
+        (["claude"], "selected AGENT=MODE"),
+        (["claude=srt", "claude=native"], "only once"),
+    ],
+)
+def test_per_agent_habitat_rejects_invalid_assignments(
+    assignments: list[str], message: str
+) -> None:
+    with pytest.raises(typer.BadParameter, match=message):
+        habitat_step(
+            ["claude", "codex"],
+            None,
+            None,
+            assignments=assignments,
+            interactive=False,
+            target=DeploymentTarget.launchd,
+        )
+
+
+def test_native_override_does_not_inherit_sbx() -> None:
+    image = "image@sha256:" + "a" * 64
+    assert habitat_step(
+        ["claude", "codex"],
+        HabitatMode.sbx,
+        image,
+        assignments=["claude=native"],
+        interactive=False,
+        target=DeploymentTarget.launchd,
+    ) == ({"claude": HabitatMode.native, "codex": HabitatMode.sbx}, image)
+
+
+@pytest.mark.parametrize("missing", ["srt", "node", "sdk", None])
+def test_srt_setup_checks_runtime_installation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    missing: str | None,
+) -> None:
+    entry = tmp_path / "cli.js"
+    entry.touch()
+    if missing != "sdk":
+        entry.with_name("index.js").touch()
+    monkeypatch.setattr(
+        habitat.shutil, "which", lambda name: None if name == missing else str(entry)
+    )
+    result = runner.invoke(app, ["habitat", "setup", "srt", "--check"])
+    assert result.exit_code == (0 if missing is None else 2), result.output
+    if missing is None:
+        assert "Runtime isolation is checked when a habitat starts" in result.output
