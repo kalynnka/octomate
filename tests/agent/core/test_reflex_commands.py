@@ -56,7 +56,7 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import ChannelOutput
 from octomate.tentacles.stream import ReactStreamEvent
 from octomate.tentacles.trunkline.base import TrunklineTentacle
-from tests.agent.test_command_execution import ExecutingAgent
+from tests.agent.core.test_command_execution import ExecutingAgent
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.nerve import drawing, held, kicked

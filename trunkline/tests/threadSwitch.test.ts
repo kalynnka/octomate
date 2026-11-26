@@ -27,7 +27,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
 /** The live socket opened on `query`, once the console has opened it. */
 async function socketOn(query: string): Promise<LiveSocket> {
   for (let at = 0; at < 200; at++) {
-    const socket = LiveSocket.opened.find((one) => one.url.endsWith(`?${query}`) && !one.closed)
+    const socket = LiveSocket.opened.find((one) => one.url.endsWith(query) && !one.closed)
     if (socket) return socket
     await tick()
   }
@@ -101,6 +101,72 @@ test('a first visit starts its transition without waiting for data', async () =>
   assert.deepEqual(useConsole.getState().detail, detail)
 })
 
+test('a thread is shown while its socket opens, and read again once the socket is held', async () => {
+  LiveSocket.autoOpen = false
+  const id = 'opening-socket'
+  let reads = 0
+  // A run is saved between the first read and the socket.
+  mock.method(api, 'getThreadDetail', async () => ({ ...detail, key: id, msgCount: ++reads }))
+  const switching = useConsole.getState().actions.selectThread('codex', id)
+  const socket = await socketOn(`thread_id=${id}`)
+  for (let at = 0; at < 200 && useConsole.getState().detail?.key !== id; at++) await tick()
+  assert.equal(useConsole.getState().detail?.msgCount, 1)
+  assert.equal(reads, 1)
+  socket.onopen?.()
+  await switching
+  assert.equal(useConsole.getState().detail?.msgCount, 2)
+  assert.equal(reads, 2)
+})
+
+test('a turn that settles while the thread is being read has it read again', async () => {
+  const id = 'settles-mid-read'
+  let land!: (value: ThreadDetail) => void
+  const early = new Promise<ThreadDetail>((done) => { land = done })
+  let reads = 0
+  mock.method(api, 'getThreadDetail', () => reads++ === 0 ? early : Promise.resolve({ ...detail, key: id, msgCount: 2 }))
+  const switching = useConsole.getState().actions.selectThread('trunkline', id)
+  const watching = await socketOn(`thread_id=${id}`)
+  for (let at = 0; at < 200 && reads === 0; at++) await tick()
+  watching.deliver({ event_kind: 'reflex_awake' }, result, { event_kind: 'reflex_asleep' })
+  // The read under way began before the run was saved.
+  land({ ...detail, key: id })
+  await switching
+  for (let at = 0; at < 200 && useConsole.getState().detail?.msgCount !== 2; at++) await tick()
+  assert.equal(useConsole.getState().detail?.msgCount, 2)
+  assert.equal(reads, 2)
+  assert.deepEqual(useConsole.getState().live, [])
+  assert.equal(useConsole.getState().running, false)
+})
+
+for (const awake of [true, false]) {
+  test(`a run that ends while the thread is being read gives way to that read, ${awake ? 'under its reflex' : 'replayed from a later run'}`, async () => {
+    const id = `ends-mid-read-${awake}`
+    let land!: (value: ThreadDetail) => void
+    const opening = new Promise<ThreadDetail>((done) => { land = done })
+    const saved = { ...detail, key: id, msgCount: 2, ledger: [{ kind: 'user', uid: 'first-prompt', text: 'First', who: 'Owner', t: '10:00' }] satisfies LedgerItem[] }
+    let reads = 0
+    mock.method(api, 'getThreadDetail', () => reads++ === 0 ? opening : Promise.resolve(saved))
+    const switching = useConsole.getState().actions.selectThread('trunkline', id)
+    const watching = await socketOn(`thread_id=${id}`)
+    for (let at = 0; at < 200 && reads === 0; at++) await tick()
+    const started: WireEvent = { event_kind: 'run_started', address: {
+      channel_tentacle_id: 'trunkline', chat_type: 'thread', chat_id: id, user_id: 'owner', channel_thread_id: null, shared: false,
+    } }
+    if (awake) watching.deliver({ event_kind: 'reflex_awake' })
+    watching.deliver(started, { ...result, output: 'Saved reply' }, { event_kind: 'run_ended' })
+    // The read under way already holds the run.
+    land(saved)
+    await switching
+    watching.deliver(started, { event_kind: 'part_start', index: 0, part: { part_kind: 'text', content: 'Hello back' } })
+    for (let at = 0; at < 200 && reads < 2; at++) await tick()
+    await tick()
+    assert.equal(reads, 2)
+    assert.equal(useConsole.getState().detail?.msgCount, 2)
+    assert.deepEqual(useConsole.getState().live.flatMap(item => item.kind === 'stream' ? [item.text] : []), ['Hello back'])
+    assert.equal(useConsole.getState().running, true)
+  })
+}
+
 test('skipping a pending transition handles its rejection and keeps the newly selected thread', async () => {
   let resolve!: (value: ThreadDetail) => void
   const first = new Promise<ThreadDetail>((done) => { resolve = done })
@@ -166,7 +232,8 @@ test('a new thread adopts its saved identity without a transition or replacing i
   // Both turns were watched on the key the thread was composed under, before and after it had a row;
   // once it had one, the open thread was watched by it between turns and after them.
   const byKey = `ws://console.test/api/trunkline/live?thread_key=${sendKey}`
-  const byId = 'ws://console.test/api/trunkline/live?thread_id=saved-thread'
+  // The watch asks for what an awake kick has not saved yet; a run's own socket reads from then on.
+  const byId = 'ws://console.test/api/trunkline/live?replay=true&thread_id=saved-thread'
   assert.deepEqual(LiveSocket.opened.map((socket) => socket.url), [byKey, byId, byKey, byId])
   assert.equal(transition.mock.callCount(), 0)
   assert.deepEqual(useConsole.getState().live.filter((item) => item.kind === 'user').map((item) => item.text), ['hello', 'continue'])
@@ -420,7 +487,7 @@ test('a persisted usage read cannot update the thread selected while it was pend
   const metrics = mock.method(api, 'getThreadMetrics', () => reading)
   run.deliver({ event_kind: 'reflex_awake' }, result, { event_kind: 'reflex_asleep' })
   for (let at = 0; at < 200 && metrics.mock.callCount() < 1; at++) await tick()
-  assert.equal(getDetail.mock.callCount(), 1)
+  assert.equal(getDetail.mock.callCount(), 2)
   assert.equal(metrics.mock.callCount(), 1)
 
   await actions.selectThread('trunkline', 'other')
@@ -541,21 +608,22 @@ test('a failed connection releases the watch so the thread can be opened again',
   assert.deepEqual(LiveSocket.opened.map(socket => socket.closed), [true, false])
 })
 
-test('resuming live updates reconnects only the lost watch and preserves the open conversation', async () => {
+test('resuming live updates reconnects only the lost watch, reads the thread again and keeps the reader\'s place', async () => {
   const id = 'resuming-watch'
   const read = mock.method(api, 'getThreadDetail', async () => ({ ...detail, key: id }))
   const actions = useConsole.getState().actions
   await actions.selectThread('codex', id)
   await actions.resumeLiveUpdates()
   assert.equal(LiveSocket.opened.length, 1)
+  assert.equal(read.mock.callCount(), 2)
   const old = LiveSocket.last()
   old.close()
   await tick()
   useConsole.setState({ composer: 'Unsent draft', ledgerN: 80, open: { tool: true } })
-  const before = useConsole.getState()
   await Promise.all([actions.resumeLiveUpdates(), actions.resumeLiveUpdates()])
-  assert.equal(useConsole.getState(), before)
-  assert.equal(read.mock.callCount(), 1)
+  const { composer, ledgerN, open } = useConsole.getState()
+  assert.deepEqual({ composer, ledgerN, open }, { composer: 'Unsent draft', ledgerN: 80, open: { tool: true } })
+  assert.equal(read.mock.callCount(), 3)
   assert.equal(LiveSocket.opened.length, 2)
   assert.deepEqual(LiveSocket.opened.map(socket => socket.closed), [true, false])
   LiveSocket.last().deliver({ event_kind: 'run_started', address: {
@@ -563,6 +631,71 @@ test('resuming live updates reconnects only the lost watch and preserves the ope
   } }, result, { event_kind: 'run_ended', thread_message_id: 'reply' })
   assert.deepEqual(useConsole.getState().live.filter(item => item.kind === 'stream').map(item => item.text), ['Hello back'])
   assert.equal(useConsole.getState().running, false)
+})
+
+test('a watch reopened on a run still going shows the thread read again and the run from its start', async () => {
+  const id = 'reopened-watch'
+  const read = mock.method(api, 'getThreadDetail', async () => ({ ...detail, key: id }))
+  const actions = useConsole.getState().actions
+  await actions.selectThread('trunkline', id)
+  const unsaved: WireEvent[] = [{ event_kind: 'reflex_awake' }, { event_kind: 'run_started', address: {
+    channel_tentacle_id: 'trunkline', chat_type: 'thread', chat_id: id, user_id: 'owner', channel_thread_id: null, shared: false,
+  } }, result]
+  const lost = await socketOn(`thread_id=${id}`)
+  lost.deliver(...unsaved)
+  lost.close()
+  await tick()
+  read.mock.mockImplementation(async () => ({ ...detail, key: id, msgCount: 1 }))
+  const resuming = actions.resumeLiveUpdates()
+  // The relay replays the run the ledger does not hold yet.
+  ;(await socketOn(`thread_id=${id}`)).deliver(...unsaved)
+  await resuming
+  assert.equal(useConsole.getState().detail?.msgCount, 1)
+  assert.deepEqual(useConsole.getState().live.flatMap(item => item.kind === 'stream' ? [item.text] : []), ['Hello back'])
+  assert.equal(useConsole.getState().running, true)
+})
+
+test('a run that outlives its socket is watched again from its start, in place of what that socket left', async () => {
+  const live: ThreadDetail = { ...detail, key: 'outlived', live: true, sendKey: 'outlived-key' }
+  const read = mock.method(api, 'getThreadDetail', async () => live)
+  mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) =>
+    init?.method === 'POST' ? new Response(null, { status: 202 }) : Response.json([]))
+  queryClient.setQueryData(['thread-detail', 'outlived'], live)
+  const actions = useConsole.getState().actions
+  await actions.selectThread('trunkline', 'outlived')
+  await socketOn('thread_id=outlived')
+  actions.sendDirective('carry on')
+  const run = await socketOn('thread_key=outlived-key')
+  run.deliver({ event_kind: 'reflex_awake' }, result)
+  read.mock.mockImplementation(async () => ({ ...live, ledger: [{ kind: 'user', uid: 'prompt', text: 'carry on', who: 'Owner', t: '10:00' }] satisfies LedgerItem[] }))
+  run.close(1013)
+  ;(await socketOn('thread_id=outlived')).deliver({ event_kind: 'reflex_awake' }, result)
+  for (let at = 0; at < 200 && useConsole.getState().detail?.ledger.length !== 1; at++) await tick()
+  assert.deepEqual(useConsole.getState().detail?.ledger.map(item => item.uid), ['prompt'])
+  assert.deepEqual(useConsole.getState().live.map(item => item.kind === 'stream' ? item.text : item.kind), ['Hello back', 'end'])
+  assert.equal(useConsole.getState().running, true)
+})
+
+test('a watch the relay closes is opened again shortly, or at once when the reader returns', async (t) => {
+  const id = 'closed-watch'
+  const read = mock.method(api, 'getThreadDetail', async () => ({ ...detail, key: id }))
+  const actions = useConsole.getState().actions
+  await actions.selectThread('codex', id)
+  const turn = () => new Promise((resolve) => setImmediate(resolve))
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  LiveSocket.last().close(1013)
+  await turn()
+  assert.equal(LiveSocket.opened.length, 1)
+  t.mock.timers.tick(2_000)
+  for (let at = 0; at < 200 && read.mock.callCount() < 2; at++) await turn()
+  assert.deepEqual(LiveSocket.opened.map(socket => socket.closed), [true, false])
+  assert.equal(read.mock.callCount(), 2)
+  LiveSocket.last().close()
+  await turn()
+  await actions.resumeLiveUpdates()
+  t.mock.timers.tick(2_000)
+  await turn()
+  assert.deepEqual(LiveSocket.opened.map(socket => socket.closed), [true, true, false])
 })
 
 test('resuming live updates leaves a draft with no saved thread alone', async () => {
@@ -837,6 +970,29 @@ test('a missed turn reads its history without clearing the next tailed turn alre
 })
 
 
+test('a watch opened on a kick\'s later run folds that run alone and reads the ledger once the reflex is asleep', async () => {
+  const opening = { ...detail, key: 'later-run', ledger: [{ kind: 'user', uid: 'first-prompt', text: 'First', who: 'Owner', t: '10:00' }] satisfies LedgerItem[] }
+  const getDetail = mock.method(api, 'getThreadDetail', async () => opening)
+  queryClient.setQueryData(['thread-detail', opening.key], opening)
+  await useConsole.getState().actions.selectThread('trunkline', opening.key)
+  const watching = await socketOn(`thread_id=${opening.key}`)
+  const calls = getDetail.mock.callCount()
+  // The relay's replay starts after the kick's last ended run, so no reflex_awake leads it.
+  watching.deliver({ event_kind: 'run_started', address: {
+    channel_tentacle_id: 'trunkline', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false,
+  } }, result)
+  assert.equal(useConsole.getState().running, true)
+  assert.deepEqual(useConsole.getState().live.flatMap(item => item.kind === 'stream' ? [item.text] : []), ['Hello back'])
+  watching.deliver({ event_kind: 'run_ended', thread_message_id: 'reply' })
+  assert.equal(getDetail.mock.callCount(), calls)
+  getDetail.mock.mockImplementation(async () => ({ ...opening, msgCount: 2 }))
+  watching.deliver({ event_kind: 'reflex_asleep' })
+  for (let at = 0; at < 200 && useConsole.getState().detail?.msgCount !== 2; at++) await tick()
+  assert.equal(useConsole.getState().detail?.msgCount, 2)
+  assert.deepEqual(useConsole.getState().live, [])
+  assert.equal(useConsole.getState().running, false)
+})
+
 test('consecutive watched turns stay mounted and replay replaces only the unfinished turn', async () => {
   const opening = { ...detail, key: 'stable-native' }
   const getDetail = mock.method(api, 'getThreadDetail', async () => opening)
@@ -887,9 +1043,9 @@ for (const saved of [false, true]) {
 }
 
 
-test('a child opens its own ledger and never folds its parent’s live messages', async () => {
+test('a child opens and reconnects its own ledger without folding its parent’s live messages', async () => {
   const child = { ...detail, key: 'child', ledger: [{ kind: 'agent', uid: 'child-answer', label: 'Claude', blocks: [{ type: 'p', text: 'Child answer' }] }] } satisfies ThreadDetail
-  mock.method(api, 'getThreadDetail', async (_id: string, conversationId?: string) => conversationId ? child : detail)
+  const read = mock.method(api, 'getThreadDetail', async (_id: string, conversationId?: string) => conversationId ? child : detail)
   const actions = useConsole.getState().actions
   await actions.selectThread('claude', 'parent')
   await actions.selectThread('claude', 'parent', 'down', 'child')
@@ -898,6 +1054,14 @@ test('a child opens its own ledger and never folds its parent’s live messages'
   socket.deliver({ event_kind: 'part_start', index: 0, part: { part_kind: 'text', content: 'Parent answer' } })
   assert.deepEqual(useConsole.getState().live, [])
   assert.deepEqual(queryClient.getQueryData(['thread-detail', 'parent', 'child']), child)
+  socket.close()
+  await tick()
+  await actions.resumeLiveUpdates()
+  assert.deepEqual(read.mock.calls.at(-1)?.arguments, ['parent', 'child'])
+  assert.deepEqual(useConsole.getState().detail, child)
+  const reconnected = await socketOn('thread_id=parent')
+  reconnected.deliver({ event_kind: 'part_start', index: 0, part: { part_kind: 'text', content: 'Parent replay' } })
+  assert.deepEqual(useConsole.getState().live, [])
   await actions.selectThread('claude', 'parent')
   assert.deepEqual(useConsole.getState().detail, detail)
   assert.equal(useConsole.getState().selConversationId, undefined)

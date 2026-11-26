@@ -31,9 +31,9 @@ from octomate.schemas.oauth import OAuthConnection
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.mcp import BareMcpTentacle, build_mcp
 from octomate.types.json import JsonObject
-from tests.agent.test_mcp import ENCRYPTION_KEY, a_turn
 from tests.support.managers import fixed_session
 from tests.support.users import a_user
+from tests.tools.test_mcp import ENCRYPTION_KEY, a_turn
 
 
 @pytest.fixture

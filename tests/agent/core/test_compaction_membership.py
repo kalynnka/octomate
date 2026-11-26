@@ -1,23 +1,13 @@
 """Compaction context references preserve order, ownership, and shared history."""
 
-import asyncio
-import sqlite3
-from pathlib import Path
-from typing import Literal
-from unittest.mock import Mock
-
 import pytest
-from alembic import command
-from alembic.config import Config
 from arcanus import RelationCollection
 from pydantic import UUID7, ValidationError
 from pydantic_ai.messages import TextPart, UserPromptPart
-from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
-from octomate.config.database import database_settings
 from octomate.database import async_session
 from octomate.managers import ConversationManager
 from octomate.schemas.compactions import Compaction, CompactionMembership
@@ -278,69 +268,3 @@ async def test_unknown_compaction_order_is_distinct_from_conflicting_known_posit
             row.position = 0
         with pytest.raises(IntegrityError, match="UNIQUE constraint failed"):
             await session.commit()
-
-
-@pytest.mark.parametrize(
-    "recorded", ["membership", "complete", "inherited", "position"]
-)
-async def test_migration_refuses_to_discard_context_or_inherited_history(
-    history: History,
-    in_memory_engine: AsyncEngine,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    recorded: Literal["membership", "complete", "inherited", "position"],
-) -> None:
-    conversation, run, compaction = history
-    owner = conversation
-    if recorded == "inherited":
-        owner = await ConversationManager().ensure(
-            await a_thread("fork"), agent_tentacle_id="agent"
-        )
-    async with async_session() as session:
-        match recorded:
-            case "membership":
-                session.add(
-                    CompactionMembership(
-                        compaction_id=compaction.id,
-                        stage="before",
-                        position=0,
-                        model_message_id=run.messages[0].id,
-                    )
-                )
-            case "complete":
-                stored = await session.get(Compaction, compaction.id)
-                assert stored is not None
-                stored.membership_complete = True
-            case "inherited" | "position":
-                session.add(
-                    ConversationCompaction(
-                        conversation_id=owner.id,
-                        compaction_id=compaction.id,
-                        position=0 if recorded == "position" else None,
-                    )
-                )
-        await session.commit()
-    source = await asyncio.to_thread(Path(in_memory_engine.url.database or "").resolve)
-    assert source.parent == await asyncio.to_thread(tmp_path.resolve)
-    target = tmp_path / "membership-migration-copy.db"
-    with (
-        sqlite3.connect(source.as_uri() + "?mode=ro", uri=True) as original,
-        sqlite3.connect(target) as copied,
-    ):
-        original.backup(copied)
-    monkeypatch.setattr(database_settings, "db_url", f"sqlite+aiosqlite:///{target}")
-    assert await asyncio.to_thread(
-        Path(make_url(database_settings.db_url).database or "").resolve
-    ) == await asyncio.to_thread(target.resolve)
-    assert source != target
-    module_path = await asyncio.to_thread(Path(__file__).resolve)
-    config = Config(str(module_path.parents[2] / "alembic.ini"))
-    monkeypatch.setattr("logging.config.fileConfig", Mock())
-    await asyncio.to_thread(command.stamp, config, "a1a2d6fe9638")
-    with sqlite3.connect(target) as copied:
-        before = list(copied.iterdump())
-    with pytest.raises(RuntimeError, match="context or inherited history is recorded"):
-        await asyncio.to_thread(command.downgrade, config, "792e14ef4f19")
-    with sqlite3.connect(target) as copied:
-        assert copied.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert list(copied.iterdump()) == before

@@ -72,8 +72,8 @@ from octomate.tentacles.channel import ChannelOutput
 from octomate.tentacles.stream import ReactStreamEvent
 from octomate.tentacles.trunkline import TrunklineTentacle
 from octomate.types.permissions import PermissionMode
-from tests.agent.test_command_execution import ExecutingAgent
-from tests.agent.test_command_manager import DiscoveringAgent
+from tests.agent.core.test_command_execution import ExecutingAgent
+from tests.agent.core.test_command_manager import DiscoveringAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import a_project, a_registry, a_workspace_manager
 from tests.support.nerve import drawing, held

@@ -678,29 +678,33 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   // overlay. A run this console asked for streams over its own socket instead,
   // and the watch steps aside until that run ends.
   let viewing: { thId: string; conversationId?: string; close: () => void } | undefined
+  // Pending while a watch the relay closed waits to be opened again.
+  let rewatch: ReturnType<typeof setTimeout> | undefined
   import.meta.hot?.dispose(() => {
     viewing?.close()
     viewing = undefined
+    clearTimeout(rewatch)
     clearTurnTimers()
   })
 
-  /** Read a driven turn or one whose opening was missed, preserving a newer live fold. */
-  const reloadSettled = async (thId: string, settled: () => boolean, conversationId?: string) => {
-    const detail = await queryClient.fetchQuery({
-      queryKey: detailKey(thId, conversationId),
-      queryFn: () => api.getThreadDetail(thId, conversationId),
-      staleTime: 0,
-      retry: false,
-    })
-    if (get().selThreadId !== thId || get().selConversationId !== conversationId || (!conversationId && streamingOn.has(thId))) return
-    if (settled()) set((s) => ({ detail, live: s.live.filter((item) => item.kind === 'artifact' && !detail.ledger.some((saved) => saved.uid === item.uid)), running: false }))
-    else showDetail(detail)
+  /** The thread as the relay holds it now. A read already under way may have
+   *  begun before what prompted this one, so it finishes and the thread is read again. */
+  const readThread = async (thId: string, conversationId?: string) => {
+    const query = { queryKey: detailKey(thId, conversationId), queryFn: () => api.getThreadDetail(thId, conversationId), staleTime: 0, retry: false }
+    if (queryClient.isFetching({ queryKey: query.queryKey, exact: true })) await queryClient.fetchQuery(query)
+    return queryClient.fetchQuery(query)
   }
 
   /** Keep observed native turns in place when they settle. Driven turns also
    *  record inbound messages outside the stream, so they still read the ledger,
-   *  as does a native turn whose opening was missed. */
-  const watchOpen = async (thId: string) => {
+   *  as does a native turn whose opening was missed. The socket starts with what
+   *  a kick still awake has said since its last run ended. With `again` the thread
+   *  is read once the socket is held, and what was read or folded before gives way
+   *  to that read and the socket: a thread being opened is read while its socket
+   *  opens, and one already shown may have lost its socket. A watch the relay
+   *  closes is opened again that way shortly after. */
+  const watchOpen = async (thId: string, again = false) => {
+    clearTimeout(rewatch)
     const conversationId = get().selConversationId
     if (viewing?.thId === thId && viewing.conversationId === conversationId) return
     viewing?.close()
@@ -732,6 +736,19 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       },
       done: () => {},
     }, get().detail?.sessions.at(-1)?.agent ?? (event.event_kind === 'run_started' ? event.address.channel_tentacle_id : undefined), [...(get().detail?.ledger ?? []), ...get().live])
+    const reading = () => queryClient.isFetching({ queryKey: detailKey(thId, conversationId), exact: true }) > 0
+    /** Read the thread again: the ledger takes over every card but the unfinished
+     *  turn's and the artifacts, and those too where it holds the same card. */
+    const reload = async () => {
+      const detail = await readThread(thId, conversationId)
+      if (!shown()) return
+      const saved = new Set(detail.ledger.map((item) => item.uid))
+      set((s) => ({
+        detail,
+        live: s.live.filter((item) => !saved.has(item.uid) && (turnItems.has(item.uid) || item.kind === 'artifact')),
+        running: fold !== undefined,
+      }))
+    }
     const onEvent = (event: WireEvent) => {
       if (!shown()) return
       if (event.event_kind === 'subagent_started' || event.event_kind === 'subagent_settled') {
@@ -741,7 +758,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       }
       if (conversationId) {
         if (event.event_kind === 'subagent_settled' || event.event_kind === 'run_ended' || event.event_kind === 'reflex_asleep') {
-          void reloadSettled(thId, () => true, conversationId)
+          void reload()
         }
         return
       }
@@ -763,12 +780,22 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         set({ running: true })
         if (!reflex) fold.feed(event)
       } else if (event.event_kind === 'reflex_asleep' || (event.event_kind === 'run_ended' && !reflex)) {
-        if (fold && !reflex && !joined) {
+        // A read under way may already hold the turn, so it does not stay in place.
+        if (fold && !reflex && !joined && !reading()) {
           fold.feed(event)
           set({ running: false })
-        } else void reloadSettled(thId, () => fold === undefined)
+        } else {
+          turnItems.clear()
+          void reload()
+        }
         fold = undefined
         reflex = false
+      } else if (event.event_kind === 'run_ended' && reading()) {
+        // The kick goes on, and a read under way may already hold this run:
+        // the thread is read again and the run's cards give way to it.
+        fold?.feed(event)
+        turnItems.clear()
+        void reload()
       } else if (event.event_kind === 'action_batch_answered') {
         markAnswered(thId, event)
       } else if (event.event_kind === 'action_batch_updated') {
@@ -778,21 +805,26 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       }
     }
     try {
-      socket = await watchThread({ id: thId }, onEvent)
+      socket = await watchThread({ id: thId, replay: true }, onEvent)
       if (!shown()) {
         socket.close()
         return
       }
-      // Release the watch so opening the thread or returning to the tab can reconnect.
       void socket.closed.then(() => {
-        if (viewing === watching) viewing = undefined
+        if (viewing !== watching) return
+        // The relay closed it or the connection dropped: release the watch and
+        // open it again shortly, as returning to the tab does at once.
+        viewing = undefined
+        rewatch = setTimeout(() => void actions.resumeLiveUpdates(), 2_000)
       })
     } catch (error) {
       if (viewing !== watching) return
       viewing = undefined
       const reason = error instanceof Error ? error.message : String(error)
       actions.reportThreadError(thId, `live updates did not connect — ${reason}`)
+      return
     }
+    if (again) await reload()
   }
 
   /**
@@ -972,12 +1004,15 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       feed(event)
     }
     let socket: Awaited<ReturnType<typeof watchThread>> | undefined
+    // Whether the run was still going when its socket closed.
+    let outlived = false
     try {
       socket = await watchThread(watch, onEvent)
       const outcome = await request()
       if (outcome) feed(outcome)
       // The relay closing the socket first means the run outlived what carried it here.
       const carried = await Promise.race([settled.then(() => true), socket.closed.then(() => false)])
+      outlived = !carried
       await following
       const closing = !carried
         ? 'the live socket closed — the run continues on the relay'
@@ -1005,8 +1040,9 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       if (!streamingOn.has(selId)) {
         if (here()) {
           set((s) => ({ running: false, live: s.live.map((item) => item.kind === 'stream' && item.streaming ? { ...item, streaming: false } : item) }))
-          // The run's socket is gone: a thread with a row is watched again.
-          if (!get().ntOn) void watchOpen(selId)
+          // The run's socket is gone: a thread with a row is watched again, and
+          // read again when the run is still going there.
+          if (!get().ntOn) void watchOpen(selId, outlived)
         } else parked.delete(selId)
       }
       void queryClient.invalidateQueries({ queryKey: ['thread-operations', selId] })
@@ -1045,7 +1081,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   const actions: ConsoleActions = {
     async resumeLiveUpdates() {
       const { selThreadId, ntOn } = get()
-      if (selThreadId && !ntOn) await watchOpen(selThreadId)
+      if (selThreadId && !ntOn) await watchOpen(selThreadId, true)
     },
     async refreshThreadProject(thId: string) {
       const queryKey = ['thread-detail', thId]
@@ -1077,6 +1113,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       // A run still streaming into the thread left its overlay parked; it comes
       // back over the ledger it was built on, which a refetch would duplicate.
       const resuming = !conversationId && parked.has(thId) && queryClient.getQueryData(detailKey(thId, conversationId)) !== undefined
+      let watched: Promise<void> | undefined
       const update = () => {
         if (selection !== threadSelection) return
         clearTurnTimers()
@@ -1116,18 +1153,18 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         }))
         scrollChatBottom()
         if (!animate) replayView()
-        void watchOpen(thId)
+        watched = watchOpen(thId, true)
       }
       const refresh = async () => {
-        const detail = await queryClient.fetchQuery({
-          queryKey: detailKey(thId, conversationId),
-          queryFn: () => api.getThreadDetail(thId, conversationId),
-          staleTime: 0,
-          retry: false,
+        // The thread is read while its socket opens, so neither waits for the
+        // other. A run that ended between that read and the socket is in
+        // neither: the watch reads the thread again once the socket is held.
+        const opened = readThread(thId, conversationId).then((detail) => {
+          if (selection !== threadSelection || get().selThreadId !== thId || get().selConversationId !== conversationId) return
+          showDetail(detail)
+          scrollChatBottom()
         })
-        if (selection !== threadSelection || get().selThreadId !== thId) return
-        showDetail(detail)
-        scrollChatBottom()
+        await Promise.all([opened, watched])
       }
       if (!animate) {
         update()

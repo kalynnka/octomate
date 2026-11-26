@@ -212,7 +212,7 @@ test('a failed or unconfirmed operation reports its reason and arrives nowhere',
   assert.equal(useConsole.getState().notices.filter((one) => one.text.includes('without confirming a destination')).length, 2)
   assert.equal(select.mock.callCount(), 0)
   // Each operation's socket closed with its run; only the open thread is watched.
-  assert.deepEqual(LiveSocket.opened.filter((socket) => !socket.closed).map((socket) => socket.url), ['ws://console.test/api/trunkline/live?thread_id=source'])
+  assert.deepEqual(LiveSocket.opened.filter((socket) => !socket.closed).map((socket) => socket.url), ['ws://console.test/api/trunkline/live?replay=true&thread_id=source'])
 })
 
 test('a move the agent makes after the operation is where it ends', async () => {
@@ -751,7 +751,7 @@ test('a synced native session can still use an eligible gateway operation', asyn
   const select = mock.method(useConsole.getState().actions, 'selectThread', async () => {})
   await useConsole.getState().actions.gateway('source', request)
   assert.deepEqual(select.mock.calls[0].arguments, ['lark', 'destination-id'])
-  assert.equal(LiveSocket.last().url, 'ws://console.test/api/trunkline/live?thread_id=source')
+  assert.equal(LiveSocket.last().url, 'ws://console.test/api/trunkline/live?replay=true&thread_id=source')
 })
 
 test('an agent\'s own command carries its feedback into the ledger and ends on its outcome', async () => {

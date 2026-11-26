@@ -14,13 +14,13 @@ from octomate.schemas.mcp import OAuthMcp
 from octomate.schemas.oauth import OAuthConnection, OAuthOperation
 from octomate.schemas.user import User, UserProfile
 from octomate.types.oauth import OAuthFlowKind
-from tests.agent.test_mcp import ENCRYPTION_KEY
 from tests.managers.test_oauth import (
     FakeAuthorizationCodeFlow,
     FakeDeviceFlow,
     direct_http,
 )
 from tests.support.users import auth_config
+from tests.tools.test_mcp import ENCRYPTION_KEY
 
 URL = "/api/mcp"
 REQUEST = {

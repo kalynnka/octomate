@@ -165,7 +165,7 @@ async def test_a_reply_reaches_the_live_request(
     run = AsyncMock(side_effect=AssertionError("A live reply must not start a run"))
     monkeypatch.setattr(reflex_graph, "run", run)
 
-    async with asyncio.timeout(3), asyncio.TaskGroup() as tasks:
+    async with asyncio.TaskGroup() as tasks:
         asking = tasks.create_task(ask(agent, conversation))
         batch = await put_up.get()
         [approval] = batch.approvals

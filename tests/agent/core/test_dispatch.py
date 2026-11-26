@@ -359,6 +359,28 @@ async def test_a_second_kick_on_an_awake_thread_is_refused() -> None:
     assert octomate.awakes == {}
 
 
+async def test_a_kick_retains_what_it_says_for_as_long_as_it_is_awake() -> None:
+    octomate = Octomate()
+    _register_agents(octomate, FakeAgent(reception_output="answered"))
+    octomate.connect(FakeChannelTentacle(config=_entry_config(stream=False)))
+    address = _key(thread_id="t1")
+    thread = ThreadTopic(ThreadKey.from_address(address))
+
+    async with octomate.nerve.subscribe(
+        ChannelTopic(address.channel_tentacle_id)
+    ) as routed:
+        reflex = await octomate.kick(
+            UserMessageSignal([_event(text="hello", thread_id="t1")])
+        )
+        assert reflex is not None
+        await routed.receive()
+        async with octomate.nerve.subscribe(thread, replay=0) as late:
+            assert isinstance(held(late)[0].event, ReflexAwakeEvent)
+        await reflex
+
+    assert octomate.nerve.retained == {}
+
+
 async def test_a_message_on_an_awake_thread_waits_in_the_ledger(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
