@@ -38,10 +38,10 @@ from octomate.database import async_session
 from octomate.events import ActionBatchEvent
 from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.deferred import DeferredActionManager
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     ApprovalRequest,
+    DeferredActionBatchResponse,
     DeferredApproval,
     DeferredQuestion,
 )

@@ -19,7 +19,7 @@ from octomate.reflex.state import (
     ReflexState,
     ResponseTarget,
 )
-from octomate.schemas.awakes import DeferredActionBatchResponse
+from octomate.schemas.deferred import DeferredActionBatchResponse
 from octomate.schemas.triage import SummonDecision
 from octomate.telemetry import reflex_logfire
 

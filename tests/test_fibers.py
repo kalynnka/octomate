@@ -30,27 +30,21 @@ from octomate.nerve import (
     HabitatTopic,
     Impulse,
     Nerve,
-    Stimulus,
     ThreadTopic,
     Topic,
     UserTopic,
-    impulse_adapter,
+    wire_impulse_adapter,
 )
-from octomate.schemas.awakes import (
-    CommandSignal,
-    DeferredActionBatchResponse,
-    DrivenGatewaySignal,
-    NativeGatewaySignal,
-    SummonSignal,
-    UserMessageSignal,
-)
-from octomate.schemas.commands import CommandContext, CommandIntent
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.events import MessageEvent
 from octomate.schemas.thread import ThreadKey
-from octomate.schemas.triage import SummonDecision, TeleportDecision
-from octomate.schemas.user import UserProfile
-from octomate.signals import InterruptRunSignal, Priming, Signal
+from octomate.signals import (
+    DeferredResponseSignal,
+    InterruptRunSignal,
+    Priming,
+    RunAgentSignal,
+    Signal,
+    signal_adapter,
+)
 from tests.support.nerve import held
 
 HERE = ChannelAddress("web", "thread", "u", "u", channel_thread_id="asking")
@@ -66,8 +60,8 @@ async def connected(
     publishing: bool = True,
 ) -> AsyncGenerator[tuple[StdioFiber[Impulse], StdioFiber[Impulse]]]:
     sending, receiving = anyio.create_memory_object_stream[bytes](10)
-    sender = StdioFiber(impulse_adapter, output=sending)
-    receiver = StdioFiber(impulse_adapter, input=receiving)
+    sender = StdioFiber(wire_impulse_adapter, output=sending)
+    receiver = StdioFiber(wire_impulse_adapter, input=receiving)
     core_fiber, guest_fiber = (receiver, sender) if publishing else (sender, receiver)
     binding = (
         core.publish(topic, fiber=core_fiber)
@@ -110,7 +104,7 @@ async def test_stdio_fiber_transports_items_without_a_nerve() -> None:
 async def test_stdio_adapter_preserves_its_concrete_impulse_type() -> None:
     adapter: TypeAdapter[Impulse[PartDeltaEvent]] = TypeAdapter(Impulse[PartDeltaEvent])
     with pytest.raises(ValidationError):
-        adapter.validate_json(impulse_adapter.dump_json(Impulse(RunEndedEvent())))
+        adapter.validate_json(wire_impulse_adapter.dump_json(Impulse(RunEndedEvent())))
     sending, receiving = anyio.create_memory_object_stream[bytes](2)
     async with (
         StdioFiber(adapter, output=sending) as sender,
@@ -296,13 +290,13 @@ async def test_bad_peer_disconnects_only_its_fiber(fault: str) -> None:
     nerve = Nerve()
     topic = HabitatTopic(uuid7())
     sending, incoming = anyio.create_memory_object_stream[bytes](2)
-    fiber = StdioFiber(impulse_adapter, input=incoming)
+    fiber = StdioFiber(wire_impulse_adapter, input=incoming)
     frame = Impulse(
         HabitatFailedEvent(
             user_id=topic.user_id, habitat="local", sequence=1, message="failed"
         )
     )
-    payload = json.loads(impulse_adapter.dump_json(frame))
+    payload = json.loads(wire_impulse_adapter.dump_json(frame))
     if fault == "missing-event":
         del payload["event"]
     if fault == "event-kind":
@@ -392,7 +386,7 @@ async def test_clean_eof_drains_events_before_detaching_publisher() -> None:
     sending, incoming = anyio.create_memory_object_stream[bytes](0)
     nerve = Nerve()
     topic = HabitatTopic(uuid7())
-    fiber = StdioFiber(impulse_adapter, input=incoming)
+    fiber = StdioFiber(wire_impulse_adapter, input=incoming)
     impulses = [
         Impulse(
             HabitatFailedEvent(
@@ -404,7 +398,9 @@ async def test_clean_eof_drains_events_before_detaching_publisher() -> None:
     async with sending, aclosing(fiber), nerve.subscribe(topic) as events:
         fiber.start()
         await sending.send(
-            b"".join(impulse_adapter.dump_json(impulse) + b"\n" for impulse in impulses)
+            b"".join(
+                wire_impulse_adapter.dump_json(impulse) + b"\n" for impulse in impulses
+            )
         )
         sending.close()
         async with nerve.publish(topic, fiber=fiber):
@@ -431,7 +427,7 @@ async def test_overflow_disconnects_peer_without_interrupting_local_publisher() 
     nerve = Nerve()
     channel = ChannelTopic(HERE.channel_tentacle_id)
     outgoing, receiving = anyio.create_memory_object_stream[bytes](0)
-    fiber = StdioFiber(impulse_adapter, output=outgoing)
+    fiber = StdioFiber(wire_impulse_adapter, output=outgoing)
     async with (
         receiving,
         aclosing(fiber),
@@ -452,7 +448,7 @@ async def test_immediate_close_releases_stdio_before_reader_task_starts() -> Non
     sending, incoming = anyio.create_memory_object_stream[bytes](0)
     nerve = Nerve()
     topic = HabitatTopic(uuid7())
-    fiber = StdioFiber(impulse_adapter, input=incoming)
+    fiber = StdioFiber(wire_impulse_adapter, input=incoming)
     async with sending, nerve.publish(topic, fiber=fiber):
         connection = fiber.start()
         await fiber.aclose()
@@ -462,32 +458,26 @@ async def test_immediate_close_releases_stdio_before_reader_task_starts() -> Non
     assert not nerve.subscribers
 
 
-async def test_a_stimulus_crosses_a_pipe_to_the_far_side() -> None:
-    core = Nerve[Stimulus[Signal]]()
+async def test_a_signal_crosses_a_pipe_to_the_far_side() -> None:
+    core = Nerve[Signal]()
     topic = UserTopic(uuid7())
-    sent = Stimulus(InterruptRunSignal(invocation_id=uuid7()))
-    adapter = TypeAdapter(Stimulus[Signal])
+    sent = InterruptRunSignal(invocation_id=uuid7())
     sending, receiving = anyio.create_memory_object_stream[bytes](2)
     async with (
-        StdioFiber(adapter, output=sending) as link,
-        StdioFiber(adapter, input=receiving) as guest,
+        StdioFiber(signal_adapter, output=sending) as link,
+        StdioFiber(signal_adapter, input=receiving) as guest,
     ):
         link.start()
         guest.start()
         with core.accept(topic, link):
             core.deliver(topic, sent)
             received = await guest.receive()
-            assert_type(received, Stimulus[Signal])
+            assert_type(received, Signal)
             assert received == sent
     assert not core.subscribers
 
 
-async def test_signals_cross_a_pipe_as_themselves_with_their_priming() -> None:
-    profile = UserProfile(channel_tentacle_id="web", channel_user_id="u")
-    summon = SummonDecision(
-        reason="asked", agent_id="claude", model=None, hint="On it", brief="Do it"
-    )
-    teleport = TeleportDecision(agent_id="claude", hint="Moving", destination=THERE)
+async def test_signals_cross_a_pipe_as_themselves() -> None:
     priming = Priming(
         invocation_id=uuid7(),
         session_id=str(uuid7()),
@@ -497,38 +487,31 @@ async def test_signals_cross_a_pipe_as_themselves_with_their_priming() -> None:
         cwd=Path("/home/agent/workspace"),
     )
     signals: list[Signal] = [
-        UserMessageSignal(
-            [MessageEvent(tentacle_id="web", user_id="u", chat_id="u", raw="hello")]
+        RunAgentSignal(
+            priming=priming,
+            conversation_id=uuid7(),
+            user_id=None,
+            conversation_address=THERE,
+            source_thread_address=HERE,
+            source_thread_message_ids=[],
+            run_name="react",
+            user_prompt="Do it",
         ),
-        DeferredActionBatchResponse(batch_id=uuid7(), approvals={uuid7(): True}),
-        CommandSignal(
-            CommandContext("claude", uuid7(), HERE, Path("/w"), None),
-            CommandIntent(command_id="compact"),
-            "delivery",
-        ),
-        NativeGatewaySignal(teleport, "claude", profile, HERE),
-        DrivenGatewaySignal(uuid7(), teleport, "claude", profile, HERE),
-        SummonSignal(summon, THERE, "inkling", profile),
+        DeferredResponseSignal(invocation_id=priming.invocation_id, batch_id=uuid7()),
         InterruptRunSignal(invocation_id=priming.invocation_id),
     ]
-    stimuli = TypeAdapter(Stimulus[Signal])
     sending, receiving = anyio.create_memory_object_stream[bytes](2)
     async with (
-        StdioFiber(stimuli, output=sending) as link,
-        StdioFiber(stimuli, input=receiving) as guest,
+        StdioFiber(signal_adapter, output=sending) as link,
+        StdioFiber(signal_adapter, input=receiving) as guest,
     ):
         link.start()
         guest.start()
         for signal in signals:
-            sent = Stimulus(signal, priming)
-            await link.send(sent)
+            await link.send(signal)
             received = await guest.receive()
             # Each arrives as itself, not as a neighbour in the union.
-            assert type(received.signal) is type(signal)
-            assert received.priming == priming
-            # A profile is a transmuter, which does not compare by its fields.
-            assert stimuli.dump_json(received) == stimuli.dump_json(sent)
+            assert type(received) is type(signal)
+            assert received == signal
     with pytest.raises(ValidationError):
-        stimuli.validate_python(
-            {"signal": {"event_kind": "interrupt_run_signal"}, "priming": None}
-        )
+        signal_adapter.validate_python({"event_kind": "interrupt_run_signal"})

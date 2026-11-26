@@ -20,8 +20,8 @@ from slack_bolt.async_app import AsyncApp, AsyncSay
 
 from octomate.config import SlackChannelConfig
 from octomate.oauth.flows import AuthorizationCodeFlow
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.deferred import DeferredActionBatchResponse
 from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
 from octomate.tentacles.channel import (
     ChannelSurfaces,

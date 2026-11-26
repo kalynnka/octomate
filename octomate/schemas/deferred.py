@@ -56,6 +56,15 @@ MAX_QUESTION_CHOICES = 5
 type QuestionAnswer = str | list[str]
 
 
+class DeferredActionBatchResponse(BaseModel):
+    batch_id: UUID7
+    responder_id: str = ""
+    answers: dict[UUID7, QuestionAnswer] = Field(default_factory=dict)
+    approvals: dict[UUID7, bool] = Field(default_factory=dict)
+    allow_session: bool = False
+    event_kind: Literal["action_batch_response"] = "action_batch_response"
+
+
 class QuestionRequest(TypedDict):
     """One question's arguments: the text, optional choices, and a hint."""
 

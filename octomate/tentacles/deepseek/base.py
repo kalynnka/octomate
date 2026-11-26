@@ -70,7 +70,6 @@ from octomate.events import (
 from octomate.managers.habitat import Invocation
 from octomate.nerve import Impulse
 from octomate.prompts import tagged
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
@@ -83,6 +82,7 @@ from octomate.schemas.commands import (
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
+    DeferredActionBatchResponse,
     QuestionRequest,
 )
 from octomate.schemas.messages import ModelRequest

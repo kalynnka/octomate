@@ -36,7 +36,7 @@ from octomate.config.channels import (
     SlackChannelConfig,
     TrunklineChannelConfig,
 )
-from octomate.schemas.awakes import StillAwake, UserMessageSignal
+from octomate.schemas.awakes import StillAwake, UserMessageAwake
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment, MessageSegment
@@ -421,7 +421,7 @@ class ChannelTentacle(
                     return
             try:
                 await self.octomate.kick(
-                    UserMessageSignal(
+                    UserMessageAwake(
                         [event],
                         trigger_thread_message_id=thread_message.id,
                     )

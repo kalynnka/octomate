@@ -55,7 +55,6 @@ from octomate.managers.files import FileOffsetConflict
 from octomate.managers.habitat import Invocation
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.auth import IssuedApiKey, UserApiKey
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
@@ -65,6 +64,7 @@ from octomate.schemas.commands import (
     CommandOutcome,
 )
 from octomate.schemas.conversation import ChannelAddress, Conversation
+from octomate.schemas.deferred import DeferredActionBatchResponse
 from octomate.schemas.project import Project
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import Thread, ThreadKey

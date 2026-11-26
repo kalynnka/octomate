@@ -15,8 +15,7 @@ from octomate.events import (
 )
 from octomate.nerve import ChannelTopic
 from octomate.reflex.suspender import ReflexSuspender
-from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.deferred import QuestionRequest
+from octomate.schemas.deferred import DeferredActionBatchResponse, QuestionRequest
 from octomate.schemas.thread import Thread
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.acp.base import AcpAgentTentacle

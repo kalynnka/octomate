@@ -41,7 +41,7 @@ from octomate.mcp.gateway import (
 )
 from octomate.mcp.server import octomate_mcp
 from octomate.nerve import Nerve, ThreadTopic
-from octomate.schemas.awakes import NativeGatewaySignal
+from octomate.schemas.awakes import NativeGatewayAwake
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import MarkdownSegment, TextSegment
@@ -124,13 +124,13 @@ async def a_native_call(
     OctomateSession,
     FakeChannelTentacle,
     FakeThreadManager,
-    list[NativeGatewaySignal],
+    list[NativeGatewayAwake],
 ]:
     """The gateway as the served endpoint builds it for one native call: no
     thread, no address, the session speaking for the registered user the
     verified bearer named — `linked` is whether that user has a real account
     on `im` for a destination to light up."""
-    kicks: list[NativeGatewaySignal] = []
+    kicks: list[NativeGatewayAwake] = []
     await a_user("luhui", profiles={"im": "alice"} if linked else {})
     users = UserManager()
     channel = FakeChannelTentacle()
@@ -147,7 +147,7 @@ async def a_native_call(
         workspaces=a_workspace_manager(),
     )
 
-    async def kick(signal: NativeGatewaySignal) -> None:
+    async def kick(signal: NativeGatewayAwake) -> None:
         kicks.append(signal)
 
     server = octomate_mcp(
@@ -605,7 +605,7 @@ async def test_a_native_teleport_moves_the_session_it_names(
 
     attach.assert_awaited_once_with("sess-1")
     assert kicks == [
-        NativeGatewaySignal(
+        NativeGatewayAwake(
             decision=decision,
             agent_id="coding",
             user_profile=session.user_profile,

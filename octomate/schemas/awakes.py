@@ -1,21 +1,23 @@
+"""Requests entering core routing through a kick."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import cached_property
 from typing import Literal
 
-from pydantic import UUID7, BaseModel, Field
+from pydantic import UUID7
 
 from octomate.schemas.commands import CommandContext, CommandIntent
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.deferred import QuestionAnswer
+from octomate.schemas.deferred import DeferredActionBatchResponse
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.triage import SchemeDecision, SummonDecision, TeleportDecision
 from octomate.schemas.user import UserProfile
 
 
 @dataclass(frozen=True)
-class UserMessageSignal:
+class UserMessageAwake:
     """Messages using channel routing or a caller-selected agent."""
 
     messages: list[MessageEvent]
@@ -41,17 +43,8 @@ class UserMessageSignal:
         )
 
 
-class DeferredActionBatchResponse(BaseModel):
-    batch_id: UUID7
-    responder_id: str = ""
-    answers: dict[UUID7, QuestionAnswer] = Field(default_factory=dict)
-    approvals: dict[UUID7, bool] = Field(default_factory=dict)
-    allow_session: bool = False
-    event_kind: Literal["action_batch_response"] = "action_batch_response"
-
-
 @dataclass(frozen=True)
-class NativeGatewaySignal:
+class NativeGatewayAwake:
     """A native session's own spell, kicked as its own turn.
 
     A driven turn's decision is read off its Octomate session when the run ends; a
@@ -73,7 +66,7 @@ class NativeGatewaySignal:
 
 
 @dataclass(frozen=True)
-class CommandSignal:
+class CommandAwake:
     """Explicit command intent on an authenticated, resolved conversation surface."""
 
     context: CommandContext
@@ -83,7 +76,7 @@ class CommandSignal:
 
 
 @dataclass(frozen=True)
-class DrivenGatewaySignal:
+class DrivenGatewayAwake:
     """An authenticated, validated operation on an existing thread."""
 
     thread_id: UUID7
@@ -95,7 +88,7 @@ class DrivenGatewaySignal:
 
 
 @dataclass(frozen=True)
-class SummonSignal:
+class SummonAwake:
     """Start independent work at a newly opened destination.
 
     Awake initializes the thread and enters React with the selected agent.
@@ -112,13 +105,13 @@ class SummonSignal:
     event_kind: Literal["summon_signal"] = "summon_signal"
 
 
-type AwakeSignal = (
-    UserMessageSignal
+type Awake = (
+    UserMessageAwake
     | DeferredActionBatchResponse
-    | CommandSignal
-    | NativeGatewaySignal
-    | DrivenGatewaySignal
-    | SummonSignal
+    | CommandAwake
+    | NativeGatewayAwake
+    | DrivenGatewayAwake
+    | SummonAwake
 )
 
 

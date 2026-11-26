@@ -36,7 +36,7 @@ from octomate.reflex.graph import reflex_graph
 from octomate.reflex.nodes.awake import Awake
 from octomate.reflex.state import ReflexDeps, ReflexState
 from octomate.reflex.suspender import ReflexSuspender
-from octomate.schemas.awakes import CommandSignal, DeferredActionBatchResponse
+from octomate.schemas.awakes import CommandAwake
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
@@ -44,6 +44,7 @@ from octomate.schemas.commands import (
     CommandResult,
 )
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.deferred import DeferredActionBatchResponse
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadCommand, ThreadKey
@@ -66,7 +67,7 @@ from tests.support.users import a_user
 @pytest.fixture
 async def scenario(
     in_memory_engine: AsyncEngine,
-) -> tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandSignal]:
+) -> tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandAwake]:
     app = Octomate()
     agent = app.connect(ExecutingAgent())
     agent.commands = app.commands
@@ -102,7 +103,7 @@ async def scenario(
         model="test",
         permission_mode=agent.default_permission_mode,
     )
-    signal = CommandSignal(
+    signal = CommandAwake(
         context,
         CommandIntent(command_id="skill", arguments='  "raw argument"\n--flag=✓  '),
         "command-1",
@@ -113,7 +114,7 @@ async def scenario(
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("gateway", [False, True])
 async def test_direct_command_delivers_feedback_without_model_history_and_replays_once(
-    scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandSignal],
+    scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandAwake],
     stream: bool,
     gateway: bool,
     monkeypatch: pytest.MonkeyPatch,
@@ -172,7 +173,7 @@ async def test_direct_command_delivers_feedback_without_model_history_and_replay
 
 @pytest.mark.parametrize("stream", [False, True])
 async def test_command_agent_stream_is_recorded_bound_and_delivered_without_another_run(
-    scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandSignal],
+    scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandAwake],
     stream: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -232,7 +233,7 @@ async def test_command_agent_stream_is_recorded_bound_and_delivered_without_anot
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("defer_first", [False, True])
 async def test_command_defers_through_reflex_then_resumes_as_an_ordinary_agent_run(
-    scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandSignal],
+    scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandAwake],
     stream: bool,
     defer_first: bool,
     monkeypatch: pytest.MonkeyPatch,
@@ -298,7 +299,7 @@ async def test_command_defers_through_reflex_then_resumes_as_an_ordinary_agent_r
 
 @pytest.mark.parametrize("stream", [False, True])
 async def test_command_teleport_before_first_event_continues_the_agent_run(
-    scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandSignal],
+    scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandAwake],
     stream: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -340,7 +341,7 @@ async def test_command_teleport_before_first_event_continues_the_agent_run(
 
 @pytest.mark.parametrize("stream", [False, True])
 async def test_command_gateway_handoff_continues_in_the_same_reflex_graph(
-    scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandSignal],
+    scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandAwake],
     stream: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -399,7 +400,7 @@ async def test_command_gateway_handoff_continues_in_the_same_reflex_graph(
 
 @pytest.mark.parametrize("reason", ["busy", "unknown", "unavailable"])
 async def test_refused_command_does_not_mount_user_tools_or_save_a_workspace(
-    scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandSignal],
+    scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandAwake],
     reason: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -429,7 +430,7 @@ async def test_refused_command_does_not_mount_user_tools_or_save_a_workspace(
 
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_user_preparation_failure_releases_guard_without_accepting_command(
-    scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandSignal],
+    scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandAwake],
     cancel: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -449,7 +450,7 @@ async def test_user_preparation_failure_releases_guard_without_accepting_command
 
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_command_failure_closes_native_stream_before_releasing_guard(
-    scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandSignal],
+    scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandAwake],
     cancel: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -486,7 +487,7 @@ async def test_command_failure_closes_native_stream_before_releasing_guard(
 
 @pytest.mark.parametrize("model_run", [False, True])
 async def test_a_commands_events_reach_its_trunkline_thread(
-    scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandSignal],
+    scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandAwake],
     model_run: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

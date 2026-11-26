@@ -41,7 +41,6 @@ from octomate.managers.user import UserManager
 from octomate.managers.volumes import VolumeManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.nerve import Nerve
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
@@ -49,6 +48,7 @@ from octomate.schemas.conversation import (
 )
 from octomate.schemas.deferred import (
     DeferredActionBatch,
+    DeferredActionBatchResponse,
     DeferredApproval,
     DeferredQuestion,
 )

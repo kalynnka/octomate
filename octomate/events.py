@@ -69,11 +69,11 @@ from pydantic_ai.usage import RunUsage
 
 from octomate.schemas.annotations import MessageAgent
 from octomate.schemas.auth import LinkProfileAuthorization
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import CommandOutcome
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredActionBatch,
+    DeferredActionBatchResponse,
     DeferredApproval,
     DeferredQuestion,
     QuestionAnswer,

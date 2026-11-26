@@ -27,12 +27,8 @@ from uuid_utils.compat import uuid7
 
 from octomate.events import ActionBatchEvent, ReflexAsleepEvent
 from octomate.nerve import Impulse, ThreadTopic
-from octomate.schemas.awakes import (
-    DeferredActionBatchResponse,
-    StillAwake,
-    UserMessageSignal,
-)
-from octomate.schemas.deferred import QuestionAnswer
+from octomate.schemas.awakes import StillAwake, UserMessageAwake
+from octomate.schemas.deferred import DeferredActionBatchResponse, QuestionAnswer
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.thread import Thread, ThreadKey
@@ -506,7 +502,7 @@ class AcpBroker:
         translator = AcpTranslator()
         try:
             inbound = await app.threads.record_inbound(event)
-            signal: UserMessageSignal | DeferredActionBatchResponse = UserMessageSignal(
+            signal: UserMessageAwake | DeferredActionBatchResponse = UserMessageAwake(
                 [event],
                 trigger_thread_message_id=inbound.id,
             )
@@ -521,7 +517,7 @@ class AcpBroker:
     async def drive(
         self,
         session: AcpSession,
-        signal: UserMessageSignal | DeferredActionBatchResponse,
+        signal: UserMessageAwake | DeferredActionBatchResponse,
         translator: AcpTranslator,
     ) -> DeferredActionBatchResponse | None:
         async with self.tentacle.nerve.subscribe(

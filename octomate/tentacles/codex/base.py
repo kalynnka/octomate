@@ -109,7 +109,6 @@ from octomate.schemas.artifacts import (
     McpAppArtifact,
 )
 from octomate.schemas.auth import IssuedApiKey
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
@@ -125,6 +124,7 @@ from octomate.schemas.conversation import (
 )
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
+    DeferredActionBatchResponse,
     QuestionRequest,
 )
 from octomate.schemas.files import Jsonl

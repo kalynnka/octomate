@@ -22,7 +22,7 @@ from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatError, HabitatManager
 from octomate.nerve import (
     Impulse,
-    impulse_adapter,
+    wire_impulse_adapter,
 )
 from octomate.schemas.habitat import InvocationScope
 from octomate.schemas.user import UserProfile
@@ -166,7 +166,10 @@ def test_nerve_preserves_native_stream_delta() -> None:
     impulse = Impulse(
         PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="hello")),
     )
-    assert impulse_adapter.validate_json(impulse_adapter.dump_json(impulse)) == impulse
+    assert (
+        wire_impulse_adapter.validate_json(wire_impulse_adapter.dump_json(impulse))
+        == impulse
+    )
 
 
 def test_impulse_adapter_accepts_lifecycle_and_run_events_and_rejects_extra_fields() -> (
@@ -185,9 +188,9 @@ def test_impulse_adapter_accepts_lifecycle_and_run_events_and_rejects_extra_fiel
         Impulse(PartDeltaEvent(index=0, delta=TextPartDelta("hello"))),
     ]
     for impulse in messages:
-        wire = impulse_adapter.dump_json(impulse)
-        assert impulse_adapter.validate_json(wire) == impulse
+        wire = wire_impulse_adapter.dump_json(impulse)
+        assert wire_impulse_adapter.validate_json(wire) == impulse
         payload = json.loads(wire)
         payload["topic"] = {"kind": "user", "user_id": str(uuid7())}
         with pytest.raises(ValidationError):
-            impulse_adapter.validate_json(json.dumps(payload))
+            wire_impulse_adapter.validate_json(json.dumps(payload))

@@ -20,7 +20,7 @@ from octomate.events import (
 from octomate.fibers import Fiber, ReplayFiber
 from octomate.nerve import ChannelTopic, Impulse
 from octomate.reflex.graph import ReflexGraphResult
-from octomate.schemas.awakes import AwakeSignal
+from octomate.schemas.awakes import Awake
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.channel import ChannelTentacle
@@ -104,16 +104,14 @@ async def awake_on(octomate: Octomate, address: ChannelAddress) -> AsyncGenerato
         octomate.awakes.pop(thread).cancel()
 
 
-async def kick_and_wait(
-    octomate: Octomate, signal: AwakeSignal
-) -> ReflexGraphResult | None:
+async def kick_and_wait(octomate: Octomate, signal: Awake) -> ReflexGraphResult | None:
     """`octomate.kick`, returning once the reflex it woke has fallen asleep, with
     what it came to; None for an answer that went to a live run."""
     reflex = await octomate.kick(signal)
     return None if reflex is None else await reflex
 
 
-async def kicked(octomate: Octomate, signal: AwakeSignal) -> ReflexGraphResult | None:
+async def kicked(octomate: Octomate, signal: Awake) -> ReflexGraphResult | None:
     """`kick_and_wait` on a host whose channels were never entered, returning once
     each has drawn what the kick published."""
     async with drawing(*octomate.channels.values()):

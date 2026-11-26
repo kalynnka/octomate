@@ -34,8 +34,8 @@ user notifications by delivering separately to each authorized user's topic.
 `Nerve.publish` owns channel and thread routing for kicks and native tails.
 
 A nerve runs one way and carries one kind of envelope. Events run outbound, as
-impulses, from whoever acted to whoever watches. Signals run inbound, as
-stimuli, to whoever is to act, on a nerve of their own over the same topics, so
+impulses, from whoever acted to whoever watches. Signals run inbound
+to whoever is to act, on a nerve of their own over the same topics, so
 a subscriber of one direction never reads the other. Kick routing belongs to
 the outbound nerve alone: `Nerve.publish` takes impulses.
 """
@@ -65,11 +65,9 @@ from octomate.fibers import FIBER_BUFFER as FIBER_BUFFER
 from octomate.fibers import Fiber, FiberError, MemoryFiber, ReplayFiber
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
-from octomate.signals import Priming, Signal
 
 EventT = TypeVar("EventT", default=WireEvent, covariant=True)
 NerveEventT = TypeVar("NerveEventT", default=WireEvent)
-SignalT = TypeVar("SignalT", default=Signal, covariant=True)
 
 
 # Python 3.12 needs typing_extensions for a type parameter with a default.
@@ -93,22 +91,6 @@ class Impulse(Generic[EventT]):
     # for a kick, the native thread for a tail, or None when neither names a thread.
     origin: ThreadKey | None = None
     replay: bool = False  # Historical transcript events must not animate live activity.
-
-
-@with_config(
-    ConfigDict(
-        extra="forbid",
-        ser_json_bytes="base64",
-        val_json_bytes="base64",
-    )
-)
-@dataclass(frozen=True)
-class Stimulus(Generic[SignalT]):
-    """One signal on its way in, to whoever is to act on it."""
-
-    signal: SignalT
-    # What core resolved for the turn the signal asks for; None when it asks for none.
-    priming: Priming | None = None
 
 
 @dataclass(frozen=True)
@@ -145,11 +127,11 @@ type Topic = EventTopic | HabitatTopic
 
 SentT = TypeVar("SentT", default=Impulse[WireEvent])
 
-impulse_adapter: TypeAdapter[Impulse[WireEvent]] = TypeAdapter(Impulse[WireEvent])
+wire_impulse_adapter: TypeAdapter[Impulse[WireEvent]] = TypeAdapter(Impulse[WireEvent])
 
 
 class Nerve(Generic[SentT]):
-    """Route one kind of envelope, impulses or stimuli, through publishers and
+    """Route one kind of payload, impulses or signals, through publishers and
     subscribers backed by any fiber."""
 
     def __init__(self) -> None:

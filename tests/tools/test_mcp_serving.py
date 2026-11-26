@@ -49,7 +49,7 @@ from octomate.mcp.server import (
     history_tool,
     octomate_instructions,
 )
-from octomate.schemas.awakes import NativeGatewaySignal, SummonSignal
+from octomate.schemas.awakes import NativeGatewayAwake, SummonAwake
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.triage import SchemeDecision
@@ -490,7 +490,7 @@ async def test_a_native_scheme_kicks_exactly_one_handoff() -> None:
     assert result.data.startswith("Taking this to")
     assert isinstance(octomate, FakeOctomate)
     [signal] = octomate.kicks
-    assert isinstance(signal, NativeGatewaySignal)
+    assert isinstance(signal, NativeGatewayAwake)
     assert signal.agent_id == "claude"
     # The handoff carries who the bearer named, so the run it starts knows whose
     # behalf it was asked on.
@@ -535,7 +535,7 @@ async def test_native_summon_resolves_the_session_once_on_the_http_call(
     )
     assert isinstance(octomate, FakeOctomate)
     [signal] = octomate.kicks
-    assert isinstance(signal, SummonSignal)
+    assert isinstance(signal, SummonAwake)
     assert signal.destination == opened
     assert signal.user_profile.channel_tentacle_id == "im"
     assert signal.user_profile.channel_user_id == "alice"

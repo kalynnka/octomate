@@ -97,7 +97,6 @@ from octomate.habitat import HabitatError, ManagedHabitat
 from octomate.managers.habitat import Invocation
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
 from octomate.nerve import Impulse
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
@@ -113,6 +112,7 @@ from octomate.schemas.conversation import (
 )
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
+    DeferredActionBatchResponse,
     QuestionRequest,
 )
 from octomate.schemas.messages import ModelRequest, ModelResponse

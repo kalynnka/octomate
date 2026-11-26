@@ -72,10 +72,10 @@ from octomate.managers.gateway import OctomateSession
 from octomate.reflex.nodes.teleport import Teleport
 from octomate.reflex.state import ReflexDeps, ReflexState, ResponseTarget
 from octomate.reflex.suspender import ReflexSuspender, TeleportRequest
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     ApprovalRequest,
+    DeferredActionBatchResponse,
     DeferredApproval,
     DeferredQuestion,
 )

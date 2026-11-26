@@ -14,7 +14,7 @@ from octomate.reflex.state import (
     ReflexState,
     ResponseTarget,
 )
-from octomate.schemas.awakes import CommandSignal
+from octomate.schemas.awakes import CommandAwake
 from octomate.schemas.commands import CommandError, CommandResult
 from octomate.schemas.triage import AgentRouteKey
 from octomate.telemetry import reflex_logfire
@@ -24,7 +24,7 @@ from octomate.telemetry import reflex_logfire
 class Command(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     """Own one command invocation through direct feedback or an ordinary agent stream."""
 
-    signal: CommandSignal
+    signal: CommandAwake
 
     @reflex_logfire.instrument("reflex.command", extract_args=False)
     async def run(

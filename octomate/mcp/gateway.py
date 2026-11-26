@@ -34,7 +34,7 @@ from octomate.events import MessageSentEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.managers.thread import ThreadManager
-from octomate.schemas.awakes import NativeGatewaySignal
+from octomate.schemas.awakes import NativeGatewayAwake
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
@@ -389,7 +389,7 @@ def mount_gateway(
     octomate_session: OctomateSession,
     thread_manager: ThreadManager,
     kick: Callable[
-        [NativeGatewaySignal], Awaitable[asyncio.Task[ReflexGraphResult] | None]
+        [NativeGatewayAwake], Awaitable[asyncio.Task[ReflexGraphResult] | None]
     ]
     | None = None,
     *,

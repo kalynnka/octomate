@@ -10,10 +10,10 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTr
 from pydantic import UUID7, JsonValue, TypeAdapter
 from uuid_utils.compat import uuid7
 
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
+    DeferredActionBatchResponse,
     DeferredApproval,
     DeferredQuestion,
     QuestionRequest,

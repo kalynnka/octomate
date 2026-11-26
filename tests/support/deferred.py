@@ -9,9 +9,8 @@ from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.events import ActionBatchEvent
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.deferred import DeferredActionBatch
+from octomate.schemas.deferred import DeferredActionBatch, DeferredActionBatchResponse
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.channel import ChannelTentacle
 from tests.support.nerve import drained, drawing

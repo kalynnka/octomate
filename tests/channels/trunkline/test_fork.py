@@ -17,7 +17,7 @@ from octomate.auth import current_user
 from octomate.config.channels import ChannelConfig, TrunklineChannelConfig
 from octomate.database import async_session
 from octomate.nerve import ThreadTopic
-from octomate.schemas.awakes import NativeGatewaySignal
+from octomate.schemas.awakes import NativeGatewayAwake
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
@@ -383,7 +383,7 @@ async def test_native_teleport_imports_completed_history_before_resuming(
         assert source is not None
         await kick_and_wait(
             app,
-            NativeGatewaySignal(
+            NativeGatewayAwake(
                 decision=TeleportDecision(
                     agent_id=case.tentacle.id,
                     hint="Continue here",
@@ -444,7 +444,7 @@ async def test_a_native_session_that_asks_to_carry_on_runs_where_it_lands(
 
     await kick_and_wait(
         app,
-        NativeGatewaySignal(
+        NativeGatewayAwake(
             decision=TeleportDecision(
                 agent_id=case.tentacle.id,
                 hint="Continue here",

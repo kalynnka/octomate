@@ -222,7 +222,7 @@ direct results and immediate command-started runs. The remaining runtime adapter
 command controls are not wired yet.
 
 Channels can dispatch explicit intent with
-`await octomate.kick(CommandSignal(context, invocation, delivery_id))`. Reflex's
+`await octomate.kick(CommandAwake(context, invocation, delivery_id))`. Reflex's
 command entry delivers direct feedback or consumes the same native agent stream
 with gateway capabilities, approvals and normal channel delivery. The context
 must already identify the authenticated user and originating surface. The command

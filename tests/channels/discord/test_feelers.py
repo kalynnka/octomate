@@ -16,11 +16,11 @@ from octomate import Octomate
 from octomate.events import OAuthDeviceAuthorizationEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
     DeferredActionBatch,
+    DeferredActionBatchResponse,
     DeferredApproval,
     DeferredQuestion,
     QuestionRequest,

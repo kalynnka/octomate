@@ -2,6 +2,8 @@
 
 ::: octomate.schemas.awakes
 
+::: octomate.signals
+
 ::: octomate.schemas.triage
 
 ::: octomate.schemas.deferred

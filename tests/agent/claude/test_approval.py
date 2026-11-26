@@ -37,11 +37,11 @@ from octomate import Octomate
 from octomate.config.agents import ClaudeCodeConfig
 from octomate.events import ActionBatchEvent
 from octomate.managers.deferred import DeferredActionManager
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
     ApprovalRequest,
+    DeferredActionBatchResponse,
     DeferredApproval,
     DeferredQuestion,
 )

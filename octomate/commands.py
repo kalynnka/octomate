@@ -17,7 +17,7 @@ from octomate.dependencies import (
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.workspaces import WorkspaceManager
-from octomate.schemas.awakes import CommandSignal, StillAwake
+from octomate.schemas.awakes import CommandAwake, StillAwake
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
@@ -195,7 +195,7 @@ async def execute_command(
     """
     intent = CommandIntent(command_id=command_id, arguments=arguments)
     try:
-        reflex = await app.kick(CommandSignal(context, intent, delivery_id))
+        reflex = await app.kick(CommandAwake(context, intent, delivery_id))
     except StillAwake as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     result = None if reflex is None else await reflex

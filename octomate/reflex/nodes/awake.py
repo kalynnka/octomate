@@ -22,15 +22,15 @@ from octomate.reflex.state import (
     ResponseTarget,
 )
 from octomate.reflex.suspender import TeleportRequest
+from octomate.schemas.awakes import Awake as AwakeInput
 from octomate.schemas.awakes import (
-    AwakeSignal,
-    CommandSignal,
-    DeferredActionBatchResponse,
-    DrivenGatewaySignal,
-    NativeGatewaySignal,
-    SummonSignal,
+    CommandAwake,
+    DrivenGatewayAwake,
+    NativeGatewayAwake,
+    SummonAwake,
 )
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.deferred import DeferredActionBatchResponse
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.triage import SummonDecision, TeleportDecision
@@ -44,7 +44,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     handoffs land, independent work initializes and enters `React`, and user
     messages resolve their thread and go to `Route`."""
 
-    signal: AwakeSignal
+    signal: AwakeInput
 
     @reflex_logfire.instrument("reflex.awake", extract_args=False)
     async def run(
@@ -60,13 +60,13 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         | Scheme
         | End[ReflexGraphResult]
     ):
-        if isinstance(self.signal, CommandSignal):
+        if isinstance(self.signal, CommandAwake):
             return Command(signal=self.signal)
 
         if isinstance(self.signal, DeferredActionBatchResponse):
             return ResumeDeferred(awake=self.signal)
 
-        if isinstance(self.signal, SummonSignal):
+        if isinstance(self.signal, SummonAwake):
             signal = self.signal
             destination = signal.destination
             target = ResponseTarget(
@@ -114,7 +114,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             )
             return React()
 
-        if isinstance(self.signal, DrivenGatewaySignal):
+        if isinstance(self.signal, DrivenGatewayAwake):
             signal = self.signal
             return await self.thread_operation(
                 ctx,
@@ -126,7 +126,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 requested_from="Trunkline",
             )
 
-        if isinstance(self.signal, NativeGatewaySignal):
+        if isinstance(self.signal, NativeGatewayAwake):
             # A native session's spell, already validated at the gateway: enter
             # the graph where React's post-run consumption would have, with the
             # native pseudo-channel — which nobody serves, so no lookup — as the

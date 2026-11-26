@@ -13,10 +13,10 @@ from uuid_utils.compat import uuid7
 from octomate.database import async_session
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredActionBatch,
+    DeferredActionBatchResponse,
     DeferredActionCollection,
     DeferredApproval,
     DeferredQuestion,

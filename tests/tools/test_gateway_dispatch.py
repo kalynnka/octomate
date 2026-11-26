@@ -18,7 +18,7 @@ from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.mcp.gateway import native_session
 from octomate.mcp.server import octomate_mcp
 from octomate.reflex.nodes.summon import Summon
-from octomate.schemas.awakes import SummonSignal, UserMessageSignal
+from octomate.schemas.awakes import SummonAwake, UserMessageAwake
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
@@ -154,7 +154,7 @@ async def test_summon_kicks_a_peer_thread_and_keeps_the_source_running(
         segments=[TextSegment(data={"text": "Continue planning here"})],
     )
     async with drawing(channel):
-        await kick_and_wait(host, UserMessageSignal([event]))
+        await kick_and_wait(host, UserMessageAwake([event]))
     original = await host.threads.get(session.thread_id)
     assert original is not None
     assert original.active_agent_tentacle_id == "inkling"
@@ -182,7 +182,7 @@ async def test_independent_summon_initializes_without_entering_the_handoff_node(
     assert isinstance(opened, ChannelAddress)
     kick.assert_awaited_once()
     signal = kick.call_args.args[0]
-    assert isinstance(signal, SummonSignal)
+    assert isinstance(signal, SummonAwake)
     assert signal.destination == opened
     assert await threads.get(ThreadKey.from_address(opened)) is None
     handoff = AsyncMock(side_effect=AssertionError("Independent work entered Summon."))

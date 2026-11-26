@@ -18,13 +18,12 @@ from octomate.nerve import (
     HabitatTopic,
     Impulse,
     Nerve,
-    Stimulus,
     ThreadTopic,
     UserTopic,
 )
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
-from octomate.signals import InterruptRunSignal
+from octomate.signals import InterruptRunSignal, Signal
 from tests.support.nerve import held
 
 HERE = ChannelAddress("web", "thread", "lu", "lu", channel_thread_id="t1")
@@ -492,18 +491,18 @@ async def test_supplied_memory_fibers_use_the_same_api_and_remain_caller_owned(
         subscriber.close()
 
 
-async def test_a_stimulus_reaches_the_subscribers_of_its_topic() -> None:
-    signals = Nerve[Stimulus]()
+async def test_a_signal_reaches_the_subscribers_of_its_topic() -> None:
+    signals = Nerve[Signal]()
     topic = ThreadTopic(ThreadKey.from_address(HERE))
-    first, second, other = (MemoryFiber[Stimulus]() for _ in range(3))
+    first, second, other = (MemoryFiber[Signal]() for _ in range(3))
     with (
         signals.accept(topic, first),
         signals.accept(topic, second),
         signals.accept(ThreadTopic(ThreadKey.from_address(THERE)), other),
     ):
-        signals.deliver(topic, Stimulus(SIGNAL))
-        assert held(first) == [Stimulus(SIGNAL)]
-        assert held(second) == [Stimulus(SIGNAL)]
+        signals.deliver(topic, SIGNAL)
+        assert held(first) == [SIGNAL]
+        assert held(second) == [SIGNAL]
         assert held(other) == []
     assert not signals.subscribers
     # Leaving keeps each fiber open for its owner.
