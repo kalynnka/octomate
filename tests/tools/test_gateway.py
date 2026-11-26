@@ -427,18 +427,18 @@ async def test_teleport_defers_the_run() -> None:
     [
         ("private_thread", None),
         ("shared_thread", None),
-        ("shared_main", _NoSubThreadChannel()),
+        ("shared_main", _NoSubThreadChannel),
     ],
 )
 async def test_teleport_refused_where_no_sub_thread_can_be_opened(
     shape: Shape,
-    channel: FakeChannelTentacle | None,
+    channel: type[FakeChannelTentacle] | None,
 ) -> None:
     """Nothing nests — every channel with threads is `flat_thread` — and some open
     none at all. Refusing beats deferring into a move that never happens and
     telling the agent it relocated. Nobody is linked anywhere else here, so there is
     no crossing to fall back on and the refusal has nothing to offer instead."""
-    capability = _capability(shape, channel=channel)
+    capability = _capability(shape, channel=channel() if channel is not None else None)
     teleport = capability.teleport
 
     with pytest.raises(
