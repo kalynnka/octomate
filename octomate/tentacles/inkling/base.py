@@ -48,7 +48,6 @@ from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, Shell
 from pydantic_ai_harness.step_persistence.conversations import conversation_text
-from pydantic_ai_harness.step_persistence.naming import generate_name
 from rich.style import Style
 
 from octomate.config.agents import AgentRouteModelName, InklingConfig
@@ -86,6 +85,7 @@ from octomate.tentacles.inkling.deferred import (
     PostureResolver,
 )
 from octomate.tentacles.inkling.mcp import OctomateTools
+from octomate.tentacles.inkling.naming import generate_name
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from octomate.tentacles.inkling.react import (
     ReactDeps,
@@ -1106,7 +1106,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 "Inkling session naming failed for %s", conversation.id, exc_info=True
             )
             return
-        title = " ".join(named.name.title.split()[:8])
+        title = " ".join(named.title.split()[:8])
         await self.conversation_manager.set_name(conversation, title)
         if conversation.parent_conversation_id is not None:
             return

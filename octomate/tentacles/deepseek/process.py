@@ -100,8 +100,6 @@ class DeepseekProcess:
     )
     diagnostic_head: list[str] = field(default_factory=list, init=False, repr=False)
     diagnostic_count: int = field(default=0, init=False)
-    ready: bool = field(default=False, init=False)
-    stderr_reported: bool = field(default=False, init=False)
 
     def child_environment(self) -> dict[str, str]:
         """Keep provider/tool configuration, without exporting Octomate server settings."""
@@ -260,7 +258,6 @@ class DeepseekProcess:
             raise RuntimeError("DSH did not report its guest listener port")
         async with habitat.publish(launch_url.port) as address:
             endpoint.set_result(HttpUrl(address))
-            self.ready = True
             relay = asyncio.create_task(self.drain_guest(stdout))
             try:
                 await self.guest_stop.wait()
@@ -302,8 +299,6 @@ class DeepseekProcess:
         self.diagnostics.clear()
         self.diagnostic_head.clear()
         self.diagnostic_count = 0
-        self.ready = False
-        self.stderr_reported = False
         self.unknown_option = None
         self.launch_token = None
         self.runtime_home = await asyncio.to_thread(
@@ -355,12 +350,6 @@ class DeepseekProcess:
         except BaseException:
             await self.stop()
             raise
-        self.ready = True
-        if self.diagnostic_count:
-            logger.warning(
-                "dsh startup produced %d diagnostic lines (details at DEBUG)",
-                self.diagnostic_count,
-            )
         self.relays.append(asyncio.create_task(self.relay_stdout(stdout)))
         return base_url
 
@@ -488,12 +477,6 @@ class DeepseekProcess:
             if not line:
                 continue
             self.capture_diagnostic(line)
-            if self.ready and not self.stderr_reported:
-                self.stderr_reported = True
-                logger.warning(
-                    "dsh stderr: %s (further output at DEBUG)",
-                    TOKEN_QUERY.sub(r"\1<redacted>", line)[:DIAGNOSTIC_WIDTH],
-                )
             match = UNKNOWN_OPTION.search(line)
             if match is not None:
                 self.unknown_option = match.group(1)
