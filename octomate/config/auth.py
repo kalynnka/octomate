@@ -36,6 +36,17 @@ class AuthConfig(BaseModel):
     cookie_secure: bool = Field(
         default=True, description="Require HTTPS for browser session cookies."
     )
+    oauth_authorization_lifetime: timedelta = Field(
+        default=timedelta(minutes=5),
+        gt=timedelta(0),
+        le=timedelta(minutes=10),
+        description="Lifetime of pending OAuth consent and, after approval, its single-use code.",
+    )
+    oauth_grant_idle_lifetime: timedelta = Field(
+        default=timedelta(days=30),
+        gt=timedelta(0),
+        description="Idle lifetime of native-harness and CLI OAuth grants, renewed by successful token refresh; no absolute lifetime.",
+    )
 
     api_key_prefix: str = Field(
         default="omk_", description="Prefix prepended to newly issued API keys."

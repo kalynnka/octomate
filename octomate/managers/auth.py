@@ -1,4 +1,4 @@
-"""Invite-only registration, local passwords, sessions and personal API keys."""
+"""Local accounts, browser sessions, API keys, and inbound OAuth grants."""
 
 from __future__ import annotations
 
@@ -26,13 +26,19 @@ from octomate.schemas.auth import (
     UserInvitation,
     UserSession,
 )
+from octomate.schemas.authorization import (
+    OAuthAuthorization,
+    OAuthClient,
+    OAuthGrant,
+    OAuthPrincipal,
+    OAuthToken,
+)
 from octomate.schemas.user import User
 from octomate.types.auth import ApiKeyScope, NewPasswordAdapter
 
 
 class InvalidCredentials(ValueError):
-    """A sign-in, refresh or password change whose credentials are wrong or
-    expired."""
+    """An authentication or credential exchange that is invalid or expired."""
 
     def __init__(self) -> None:
         super().__init__("Invalid or expired credentials")
@@ -43,6 +49,13 @@ class UsernameUnavailable(ValueError):
 
     def __init__(self) -> None:
         super().__init__("This username is already taken")
+
+
+class InvalidOAuthScopes(ValueError):
+    """Requested scopes are empty or exceed the existing authorization."""
+
+    def __init__(self) -> None:
+        super().__init__("Scopes must be a nonempty subset of the authorization")
 
 
 class AuthManager(Manager, Locks[str]):
@@ -480,4 +493,239 @@ class AuthManager(Manager, Locks[str]):
             if key.revoked_at is not None:
                 return
             key.revoked_at = datetime.now(UTC)
+            await session.commit()
+
+    async def approve_oauth_authorization(
+        self, user_id: UUID7, ticket: SecretStr
+    ) -> OAuthAuthorization:
+        """Bind pending consent to the authenticated browser user, once only."""
+        ticket_hash = self.hash_token(ticket, self.config.access_token_salt)
+        async with async_session() as session:
+            pending = await session.one_or_none(
+                OAuthAuthorization,
+                expressions=[OAuthAuthorization["ticket_hash"] == ticket_hash],
+            )
+        if pending is None:
+            raise InvalidCredentials
+        async with self.lock(f"oauth-consent:{pending.id}"), async_session() as session:
+            if session.get_bind().dialect.name == "sqlite":
+                # SQLite has no row locks; reserve its writer before reading.
+                await session.execute(text("BEGIN IMMEDIATE"))
+            pending = await session.get(
+                OAuthAuthorization, pending.id, with_for_update=True
+            )
+            now = datetime.now(UTC)
+            if (
+                pending is None
+                or pending.ticket_hash != ticket_hash
+                or pending.expires_at <= now
+                or pending.grant_id is not None
+            ):
+                raise InvalidCredentials
+            if await session.get(User, user_id) is None:
+                raise InvalidCredentials
+            client = await session.get(OAuthClient, pending.client_id)
+            if client is None:
+                raise InvalidCredentials
+            if not pending.scopes or not set(pending.scopes) <= set(client.scopes):
+                raise InvalidOAuthScopes
+            grant = OAuthGrant(
+                client_id=client.id,
+                user_id=user_id,
+                resource=pending.resource,
+                scopes=sorted(set(pending.scopes)),
+                expires_at=now + self.config.oauth_grant_idle_lifetime,
+            )
+            session.add(grant)
+            await session.flush()
+            code = SecretStr(secrets.token_urlsafe(32))
+            pending.grant_id = grant.id
+            pending.code_hash = self.hash_token(code, self.config.access_token_salt)
+            pending.expires_at = min(
+                grant.expires_at, now + self.config.oauth_authorization_lifetime
+            )
+            await session.commit()
+            pending.code = code
+            return pending
+
+    async def exchange_oauth_code(
+        self, client_id: UUID7, code: SecretStr, *, resource: str
+    ) -> OAuthToken:
+        """Consume a code after the OAuth handler verifies PKCE and redirect binding.
+
+        The protocol handler owns request validation. Reload under the grant lock
+        so expiry, replay, and revocation remain authoritative at issuance.
+        """
+        code_hash = self.hash_token(code, self.config.access_token_salt)
+        async with async_session() as session:
+            authorization = await session.one_or_none(
+                OAuthAuthorization,
+                expressions=[OAuthAuthorization["code_hash"] == code_hash],
+            )
+        if authorization is None or authorization.grant_id is None:
+            raise InvalidCredentials
+        async with (
+            self.lock(f"oauth-grant:{authorization.grant_id}"),
+            async_session() as session,
+        ):
+            if session.get_bind().dialect.name == "sqlite":
+                await session.execute(text("BEGIN IMMEDIATE"))
+            grant = await session.get(
+                OAuthGrant, authorization.grant_id, with_for_update=True
+            )
+            authorization = await session.get(OAuthAuthorization, authorization.id)
+            now = datetime.now(UTC)
+            if (
+                grant is None
+                or grant.client_id != client_id
+                or grant.resource != resource
+                or grant.revoked_at is not None
+                or grant.expires_at <= now
+                or authorization is None
+                or authorization.code_hash != code_hash
+            ):
+                raise InvalidCredentials
+            if authorization.consumed_at is not None:
+                grant.revoked_at = now
+                await session.commit()
+                raise InvalidCredentials
+            if authorization.expires_at <= now:
+                raise InvalidCredentials
+            access = SecretStr(secrets.token_urlsafe(32))
+            refresh = SecretStr(secrets.token_urlsafe(32))
+            token = OAuthToken(
+                grant_id=grant.id,
+                access_token_hash=self.hash_token(
+                    access, self.config.access_token_salt
+                ),
+                refresh_token_hash=self.hash_token(
+                    refresh, self.config.refresh_token_salt
+                ),
+                scopes=grant.scopes,
+                access_expires_at=min(
+                    grant.expires_at, now + self.config.access_token_lifetime
+                ),
+            )
+            authorization.consumed_at = now
+            session.add(token)
+            await session.commit()
+            token.access_token = access
+            token.refresh_token = refresh
+            return token
+
+    async def refresh_oauth_token(
+        self,
+        client_id: UUID7,
+        refresh_token: SecretStr,
+        *,
+        resource: str,
+        scopes: list[ApiKeyScope] | None = None,
+    ) -> OAuthToken:
+        """Rotate once; replay revokes the entire grant, including newer tokens."""
+        token_hash = self.hash_token(refresh_token, self.config.refresh_token_salt)
+        async with async_session() as session:
+            previous = await session.one_or_none(
+                OAuthToken,
+                expressions=[OAuthToken["refresh_token_hash"] == token_hash],
+            )
+        if previous is None:
+            raise InvalidCredentials
+        async with (
+            self.lock(f"oauth-grant:{previous.grant_id}"),
+            async_session() as session,
+        ):
+            if session.get_bind().dialect.name == "sqlite":
+                await session.execute(text("BEGIN IMMEDIATE"))
+            grant = await session.get(
+                OAuthGrant, previous.grant_id, with_for_update=True
+            )
+            previous = await session.get(OAuthToken, previous.id)
+            now = datetime.now(UTC)
+            if (
+                grant is None
+                or grant.client_id != client_id
+                or grant.resource != resource
+                or grant.revoked_at is not None
+                or grant.expires_at <= now
+                or previous is None
+                or previous.refresh_token_hash != token_hash
+            ):
+                raise InvalidCredentials
+            if previous.refresh_used_at is not None:
+                grant.revoked_at = now
+                await session.commit()
+                raise InvalidCredentials
+            allowed = set(previous.scopes) & set(grant.scopes)
+            requested = sorted(set(previous.scopes if scopes is None else scopes))
+            if not requested or not set(requested) <= allowed:
+                raise InvalidOAuthScopes
+            grant.expires_at = now + self.config.oauth_grant_idle_lifetime
+            access = SecretStr(secrets.token_urlsafe(32))
+            refresh = SecretStr(secrets.token_urlsafe(32))
+            token = OAuthToken(
+                grant_id=grant.id,
+                access_token_hash=self.hash_token(
+                    access, self.config.access_token_salt
+                ),
+                refresh_token_hash=self.hash_token(
+                    refresh, self.config.refresh_token_salt
+                ),
+                scopes=requested,
+                access_expires_at=min(
+                    grant.expires_at, now + self.config.access_token_lifetime
+                ),
+            )
+            previous.refresh_used_at = now
+            session.add(token)
+            await session.commit()
+            token.access_token = access
+            token.refresh_token = refresh
+            return token
+
+    async def authenticate_oauth_token(
+        self, access_token: SecretStr, *, resource: str, scope: ApiKeyScope
+    ) -> OAuthPrincipal | None:
+        """Check the token and its persisted grant on every resource request."""
+        async with async_session() as session:
+            token = await session.one_or_none(
+                OAuthToken,
+                expressions=[
+                    OAuthToken["access_token_hash"]
+                    == self.hash_token(access_token, self.config.access_token_salt)
+                ],
+            )
+            if token is None:
+                return None
+            grant = await session.get(OAuthGrant, token.grant_id)
+            now = datetime.now(UTC)
+            if (
+                grant is None
+                or grant.resource != resource
+                or grant.revoked_at is not None
+                or grant.expires_at <= now
+                or token.access_expires_at <= now
+                or scope not in token.scopes
+                or scope not in grant.scopes
+            ):
+                return None
+            return OAuthPrincipal(
+                grant_id=grant.id,
+                user_id=grant.user_id,
+                client_id=grant.client_id,
+                resource=grant.resource,
+                scopes=sorted(set(token.scopes) & set(grant.scopes)),
+                expires_at=min(grant.expires_at, token.access_expires_at),
+            )
+
+    async def revoke_oauth_grant(self, user_id: UUID7, grant_id: UUID7) -> None:
+        """Revoke one owned grant without affecting another installation's consent."""
+        async with self.lock(f"oauth-grant:{grant_id}"), async_session() as session:
+            if session.get_bind().dialect.name == "sqlite":
+                await session.execute(text("BEGIN IMMEDIATE"))
+            grant = await session.get(OAuthGrant, grant_id, with_for_update=True)
+            if grant is None or grant.user_id != user_id:
+                raise InvalidCredentials
+            if grant.revoked_at is not None:
+                return
+            grant.revoked_at = datetime.now(UTC)
             await session.commit()
