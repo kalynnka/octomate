@@ -303,6 +303,28 @@ async def test_command_context_reaps_its_child_without_stopping_the_vm(
         os.kill(info.pid, 0)
 
 
+async def test_stream_close_with_cancelled_receive_reaps_child(
+    sandbox: SbxHabitat,
+) -> None:
+    async with sandbox.resident("cat", workdir="/workspace") as stream:
+        receive = BufferedByteReceiveStream(stream)
+        info = ProcessInfo.model_validate_json(
+            await receive.receive_until(b"\n", 65536)
+        )
+        reading = asyncio.create_task(receive.receive())
+        try:
+            await anyio.wait_all_tasks_blocked()
+            reading.cancel()
+            # Close before the cancelled socket waiter has resumed its cleanup.
+            await stream.aclose()
+        finally:
+            reading.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await reading
+    with pytest.raises(ProcessLookupError):
+        os.kill(info.pid, 0)
+
+
 async def test_concurrent_commands_have_independent_lifetimes(
     sandbox: SbxHabitat,
 ) -> None:

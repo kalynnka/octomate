@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath
 from typing import Literal, TypedDict, Unpack
 
 import anyio
-from anyio.abc import UNIXSocketStream
+from anyio.abc import SocketStream
 from pydantic import UUID7, BaseModel, Field, TypeAdapter
 from yarl import URL
 
@@ -284,12 +284,12 @@ class SbxHabitat(ManagedHabitat):
         workdir: str,
         env: dict[str, str] | None = None,
         stderr: Callable[[str], None] | None = None,
-    ) -> AsyncGenerator[UNIXSocketStream]:
+    ) -> AsyncGenerator[SocketStream]:
         """Keep a guest process attached to a byte stream until its owner exits."""
         parent, child = socket.socketpair()
         with parent, child:
             async with (
-                await UNIXSocketStream.from_socket(parent) as stream,
+                await SocketStream.from_socket(parent) as stream,
                 self.cli(
                     "exec",
                     "--interactive",
