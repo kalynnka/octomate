@@ -1,6 +1,7 @@
 """Host and credential commands remain independent when invoked directly."""
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -284,6 +285,9 @@ def test_srt_setup_checks_runtime_installation(
     monkeypatch: pytest.MonkeyPatch,
     missing: str | None,
 ) -> None:
+    monkeypatch.setattr(habitat.platform, "system", lambda: "Darwin")
+    probe = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
+    monkeypatch.setattr(habitat.subprocess, "run", probe)
     entry = tmp_path / "cli.js"
     entry.touch()
     if missing != "sdk":
@@ -295,3 +299,50 @@ def test_srt_setup_checks_runtime_installation(
     assert result.exit_code == (0 if missing is None else 2), result.output
     if missing is None:
         assert "Runtime isolation is checked when a habitat starts" in result.output
+        assert probe.call_args.args[0] == [
+            str(entry),
+            str(Path(habitat.__file__).with_name("srt.mjs")),
+            entry.with_name("index.js").as_uri(),
+        ]
+    else:
+        probe.assert_not_called()
+
+
+@pytest.mark.parametrize("system", ["Linux", "Windows"])
+def test_srt_setup_rejects_unqualified_platform_before_runtime_checks(
+    monkeypatch: pytest.MonkeyPatch,
+    system: str,
+) -> None:
+    monkeypatch.setattr(habitat.platform, "system", lambda: system)
+    lookup = Mock()
+    monkeypatch.setattr(habitat.shutil, "which", lookup)
+    result = runner.invoke(app, ["habitat", "setup", "srt", "--check"])
+    assert result.exit_code == 2
+    assert "macOS only" in result.output
+    lookup.assert_not_called()
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_srt_setup_surfaces_sdk_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+) -> None:
+    entry = tmp_path / "cli.js"
+    entry.touch()
+    entry.with_name("index.js").touch()
+    monkeypatch.setattr(habitat.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(habitat.shutil, "which", lambda name: str(entry))
+    monkeypatch.setattr(
+        habitat.subprocess,
+        "run",
+        Mock(
+            return_value=subprocess.CompletedProcess(
+                [], returncode, "", "runtime diagnostic"
+            )
+        ),
+    )
+    result = runner.invoke(app, ["habitat", "setup", "srt", "--check"])
+    assert result.exit_code == (2 if returncode else 0)
+    assert "runtime diagnostic" in result.output
+    assert ("SRT dependency check failed" in result.output) == bool(returncode)

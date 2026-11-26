@@ -1,6 +1,8 @@
 """Prepare a habitat backend independently of agent credentials."""
 
+import platform
 import shutil
+import subprocess
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Literal
@@ -56,17 +58,41 @@ def setup(
 ) -> None:
     """Check SRT installation or sbx host access independently of credentials."""
     if backend == "srt":
-        executable = shutil.which("srt")
-        if executable is None or shutil.which("node") is None:
+        if platform.system() != "Darwin":
             raise typer.BadParameter(
-                "Install Node.js and @anthropic-ai/sandbox-runtime for the service account."
+                "Octomate's SRT habitat is currently qualified for macOS only."
             )
-        if not Path(executable).resolve().with_name("index.js").is_file():
+        executable = shutil.which("srt")
+        if executable is None:
+            raise typer.BadParameter(
+                "Install @anthropic-ai/sandbox-runtime with npm and put srt on the service account's PATH."
+            )
+        node = shutil.which("node")
+        if node is None:
+            raise typer.BadParameter("Install Node.js on the service account's PATH.")
+        sdk = Path(executable).resolve().with_name("index.js")
+        if not sdk.is_file():
             raise typer.BadParameter(
                 "srt must resolve to the @anthropic-ai/sandbox-runtime npm entry point."
             )
+        result = subprocess.run(
+            [
+                node,
+                str(Path(__file__).with_name("srt.mjs")),
+                sdk.as_uri(),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            raise typer.BadParameter(
+                f"SRT dependency check failed: {result.stderr.strip()}"
+            )
+        if result.stderr.strip():
+            console.print(result.stderr.strip(), markup=False)
         console.print(
-            "SRT and Node.js found. Runtime isolation is checked when a habitat starts."
+            "SRT dependencies checked. Runtime isolation is checked when a habitat starts."
         )
         return
     executable = sbx.executable()
