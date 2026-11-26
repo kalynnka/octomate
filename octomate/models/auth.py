@@ -21,7 +21,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base, MapperArgs, SecretString, UTCDateTime
 from octomate.models.user import User
-from octomate.types.auth import ApiKeyScope, RuntimeScope
+from octomate.types.auth import ApiKeyScope
 
 
 class UserInvitation(Base, TransmuterProxiedMixin):
@@ -220,86 +220,4 @@ class RuntimeApiKey(ApiKey):
         Uuid,
         nullable=False,
         comment="Generation used with the deployment secret to reproduce a runtime bearer.",
-    )
-
-
-class RuntimeGrant(Base, TransmuterProxiedMixin):
-    """Durable authorization for a user's configured agent in one habitat."""
-
-    __tablename__ = "runtime_grants"
-    __table_args__ = (UniqueConstraint("user_id", "agent_tentacle_id", "habitat_name"),)
-
-    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
-    user_id: Mapped[UUID7] = mapped_column(
-        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
-    )
-    agent_tentacle_id: Mapped[str] = mapped_column(
-        String, nullable=False, comment="Configured agent authorized by this grant."
-    )
-    habitat_name: Mapped[str] = mapped_column(
-        String,
-        nullable=False,
-        comment="Stable Habitat.name for the authorized runtime.",
-    )
-    scopes: Mapped[list[RuntimeScope]] = mapped_column(
-        JSON,
-        nullable=False,
-        comment="API surfaces this runtime may receive tokens for.",
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        UTCDateTime, nullable=False, default=lambda: datetime.now(UTC)
-    )
-    revoked_at: Mapped[datetime | None] = mapped_column(
-        UTCDateTime,
-        nullable=True,
-        comment="Revocation retains the grant identity until explicit reauthorization.",
-    )
-
-
-class RuntimeAccessToken(Base, TransmuterProxiedMixin):
-    """An expiring bearer hash restricted to one core invocation and resource."""
-
-    __tablename__ = "runtime_access_tokens"
-
-    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
-    grant_id: Mapped[UUID7] = mapped_column(
-        Uuid,
-        ForeignKey("runtime_grants.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    invocation_id: Mapped[UUID7] = mapped_column(
-        Uuid,
-        nullable=False,
-        index=True,
-        comment="Core Invocation.id; allocated before any persisted agent run exists.",
-    )
-    conversation_id: Mapped[UUID7] = mapped_column(
-        Uuid,
-        ForeignKey("conversations.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    token_hash: Mapped[SecretStr] = mapped_column(
-        SecretString,
-        nullable=False,
-        unique=True,
-        comment="Salted SHA-256 digest of an opaque access token; never stores the token.",
-    )
-    resource: Mapped[str] = mapped_column(
-        String,
-        nullable=False,
-        comment="Protected resource identifier this token targets.",
-    )
-    scopes: Mapped[list[RuntimeScope]] = mapped_column(
-        JSON, nullable=False, comment="API surfaces permitted within the owning grant."
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        UTCDateTime, nullable=False, default=lambda: datetime.now(UTC)
-    )
-    expires_at: Mapped[datetime] = mapped_column(
-        UTCDateTime,
-        nullable=False,
-        index=True,
-        comment="Authentication deadline independent of expired-row cleanup.",
     )

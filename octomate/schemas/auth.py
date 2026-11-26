@@ -20,7 +20,7 @@ from uuid_utils.compat import uuid7
 from octomate.models import auth as auth_models
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.user import UserProfile
-from octomate.types.auth import ApiKeyScope, RuntimeScope
+from octomate.types.auth import ApiKeyScope
 
 
 @sqlalchemy_materia.bless(auth_models.UserInvitation)
@@ -116,62 +116,6 @@ class RuntimeApiKey(ApiKey):
         exclude=True,
         repr=False,
         description="Generation used with the deployment secret to reproduce a runtime bearer.",
-    )
-
-
-@sqlalchemy_materia.bless(auth_models.RuntimeGrant)
-class RuntimeGrant(BaseTransmuter):
-    """Durable runtime authorization, retained when revoked to prevent recreation."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
-    user_id: UUID7 = Field(frozen=True)
-    agent_tentacle_id: str = Field(
-        min_length=1,
-        frozen=True,
-        description="Configured agent authorized by this grant.",
-    )
-    habitat_name: str = Field(
-        min_length=1,
-        frozen=True,
-        description="Stable Habitat.name for the authorized runtime.",
-    )
-    scopes: list[RuntimeScope] = Field(
-        min_length=1, description="API surfaces this runtime may receive tokens for."
-    )
-    created_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
-    revoked_at: AwareDatetime | None = Field(
-        default=None,
-        description="Revocation retains the grant identity until explicit reauthorization.",
-    )
-
-
-@sqlalchemy_materia.bless(auth_models.RuntimeAccessToken)
-class RuntimeAccessToken(BaseTransmuter):
-    """An expiring bearer hash restricted to one core invocation and resource."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
-    grant_id: UUID7 = Field(frozen=True)
-    invocation_id: UUID7 = Field(
-        frozen=True,
-        description="Core Invocation.id; allocated before any persisted agent run exists.",
-    )
-    conversation_id: UUID7 = Field(frozen=True)
-    token_hash: SecretStr = Field(exclude=True, repr=False)
-    resource: str = Field(
-        min_length=1,
-        frozen=True,
-        description="Protected resource identifier this token targets.",
-    )
-    scopes: list[RuntimeScope] = Field(
-        min_length=1, description="API surfaces permitted within the owning grant."
-    )
-    created_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
-    expires_at: AwareDatetime = Field(
-        description="Authentication deadline independent of expired-row cleanup."
     )
 
 

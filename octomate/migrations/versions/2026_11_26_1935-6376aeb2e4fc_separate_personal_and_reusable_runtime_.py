@@ -1,7 +1,7 @@
 """Separate personal management from reusable runtime credentials without changing existing bearers.
 
 Revision ID: 6376aeb2e4fc
-Revises: 174f49e9cda1
+Revises: 4122899cefcb
 Create Date: 2026-11-26 19:35:04.432193
 
 """
@@ -15,7 +15,7 @@ import octomate.models.base
 
 # revision identifiers, used by Alembic.
 revision: str = "6376aeb2e4fc"
-down_revision: str | Sequence[str] | None = "174f49e9cda1"
+down_revision: str | Sequence[str] | None = "4122899cefcb"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

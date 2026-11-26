@@ -1,11 +1,10 @@
-"""Credential scopes and the rules a new password is validated against."""
+"""API key scopes and the rules a new password is validated against."""
 
 from typing import Annotated, Literal
 
 from pydantic import AfterValidator, ConfigDict, Field, SecretStr, TypeAdapter
 
 ApiKeyScope = Literal["hooks", "mcp", "acp"]
-RuntimeScope = Literal["hooks", "mcp"]
 
 
 def validate_password_complexity(password: SecretStr) -> SecretStr:
