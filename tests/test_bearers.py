@@ -43,16 +43,18 @@ async def test_owner_names_the_token_owner(auth: AuthManager) -> None:
 async def test_scopes_separate_hooks_and_mcp(auth: AuthManager) -> None:
     user = await a_user()
     hook = await auth.create_api_key(user.id, name="hooks", scopes=["hooks"])
+    assert hook.bearer is not None
     mcp = await auth.create_api_key(user.id, name="editor", scopes=["mcp"])
+    assert mcp.bearer is not None
     bearers = KnownBearers(auth)
     verify = hook_guard(bearers)
 
-    assert await verify(f"Bearer {hook.token.get_secret_value()}") == "lu"
-    assert await bearers.verify_token(hook.token.get_secret_value()) is None
+    assert await verify(f"Bearer {hook.bearer.get_secret_value()}") == "lu"
+    assert await bearers.verify_token(hook.bearer.get_secret_value()) is None
     with pytest.raises(HTTPException) as denial:
-        await verify(f"Bearer {mcp.token.get_secret_value()}")
+        await verify(f"Bearer {mcp.bearer.get_secret_value()}")
     assert denial.value.status_code == 401
-    principal = await bearers.verify_token(mcp.token.get_secret_value())
+    principal = await bearers.verify_token(mcp.bearer.get_secret_value())
     assert principal is not None
     assert principal.client_id == "lu"
     assert principal.scopes == ["mcp"]
@@ -71,19 +73,21 @@ async def test_octomate_uses_its_auth_manager() -> None:
 async def test_revocation_applies_to_both_surfaces(auth: AuthManager) -> None:
     user = await a_user()
     key = await auth.create_api_key(user.id, name="laptop", scopes=["hooks", "mcp"])
+    assert key.bearer is not None
     other = await auth.create_api_key(user.id, name="desktop", scopes=["hooks", "mcp"])
-    token = key.token.get_secret_value()
+    assert other.bearer is not None
+    token = key.bearer.get_secret_value()
     bearers = KnownBearers(auth)
     verify = hook_guard(bearers)
     assert await verify(f"Bearer {token}") == "lu"
     assert await bearers.verify_token(token) is not None
 
-    await auth.revoke_api_key(user.id, key.key.id)
+    await auth.revoke_api_key(user.id, key.id)
 
     assert await bearers.verify_token(token) is None
     with pytest.raises(HTTPException):
         await verify(f"Bearer {token}")
-    assert await bearers.verify_token(other.token.get_secret_value()) is not None
+    assert await bearers.verify_token(other.bearer.get_secret_value()) is not None
 
 
 async def test_expired_keys_are_rejected(auth: AuthManager) -> None:

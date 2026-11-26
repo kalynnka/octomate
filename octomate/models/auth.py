@@ -7,11 +7,20 @@ from typing import ClassVar
 
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import UUID7, SecretStr
-from sqlalchemy import JSON, ForeignKey, Integer, String, UniqueConstraint, Uuid
+from sqlalchemy import (
+    JSON,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Integer,
+    String,
+    UniqueConstraint,
+    Uuid,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base, MapperArgs, SecretString, UTCDateTime
+from octomate.models.user import User
 from octomate.types.auth import ApiKeyScope, RuntimeScope
 
 
@@ -118,21 +127,22 @@ class LinkProfileSession(Base, TransmuterProxiedMixin):
     __mapper_args__: ClassVar[MapperArgs] = {"version_id_col": version}
 
 
-class UserApiKey(Base, TransmuterProxiedMixin):
-    """A personal API key's hash, prefix and scopes."""
+class ApiKey(Base, TransmuterProxiedMixin):
+    """Shared credential state for personal and core-managed runtime keys."""
 
-    __tablename__ = "user_api_keys"
+    __tablename__ = "api_keys"
+    __table_args__ = (UniqueConstraint("id", "user_id", name="uq_api_keys_id_owner"),)
 
     id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
     user_id: Mapped[UUID7] = mapped_column(
-        Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+        Uuid, ForeignKey(User.id, ondelete="CASCADE"), nullable=False, index=True
     )
-    name: Mapped[str] = mapped_column(String, nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
     key_hash: Mapped[SecretStr] = mapped_column(
         SecretString,
         nullable=False,
         unique=True,
-        comment="Salted SHA-256 digest; the API key is disclosed only at issuance.",
+        comment="Salted SHA-256 digest of the bearer; never stores the bearer itself.",
     )
     key_prefix: Mapped[str] = mapped_column(
         String,
@@ -149,6 +159,68 @@ class UserApiKey(Base, TransmuterProxiedMixin):
     )
     expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
+        comment="Optimistic lock serializing runtime renewal, rotation and revocation across cores.",
+    )
+    __mapper_args__: ClassVar[MapperArgs] = {
+        "polymorphic_on": "kind",
+        "polymorphic_abstract": True,
+        "with_polymorphic": "*",
+        "version_id_col": version,
+    }
+
+
+class UserApiKey(ApiKey):
+    """A personal credential managed through the account API-key endpoints."""
+
+    __tablename__ = "user_api_keys"
+    __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "user"}
+
+    id: Mapped[UUID7] = mapped_column(
+        Uuid,
+        ForeignKey("api_keys.id", ondelete="CASCADE", name="fk_user_api_keys_api_key"),
+        primary_key=True,
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class RuntimeApiKey(ApiKey):
+    """A persisted credential reused by a user's configured agent across cores."""
+
+    __tablename__ = "runtime_api_keys"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "runtime_agent_id", name="uq_runtime_api_keys_owner_agent"
+        ),
+        ForeignKeyConstraint(
+            ["id", "user_id"],
+            ["api_keys.id", "api_keys.user_id"],
+            ondelete="CASCADE",
+            name="fk_runtime_api_keys_owner",
+        ),
+    )
+    __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "runtime"}
+
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True)
+    user_id: Mapped[UUID7] = mapped_column(
+        Uuid,
+        nullable=False,
+        comment="Owner constrained to match the base key; enforces one runtime key per user and agent.",
+    )
+    runtime_agent_id: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        comment="Configured agent reusing this user's runtime key.",
+    )
+    runtime_nonce: Mapped[UUID7] = mapped_column(
+        Uuid,
+        nullable=False,
+        comment="Generation used with the deployment secret to reproduce a runtime bearer.",
+    )
 
 
 class RuntimeGrant(Base, TransmuterProxiedMixin):

@@ -454,13 +454,14 @@ async def test_the_runtime_key_uploads() -> None:
         url = f"/hooks/claude/transcripts/{conversation.id}"
         issued = await octomate.agents["claude"].runtime_api_key(user.id)
         assert issued is not None
-        assert issued.key.scopes == ["hooks", "mcp"]
+        assert issued.bearer is not None
+        assert issued.scopes == ["hooks", "mcp"]
 
         runtime = await client.post(
             url,
             params={"offset": 0, "transcript_id": str(conversation.id)},
             content=FIRST,
-            headers={"Authorization": f"Bearer {issued.token.get_secret_value()}"},
+            headers={"Authorization": f"Bearer {issued.bearer.get_secret_value()}"},
         )
         assert runtime.status_code == 200
         assert await kept_bytes(octomate, conversation, user) == FIRST

@@ -46,5 +46,5 @@ class AuthConfig(BaseModel):
     runtime_api_key_lifetime: timedelta = Field(
         default=timedelta(days=1),
         gt=timedelta(0),
-        description="Maximum lifetime of a driven runtime's temporary MCP API key.",
+        description="Idle lifetime of a runtime API key, extended by acquisition and successful authentication.",
     )

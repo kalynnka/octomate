@@ -3,8 +3,10 @@ concern."""
 
 from octomate.models.artifacts import Artifact, HtmlArtifact, McpAppArtifact
 from octomate.models.auth import (
+    ApiKey,
     LinkProfileSession,
     RuntimeAccessToken,
+    RuntimeApiKey,
     RuntimeGrant,
     UserApiKey,
     UserInvitation,
@@ -77,6 +79,7 @@ from octomate.models.volumes import GitVolume, Volume
 
 __all__ = [
     "AgentRun",
+    "ApiKey",
     "Artifact",
     "Base",
     "BearerMcp",
@@ -117,6 +120,7 @@ __all__ = [
     "Png",
     "Project",
     "RuntimeAccessToken",
+    "RuntimeApiKey",
     "RuntimeGrant",
     "Snapshot",
     "SnapshotMembership",
