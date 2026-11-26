@@ -16,6 +16,21 @@ from pydantic_ai.workspaces import (
     WorkspaceUnavailableError,
 )
 
+EXECUTE_ENV: tuple[str, ...] = (
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "PYTHONDONTWRITEBYTECODE",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+)
+
 
 class CommandRequest(BaseModel):
     kind: Literal["command"] = "command"
@@ -138,7 +153,12 @@ file_errors: dict[str, type[OSError]] = {
 
 
 async def execute(request: Request) -> Response:
-    backend = LocalWorkspaceBackend(".")
+    # Upstream inherits PATH/HOME, but commands also need the habitat's temp and
+    # proxy settings. These come from the guest environment, never core's env.
+    backend = LocalWorkspaceBackend(
+        ".",
+        env={name: os.environ[name] for name in EXECUTE_ENV if name in os.environ},
+    )
     try:
         match request:
             case DirectoryRequest():

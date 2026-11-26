@@ -9,8 +9,13 @@ from pydantic_ai.models.test import TestModel
 from uuid_utils.compat import uuid7
 
 from octomate.config.base import OctomateConfig
-from octomate.config.habitat import NativeHabitatConfig, SbxHabitatConfig
+from octomate.config.habitat import (
+    NativeHabitatConfig,
+    SbxHabitatConfig,
+    SrtHabitatConfig,
+)
 from octomate.habitat.sbx import SbxHabitat
+from octomate.habitat.srt import SrtHabitat
 from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
 from octomate.schemas.habitat import InvocationScope
@@ -19,7 +24,8 @@ from tests.support.managers import a_workspace_manager
 
 
 @pytest.mark.parametrize(
-    "habitat", [None, {"mode": "native"}, {"mode": "sbx", "image": IMAGE}]
+    "habitat",
+    [None, {"mode": "native"}, {"mode": "srt"}, {"mode": "sbx", "image": IMAGE}],
 )
 def test_factory_builds_every_harness_without_launching_a_habitat(
     monkeypatch: pytest.MonkeyPatch, habitat: dict[str, str] | None
@@ -74,11 +80,17 @@ def test_sbx_mode_round_trips() -> None:
     assert OctomateConfig.model_validate_json(config.model_dump_json()) == config
 
 
+def test_srt_mode_round_trips() -> None:
+    config = OctomateConfig.model_validate({"habitat": {"mode": "srt"}})
+    assert config.habitat == SrtHabitatConfig()
+    assert OctomateConfig.model_validate_json(config.model_dump_json()) == config
+
+
 @pytest.mark.parametrize(
     "habitat",
     [
         {"image": IMAGE},
-        {"mode": "srt"},
+        {"mode": "srt", "version": "unsupported"},
         {"mode": "cloud", "image": IMAGE},
         {"mode": "sbx"},
         {"mode": "native", "image": IMAGE},
@@ -92,15 +104,21 @@ def test_invalid_modes_are_rejected(
         OctomateConfig.model_validate({"habitat": habitat})
 
 
-async def test_each_user_gets_one_vm_shared_by_their_invocations(
+@pytest.mark.parametrize("provider", [SbxHabitat, SrtHabitat])
+async def test_each_user_gets_one_habitat_shared_by_their_invocations(
     monkeypatch: pytest.MonkeyPatch,
+    provider: type[SbxHabitat] | type[SrtHabitat],
 ) -> None:
     manager = HabitatManager(
-        SbxHabitatConfig(image=IMAGE, idle_timeout=60), Nerve(), a_workspace_manager()
+        SbxHabitatConfig(image=IMAGE, idle_timeout=60)
+        if provider is SbxHabitat
+        else SrtHabitatConfig(),
+        Nerve(),
+        a_workspace_manager(),
     )
-    monkeypatch.setattr(SbxHabitat, "prepare", AsyncMock())
+    monkeypatch.setattr(provider, "prepare", AsyncMock())
     stop = AsyncMock()
-    monkeypatch.setattr(SbxHabitat, "stop", stop)
+    monkeypatch.setattr(provider, "stop", stop)
     owner = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
     peer = owner.model_copy(update={"conversation_id": uuid7()})
     other = owner.model_copy(update={"user_id": uuid7()})

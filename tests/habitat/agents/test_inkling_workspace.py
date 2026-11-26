@@ -74,7 +74,7 @@ class TestWorkspace(WorkspaceBackendSuite):
         monkeypatch.setattr(
             executor,
             "LocalWorkspaceBackend",
-            lambda cwd: LocalWorkspaceBackend(tmp_path / cwd),
+            lambda cwd, **kwargs: LocalWorkspaceBackend(tmp_path / cwd, **kwargs),
         )
 
         @asynccontextmanager

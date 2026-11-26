@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import platform
@@ -49,6 +50,7 @@ class SbxKitArgs(TypedDict):
     cpus: int
     memory_mib: int
     internet_access: Literal["true", "false"]
+    denied_domains: str
 
 
 class SbxOptions(TypedDict, total=False):
@@ -244,6 +246,9 @@ class SbxHabitat(ManagedHabitat):
             "cpus": self.config.cpus,
             "memory_mib": self.config.memory_mib,
             "internet_access": "true" if self.config.internet_access else "false",
+            "denied_domains": json.dumps(
+                sorted(set(self.config.denied_domains)), separators=(",", ":")
+            ),
         }
         self.managed = True
         if self.name not in names:
@@ -252,12 +257,17 @@ class SbxHabitat(ManagedHabitat):
             # The agents' credential file is written beneath the configuration
             # volume, where the harness is told to keep its configuration.
             await anyio.Path(self.config_dir).mkdir(parents=True, exist_ok=True)
+            # sbx requires port-free IPv6 addresses in CIDR notation.
+            denied_domains = [
+                f"{domain[1:-1]}/128" if domain.endswith("]") else domain
+                for domain in self.config.denied_domains
+            ]
             await self.control(
                 "create",
                 str(Path(__file__).parent),
                 str(self.root),
                 kit_arg=[f"{key}={value}" for key, value in kit_args.items()],
-                deny_network=[] if self.config.internet_access else ["**"],
+                deny_network=denied_domains if self.config.internet_access else ["**"],
                 name=self.name,
                 pull="missing",
                 skills="off",

@@ -18,11 +18,13 @@ from octomate.config.habitat import (
     HabitatConfig,
     NativeHabitatConfig,
     SbxHabitatConfig,
+    SrtHabitatConfig,
 )
 from octomate.events import HabitatEvent, HabitatFailedEvent, HabitatProgressEvent
 from octomate.habitat import Habitat, ManagedHabitat, NativeHabitat
 from octomate.habitat import HabitatError as HabitatError
 from octomate.habitat.sbx import SbxHabitat
+from octomate.habitat.srt import SrtHabitat
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import (
     HabitatTopic,
@@ -199,7 +201,14 @@ class HabitatManager:
     def residence(self, scope: InvocationScope) -> Residence:
         """Internal lookup; callers must supply a core-authorized owner."""
         if scope.user_id not in self.residences:
+            habitat: ManagedHabitat
             match self.config:
+                case SrtHabitatConfig() as config:
+                    habitat = SrtHabitat(
+                        config=config,
+                        user_id=scope.user_id,
+                        root=self.workspaces.root(scope.user_id),
+                    )
                 case SbxHabitatConfig() as config:
                     habitat = SbxHabitat(
                         config=config,

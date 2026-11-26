@@ -85,6 +85,8 @@ async def test_native_manager_refuses_vm_acquisition() -> None:
         {"idle_timeout": float("inf")},
         {"cpus": True},
         {"internet_access": "yes"},
+        {"denied_domains": ["https://example.com/path"]},
+        {"denied_domains": ["example.com:65536"]},
         {"version": "0.47.0"},
         {"unknown": "setting"},
         {"core_address": "ftp://core.example:8000"},
@@ -92,7 +94,7 @@ async def test_native_manager_refuses_vm_acquisition() -> None:
     ],
 )
 def test_invalid_sbx_settings_are_rejected(
-    changes: dict[str, str | int | float],
+    changes: dict[str, str | int | float | list[str]],
 ) -> None:
     with pytest.raises(ValidationError):
         SbxHabitatConfig.model_validate({"image": IMAGE, **changes})
