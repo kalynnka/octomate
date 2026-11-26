@@ -653,11 +653,13 @@ async def test_interrupt_and_cancellation_release_process_and_lease(
         os.kill(info.pid, 0)
 
 
+@pytest.mark.parametrize("builtin_sandbox", [None, True, False])
 async def test_a_driven_turn_runs_inside_the_owners_sandbox(
     in_memory_engine: AsyncEngine,
     executable: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    builtin_sandbox: bool | None,
 ) -> None:
     log = tmp_path / "protocol.jsonl"
     cli = tmp_path / "claude"
@@ -699,7 +701,9 @@ async def test_a_driven_turn_runs_inside_the_owners_sandbox(
         config=OctomateConfig(auth=auth_config()),
         conversations=FakeConversationManager(),
     )
-    host.habitats.config = SbxHabitatConfig(executable=str(executable), image=IMAGE)
+    host.habitats.config = SbxHabitatConfig(
+        executable=str(executable), image=IMAGE, builtin_sandbox=builtin_sandbox
+    )
     tentacle = ClaudeTentacle(
         host,
         auth=host.auth,
@@ -762,10 +766,9 @@ async def test_a_driven_turn_runs_inside_the_owners_sandbox(
     assert info.cwd == str(invocation.cwd)
     assert info.config == invocation.environment["CLAUDE_CONFIG_DIR"]
     assert "--safe-mode" not in info.argv
-    # The sandbox is the boundary: Claude's own is not configured, and no
-    # host settings are loaded.
     settings = json.loads(info.argv[info.argv.index("--settings") + 1])
     assert settings == {
+        "sandbox": {"enabled": builtin_sandbox is True},
         "hooks": {
             event: [
                 {
@@ -780,7 +783,7 @@ async def test_a_driven_turn_runs_inside_the_owners_sandbox(
                 }
             ]
             for event in ("SubagentStop", "Stop", "SessionEnd")
-        }
+        },
     }
     assert "--setting-sources=" in info.argv
     with pytest.raises(ProcessLookupError):

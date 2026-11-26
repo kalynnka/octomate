@@ -173,7 +173,10 @@ class ClaudeInk(AgentInk):
         options.setting_sources = []
         async with contextlib.AsyncExitStack() as resources:
             if isinstance(habitat, ManagedHabitat):
-                # The habitat is the boundary, so Claude's own sandbox stays off.
+                options.sandbox = {
+                    **(options.sandbox or {}),
+                    "enabled": habitat.builtin_sandbox,
+                }
                 client = await resources.enter_async_context(
                     HabitatTransport.client(habitat, options)
                 )
@@ -189,7 +192,7 @@ class ClaudeInk(AgentInk):
                     {
                         "permissions": {"blockReadsOutsideWorkingDirectories": True},
                         "sandbox": {
-                            "enabled": True,
+                            "enabled": habitat.builtin_sandbox,
                             "failIfUnavailable": True,
                             "autoAllowBashIfSandboxed": False,
                             "allowUnsandboxedCommands": False,
