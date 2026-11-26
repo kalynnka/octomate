@@ -4,6 +4,8 @@ concern."""
 from octomate.models.artifacts import Artifact, HtmlArtifact, McpAppArtifact
 from octomate.models.auth import (
     LinkProfileSession,
+    RuntimeAccessToken,
+    RuntimeGrant,
     UserApiKey,
     UserInvitation,
     UserSession,
@@ -114,6 +116,8 @@ __all__ = [
     "OAuthOperation",
     "Png",
     "Project",
+    "RuntimeAccessToken",
+    "RuntimeGrant",
     "Snapshot",
     "SnapshotMembership",
     "SnapshotMessage",
