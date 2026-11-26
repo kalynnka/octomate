@@ -342,6 +342,7 @@ async def test_password_change_requires_current_password_and_ends_only_own_sessi
     alice = await auth.login("alice", SecretStr(PASSWORD))
     refresh = SecretStr(client.cookies["octomate_refresh"])
     key = await auth.create_api_key(alice.user_id, name="laptop", scopes=["hooks"])
+    assert key.bearer is not None
     replacement = "Replacement password1!"
     response = await client.post(
         "/api/auth/password",
@@ -358,7 +359,7 @@ async def test_password_change_requires_current_password_and_ends_only_own_sessi
         await auth.login("alice", SecretStr(PASSWORD))
     assert (await auth.login("alice", SecretStr(replacement))).user_id == alice.user_id
     assert await auth.authenticate_session(bob.access_token) is not None
-    assert await auth.authenticate_api_key(key.token, scope="hooks") is not None
+    assert await auth.authenticate_api_key(key.bearer, scope="hooks") is not None
 
 
 @pytest.mark.parametrize(
@@ -710,6 +711,25 @@ async def test_api_keys_are_issued_once_and_managed_only_by_their_owner(
     assert (await client.delete(f"/api/auth/api-keys/{key_id}")).status_code == 204
     for scope in scopes:
         assert await auth.authenticate_api_key(SecretStr(token), scope=scope) is None
+
+
+async def test_personal_key_endpoints_exclude_runtime_credentials(
+    client: httpx2.AsyncClient, auth: AuthManager
+) -> None:
+    await enroll(client, auth)
+    user = User.model_validate((await client.get("/api/auth/me")).json())
+    runtime = await auth.runtime_api_key(user.id, agent_id="acp", scopes=["mcp"])
+    assert runtime.bearer is not None
+    created = await client.post(
+        "/api/auth/api-keys", json={"name": "Laptop", "scopes": ["mcp"]}
+    )
+    assert created.status_code == 201
+    listed = await client.get("/api/auth/api-keys")
+    assert listed.status_code == 200
+    assert [key["id"] for key in listed.json()] == [created.json()["key"]["id"]]
+    assert str(runtime.id) not in listed.text
+    assert (await client.delete(f"/api/auth/api-keys/{runtime.id}")).status_code == 404
+    assert await auth.authenticate_api_key(runtime.bearer, scope="mcp") is not None
 
 
 async def test_api_key_creation_rejects_invalid_scope_expiry_and_cross_origin_writes(

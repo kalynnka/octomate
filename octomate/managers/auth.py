@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import secrets
 from datetime import UTC, datetime
 
@@ -10,7 +11,7 @@ from anyio import CapacityLimiter, to_thread
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from pydantic import UUID7, AwareDatetime, SecretStr
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 from sqlalchemy.orm.exc import StaleDataError
 from uuid_utils.compat import uuid7
 
@@ -18,7 +19,8 @@ from octomate.config.auth import AuthConfig
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.schemas.auth import (
-    IssuedApiKey,
+    ApiKey,
+    RuntimeApiKey,
     SessionTokens,
     UserApiKey,
     UserInvitation,
@@ -321,7 +323,7 @@ class AuthManager(Manager, Locks[str]):
         name: str,
         scopes: list[ApiKeyScope],
         expires_at: AwareDatetime | None = None,
-    ) -> IssuedApiKey:
+    ) -> UserApiKey:
         """Issue for a verified user; the HTTP caller must establish that identity."""
         token = SecretStr(self.config.api_key_prefix + secrets.token_urlsafe(32))
         key = UserApiKey(
@@ -339,23 +341,122 @@ class AuthManager(Manager, Locks[str]):
                 raise InvalidCredentials
             session.add(key)
             await session.commit()
-        return IssuedApiKey(key=key, token=token)
+        key.bearer = token
+        return key
 
     async def authenticate_api_key(
         self, token: SecretStr, *, scope: ApiKeyScope
-    ) -> UserApiKey | None:
+    ) -> ApiKey | None:
+        token_hash = self.hash_token(token, self.config.api_key_salt)
         async with async_session() as session:
+            now = datetime.now(UTC)
             key = await session.one_or_none(
-                UserApiKey,
+                ApiKey,
                 expressions=[
-                    UserApiKey["key_hash"]
-                    == self.hash_token(token, self.config.api_key_salt),
-                    UserApiKey["revoked_at"].is_(None),
-                    UserApiKey["expires_at"].is_(None)
-                    | (UserApiKey["expires_at"] > datetime.now(UTC)),
+                    ApiKey["key_hash"] == token_hash,
+                    ApiKey["revoked_at"].is_(None),
+                    ApiKey["expires_at"].is_(None) | (ApiKey["expires_at"] > now),
                 ],
             )
-        return key if key is not None and scope in key.scopes else None
+            if key is None or scope not in key.scopes:
+                return None
+            if not isinstance(key, RuntimeApiKey):
+                return key
+        async with self.lock(f"api-key:{key.user_id}"), async_session() as session:
+            if session.get_bind().dialect.name == "sqlite":
+                # SQLite has no row locks; reserve its writer before reading.
+                await session.execute(text("BEGIN IMMEDIATE"))
+            await session.get(User, key.user_id, with_for_update=True)
+            current = await session.get(RuntimeApiKey, key.id)
+            now = datetime.now(UTC)
+            if (
+                current is None
+                or current.key_hash != token_hash
+                or current.revoked_at is not None
+                or (current.expires_at is not None and current.expires_at <= now)
+                or scope not in current.scopes
+            ):
+                return None
+            current.expires_at = max(
+                current.expires_at or now, now + self.config.runtime_api_key_lifetime
+            )
+            await session.commit()
+            return current
+
+    def runtime_bearer(self, nonce: UUID7) -> SecretStr:
+        """Reproduce a runtime API key without storing its bearer in the database."""
+        digest = hmac.digest(
+            self.config.api_key_salt.get_secret_value().encode(),
+            b"octomate:runtime-api-key:v1:" + nonce.bytes,
+            "sha256",
+        ).hex()
+        return SecretStr(self.config.api_key_prefix + digest)
+
+    async def runtime_api_key(
+        self, user_id: UUID7, *, agent_id: str, scopes: list[ApiKeyScope]
+    ) -> RuntimeApiKey:
+        """Reuse shared persisted state; expiry rotates the bearer, not the key row."""
+        scopes = sorted(set(scopes))
+        async with self.lock(f"api-key:{user_id}"), async_session() as session:
+            if session.get_bind().dialect.name == "sqlite":
+                # SQLite has no row locks; reserve its writer before reading.
+                await session.execute(text("BEGIN IMMEDIATE"))
+            if await session.get(User, user_id, with_for_update=True) is None:
+                raise InvalidCredentials
+            key = await session.one_or_none(
+                RuntimeApiKey,
+                expressions=[
+                    RuntimeApiKey["user_id"] == user_id,
+                    RuntimeApiKey["runtime_agent_id"] == agent_id,
+                ],
+            )
+            now = datetime.now(UTC)
+            deadline = now + self.config.runtime_api_key_lifetime
+            if key is not None and key.revoked_at is not None:
+                raise InvalidCredentials
+            if (
+                key is None
+                or key.expires_at is None
+                or key.expires_at <= now
+                or key.scopes != scopes
+            ):
+                nonce = uuid7()
+            else:
+                nonce = key.runtime_nonce
+            token = self.runtime_bearer(nonce)
+            if (
+                key is not None
+                and nonce == key.runtime_nonce
+                and key.key_hash != self.hash_token(token, self.config.api_key_salt)
+            ):
+                raise ValueError(
+                    "Runtime API key does not match this core's auth secrets"
+                )
+            if key is None:
+                key = RuntimeApiKey(
+                    user_id=user_id,
+                    scopes=scopes,
+                    runtime_agent_id=agent_id,
+                    runtime_nonce=nonce,
+                    key_hash=self.hash_token(token, self.config.api_key_salt),
+                    key_prefix=token.get_secret_value()[:12],
+                )
+                session.add(key)
+            key.runtime_nonce = nonce
+            key.key_hash = self.hash_token(token, self.config.api_key_salt)
+            key.key_prefix = token.get_secret_value()[:12]
+            key.scopes = scopes
+            key.expires_at = max(key.expires_at or now, deadline)
+            await session.commit()
+            key.bearer = token
+            return key
+
+    async def get_api_key(self, user_id: UUID7, key_id: UUID7) -> ApiKey:
+        async with async_session() as session:
+            key = await session.get(ApiKey, key_id)
+            if key is None or key.user_id != user_id:
+                raise InvalidCredentials
+            return key
 
     async def list_api_keys(self, user_id: UUID7) -> list[UserApiKey]:
         async with async_session() as session:
@@ -368,10 +469,15 @@ class AuthManager(Manager, Locks[str]):
             )
 
     async def revoke_api_key(self, user_id: UUID7, key_id: UUID7) -> None:
-        async with async_session() as session:
-            key = await session.get(UserApiKey, key_id)
+        async with self.lock(f"api-key:{user_id}"), async_session() as session:
+            if session.get_bind().dialect.name == "sqlite":
+                # SQLite has no row locks; reserve its writer before reading.
+                await session.execute(text("BEGIN IMMEDIATE"))
+            await session.get(User, user_id, with_for_update=True)
+            key = await session.get(ApiKey, key_id)
             if key is None or key.user_id != user_id:
                 raise InvalidCredentials
-            if key.revoked_at is None:
-                key.revoked_at = datetime.now(UTC)
-                await session.commit()
+            if key.revoked_at is not None:
+                return
+            key.revoked_at = datetime.now(UTC)
+            await session.commit()

@@ -60,11 +60,13 @@ async def test_scoped_key_resolves_its_owner_without_inherited_database_context(
 ) -> None:
     assert app.auth is not None
     key = await app.auth.create_api_key(user.id, name="ACP client", scopes=["acp"])
+    assert key.bearer is not None
 
     def connect() -> None:
+        assert key.bearer is not None
         with TestClient(app).websocket_connect(
             "/test/acp?username=bob",
-            headers={"Authorization": f"{scheme} {key.token.get_secret_value()}"},
+            headers={"Authorization": f"{scheme} {key.bearer.get_secret_value()}"},
         ) as socket:
             assert socket.receive_json() == {
                 "user_id": str(user.id),
@@ -85,11 +87,12 @@ async def test_existing_scopes_cannot_authorize_acp(
 ) -> None:
     assert app.auth is not None
     key = await app.auth.create_api_key(user.id, name="Existing client", scopes=scopes)
+    assert key.bearer is not None
     with (
         pytest.raises(WebSocketDenialResponse) as denial,
         TestClient(app).websocket_connect(
             "/test/acp",
-            headers={"Authorization": f"Bearer {key.token.get_secret_value()}"},
+            headers={"Authorization": f"Bearer {key.bearer.get_secret_value()}"},
         ),
     ):
         pytest.fail("A key without the ACP scope reached the endpoint")
@@ -118,11 +121,12 @@ async def test_revoked_or_expired_keys_are_refused(
 ) -> None:
     assert app.auth is not None
     key = await app.auth.create_api_key(user.id, name="ACP client", scopes=["acp"])
+    assert key.bearer is not None
     if state == "revoked":
-        await app.auth.revoke_api_key(user.id, key.key.id)
+        await app.auth.revoke_api_key(user.id, key.id)
     else:
         async with async_session() as session:
-            stored = await session.get(UserApiKey, key.key.id)
+            stored = await session.get(UserApiKey, key.id)
             assert stored is not None
             stored.expires_at = datetime.now(UTC) - timedelta(seconds=1)
             await session.commit()
@@ -130,7 +134,7 @@ async def test_revoked_or_expired_keys_are_refused(
         pytest.raises(WebSocketDenialResponse) as denial,
         TestClient(app).websocket_connect(
             "/test/acp",
-            headers={"Authorization": f"Bearer {key.token.get_secret_value()}"},
+            headers={"Authorization": f"Bearer {key.bearer.get_secret_value()}"},
         ),
     ):
         pytest.fail("An inactive key reached the endpoint")
@@ -147,11 +151,12 @@ async def test_browser_session_and_query_token_cannot_authorize_execution(
     )
     tokens = await app.auth.login(user.username, password)
     key = await app.auth.create_api_key(user.id, name="ACP client", scopes=["acp"])
+    assert key.bearer is not None
     client = TestClient(app)
     client.cookies.set("octomate_access", tokens.access_token.get_secret_value())
     with (
         pytest.raises(WebSocketDenialResponse) as denial,
-        client.websocket_connect(f"/test/acp?token={key.token.get_secret_value()}"),
+        client.websocket_connect(f"/test/acp?token={key.bearer.get_secret_value()}"),
     ):
         pytest.fail("Cookies or a query token authorized execution")
     assert denial.value.status_code == 401
@@ -160,7 +165,8 @@ async def test_browser_session_and_query_token_cannot_authorize_execution(
 async def test_acp_scope_does_not_grant_hooks_or_mcp(app: Octomate, user: User) -> None:
     assert app.auth is not None
     key = await app.auth.create_api_key(user.id, name="ACP client", scopes=["acp"])
-    token = key.token.get_secret_value()
+    assert key.bearer is not None
+    token = key.bearer.get_secret_value()
     assert await app.bearers.verify_token(token) is None
     with pytest.raises(HTTPException) as denial:
         await hook_guard(app.bearers)(f"Bearer {token}")

@@ -16,7 +16,6 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self, get_args, overload
 
-import anyio
 from httpx2 import URL
 from opentelemetry.trace import get_tracer
 from pydantic import UUID7, TypeAdapter
@@ -561,8 +560,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 pass
             self.warm_task = None
         await self._exit_stack.aclose()
-        with anyio.CancelScope(shield=True):
-            await self.revoke_runtime_keys()
 
     async def resolve_conversation(
         self,
@@ -974,7 +971,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         )
         if profile is not None and profile.user_id is not None:
             key = await self.runtime_api_key(profile.user_id)
-            if key is None:
+            if key is None or key.bearer is None:
                 raise ValueError("Inkling MCP tools require configured authentication")
             if octomate_session is None or octomate_session.conversation_id is None:
                 raise ValueError("Inkling MCP tools require a core-owned conversation")
@@ -992,7 +989,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 ),
                 id="octomate",
                 headers={
-                    "Authorization": f"Bearer {key.token.get_secret_value()}",
+                    "Authorization": f"Bearer {key.bearer.get_secret_value()}",
                     CONVERSATION_HEADER: str(octomate_session.conversation_id),
                 },
                 process_tool_call=OctomateTools.call,

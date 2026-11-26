@@ -192,31 +192,36 @@ async def test_api_keys_are_independent_named_scoped_credentials(
     auth: AuthManager, user: User
 ) -> None:
     hook = await auth.create_api_key(user.id, name="laptop", scopes=["hooks"])
+    assert hook.bearer is not None
     mcp = await auth.create_api_key(user.id, name="editor", scopes=["mcp"])
-    assert hook.token != mcp.token
+    assert mcp.bearer is not None
+    assert hook.bearer != mcp.bearer
     async with async_session() as session:
-        stored = await session.get(UserApiKey, hook.key.id)
+        stored = await session.get(UserApiKey, hook.id)
     assert stored is not None
     assert stored.name == "laptop"
-    assert stored.key_hash != hook.token
+    assert stored.bearer is None
+    assert stored.key_hash != hook.bearer
     assert len(stored.key_hash.get_secret_value()) == 64
     assert "key_hash" not in stored.model_dump()
-    assert hook.token.get_secret_value() not in stored.model_dump_json()
-    assert hook.token.get_secret_value() not in hook.model_dump_json()
-    assert hook.token.get_secret_value() not in repr(hook)
-    assert stored.key_prefix == hook.token.get_secret_value()[:12]
+    assert hook.bearer.get_secret_value() not in stored.model_dump_json()
+    assert hook.bearer.get_secret_value() not in hook.model_dump_json()
+    assert hook.bearer.get_secret_value() not in repr(hook)
+    assert hook.bearer.get_secret_value() not in str(hook)
+    assert hook.bearer.get_secret_value() not in f"{hook}"
+    assert stored.key_prefix == hook.bearer.get_secret_value()[:12]
 
     restarted = AuthManager(auth.config)
-    verified = await restarted.authenticate_api_key(hook.token, scope="hooks")
+    verified = await restarted.authenticate_api_key(hook.bearer, scope="hooks")
     assert verified is not None
     assert verified.user_id == user.id
-    assert await restarted.authenticate_api_key(hook.token, scope="mcp") is None
+    assert await restarted.authenticate_api_key(hook.bearer, scope="mcp") is None
     with pytest.raises(InvalidCredentials):
-        await auth.revoke_api_key(uuid7(), hook.key.id)
-    await auth.revoke_api_key(user.id, hook.key.id)
-    await auth.revoke_api_key(user.id, hook.key.id)
-    assert await restarted.authenticate_api_key(hook.token, scope="hooks") is None
-    assert await restarted.authenticate_api_key(mcp.token, scope="mcp") is not None
+        await auth.revoke_api_key(uuid7(), hook.id)
+    await auth.revoke_api_key(user.id, hook.id)
+    await auth.revoke_api_key(user.id, hook.id)
+    assert await restarted.authenticate_api_key(hook.bearer, scope="hooks") is None
+    assert await restarted.authenticate_api_key(mcp.bearer, scope="mcp") is not None
 
 
 async def test_credential_types_cannot_be_substituted(
@@ -224,11 +229,12 @@ async def test_credential_types_cannot_be_substituted(
 ) -> None:
     tokens = await auth.login(user.username, PASSWORD)
     key = await auth.create_api_key(user.id, name="editor", scopes=["hooks", "mcp"])
+    assert key.bearer is not None
     for token in (tokens.access_token, tokens.refresh_token, SecretStr("unknown")):
         assert await auth.authenticate_api_key(token, scope="mcp") is None
-    for token in (key.token, tokens.refresh_token, SecretStr("unknown")):
+    for token in (key.bearer, tokens.refresh_token, SecretStr("unknown")):
         assert await auth.authenticate_session(token) is None
-    for token in (key.token, tokens.access_token, SecretStr("unknown")):
+    for token in (key.bearer, tokens.access_token, SecretStr("unknown")):
         with pytest.raises(InvalidCredentials):
             await auth.refresh_session(token)
 
@@ -238,9 +244,10 @@ async def test_api_key_expiry_is_enforced(auth: AuthManager, user: User) -> None
     key = await auth.create_api_key(
         user.id, name="temporary", scopes=["mcp"], expires_at=deadline
     )
+    assert key.bearer is not None
     with patch("octomate.managers.auth.datetime") as clock:
         clock.now.return_value = deadline
-        assert await auth.authenticate_api_key(key.token, scope="mcp") is None
+        assert await auth.authenticate_api_key(key.bearer, scope="mcp") is None
     with pytest.raises(ValidationError, match="timezone"):
         await auth.create_api_key(
             user.id,

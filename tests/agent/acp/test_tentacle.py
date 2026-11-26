@@ -26,7 +26,7 @@ from octomate.events import (
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.nerve import ThreadTopic
 from octomate.reflex.state import ReflexResult
-from octomate.schemas.auth import UserApiKey
+from octomate.schemas.auth import RuntimeApiKey
 from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSignal
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.deferred import DeferredActionBatch
@@ -184,7 +184,9 @@ async def test_custom_harness_discovers_selects_and_reopens(
                 "outputTokens": 1,
                 "totalTokens": 10000,
             }
-        assert all(key.revoked_at is not None for key in await session.list(UserApiKey))
+        [key] = await session.list(RuntimeApiKey)
+        assert key.revoked_at is None
+        assert key.scopes == ["mcp"]
     messages = [
         json.loads(line)["message"]
         for line in (tmp_path / "custom-requests.jsonl").read_text().splitlines()
@@ -312,8 +314,9 @@ async def test_public_endpoint_drives_custom_harness(
     user = await a_user("alice")
     assert app.auth is not None
     key = await app.auth.create_api_key(user.id, name="test", scopes=["acp"])
+    assert key.bearer is not None
     client = TestClient(
-        app, headers={"Authorization": f"Bearer {key.token.get_secret_value()}"}
+        app, headers={"Authorization": f"Bearer {key.bearer.get_secret_value()}"}
     )
     async with agent:
         with client.websocket_connect("/api/acp") as socket:
@@ -423,7 +426,7 @@ async def test_harness_without_http_mcp(
             )
         assert result.output == "custom harness answer"
     async with async_session() as session:
-        assert not await session.list(UserApiKey)
+        assert not await session.list(RuntimeApiKey)
 
 
 @pytest.fixture(params=["claude-agent-acp", "codex-acp"])
@@ -535,8 +538,8 @@ async def test_reflex_owns_dispatch_and_history(
             "assistant_reply",
         }
         assert all(binding.run_id == run.id for binding in bindings)
-        [key] = await session.list(UserApiKey)
-        assert key.revoked_at is not None
+        [key] = await session.list(RuntimeApiKey)
+        assert key.revoked_at is None
     log = await AsyncPath(adapter_environment["ACP_TEST_LOG"]).read_text()
     messages = [json.loads(line)["message"] for line in log.splitlines()]
     initialize = messages[0]["params"]
@@ -552,7 +555,7 @@ async def test_reflex_owns_dispatch_and_history(
     headers = {item["name"]: item["value"] for item in mcp["headers"]}
     assert headers[CONVERSATION_HEADER] == str(conversation.id)
     token = headers["Authorization"].removeprefix("Bearer ")
-    assert await app.bearers.owner(token, scope="mcp") is None
+    assert await app.bearers.owner(token, scope="mcp") is not None
     prompt = next(
         item["params"] for item in messages if item.get("method") == "session/prompt"
     )
@@ -595,7 +598,9 @@ async def test_direct_runs_reopen_the_conversation_without_dispatch(
         assert conversation.external_id == "native-1"
         assert len(await session.list(AgentRun)) == 2
         assert not await session.list(ThreadMessage)
-        assert all(key.revoked_at is not None for key in await session.list(UserApiKey))
+        [key] = await session.list(RuntimeApiKey)
+        assert key.revoked_at is None
+        assert key.scopes == ["mcp"]
     log = await AsyncPath(adapter_environment["ACP_TEST_LOG"]).read_text()
     messages = [json.loads(line)["message"] for line in log.splitlines()]
     assert [item.get("method") for item in messages[:3]] == [
@@ -648,7 +653,9 @@ async def test_cancel_settles_provider_and_keeps_partial_history(
         assert batch.status == "expired"
         assert len(run.messages) == 2
         assert len(await session.list(ThreadMessage)) == 2
-        assert all(key.revoked_at is not None for key in await session.list(UserApiKey))
+        [key] = await session.list(RuntimeApiKey)
+        assert key.revoked_at is None
+        assert key.scopes == ["mcp"]
     log = await AsyncPath(adapter_environment["ACP_TEST_LOG"]).read_text()
     assert any(
         json.loads(line)["message"].get("method") == "session/cancel"
@@ -683,7 +690,7 @@ async def test_conversation_cannot_cross_threads(
     assert not await AsyncPath(adapter_environment["ACP_TEST_LOG"]).exists()
 
 
-async def test_provider_failure_preserves_partial_run_and_revokes_key(
+async def test_provider_failure_preserves_partial_run_and_reusable_key(
     agent: tuple[AcpAgentTentacle, UserProfile, Thread],
     tmp_path: Path,
 ) -> None:
@@ -723,4 +730,6 @@ async def test_provider_failure_preserves_partial_run_and_revokes_key(
         [binding] = await session.list(MessageBinding)
         assert binding.kind == "assistant_reply"
         assert binding.run_id == run.id
-        assert all(key.revoked_at is not None for key in await session.list(UserApiKey))
+        [key] = await session.list(RuntimeApiKey)
+        assert key.revoked_at is None
+        assert key.scopes == ["mcp"]
