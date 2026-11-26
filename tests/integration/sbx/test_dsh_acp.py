@@ -22,7 +22,7 @@ from octomate.habitat.sbx import SbxHabitat
 from octomate.schemas.habitat import InvocationScope
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.acp.base import AcpAgentTentacle
-from tests.habitat.sbx import remove_sandbox
+from tests.integration.sbx import remove_sandbox
 from tests.support.invocations import invocation_for
 from tests.support.users import a_user, auth_config
 

@@ -19,7 +19,7 @@ from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
 from octomate.schemas.habitat import InvocationScope
 from octomate.tentacles.codex.client import SharedCodex
-from tests.habitat.sbx import cli_pids, remove_sandbox
+from tests.integration.sbx import cli_pids, remove_sandbox
 from tests.support.managers import a_workspace_manager
 
 

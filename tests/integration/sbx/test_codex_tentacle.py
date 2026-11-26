@@ -30,8 +30,8 @@ from octomate.schemas.habitat import InvocationScope
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.codex import CodexTentacle
 from tests.agent.claude.test_driven_transcript import served
-from tests.habitat.sbx import cli_pids, expire_idle, remove_sandbox
 from tests.integration.native_sandbox.provider import ScriptedProvider, local_provider
+from tests.integration.sbx import cli_pids, expire_idle, remove_sandbox
 from tests.support.invocations import invocation_for
 from tests.support.managers import a_project, a_registry
 from tests.support.users import a_user, auth_config

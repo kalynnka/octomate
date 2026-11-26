@@ -14,7 +14,7 @@ from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
 from octomate.schemas.habitat import InvocationScope
-from tests.habitat.sbx import remove_sandbox
+from tests.integration.sbx import remove_sandbox
 from tests.support.managers import a_thread, a_workspace_manager
 from tests.support.users import a_user
 

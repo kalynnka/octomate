@@ -60,7 +60,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
-    if collection_path == Path(__file__).parent / "habitat" / "sbx":
+    if collection_path == Path(__file__).parent / "integration" / "sbx":
         return not config.getoption("--sbx")
     if collection_path == Path(__file__).parent / "integration" / "native_sandbox":
         return not config.getoption("--native-sandbox")

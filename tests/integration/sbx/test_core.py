@@ -21,7 +21,7 @@ from tests.agent.claude.test_driven_transcript import (
     kept_bytes,
     served,
 )
-from tests.habitat.sbx import remove_sandbox
+from tests.integration.sbx import remove_sandbox
 from tests.support.invocations import invocation_for
 
 
