@@ -21,6 +21,9 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 VERSIONS = "octomate/migrations/versions/"
 
 
+@pytest.mark.filterwarnings(
+    "error:Cannot correctly sort tables:sqlalchemy.exc.SAWarning"
+)
 def test_migrations_upgrade_a_database_at_main_to_this_head(
     request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
