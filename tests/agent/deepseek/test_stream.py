@@ -151,7 +151,7 @@ def test_entries_flow_over_the_socket_and_the_next_connect_resumes() -> None:
         assert client.portal is not None
         live = subscriptions.enter_context(
             client.portal.wrap_async_context_manager(
-                tentacle.octomate.nerve.subscribe(ThreadTopic(key))
+                tentacle.octomate.nerves.events.subscribe(ThreadTopic(key))
             )
         )
         with client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket:

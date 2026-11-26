@@ -345,7 +345,7 @@ def hello_json(session_id: str = SESSION_ID, protocol: int = STREAM_PROTOCOL) ->
 async def test_native_subagent_hooks_reach_the_thread_before_the_parent_ends() -> None:
     client, tentacle = stream_client()
     key = ThreadKey("claude", "thread", SESSION_ID)
-    async with tentacle.octomate.nerve.subscribe(ThreadTopic(key)) as live:
+    async with tentacle.octomate.nerves.events.subscribe(ThreadTopic(key)) as live:
         with client:
             for event in ("SubagentStart", "SubagentStop"):
                 posted = client.post(
@@ -379,7 +379,7 @@ async def test_a_native_subagent_left_open_settles_with_its_turn_or_session() ->
         },
         {"hook_event_name": "SessionEnd"},
     ]
-    async with tentacle.octomate.nerve.subscribe(ThreadTopic(key)) as live:
+    async with tentacle.octomate.nerves.events.subscribe(ThreadTopic(key)) as live:
         with client:
             for hook in hooks:
                 posted = client.post(
@@ -409,7 +409,7 @@ async def test_an_interrupted_native_subagent_settles_at_its_own_marker() -> Non
         [{"type": "text", "text": "[Request interrupted by user for tool use]"}],
     )
     hook: JsonObject = {"session_id": SESSION_ID, "prompt_id": "p1"}
-    async with tentacle.octomate.nerve.subscribe(ThreadTopic(key)) as live:
+    async with tentacle.octomate.nerves.events.subscribe(ThreadTopic(key)) as live:
         with client:
             started = client.post(
                 CLAUDE_HOOK_PATH,
@@ -512,7 +512,7 @@ def test_lines_over_the_socket_commit_and_the_next_welcome_resumes() -> None:
         assert client.portal is not None
         live = subscriptions.enter_context(
             client.portal.wrap_async_context_manager(
-                tentacle.octomate.nerve.subscribe(ThreadTopic(key))
+                tentacle.octomate.nerves.events.subscribe(ThreadTopic(key))
             )
         )
         with client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as websocket:

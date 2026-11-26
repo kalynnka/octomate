@@ -139,7 +139,7 @@ async def _run(
     origin = state.source_target.address if state.source_target else None
     async with (
         drawing(*deps.channels.values()),
-        host.nerve.publish(origin) as impulses,
+        host.nerves.events.publish(origin) as impulses,
     ):
         return await build_reflex_graph(type(entry)).run(
             inputs=entry, state=state, deps=replace(deps, impulses=impulses)
@@ -2742,7 +2742,7 @@ async def test_a_failed_turn_is_reported_where_it_came_from() -> None:
     )
     address = _key()
 
-    async with drawing(im), im.octomate.nerve.publish(address) as impulses:
+    async with drawing(im), im.octomate.nerves.events.publish(address) as impulses:
         kicked = replace(deps, impulses=impulses)
         await kicked.report(
             ReflexState(source_target=_source_target(address)), RuntimeError("here")

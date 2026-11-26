@@ -12,11 +12,12 @@ from pydantic_ai.messages import PartDeltaEvent, TextPartDelta
 from uuid_utils.compat import uuid7
 
 from octomate.events import HabitatFailedEvent, HabitatProgressEvent, MessageSentEvent
-from octomate.fibers import MemoryFiber
+from octomate.fibers import FiberError, MemoryFiber
 from octomate.nerve import (
     ChannelTopic,
     HabitatTopic,
     Impulse,
+    InvocationTopic,
     Nerve,
     ThreadTopic,
     UserTopic,
@@ -32,6 +33,37 @@ FAR = ChannelAddress("slack", "dm", "D1", "U1")
 EVENT = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="hi"))
 SIGNAL = InterruptRunSignal(invocation_id=uuid7())
 LATER = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="there"))
+
+
+async def test_directed_delivery_requires_one_ready_receiver() -> None:
+    nerve = Nerve[Signal]()
+    topic = InvocationTopic(SIGNAL.invocation_id)
+    with pytest.raises(FiberError, match="exactly one"):
+        nerve.dispatch(topic, SIGNAL)
+    async with MemoryFiber[Signal]() as first, MemoryFiber[Signal]() as second:
+        with nerve.accept(topic, first):
+            nerve.dispatch(topic, SIGNAL)
+            assert held(first) == [SIGNAL]
+            with (
+                nerve.accept(topic, second),
+                pytest.raises(FiberError, match="exactly one"),
+            ):
+                nerve.dispatch(topic, SIGNAL)
+            assert held(first) == []
+            assert held(second) == []
+            first.close()
+            with pytest.raises(FiberError, match="exactly one"):
+                nerve.dispatch(topic, SIGNAL)
+
+
+async def test_directed_delivery_reports_a_full_receiver() -> None:
+    nerve = Nerve[Signal]()
+    topic = InvocationTopic(SIGNAL.invocation_id)
+    async with nerve.subscribe(topic, backlog=1) as receiver:
+        nerve.dispatch(topic, SIGNAL)
+        with pytest.raises(anyio.WouldBlock):
+            nerve.dispatch(topic, SIGNAL)
+        assert await receiver.receive() == SIGNAL
 
 
 @pytest.mark.parametrize("supplied", [False, True])

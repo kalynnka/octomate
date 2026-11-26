@@ -56,7 +56,7 @@ async def context(
             agent_id="inkling", model="test", reason="Work", hint="", brief=""
         ),
     )
-    async with app.nerve.publish(address) as impulses:
+    async with app.nerves.events.publish(address) as impulses:
         yield GraphRunContext(
             state=state,
             deps=ReflexDeps(

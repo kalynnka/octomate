@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from pydantic_ai.tools import DeferredToolResults
 from pydantic_graph import BaseNode, End, GraphRunContext
 
 from octomate.events import ReflexPhaseChangedEvent
@@ -258,11 +257,7 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             if self.request.tool_call_id is None:
                 state.user_prompt = f"{sentence}\nCurrent channel address: {address}"
                 return React()
-            return React(
-                resume_results=DeferredToolResults(
-                    calls={self.request.tool_call_id: sentence}
-                )
-            )
+            return React(tool_results={self.request.tool_call_id: sentence})
         if state.user_profile is None:
             raise ValueError("A prompt after a teleport needs its user")
         channel = ctx.deps.channel(address.channel_tentacle_id)

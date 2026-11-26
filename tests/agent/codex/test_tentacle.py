@@ -1047,7 +1047,7 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
             origin=origin,
             agent_id="codex",
         )
-        async with octomate.nerve.publish(KEY) as impulses:
+        async with octomate.nerves.events.publish(KEY) as impulses:
             await node.run(
                 GraphRunContext(state=state, deps=replace(deps, impulses=impulses))
             )

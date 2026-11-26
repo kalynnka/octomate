@@ -356,8 +356,8 @@ async def test_a_stop_returns_before_the_late_reply_and_completion(
     """Codex can flush its reply and terminal line only after Stop returns."""
     octomate, tailer = remote_tailer()
     key = ThreadKey.from_address(SESSION_ADDRESS)
-    async with octomate.nerve.subscribe(ThreadTopic(key)) as live:
-        async with octomate.nerve.publish(SESSION_ADDRESS) as impulses:
+    async with octomate.nerves.events.subscribe(ThreadTopic(key)) as live:
+        async with octomate.nerves.events.publish(SESSION_ADDRESS) as impulses:
             state, _ = await tailer.attach_remote(
                 SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
             )
@@ -566,7 +566,7 @@ def test_native_html_crosses_the_client_stream_and_reuses_the_owned_viewer(
         assert client.portal is not None
         live = subscriptions.enter_context(
             client.portal.wrap_async_context_manager(
-                host.nerve.subscribe(
+                host.nerves.events.subscribe(
                     ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
                 )
             )

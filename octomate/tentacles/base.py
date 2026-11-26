@@ -42,7 +42,7 @@ class Tentacle[TentaclePrimaryT, TentacleSecondaryT]:
     @property
     def nerve(self) -> Nerve:
         """The outbound nerve of the host this tentacle belongs to."""
-        return self.octomate.nerve
+        return self.octomate.nerves.events
 
     @property
     def log_names(self) -> tuple[str, ...]:

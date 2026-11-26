@@ -95,7 +95,7 @@ async def test_two_artifacts_and_the_reply_have_distinct_deliveries(
             RunResultEvent(output="done", usage=RunUsage()),
             RunEndedEvent(thread_message_id=reply.id),
         ]:
-            channel.octomate.nerve.deliver(
+            channel.octomate.nerves.events.deliver(
                 ChannelTopic(channel.id), Impulse(event, ADDRESS)
             )
 
@@ -128,7 +128,7 @@ async def test_artifact_outside_a_run_preserves_the_platform_thread(
         "im", "thread", "chat", "alice", "platform-root", shared=True
     )
     async with drawing(channel):
-        channel.octomate.nerve.deliver(
+        channel.octomate.nerves.events.deliver(
             ChannelTopic(channel.id),
             Impulse(
                 ArtifactAvailableEvent(
@@ -160,7 +160,7 @@ async def test_artifact_separates_buffered_text_from_following_text(
             PartStartEvent(index=1, part=TextPart("after")),
             RunEndedEvent(),
         ]:
-            channel.octomate.nerve.deliver(
+            channel.octomate.nerves.events.deliver(
                 ChannelTopic(channel.id), Impulse(event, ADDRESS)
             )
     texts = [
@@ -211,7 +211,7 @@ async def test_unconfigured_overviews_leave_the_normal_reply_intact(
             RunResultEvent(output="done", usage=RunUsage()),
             RunEndedEvent(),
         ]:
-            channel.octomate.nerve.deliver(
+            channel.octomate.nerves.events.deliver(
                 ChannelTopic(channel.id), Impulse(event, ADDRESS)
             )
     assert [

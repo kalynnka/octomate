@@ -353,7 +353,7 @@ async def test_claude_ingest_persists_clean_prompt_and_annotations() -> None:
     _, tailer = claude.wired(octomate)
     await claude.stream_in(
         tailer,
-        octomate.nerve,
+        octomate.nerves.events,
         [
             claude.prompt_record("prompt", CLAUDE, 0),
             claude.assistant_record("reply", 1, [{"type": "text", "text": "Done."}]),

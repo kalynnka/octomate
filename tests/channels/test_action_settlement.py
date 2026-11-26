@@ -144,12 +144,14 @@ async def publish(
     topic = ChannelTopic(channel.id)
     async with drawing(channel):
         if mode != "outside":
-            channel.octomate.nerve.deliver(
+            channel.octomate.nerves.events.deliver(
                 topic, Impulse(RunStartedEvent(address=address), address)
             )
-        channel.octomate.nerve.deliver(topic, Impulse(event, address))
+        channel.octomate.nerves.events.deliver(topic, Impulse(event, address))
         if mode != "outside":
-            channel.octomate.nerve.deliver(topic, Impulse(RunEndedEvent(), address))
+            channel.octomate.nerves.events.deliver(
+                topic, Impulse(RunEndedEvent(), address)
+            )
 
 
 def rendered(channel: FakeChannelTentacle, edits: AsyncMock) -> list[str]:
@@ -269,7 +271,7 @@ async def test_closure_settles_every_card_and_preserves_accepted_decisions(
     topic = ChannelTopic(channel.id)
     async with drawing(channel):
         if mode != "outside":
-            channel.octomate.nerve.deliver(
+            channel.octomate.nerves.events.deliver(
                 topic,
                 Impulse(
                     RunStartedEvent(address=batch.target_address), batch.target_address
@@ -277,7 +279,7 @@ async def test_closure_settles_every_card_and_preserves_accepted_decisions(
             )
         await manager.mark_batch(batch.id, status)
         if mode != "outside":
-            channel.octomate.nerve.deliver(
+            channel.octomate.nerves.events.deliver(
                 topic, Impulse(RunEndedEvent(), batch.target_address)
             )
     stored = await manager.get_batch(batch.id)

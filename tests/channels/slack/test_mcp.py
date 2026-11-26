@@ -154,7 +154,7 @@ async def a_slack_turn(
         channels={channel.id: channel, "im": FakeChannelTentacle(octomate=octomate)},
         conversation_id=uuid7(),
         conversation_address=address,
-        nerve=octomate.nerve,
+        nerve=octomate.nerves.events,
         users=octomate.users,
         user_profile=await octomate.users.profile(channel.id, "U1"),
         threads=octomate.threads,

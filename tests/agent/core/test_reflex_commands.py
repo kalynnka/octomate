@@ -129,7 +129,7 @@ async def test_direct_command_delivers_feedback_without_model_history_and_replay
     state = ReflexState()
     async with (
         drawing(channel),
-        app.nerve.publish(signal.context.address) as impulses,
+        app.nerves.events.publish(signal.context.address) as impulses,
     ):
         await reflex_graph.run(
             inputs=Awake(signal),
@@ -367,7 +367,7 @@ async def test_command_gateway_handoff_continues_in_the_same_reflex_graph(
     agent.behavior = "stream_complete"
     monkeypatch.setattr(agent, "events", events)
     state = ReflexState()
-    async with app.nerve.publish(signal.context.address) as impulses:
+    async with app.nerves.events.publish(signal.context.address) as impulses:
         deps = ReflexDeps(
             workspaces=app.workspaces,
             agents=app.agents,
@@ -539,7 +539,7 @@ async def test_a_commands_events_reach_its_trunkline_thread(
     if model_run:
         agent.behavior = "stream_complete"
         monkeypatch.setattr(agent, "events", events)
-    async with app.nerve.subscribe(
+    async with app.nerves.events.subscribe(
         ThreadTopic(ThreadKey.from_address(address))
     ) as live:
         await kicked(app, signal)

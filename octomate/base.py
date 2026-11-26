@@ -44,7 +44,7 @@ from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.mcp.base import KnownBearers
 from octomate.mcp.gateway import served_session
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_mcp
-from octomate.nerve import Nerve
+from octomate.nerve import Nerves
 from octomate.reflex import (
     ReflexDeps,
     ReflexGraphResult,
@@ -157,7 +157,7 @@ class Octomate(FastAPI):
     deferred_actions: DeferredActionManager = field(init=False)
     gateway: GatewayManager = field(default_factory=GatewayManager)
     workspaces: WorkspaceManager = field(init=False)
-    nerve: Nerve = field(default_factory=Nerve)
+    nerves: Nerves = field(default_factory=Nerves)
     habitats: HabitatManager = field(init=False)
 
     # Every connected tentacle by id, in connection order — the one registry. A
@@ -194,9 +194,11 @@ class Octomate(FastAPI):
             mirrors=MirrorManager(config=self.config.mirrors, volumes=volumes),
             config=self.config.workspaces,
         )
-        self.threads = ThreadManager(users=self.users, nerve=self.nerve)
-        self.habitats = HabitatManager(self.config.habitat, self.nerve, self.workspaces)
-        self.deferred_actions = DeferredActionManager(nerve=self.nerve)
+        self.threads = ThreadManager(users=self.users, nerve=self.nerves.events)
+        self.habitats = HabitatManager(
+            self.config.habitat, self.nerves.events, self.workspaces
+        )
+        self.deferred_actions = DeferredActionManager(nerve=self.nerves.events)
         self.commands = CommandManager(
             tentacles=self.tentacles,
             users=self.users,
@@ -379,7 +381,7 @@ class Octomate(FastAPI):
                 raise StillAwake()
 
             async def reflex() -> ReflexGraphResult:
-                async with self.nerve.publish(origin, retain=True) as impulses:
+                async with self.nerves.events.publish(origin, retain=True) as impulses:
                     deps = ReflexDeps(
                         workspaces=self.workspaces,
                         agents=self.agents,

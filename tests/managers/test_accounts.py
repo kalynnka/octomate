@@ -592,7 +592,7 @@ async def test_private_threads_and_mutations_are_isolated(
 ) -> None:
     assert (await client.get("/api/trunkline/threads")).status_code == 401
     alice = (await enroll(client, auth)).json()
-    async with app.nerve.subscribe(
+    async with app.nerves.events.subscribe(
         ThreadTopic(ThreadKey("trunkline", "thread", alice["id"], "shared-key"))
     ) as live:
         posted = await client.post(
@@ -648,7 +648,7 @@ async def test_private_threads_and_mutations_are_isolated(
         )
     ).status_code == 404
     assert (await app.deferred_actions.get_batch(batch.id)).status == "pending"
-    async with app.nerve.subscribe(
+    async with app.nerves.events.subscribe(
         ThreadTopic(ThreadKey("trunkline", "thread", bob["id"], "shared-key"))
     ) as live:
         second = await client.post(

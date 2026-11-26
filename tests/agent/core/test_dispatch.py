@@ -342,7 +342,7 @@ async def test_a_second_kick_on_an_awake_thread_is_refused() -> None:
     signal = UserMessageAwake([_event(text="hello", thread_id="t1")])
 
     reflex = await octomate.kick(signal)
-    async with octomate.nerve.subscribe(ThreadTopic(thread)) as live:
+    async with octomate.nerves.events.subscribe(ThreadTopic(thread)) as live:
         with pytest.raises(StillAwake):
             await octomate.kick(signal)
         assert held(live) == []
@@ -363,7 +363,7 @@ async def test_a_kick_retains_what_it_says_for_as_long_as_it_is_awake() -> None:
     address = _key(thread_id="t1")
     thread = ThreadTopic(ThreadKey.from_address(address))
 
-    async with octomate.nerve.subscribe(
+    async with octomate.nerves.events.subscribe(
         ChannelTopic(address.channel_tentacle_id)
     ) as routed:
         reflex = await octomate.kick(
@@ -371,11 +371,11 @@ async def test_a_kick_retains_what_it_says_for_as_long_as_it_is_awake() -> None:
         )
         assert reflex is not None
         await routed.receive()
-        async with octomate.nerve.subscribe(thread, replay=0) as late:
+        async with octomate.nerves.events.subscribe(thread, replay=0) as late:
             assert isinstance(held(late)[0].event, ReflexAwakeEvent)
         await reflex
 
-    assert octomate.nerve.retained == {}
+    assert octomate.nerves.events.retained == {}
 
 
 async def test_a_message_on_an_awake_thread_waits_in_the_ledger(
@@ -857,8 +857,10 @@ async def test_status_facts_keep_the_reflex_open_across_runs(ending: str) -> Non
     app.connect(FakeChannelTentacle(config=_summon_config(stream=False)))
 
     async with (
-        app.nerve.subscribe(ThreadTopic(ThreadKey.from_address(_key()))) as live,
-        app.nerve.subscribe(ChannelTopic("im")) as channel_live,
+        app.nerves.events.subscribe(
+            ThreadTopic(ThreadKey.from_address(_key()))
+        ) as live,
+        app.nerves.events.subscribe(ChannelTopic("im")) as channel_live,
     ):
         await kicked(app, UserMessageAwake([_event()]))
         events = [impulse.event for impulse in held(live)]
@@ -922,7 +924,7 @@ async def test_status_facts_keep_the_reflex_open_across_runs(ending: str) -> Non
         entry.reception_output = "Resumed and finished."
         [approval] = batch.approvals
         assert approval.batch_id is not None
-        async with app.nerve.subscribe(
+        async with app.nerves.events.subscribe(
             ThreadTopic(ThreadKey.from_address(_key()))
         ) as live:
             await kicked(
@@ -968,7 +970,9 @@ async def test_status_outcomes_survive_failed_or_cancelled_lifecycle(
 
         monkeypatch.setattr(ReflexRuntime, "finalizing", finalizing)
 
-    async with app.nerve.subscribe(ThreadTopic(ThreadKey.from_address(_key()))) as live:
+    async with app.nerves.events.subscribe(
+        ThreadTopic(ThreadKey.from_address(_key()))
+    ) as live:
         with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
             await kicked(app, UserMessageAwake([event]))
         events = [impulse.event for impulse in held(live)]

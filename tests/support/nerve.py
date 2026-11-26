@@ -62,7 +62,7 @@ async def drawing(*channels: ChannelTentacle) -> AsyncGenerator[None]:
         yield
     finally:
         for channel in channels:
-            for fiber in channel.octomate.nerve.subscribers.get(
+            for fiber in channel.octomate.nerves.events.subscribers.get(
                 ChannelTopic(channel.id), set()
             ):
                 fiber.close_send()
@@ -79,7 +79,7 @@ async def drained(*channels: ChannelTentacle) -> None:
         channel.siphon.lanes
         or any(
             fiber.receiver.statistics().current_buffer_used
-            for fiber in channel.octomate.nerve.subscribers.get(
+            for fiber in channel.octomate.nerves.events.subscribers.get(
                 ChannelTopic(channel.id), set()
             )
         )

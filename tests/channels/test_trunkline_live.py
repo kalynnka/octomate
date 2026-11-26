@@ -68,7 +68,7 @@ async def streaming(
     task = asyncio.create_task(channel.siphon.watch(socket.websocket, topic))
     # The fake socket never suspends, so one turn of the loop subscribes it.
     await asyncio.sleep(0)
-    assert octomate.nerve.subscribers[topic]
+    assert octomate.nerves.events.subscribers[topic]
     return octomate, task
 
 
@@ -76,15 +76,17 @@ async def test_a_threads_events_reach_its_socket() -> None:
     socket = ConsoleSocket()
     octomate, task = await streaming(socket, ThreadTopic(KEY))
 
-    octomate.nerve.deliver(ThreadTopic(KEY), Impulse(EVENT, KEY.address("lu")))
-    octomate.nerve.deliver(ThreadTopic(OTHER), Impulse(EVENT, OTHER.address("lu")))
+    octomate.nerves.events.deliver(ThreadTopic(KEY), Impulse(EVENT, KEY.address("lu")))
+    octomate.nerves.events.deliver(
+        ThreadTopic(OTHER), Impulse(EVENT, OTHER.address("lu"))
+    )
     # One turn of the loop pumps it down the socket.
     await asyncio.sleep(0)
     socket.leave()
     await task
 
     assert socket.events == [EVENT]
-    assert octomate.nerve.subscribers == {}
+    assert octomate.nerves.events.subscribers == {}
 
 
 async def test_console_siphon_context_does_not_subscribe_without_a_socket() -> None:
@@ -94,8 +96,8 @@ async def test_console_siphon_context_does_not_subscribe_without_a_socket() -> N
     )
     async with channel.siphon as siphon:
         assert siphon is channel.siphon
-        assert not octomate.nerve.subscribers
-    assert not octomate.nerve.subscribers
+        assert not octomate.nerves.events.subscribers
+    assert not octomate.nerves.events.subscribers
 
 
 async def test_a_console_that_is_gone_ends_quietly() -> None:
@@ -103,13 +105,13 @@ async def test_a_console_that_is_gone_ends_quietly() -> None:
     octomate, task = await streaming(socket, ThreadTopic(KEY))
     socket.gone = True
 
-    octomate.nerve.deliver(ThreadTopic(KEY), Impulse(EVENT, KEY.address("lu")))
+    octomate.nerves.events.deliver(ThreadTopic(KEY), Impulse(EVENT, KEY.address("lu")))
     await asyncio.sleep(0)
     socket.leave()
     await task
 
     assert socket.events == []
-    assert octomate.nerve.subscribers == {}
+    assert octomate.nerves.events.subscribers == {}
 
 
 async def test_a_replaying_console_that_opens_during_a_kick_starts_after_its_last_ended_run() -> (
@@ -123,8 +125,8 @@ async def test_a_replaying_console_that_opens_during_a_kick_starts_after_its_las
     saved = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="saved"))
     following = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="again"))
     async with (
-        octomate.nerve.subscribe(ThreadTopic(KEY)) as routed,
-        octomate.nerve.publish(KEY.address("lu"), retain=True) as impulses,
+        octomate.nerves.events.subscribe(ThreadTopic(KEY)) as routed,
+        octomate.nerves.events.publish(KEY.address("lu"), retain=True) as impulses,
     ):
         for event in (saved, RunEndedEvent(), EVENT):
             await impulses.send(Impulse(event, KEY.address("lu")))
@@ -150,8 +152,8 @@ async def test_a_console_that_opens_during_a_kick_without_replay_reads_from_then
     following = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="again"))
     octomate = Octomate()
     async with (
-        octomate.nerve.subscribe(ThreadTopic(KEY)) as routed,
-        octomate.nerve.publish(KEY.address("lu"), retain=True) as impulses,
+        octomate.nerves.events.subscribe(ThreadTopic(KEY)) as routed,
+        octomate.nerves.events.publish(KEY.address("lu"), retain=True) as impulses,
     ):
         await impulses.send(Impulse(EVENT, KEY.address("lu")))
         await routed.receive()
@@ -182,7 +184,7 @@ async def test_a_console_that_fell_behind_is_closed_to_read_the_thread_again(
 
     # Nothing is read in between, so the second finds the backlog full.
     for _ in range(2):
-        octomate.nerve.deliver(topic, Impulse(EVENT, KEY.address("lu")))
+        octomate.nerves.events.deliver(topic, Impulse(EVENT, KEY.address("lu")))
     await asyncio.wait_for(socket.closed.wait(), 1)
     socket.leave()
     await task

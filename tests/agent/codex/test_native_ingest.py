@@ -101,7 +101,7 @@ async def test_native_completion_correlates_with_driven_compaction_without_new_i
         first = rows[0]
         return str(first.id), [str(message.id) for message in first.messages]
 
-    async with app.nerve.publish(SESSION_ADDRESS) as impulses:
+    async with app.nerves.events.publish(SESSION_ADDRESS) as impulses:
         state, _ = await tailer.attach_remote(
             SESSION_ID, ROLLOUT_LABEL, SENDER, SESSION_ADDRESS, impulses
         )

@@ -229,7 +229,7 @@ async def test_each_claude_turn_records_its_own_prompt_directory(
         octomate.conversations, octomate.threads, agent_tentacle_id="claude"
     )
 
-    await stream_transcript(tailer, octomate.nerve, transcript)
+    await stream_transcript(tailer, octomate.nerves.events, transcript)
 
     runs = await runs_of(octomate, "claude", CLAUDE_SESSION)
     assert {run.id: run.cwd for run in runs} == {
@@ -256,7 +256,7 @@ async def test_a_claude_turn_keeps_the_directory_it_was_asked_in(
         octomate.conversations, octomate.threads, agent_tentacle_id="claude"
     )
 
-    await stream_transcript(tailer, octomate.nerve, transcript)
+    await stream_transcript(tailer, octomate.nerves.events, transcript)
 
     [run] = await runs_of(octomate, "claude", CLAUDE_SESSION)
     assert run.cwd == Path(REPO)
@@ -304,7 +304,7 @@ async def test_the_rebuilt_claude_turn_supersedes_the_sketch_directory(
         transcript,
         [claude_prompt("p1", "here", 1, REPO), claude_answer("a1", 2, "ok", REPO)],
     )
-    await stream_transcript(tailer, octomate.nerve, transcript)
+    await stream_transcript(tailer, octomate.nerves.events, transcript)
 
     [run] = await runs_of(octomate, "claude", CLAUDE_SESSION)
     assert run.cwd == Path(REPO)

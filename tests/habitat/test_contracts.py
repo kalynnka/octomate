@@ -57,7 +57,7 @@ async def test_native_default_constructs_an_idle_habitat_manager(
     assert app.config.habitat == NativeHabitatConfig()
     assert isinstance(app.habitats, HabitatManager)
     assert app.habitats.config is app.config.habitat
-    assert app.habitats.nerve is app.nerve
+    assert app.habitats.nerve is app.nerves.events
     assert app.habitats.residences == {}
     await app.habitats.close()
     assert app.habitats.closed

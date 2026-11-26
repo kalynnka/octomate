@@ -68,7 +68,7 @@ async def a_turn(*, authenticated: bool = True) -> tuple[Octomate, OctomateSessi
         thread_id=thread.id,
         conversation_address=address,
         user_profile=await host.users.profile("im", "alice"),
-        nerve=host.nerve,
+        nerve=host.nerves.events,
         threads=host.threads,
         workspaces=host.workspaces,
         users=host.users,
@@ -120,7 +120,7 @@ async def test_inkling_calls_todos_through_authenticated_mcp_and_publishes_once(
         served_inkling_mcp(host, monkeypatch),
         inkling,
         host.gateway.driving(scope),
-        host.nerve.subscribe(topic) as events,
+        host.nerves.events.subscribe(topic) as events,
     ):
         async with invocation_for(
             inkling,
@@ -172,7 +172,7 @@ async def test_todo_mcp_rejects_another_users_conversation_and_has_no_owner_argu
     async with (
         served(host),
         host.gateway.driving(scope),
-        host.nerve.subscribe(topic) as events,
+        host.nerves.events.subscribe(topic) as events,
     ):
         async with over(
             host,

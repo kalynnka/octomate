@@ -87,11 +87,11 @@ async def test_context_owns_subscription_and_reader(failed: bool) -> None:
             assert siphon is channel.siphon
             reading = siphon.reading
             assert reading is not None
-            assert topic in channel.octomate.nerve.subscribers
+            assert topic in channel.octomate.nerves.events.subscribers
             if failed:
                 raise RuntimeError("body failed")
     assert reading.done()
-    assert topic not in channel.octomate.nerve.subscribers
+    assert topic not in channel.octomate.nerves.events.subscribers
 
 
 async def test_reader_failure_still_closes_the_subscription(
@@ -108,7 +108,7 @@ async def test_reader_failure_still_closes_the_subscription(
     with pytest.raises(RuntimeError, match="reader failed"):
         async with channel.siphon:
             await started.wait()
-    assert not channel.octomate.nerve.subscribers
+    assert not channel.octomate.nerves.events.subscribers
 
 
 async def test_cancelled_context_closes_subscription_and_reader() -> None:
@@ -127,7 +127,7 @@ async def test_cancelled_context_closes_subscription_and_reader() -> None:
         await task
     assert channel.siphon.reading is not None
     assert channel.siphon.reading.done()
-    assert not channel.octomate.nerve.subscribers
+    assert not channel.octomate.nerves.events.subscribers
 
 
 async def test_a_streaming_channel_draws_a_run_on_its_timeline_and_marks_it() -> None:
@@ -136,7 +136,7 @@ async def test_a_streaming_channel_draws_a_run_on_its_timeline_and_marks_it() ->
 
     async with drawing(channel):
         for impulse in a_run(ALICE, reply=reply):
-            channel.octomate.nerve.deliver(ChannelTopic(channel.id), impulse)
+            channel.octomate.nerves.events.deliver(ChannelTopic(channel.id), impulse)
 
     [(where, rendered)] = channel.consumed
     assert where == ALICE
@@ -151,7 +151,7 @@ async def test_a_quiet_channel_posts_its_sends_then_the_reply_once() -> None:
 
     async with drawing(channel):
         for impulse in a_run(ALICE, sent("working on it"), reply=reply):
-            channel.octomate.nerve.deliver(ChannelTopic(channel.id), impulse)
+            channel.octomate.nerves.events.deliver(ChannelTopic(channel.id), impulse)
 
     assert channel.consumed == []
     assert texts(channel) == ["working on it", "done"]
@@ -185,7 +185,7 @@ async def test_a_slow_thread_holds_up_no_other() -> None:
 
     async with drawing(channel):
         for impulse in [*a_run(ALICE, answer="alice's"), *a_run(BOB, answer="bob's")]:
-            channel.octomate.nerve.deliver(ChannelTopic(channel.id), impulse)
+            channel.octomate.nerves.events.deliver(ChannelTopic(channel.id), impulse)
         await asyncio.wait_for(held.posted_elsewhere.wait(), 1)
         assert texts(channel) == ["bob's"]
         held.release.set()
@@ -216,6 +216,6 @@ async def test_a_rendering_that_fails_leaves_its_thread_drawing() -> None:
 
     async with drawing(channel):
         for impulse in [Impulse(sent("lost"), ALICE), Impulse(sent("kept"), ALICE)]:
-            channel.octomate.nerve.deliver(ChannelTopic(channel.id), impulse)
+            channel.octomate.nerves.events.deliver(ChannelTopic(channel.id), impulse)
 
     assert texts(channel) == ["kept"]

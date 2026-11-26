@@ -106,7 +106,7 @@ async def test_options_and_summon_here(case: Case, client: httpx2.AsyncClient) -
         for routes in data["summon"]["routes"].values()
         for route in routes
     )
-    async with case.app.nerve.subscribe(ThreadTopic(case.thread.key)) as live:
+    async with case.app.nerves.events.subscribe(ThreadTopic(case.thread.key)) as live:
         response = await client.post(
             f"{path}/summon",
             json={
@@ -254,7 +254,7 @@ async def test_teleport_creates_independent_owned_destination(
         permission_mode="default",
     )
     await case.app.conversations.set_permission_mode(source, "default")
-    async with case.app.nerve.subscribe(ThreadTopic(case.thread.key)) as live:
+    async with case.app.nerves.events.subscribe(ThreadTopic(case.thread.key)) as live:
         response = await client.post(
             f"/api/trunkline/threads/{case.thread.id}/teleport",
             json={"destination": destination, "hint": "Work here"},
@@ -348,7 +348,7 @@ async def test_a_turn_the_agent_moved_ends_where_it_landed(
             "far", UserProfile(channel_user_id="ou_alice", user_id=case.owner.id)
         )
 
-    async with case.app.nerve.subscribe(ThreadTopic(case.thread.key)) as live:
+    async with case.app.nerves.events.subscribe(ThreadTopic(case.thread.key)) as live:
         response = await client.post(
             f"/api/trunkline/threads/{case.thread.channel_thread_id}/messages",
             json={"text": "take this elsewhere"},
@@ -381,7 +381,7 @@ async def test_a_teleport_with_a_prompt_sends_it_where_it_lands(
         if one["channel_tentacle_id"] == "trunkline"
     ]
 
-    async with case.app.nerve.subscribe(ThreadTopic(case.thread.key)) as live:
+    async with case.app.nerves.events.subscribe(ThreadTopic(case.thread.key)) as live:
         response = await client.post(
             f"{path}/teleport",
             json={
@@ -542,7 +542,7 @@ async def test_failed_open_reports_stream_error(
     case: Case, client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(case.far.ink, "open_dm", AsyncMock(return_value=None))
-    async with case.app.nerve.subscribe(ThreadTopic(case.thread.key)) as live:
+    async with case.app.nerves.events.subscribe(ThreadTopic(case.thread.key)) as live:
         response = await client.post(
             f"/api/trunkline/threads/{case.thread.id}/teleport",
             json={
@@ -676,7 +676,7 @@ async def test_external_thread_its_channel_calls_private_exports_history(
         channel: {route["agent_id"] for route in routes}
         for channel, routes in options["teleport"]["routes"].items()
     } == {"trunkline": {"first"}, "far": {"first"}}
-    async with case.app.nerve.subscribe(ThreadTopic(thread.key)) as live:
+    async with case.app.nerves.events.subscribe(ThreadTopic(thread.key)) as live:
         response = await client.post(
             f"{path}/teleport",
             json={
@@ -888,7 +888,7 @@ async def test_new_trunkline_destination_is_owned_and_independent(
         },
         "hint": "New workspace",
     }
-    async with case.app.nerve.subscribe(ThreadTopic(case.thread.key)) as live:
+    async with case.app.nerves.events.subscribe(ThreadTopic(case.thread.key)) as live:
         response = await client.post(
             f"/api/trunkline/threads/{case.thread.id}/teleport", json=body
         )

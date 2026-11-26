@@ -95,7 +95,7 @@ def a_turn(
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id="inkling",
         channels={"im": channel},
-        nerve=channel.octomate.nerve,
+        nerve=channel.octomate.nerves.events,
         conversation_address=ChannelAddress(
             channel_tentacle_id="im",
             chat_type="thread" if in_thread else "group",
@@ -139,7 +139,7 @@ async def a_native_call(
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id="coding",
         channels={"im": channel},
-        nerve=channel.octomate.nerve,
+        nerve=channel.octomate.nerves.events,
         users=users,
         user_profile=await users.native_profile("coding", "luhui"),
         native=True,
@@ -477,7 +477,7 @@ async def test_send_here_reaches_the_console_watching_a_trunkline_thread() -> No
         channel_routes={"trunkline": []},
         current_agent_id="claude",
         channels={"trunkline": console},
-        nerve=octomate.nerve,
+        nerve=octomate.nerves.events,
         conversation_address=address,
         users=octomate.users,
         threads=octomate.threads,
@@ -489,7 +489,7 @@ async def test_send_here_reaches_the_console_watching_a_trunkline_thread() -> No
         manager=McpManager(users=threads.users, cipher=None),
         conversations=FakeConversationManager(),
     )
-    async with octomate.nerve.subscribe(
+    async with octomate.nerves.events.subscribe(
         ThreadTopic(ThreadKey.from_address(address))
     ) as live:
         async with Client(server) as client:

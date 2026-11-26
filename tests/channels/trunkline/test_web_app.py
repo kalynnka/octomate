@@ -147,7 +147,7 @@ async def _post(
     project: str | None = None,
 ) -> list[JsonObject]:
     key = ThreadKey.from_address(_console_address(thread_id))
-    async with channel.octomate.nerve.subscribe(ThreadTopic(key)) as live:
+    async with channel.octomate.nerves.events.subscribe(ThreadTopic(key)) as live:
         await channel.handle_directive(
             TrunklineDirective(
                 user=console_user(),
@@ -169,7 +169,7 @@ async def _send(
     """Post a directive over HTTP and wait for its turn to settle, as the console
     does on the thread's socket."""
     key = ThreadKey.from_address(_console_address(thread_key))
-    async with octomate.nerve.subscribe(ThreadTopic(key)) as live:
+    async with octomate.nerves.events.subscribe(ThreadTopic(key)) as live:
         response = await client.post(
             f"/api/trunkline/threads/{thread_key}/messages", json=body
         )
@@ -300,7 +300,7 @@ async def test_user_sockets_subscribe_only_to_the_authenticated_user(
     ]
     for socket in sockets:
         assert (await socket.outbound.get())["type"] == "websocket.accept"
-    assert len(octomate.nerve.subscribers[UserTopic(CONSOLE_USER_ID)]) == 2
+    assert len(octomate.nerves.events.subscribers[UserTopic(CONSOLE_USER_ID)]) == 2
 
     octomate.dependency_overrides[current_user] = lambda: other
     other_socket = ConsoleSocket(octomate, path="/api/trunkline/live/user")
@@ -308,20 +308,20 @@ async def test_user_sockets_subscribe_only_to_the_authenticated_user(
     event = ThreadTitleChangedEvent(
         thread_id=uuid7(), title="Renamed", updated_at=datetime.now(UTC)
     )
-    octomate.nerve.deliver(UserTopic(CONSOLE_USER_ID), Impulse(event))
+    octomate.nerves.events.deliver(UserTopic(CONSOLE_USER_ID), Impulse(event))
     for socket in sockets:
         received = await asyncio.wait_for(socket.outbound.get(), 1)
         assert received["type"] == "websocket.send"
         assert json.loads(received["text"]) == event.model_dump(mode="json")
     assert other_socket.outbound.empty()
 
-    octomate.nerve.deliver(UserTopic(other.id), Impulse(event))
+    octomate.nerves.events.deliver(UserTopic(other.id), Impulse(event))
     assert (await other_socket.outbound.get())["type"] == "websocket.send"
     for socket in sockets:
         assert socket.outbound.empty()
         await socket.leave()
     await other_socket.leave()
-    assert octomate.nerve.subscribers == {}
+    assert octomate.nerves.events.subscribers == {}
 
 
 @pytest.mark.parametrize(
@@ -342,7 +342,7 @@ async def test_user_socket_requires_sign_in(
     refused = socket.outbound.get_nowait()
     assert refused["type"] == "websocket.http.response.start"
     assert refused["status"] == 401
-    assert octomate.nerve.subscribers == {}
+    assert octomate.nerves.events.subscribers == {}
 
 
 async def test_activity_socket_multiplexes_without_streaming_content(
@@ -365,19 +365,19 @@ async def test_activity_socket_multiplexes_without_streaming_content(
             {"type": "websocket.receive", "text": json.dumps({"thread_keys": keys})}
         )
         async with asyncio.timeout(1):
-            while len(octomate.nerve.subscribers) < 30:  # noqa: ASYNC110
+            while len(octomate.nerves.events.subscribers) < 30:  # noqa: ASYNC110
                 await asyncio.sleep(0)
         for _ in keys:
             initial = await asyncio.wait_for(socket.outbound.get(), 1)
             assert json.loads(initial["text"])["event"]["event_kind"] == "run_ended"
         for topic in topics:
-            octomate.nerve.deliver(
+            octomate.nerves.events.deliver(
                 topic,
                 Impulse(RunActivityChangedEvent(activity="thinking"), replay=True),
             )
         for topic in topics:
             for _ in range(100):
-                octomate.nerve.deliver(
+                octomate.nerves.events.deliver(
                     topic,
                     Impulse(
                         PartDeltaEvent(
@@ -392,7 +392,7 @@ async def test_activity_socket_multiplexes_without_streaming_content(
         async with asyncio.timeout(1):
             while any(  # noqa: ASYNC110
                 fiber.receiver.statistics().current_buffer_used
-                for fibers in octomate.nerve.subscribers.values()
+                for fibers in octomate.nerves.events.subscribers.values()
                 for fiber in fibers
             ):
                 await asyncio.sleep(0)
@@ -402,11 +402,11 @@ async def test_activity_socket_multiplexes_without_streaming_content(
                 tool_name="tool", tool_call_id="call", content="private result"
             )
         )
-        octomate.nerve.deliver(topics[0], Impulse(heartbeat))
+        octomate.nerves.events.deliver(topics[0], Impulse(heartbeat))
         await asyncio.sleep(0)
         assert socket.outbound.empty()
         clock += 30
-        octomate.nerve.deliver(topics[0], Impulse(heartbeat))
+        octomate.nerves.events.deliver(topics[0], Impulse(heartbeat))
         refreshed = await asyncio.wait_for(socket.outbound.get(), 1)
         assert json.loads(refreshed["text"])["event"]["activity"] == "writing"
         assert "private result" not in refreshed["text"]
@@ -414,14 +414,14 @@ async def test_activity_socket_multiplexes_without_streaming_content(
             {"type": "websocket.receive", "text": json.dumps({"thread_keys": keys[:1]})}
         )
         async with asyncio.timeout(1):
-            while len(octomate.nerve.subscribers) != 1:  # noqa: ASYNC110
+            while len(octomate.nerves.events.subscribers) != 1:  # noqa: ASYNC110
                 await asyncio.sleep(0)
-        octomate.nerve.deliver(topics[0], Impulse(RunEndedEvent()))
+        octomate.nerves.events.deliver(topics[0], Impulse(RunEndedEvent()))
         ended = await asyncio.wait_for(socket.outbound.get(), 1)
         assert json.loads(ended["text"])["event"]["event_kind"] == "run_ended"
     finally:
         await socket.leave()
-    assert octomate.nerve.subscribers == {}
+    assert octomate.nerves.events.subscribers == {}
 
 
 async def test_activity_socket_checks_thread_access_and_scopes_new_keys() -> None:
@@ -440,11 +440,13 @@ async def test_activity_socket_checks_thread_access_and_scopes_new_keys() -> Non
     )
     topic = ThreadTopic(thread.key)
     async with asyncio.timeout(1):
-        while topic not in octomate.nerve.subscribers:  # noqa: ASYNC110
+        while topic not in octomate.nerves.events.subscribers:  # noqa: ASYNC110
             await asyncio.sleep(0)
     initial = await asyncio.wait_for(socket.outbound.get(), 1)
     assert json.loads(initial["text"])["event"]["event_kind"] == "run_ended"
-    octomate.nerve.deliver(topic, Impulse(RunActivityChangedEvent(activity="thinking")))
+    octomate.nerves.events.deliver(
+        topic, Impulse(RunActivityChangedEvent(activity="thinking"))
+    )
     received = await asyncio.wait_for(socket.outbound.get(), 1)
     assert json.loads(received["text"])["key"] == f"id:{thread.id}"
     await socket.leave()
@@ -463,7 +465,7 @@ async def test_activity_socket_checks_thread_access_and_scopes_new_keys() -> Non
     await denied.task
     assert refused["type"] == "websocket.close"
     assert refused["code"] == 1008
-    assert octomate.nerve.subscribers == {}
+    assert octomate.nerves.events.subscribers == {}
 
     scoped = ConsoleSocket(octomate, path="/api/trunkline/live/activity")
     assert (await scoped.outbound.get())["type"] == "websocket.accept"
@@ -471,15 +473,15 @@ async def test_activity_socket_checks_thread_access_and_scopes_new_keys() -> Non
         {"type": "websocket.receive", "text": json.dumps({"thread_keys": ["thread-1"]})}
     )
     async with asyncio.timeout(1):
-        while not octomate.nerve.subscribers:  # noqa: ASYNC110
+        while not octomate.nerves.events.subscribers:  # noqa: ASYNC110
             await asyncio.sleep(0)
-    assert topic not in octomate.nerve.subscribers
+    assert topic not in octomate.nerves.events.subscribers
     assert (
         ThreadTopic(ThreadKey("trunkline", "thread", str(other.id), "thread-1"))
-        in octomate.nerve.subscribers
+        in octomate.nerves.events.subscribers
     )
     await scoped.leave()
-    assert octomate.nerve.subscribers == {}
+    assert octomate.nerves.events.subscribers == {}
 
 
 @pytest.mark.parametrize("by_key", [False, True])
@@ -516,7 +518,7 @@ async def test_activity_refresh_restores_awake_work_and_clears_finished_work(
     initial = await asyncio.wait_for(socket.outbound.get(), 1)
     assert json.loads(initial["text"])["event"]["event_kind"] == "run_ended"
     await socket.leave()
-    assert octomate.nerve.subscribers == {}
+    assert octomate.nerves.events.subscribers == {}
 
 
 async def test_activity_refresh_restores_a_native_turn_without_another_event() -> None:
@@ -544,7 +546,7 @@ async def test_activity_refresh_restores_a_native_turn_without_another_event() -
     key = ThreadKey(agent.id, "thread", session_id)
     sender = UserProfile(channel_user_id="operator", user_id=CONSOLE_USER_ID)
     address = key.address(sender.channel_user_id)
-    async with octomate.nerve.publish(address) as impulses:
+    async with octomate.nerves.events.publish(address) as impulses:
         state, _ = await agent.session_tailer.attach_remote(
             session_id, Path("/client/session.jsonl"), sender, address, impulses
         )
@@ -584,7 +586,7 @@ async def test_activity_refresh_restores_a_native_turn_without_another_event() -
             assert (event.get("activity") or event["event_kind"]) == expected
             assert "private prompt" not in initial["text"]
             await socket.leave()
-    assert octomate.nerve.subscribers == {}
+    assert octomate.nerves.events.subscribers == {}
 
 
 async def test_a_console_watches_a_thread_over_its_live_socket(
@@ -642,17 +644,17 @@ async def test_thread_activity_is_not_delivered_to_an_unauthorized_socket() -> N
         await denied.task
         assert refused["type"] == "websocket.close"
         assert refused["code"] == 1008
-        assert len(octomate.nerve.subscribers[topic]) == 1
+        assert len(octomate.nerves.events.subscribers[topic]) == 1
         event = RunActivityChangedEvent(
             activity="thinking", display_text="Private work"
         )
-        octomate.nerve.deliver(topic, Impulse(event))
+        octomate.nerves.events.deliver(topic, Impulse(event))
         received = await asyncio.wait_for(owner.outbound.get(), 1)
         assert json.loads(received["text"]) == event.model_dump(mode="json")
         assert denied.outbound.empty()
     finally:
         await owner.leave()
-    assert octomate.nerve.subscribers == {}
+    assert octomate.nerves.events.subscribers == {}
 
 
 async def test_late_and_reconnected_sockets_only_receive_new_activity() -> None:
@@ -666,13 +668,15 @@ async def test_late_and_reconnected_sockets_only_receive_new_activity() -> None:
         RunActivityChangedEvent(activity="thinking"),
         RunActivityChangedEvent(activity="writing"),
     ):
-        octomate.nerve.deliver(topic, Impulse(event))
+        octomate.nerves.events.deliver(topic, Impulse(event))
         socket = ConsoleSocket(octomate, f"thread_id={thread.id}")
         assert (await socket.outbound.get())["type"] == "websocket.accept"
         try:
             assert socket.outbound.empty()
-            octomate.nerve.deliver(topic, Impulse(event))
-            octomate.nerve.deliver(topic, Impulse(RunEndedEvent(outcome="completed")))
+            octomate.nerves.events.deliver(topic, Impulse(event))
+            octomate.nerves.events.deliver(
+                topic, Impulse(RunEndedEvent(outcome="completed"))
+            )
             received = await asyncio.wait_for(socket.outbound.get(), 1)
             assert json.loads(received["text"]) == event.model_dump(mode="json")
             ended = await asyncio.wait_for(socket.outbound.get(), 1)
@@ -680,7 +684,7 @@ async def test_late_and_reconnected_sockets_only_receive_new_activity() -> None:
             assert socket.outbound.empty()
         finally:
             await socket.leave()
-    assert octomate.nerve.subscribers == {}
+    assert octomate.nerves.events.subscribers == {}
 
 
 async def test_a_directive_on_an_awake_thread_is_refused_and_leaves_no_row(
@@ -2031,7 +2035,7 @@ async def test_batch_resolve_resolves_and_streams(
         assert busy.json()["detail"] == "A turn is still running in this thread."
         assert (await octomate.deferred_actions.get_batch(batch.id)).status == "pending"
 
-        async with octomate.nerve.subscribe(ThreadTopic(thread.key)) as live:
+        async with octomate.nerves.events.subscribe(ThreadTopic(thread.key)) as live:
             response = await client.post(
                 f"/api/trunkline/batches/{batch.id}/resolve",
                 json={"approvals": {str(approval_id): True}},

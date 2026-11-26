@@ -56,32 +56,34 @@ async def test_slack_status_follows_events_before_and_during_a_run(
     address = slack_key()
     async with drawing(channel):
         topic = ChannelTopic(channel.id)
-        channel.octomate.nerve.deliver(topic, Impulse(ReflexAwakeEvent(), address))
+        channel.octomate.nerves.events.deliver(
+            topic, Impulse(ReflexAwakeEvent(), address)
+        )
         assert await ink.next_status() == "Waking…"
-        channel.octomate.nerve.deliver(
+        channel.octomate.nerves.events.deliver(
             topic, Impulse(RunStartedEvent(address=address), address)
         )
         assert await ink.next_status() == "Starting…"
-        channel.octomate.nerve.deliver(
+        channel.octomate.nerves.events.deliver(
             topic,
             Impulse(
                 PartStartEvent(index=0, part=ThinkingPart(content="checking")), address
             ),
         )
         assert await ink.next_status() == "Thinking…"
-        channel.octomate.nerve.deliver(
+        channel.octomate.nerves.events.deliver(
             topic,
             Impulse(
                 FunctionToolCallEvent(ToolCallPart("lookup", {}, "call-1")), address
             ),
         )
         assert await ink.next_status() == "Lookup…"
-        channel.octomate.nerve.deliver(
+        channel.octomate.nerves.events.deliver(
             topic,
             Impulse(PartStartEvent(index=1, part=TextPart(content="answer")), address),
         )
         assert await ink.next_status() == "Writing…"
-        channel.octomate.nerve.deliver(topic, Impulse(RunEndedEvent(), address))
+        channel.octomate.nerves.events.deliver(topic, Impulse(RunEndedEvent(), address))
         assert await ink.next_status() == ""
     assert ink.statuses[-1] == ""
 
@@ -140,18 +142,20 @@ async def test_slow_timeline_cannot_delay_terminal_status() -> None:
     address = slack_key()
     async with drawing(channel):
         topic = ChannelTopic(channel.id)
-        channel.octomate.nerve.deliver(
+        channel.octomate.nerves.events.deliver(
             topic, Impulse(RunStartedEvent(address=address), address)
         )
         assert await ink.next_status() == "Starting…"
-        channel.octomate.nerve.deliver(
+        channel.octomate.nerves.events.deliver(
             topic,
             Impulse(PartStartEvent(index=0, part=TextPart(content="answer")), address),
         )
         await asyncio.wait_for(started.wait(), 1)
         assert await ink.next_status() == "Writing…"
         try:
-            channel.octomate.nerve.deliver(topic, Impulse(RunEndedEvent(), address))
+            channel.octomate.nerves.events.deliver(
+                topic, Impulse(RunEndedEvent(), address)
+            )
             assert await ink.next_status() == ""
             assert channel.siphon.lanes
         finally:

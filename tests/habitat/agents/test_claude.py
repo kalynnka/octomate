@@ -277,7 +277,7 @@ async def test_driven_teleport_forks_the_guest_session(
         agent.id,
     )
     try:
-        async with core.nerve.publish(address) as impulses:
+        async with core.nerves.events.publish(address) as impulses:
             deps = ReflexDeps(
                 channels=core.channels,
                 agents=core.agents,

@@ -27,10 +27,11 @@ class Priming(BaseModel):
     invocation_id: UUID7 = Field(
         description="Allocated by core; names the turn to `InterruptRunSignal`."
     )
-    session_id: str = Field(description="The harness session the turn runs in.")
+    session_id: str | None = Field(
+        description="The existing harness session; None lets the provider create a new one."
+    )
     resume: bool = Field(
-        description="Whether the harness already holds that session. A session "
-        "it does not hold is opened under the given id."
+        description="Whether this turn continues an existing harness session."
     )
     model: str | None = Field(
         default=None, description="None leaves the harness's own choice."
@@ -106,8 +107,8 @@ class RunAgentSignal(BaseModel):
     conversation_address: ChannelAddress = Field(
         description="Destination resolved by core before dispatch."
     )
-    source_thread_address: ChannelAddress = Field(
-        description="Origin retained for source-message and attachment resolution."
+    source_thread_address: ChannelAddress | None = Field(
+        description="Origin retained for source-message and attachment resolution, when known."
     )
     source_thread_message_ids: list[UUID7] = Field(
         description="Core ledger messages the receiver may resolve for this turn."

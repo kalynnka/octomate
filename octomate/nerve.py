@@ -47,7 +47,7 @@ import math
 from collections import Counter, defaultdict
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager, suppress
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Generic
 
 import anyio
@@ -65,6 +65,7 @@ from octomate.fibers import FIBER_BUFFER as FIBER_BUFFER
 from octomate.fibers import Fiber, FiberError, MemoryFiber, ReplayFiber
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
+from octomate.signals import Signal
 
 EventT = TypeVar("EventT", default=WireEvent, covariant=True)
 NerveEventT = TypeVar("NerveEventT", default=WireEvent)
@@ -121,8 +122,15 @@ class HabitatTopic:
     user_id: UUID7
 
 
+@dataclass(frozen=True)
+class InvocationTopic:
+    """The agent receiver borrowing one core-owned invocation."""
+
+    invocation_id: UUID7
+
+
 type EventTopic = ChannelTopic | ThreadTopic | UserTopic
-type Topic = EventTopic | HabitatTopic
+type Topic = EventTopic | HabitatTopic | InvocationTopic
 
 
 SentT = TypeVar("SentT", default=Impulse[WireEvent])
@@ -177,6 +185,17 @@ class Nerve(Generic[SentT]):
                 anyio.ClosedResourceError,
             ):
                 fiber.fail(FiberError("Subscriber fiber cannot accept publication"))
+
+    def dispatch(self, topic: Topic, sent: SentT) -> None:
+        """Send to exactly one ready receiver, refusing missing or ambiguous delivery."""
+        recipients = [
+            fiber
+            for fiber in self.subscribers.get(topic, set())
+            if not fiber.closed and fiber.failure is None
+        ]
+        if len(recipients) != 1:
+            raise FiberError("Directed delivery requires exactly one ready receiver")
+        recipients[0].send_nowait(sent)
 
     @asynccontextmanager
     async def subscribe(
@@ -259,7 +278,10 @@ class Nerve(Generic[SentT]):
         )
         topic = (
             origin
-            if isinstance(origin, ChannelTopic | ThreadTopic | UserTopic | HabitatTopic)
+            if isinstance(
+                origin,
+                ChannelTopic | ThreadTopic | UserTopic | HabitatTopic | InvocationTopic,
+            )
             else None
         )
 
@@ -310,3 +332,11 @@ class Nerve(Generic[SentT]):
                     await pumping
                 finally:
                     publisher.close()
+
+
+@dataclass
+class Nerves:
+    """The host's independent inbound signals and outbound event stream."""
+
+    signals: Nerve[Signal] = field(default_factory=Nerve[Signal])
+    events: Nerve[Impulse[WireEvent]] = field(default_factory=Nerve[Impulse[WireEvent]])
