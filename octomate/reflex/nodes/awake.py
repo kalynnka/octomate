@@ -22,19 +22,20 @@ from octomate.reflex.state import (
     ResponseTarget,
 )
 from octomate.reflex.suspender import TeleportRequest
-from octomate.schemas.awakes import Awake as AwakeInput
-from octomate.schemas.awakes import (
-    CommandAwake,
-    DrivenGatewayAwake,
-    NativeGatewayAwake,
-    SummonAwake,
-)
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.deferred import DeferredActionBatchResponse
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.triage import SummonDecision, TeleportDecision
 from octomate.schemas.user import UserProfile
+from octomate.signals import (
+    AwakeSignal,
+    CommandSignal,
+    DeferredActionBatchResponse,
+    DrivenGatewaySignal,
+    NativeGatewaySignal,
+    SummonSignal,
+    UserMessageSignal,
+)
 from octomate.telemetry import reflex_logfire
 
 
@@ -44,7 +45,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     handoffs land, independent work initializes and enters `React`, and user
     messages resolve their thread and go to `Route`."""
 
-    signal: AwakeInput
+    signal: AwakeSignal
 
     @reflex_logfire.instrument("reflex.awake", extract_args=False)
     async def run(
@@ -60,13 +61,13 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         | Scheme
         | End[ReflexGraphResult]
     ):
-        if isinstance(self.signal, CommandAwake):
+        if isinstance(self.signal, CommandSignal):
             return Command(signal=self.signal)
 
         if isinstance(self.signal, DeferredActionBatchResponse):
             return ResumeDeferred(awake=self.signal)
 
-        if isinstance(self.signal, SummonAwake):
+        if isinstance(self.signal, SummonSignal):
             signal = self.signal
             destination = signal.destination
             target = ResponseTarget(
@@ -114,7 +115,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             )
             return React()
 
-        if isinstance(self.signal, DrivenGatewayAwake):
+        if isinstance(self.signal, DrivenGatewaySignal):
             signal = self.signal
             return await self.thread_operation(
                 ctx,
@@ -126,7 +127,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 requested_from="Trunkline",
             )
 
-        if isinstance(self.signal, NativeGatewayAwake):
+        if isinstance(self.signal, NativeGatewaySignal):
             # A native session's spell, already validated at the gateway: enter
             # the graph where React's post-run consumption would have, with the
             # native pseudo-channel — which nobody serves, so no lookup — as the
@@ -161,6 +162,8 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 agent_id=self.signal.agent_id,
             )
 
+        if not isinstance(self.signal, UserMessageSignal):
+            raise ValueError("Unsupported awake signal")
         if not self.signal:
             reflex_logfire.info("awake short-circuit: empty signal")
             return End(

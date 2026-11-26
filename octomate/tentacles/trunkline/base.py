@@ -39,7 +39,6 @@ from octomate.events import (
     wire_event_adapter,
 )
 from octomate.nerve import EventTopic
-from octomate.schemas.awakes import StillAwake, UserMessageAwake
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.project import Project
@@ -49,6 +48,7 @@ from octomate.schemas.segments import (
 )
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import User, UserProfile
+from octomate.signals import StillAwake, UserMessageSignal
 from octomate.tentacles.channel import (
     ChannelInk,
     ChannelTentacle,
@@ -470,5 +470,5 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             await self.octomate.conversations.set_effort(conversation, effort)
         thread_message = await self.octomate.threads.record_inbound(event)
         await self.octomate.kick(
-            UserMessageAwake([event], trigger_thread_message_id=thread_message.id)
+            UserMessageSignal([event], trigger_thread_message_id=thread_message.id)
         )

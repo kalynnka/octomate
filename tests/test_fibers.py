@@ -4,7 +4,6 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, asynccontextmanager
-from pathlib import Path
 from typing import assert_type
 
 import anyio
@@ -38,11 +37,10 @@ from octomate.nerve import (
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
 from octomate.signals import (
-    DeferredResponseSignal,
-    InterruptRunSignal,
-    Priming,
-    RunAgentSignal,
+    AsleepSignal,
+    DeferredActionBatchResponse,
     Signal,
+    UserMessageSignal,
     signal_adapter,
 )
 from tests.support.nerve import held
@@ -461,7 +459,7 @@ async def test_immediate_close_releases_stdio_before_reader_task_starts() -> Non
 async def test_a_signal_crosses_a_pipe_to_the_far_side() -> None:
     core = Nerve[Signal]()
     topic = UserTopic(uuid7())
-    sent = InterruptRunSignal(invocation_id=uuid7())
+    sent = AsleepSignal(invocation_id=uuid7())
     sending, receiving = anyio.create_memory_object_stream[bytes](2)
     async with (
         StdioFiber(signal_adapter, output=sending) as link,
@@ -478,27 +476,10 @@ async def test_a_signal_crosses_a_pipe_to_the_far_side() -> None:
 
 
 async def test_signals_cross_a_pipe_as_themselves() -> None:
-    priming = Priming(
-        invocation_id=uuid7(),
-        session_id=str(uuid7()),
-        resume=False,
-        output_schema={"type": "object", "properties": {"n": {"type": "integer"}}},
-        allowed_tools=["Bash"],
-        cwd=Path("/home/agent/workspace"),
-    )
     signals: list[Signal] = [
-        RunAgentSignal(
-            priming=priming,
-            conversation_id=uuid7(),
-            user_id=None,
-            conversation_address=THERE,
-            source_thread_address=HERE,
-            source_thread_message_ids=[],
-            run_name="react",
-            user_prompt="Do it",
-        ),
-        DeferredResponseSignal(invocation_id=priming.invocation_id, batch_id=uuid7()),
-        InterruptRunSignal(invocation_id=priming.invocation_id),
+        UserMessageSignal(messages=[], agent_id="agent"),
+        DeferredActionBatchResponse(batch_id=uuid7(), answers={uuid7(): "Continue"}),
+        AsleepSignal(invocation_id=uuid7()),
     ]
     sending, receiving = anyio.create_memory_object_stream[bytes](2)
     async with (
@@ -514,4 +495,4 @@ async def test_signals_cross_a_pipe_as_themselves() -> None:
             assert type(received) is type(signal)
             assert received == signal
     with pytest.raises(ValidationError):
-        signal_adapter.validate_python({"event_kind": "interrupt_run_signal"})
+        signal_adapter.validate_python({"event_kind": "asleep_signal"})

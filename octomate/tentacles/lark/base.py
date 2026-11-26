@@ -26,8 +26,8 @@ from rich.style import Style
 from octomate.config import LarkChannelConfig
 from octomate.oauth.flows import AuthorizationCodeFlow, OAuthTokenExchange
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.deferred import DeferredActionBatchResponse
 from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
+from octomate.signals import DeferredActionBatchResponse
 from octomate.tentacles.channel import (
     ChannelSurfaces,
     ChannelTentacle,

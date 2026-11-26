@@ -110,17 +110,14 @@ from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
 )
-from octomate.schemas.deferred import (
-    MAX_QUESTION_CHOICES,
-    DeferredActionBatchResponse,
-    QuestionRequest,
-)
+from octomate.schemas.deferred import MAX_QUESTION_CHOICES, QuestionRequest
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
+from octomate.signals import DeferredActionBatchResponse
 from octomate.telemetry import (
     agent_input_message_attributes,
     claude_logfire,

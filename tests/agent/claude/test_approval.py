@@ -41,10 +41,10 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
     ApprovalRequest,
-    DeferredActionBatchResponse,
     DeferredApproval,
     DeferredQuestion,
 )
+from octomate.signals import DeferredActionBatchResponse
 from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.stream import ReactStreamEvent

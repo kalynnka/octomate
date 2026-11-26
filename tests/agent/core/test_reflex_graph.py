@@ -54,10 +54,9 @@ from octomate.reflex.graph import (
     Route,
     build_reflex_graph,
 )
-from octomate.schemas.awakes import NativeGatewayAwake, UserMessageAwake
 from octomate.schemas.commands import CommandIntent
 from octomate.schemas.conversation import ChannelAddress, Conversation
-from octomate.schemas.deferred import DeferredActionBatchResponse, DeferredQuestion
+from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.segments import (
@@ -76,6 +75,11 @@ from octomate.schemas.triage import (
 from octomate.schemas.user import UserProfile
 from octomate.schemas.volumes import GitVolume, UnregisteredProjectError
 from octomate.schemas.volumes.git import run_git
+from octomate.signals import (
+    DeferredActionBatchResponse,
+    NativeGatewaySignal,
+    UserMessageSignal,
+)
 from octomate.tentacles.acp.ink import AcpInk
 from octomate.tentacles.channel import ChannelOutput, ChannelSurfaces
 from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
@@ -1505,7 +1509,7 @@ async def test_a_native_scheme_signal_lands_in_their_dms_and_hands_off(
         gateway=GatewayManager(),
         impulses=unwired(),
     )
-    signal = NativeGatewayAwake(
+    signal = NativeGatewaySignal(
         decision=SchemeDecision(
             hint="Working on it",
             brief="Please take this up over here.",
@@ -1935,7 +1939,7 @@ async def test_awake_short_circuits_on_empty_signal() -> None:
     im = _channel()
 
     result = await _run(
-        Awake(signal=UserMessageAwake([])),
+        Awake(signal=UserMessageSignal([])),
         state=ReflexState(),
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
     )
@@ -1964,7 +1968,7 @@ async def test_awake_short_circuits_on_empty_prompt() -> None:
     )
 
     result = await _run(
-        Awake(signal=UserMessageAwake([event])),
+        Awake(signal=UserMessageSignal([event])),
         state=ReflexState(),
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
     )
@@ -2047,7 +2051,7 @@ async def test_a_chat_room_kick_runs_in_a_sub_thread() -> None:
     conversations = FakeConversationManager()
 
     await _run(
-        Awake(signal=UserMessageAwake([_chat_message()])),
+        Awake(signal=UserMessageSignal([_chat_message()])),
         state=ReflexState(),
         deps=_deps(
             threads=threads,
@@ -2080,7 +2084,7 @@ async def test_two_kicks_in_a_chat_room_do_not_share_a_conversation() -> None:
 
     for _ in range(2):
         await _run(
-            Awake(signal=UserMessageAwake([_chat_message()])),
+            Awake(signal=UserMessageSignal([_chat_message()])),
             state=ReflexState(),
             deps=deps,
         )
@@ -2111,7 +2115,7 @@ async def test_a_chat_rooms_owner_survives_the_next_kick() -> None:
     deps.agents["second"] = owner
 
     result = await _run(
-        Awake(signal=UserMessageAwake([_chat_message()])),
+        Awake(signal=UserMessageSignal([_chat_message()])),
         state=ReflexState(),
         deps=deps,
     )
@@ -2172,7 +2176,7 @@ async def test_awake_raises_for_unknown_channel_or_agent() -> None:
 
     with pytest.raises(ValueError, match="unknown channel"):
         await _run(
-            Awake(signal=UserMessageAwake([event])),
+            Awake(signal=UserMessageSignal([event])),
             state=ReflexState(),
             deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
         )

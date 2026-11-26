@@ -56,13 +56,10 @@ from octomate.managers.habitat import Invocation
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
 from octomate.schemas.conversation import ChannelAddress, Conversation
-from octomate.schemas.deferred import (
-    MAX_QUESTION_CHOICES,
-    DeferredActionBatch,
-    DeferredActionBatchResponse,
-)
+from octomate.schemas.deferred import MAX_QUESTION_CHOICES, DeferredActionBatch
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.user import UserProfile
+from octomate.signals import DeferredActionBatchResponse
 from octomate.tentacles.acp.adapter import json_value_adapter
 from octomate.tentacles.acp.client import NativeAcpClient, NativeAcpSession
 from octomate.tentacles.acp.elicitation import AcpForm, AcpFormValidationError

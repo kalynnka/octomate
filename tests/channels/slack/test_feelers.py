@@ -15,11 +15,11 @@ from octomate import Octomate
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
-    DeferredActionBatchResponse,
     DeferredApproval,
     DeferredQuestion,
     QuestionRequest,
 )
+from octomate.signals import DeferredActionBatchResponse
 from octomate.tentacles.slack.base import SlackTentacle
 from octomate.tentacles.slack.feelers.actions import SlackBlockAction
 from octomate.tentacles.slack.feelers.approvals import (

@@ -37,12 +37,12 @@ from octomate.events import (
     to_wire,
 )
 from octomate.managers.deferred import DeferredActionManager
-from octomate.schemas.awakes import Awake
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment, MessageSegment
 from octomate.schemas.user import UserProfile
+from octomate.signals import AwakeSignal
 from octomate.tentacles.channel import (
     ChannelInk,
     ChannelOutput,
@@ -124,11 +124,11 @@ class RawMessage(TypedDict, total=False):
 
 @dataclass(eq=False)
 class FakeOctomate(Octomate):
-    kicks: list[Awake] = field(default_factory=list)
+    kicks: list[AwakeSignal] = field(default_factory=list)
 
     async def kick(
         self,
-        signal: Awake,
+        signal: AwakeSignal,
     ) -> None:
         self.kicks.append(signal)
 

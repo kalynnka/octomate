@@ -15,7 +15,7 @@ from octomate.config.channels import TrunklineChannelConfig
 from octomate.events import ActionBatchEvent
 from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.deferred import DeferredActionBatchResponse
+from octomate.signals import DeferredActionBatchResponse
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex.base import CodexBridgeContext
 from octomate.tentacles.deferred import Interjections

@@ -15,12 +15,8 @@ from weakref import WeakKeyDictionary, WeakValueDictionary
 import discord
 from pydantic import UUID7
 
-from octomate.schemas.deferred import (
-    DeferredActionBatchResponse,
-    DeferredApproval,
-    DeferredQuestion,
-    QuestionAnswer,
-)
+from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
+from octomate.signals import DeferredActionBatchResponse, QuestionAnswer
 
 if TYPE_CHECKING:
     from octomate.base import Octomate

@@ -24,14 +24,14 @@ from octomate.nerve import (
 )
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
-from octomate.signals import InterruptRunSignal, Signal
+from octomate.signals import AsleepSignal, Signal
 from tests.support.nerve import held
 
 HERE = ChannelAddress("web", "thread", "lu", "lu", channel_thread_id="t1")
 THERE = ChannelAddress("web", "thread", "lu", "lu", channel_thread_id="t2")
 FAR = ChannelAddress("slack", "dm", "D1", "U1")
 EVENT = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="hi"))
-SIGNAL = InterruptRunSignal(invocation_id=uuid7())
+SIGNAL = AsleepSignal(invocation_id=uuid7())
 LATER = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="there"))
 
 

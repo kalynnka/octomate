@@ -20,12 +20,12 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
     DeferredActionBatch,
-    DeferredActionBatchResponse,
     DeferredApproval,
     DeferredQuestion,
     QuestionRequest,
 )
 from octomate.schemas.triage import SummonDecision
+from octomate.signals import DeferredActionBatchResponse
 from octomate.tentacles.discord.feelers.actions import DiscordComponentRouter
 from octomate.tentacles.discord.feelers.approvals import (
     APPROVAL_CUSTOM_ID_TEMPLATE,

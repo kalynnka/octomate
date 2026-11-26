@@ -53,7 +53,6 @@ from octomate.habitat import Habitat
 from octomate.managers.conversation import ConversationNotFound
 from octomate.managers.files import FileOffsetConflict
 from octomate.managers.habitat import Invocation
-from octomate.nerve import InvocationTopic
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.auth import IssuedApiKey, UserApiKey
 from octomate.schemas.commands import (
@@ -65,13 +64,12 @@ from octomate.schemas.commands import (
     CommandOutcome,
 )
 from octomate.schemas.conversation import ChannelAddress, Conversation
-from octomate.schemas.deferred import DeferredActionBatchResponse
 from octomate.schemas.project import Project
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import AgentRoute, Claim
 from octomate.schemas.user import UserProfile
-from octomate.signals import RunAgentSignal
+from octomate.signals import DeferredActionBatchResponse
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from octomate.types.json import JsonObject
@@ -708,72 +706,6 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         return self.habitats.invoke(
             thread=thread, conversation=conversation, owner_id=owner_id
         )
-
-    @asynccontextmanager
-    async def reflex(
-        self: AgentTentacle[AgentOutputT, None],
-        *,
-        invocation: Invocation,
-        deferred_suspender: DeferredSuspender,
-        capabilities: list[AgentCapability[None]],
-    ) -> AsyncGenerator[AsyncGenerator[ReactStreamEvent[AgentOutputT], None]]:
-        """Receive a run signal while borrowing the caller's existing resources.
-
-        Entering subscribes before core dispatches. Consuming drives the same
-        provider stream, in the caller's task; leaving closes it before core
-        releases the invocation, gateway session or suspender.
-        """
-        self.check_conversation(invocation.conversation)
-        async with self.octomate.nerves.signals.subscribe(
-            InvocationTopic(invocation.id), backlog=1
-        ) as incoming:
-
-            async def events() -> AsyncGenerator[ReactStreamEvent[AgentOutputT], None]:
-                signal = await incoming.receive()
-                await incoming.aclose()
-                if not isinstance(signal, RunAgentSignal):
-                    raise ValueError("This receiver requires a run signal")
-                if (
-                    signal.priming.invocation_id != invocation.id
-                    or signal.conversation_id != invocation.conversation.id
-                    or signal.user_id != invocation.owner_id
-                ):
-                    raise ValueError("Run signal does not belong to this invocation")
-                deferred_results = None
-                if signal.deferred_batch_id is not None:
-                    batch = await self.octomate.deferred_actions.get_batch(
-                        signal.deferred_batch_id
-                    )
-                    if batch.conversation_id != signal.conversation_id:
-                        raise ValueError(
-                            "Deferred batch belongs to another conversation"
-                        )
-                    deferred_results = batch.build_results()
-                elif signal.tool_results is not None:
-                    deferred_results = DeferredToolResults(calls=signal.tool_results)
-                model = (
-                    self.models[signal.priming.model]
-                    if signal.priming.model is not None
-                    else None
-                )
-                async with self.run_stream_events(
-                    signal.user_prompt,
-                    conversation_address=signal.conversation_address,
-                    invocation=invocation,
-                    source_thread_address=signal.source_thread_address,
-                    source_thread_message_ids=signal.source_thread_message_ids,
-                    run_name=signal.run_name,
-                    model=model,
-                    effort=signal.priming.effort,
-                    deferred_tool_results=deferred_results,
-                    deferred_suspender=deferred_suspender,
-                    capabilities=capabilities,
-                ) as stream:
-                    async for event in stream:
-                        yield event
-
-            async with aclosing(events()) as stream:
-                yield stream
 
     def needs_invocation(self, descriptor: CommandDescriptor) -> bool:
         """Whether this command runs in a workspace and habitat.

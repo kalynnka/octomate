@@ -13,11 +13,11 @@ from uuid_utils.compat import uuid7
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
-    DeferredActionBatchResponse,
     DeferredApproval,
     DeferredQuestion,
     QuestionRequest,
 )
+from octomate.signals import DeferredActionBatchResponse
 from octomate.tentacles.lark.base import LarkTentacle
 from octomate.tentacles.lark.feelers.actions import LarkCardAction
 from octomate.tentacles.lark.feelers.approvals import (

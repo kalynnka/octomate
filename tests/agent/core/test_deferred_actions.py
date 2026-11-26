@@ -16,12 +16,12 @@ from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredActionBatch,
-    DeferredActionBatchResponse,
     DeferredActionCollection,
     DeferredApproval,
     DeferredQuestion,
 )
 from octomate.schemas.triage import SummonDecision
+from octomate.signals import DeferredActionBatchResponse
 from octomate.types.deferred import DeferredResponseMode
 from tests.support.managers import a_thread
 

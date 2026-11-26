@@ -80,15 +80,12 @@ from octomate.schemas.commands import (
     CommandResult,
 )
 from octomate.schemas.conversation import ChannelAddress, Conversation
-from octomate.schemas.deferred import (
-    MAX_QUESTION_CHOICES,
-    DeferredActionBatchResponse,
-    QuestionRequest,
-)
+from octomate.schemas.deferred import MAX_QUESTION_CHOICES, QuestionRequest
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
+from octomate.signals import DeferredActionBatchResponse
 from octomate.telemetry import agent_input_message_attributes, deepseek_logfire
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.deepseek.adapter import (

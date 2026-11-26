@@ -26,7 +26,8 @@ from octomate.events import (
 from octomate.managers.conversation import ConversationManager
 from octomate.nerve import ChannelTopic, Impulse
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.deferred import DeferredActionBatch, DeferredActionBatchResponse
+from octomate.schemas.deferred import DeferredActionBatch
+from octomate.signals import DeferredActionBatchResponse
 from octomate.tentacles.discord.feelers.actions import DiscordComponentRouter
 from octomate.tentacles.discord.feelers.approvals import DiscordApprovalFeeler
 from octomate.tentacles.discord.feelers.questions import DiscordAskQuestionFeeler

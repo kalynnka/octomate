@@ -15,7 +15,6 @@ from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.config.agents import DeepseekConfig
 from octomate.database import async_session
 from octomate.reflex.state import ReflexResult
-from octomate.schemas.awakes import CommandAwake
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
@@ -27,6 +26,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadCommand
 from octomate.schemas.user import UserProfile
+from octomate.signals import CommandSignal
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
@@ -45,7 +45,7 @@ from tests.support.invocations import invocation_for
 from tests.support.nerve import kick_and_wait, kicked
 from tests.support.users import a_user
 
-type Scenario = tuple[Octomate, DeepseekTentacle, FakeChannelTentacle, CommandAwake]
+type Scenario = tuple[Octomate, DeepseekTentacle, FakeChannelTentacle, CommandSignal]
 
 
 @pytest.fixture
@@ -101,7 +101,7 @@ async def scenario(
     await app.threads.record_handoff(
         thread, to_agent_tentacle_id=agent.id, to_model=None
     )
-    signal = CommandAwake(
+    signal = CommandSignal(
         CommandContext(
             agent_id=agent.id,
             user_id=user.id,

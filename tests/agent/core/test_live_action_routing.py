@@ -16,7 +16,7 @@ from octomate.events import ActionBatchEvent
 from octomate.reflex.graph import reflex_graph
 from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.conversation import ChannelAddress, Conversation
-from octomate.schemas.deferred import DeferredActionBatchResponse
+from octomate.signals import DeferredActionBatchResponse
 from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex.base import CodexBridgeContext

@@ -27,7 +27,6 @@ from octomate.events import (
     StreamEvents,
     TodoCompletedEvent,
 )
-from octomate.schemas.awakes import UserMessageAwake
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.deferred import (
     ApprovalRequest,
@@ -43,6 +42,7 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.schemas.todos import Todo
+from octomate.signals import UserMessageSignal
 from octomate.tentacles.channel import (
     ChannelOutput,
     ChannelTentacle,
@@ -117,7 +117,7 @@ async def test_ingest_dispatches_event_to_octomate(
     assert isinstance(octomate, FakeOctomate)
     assert len(octomate.kicks) == 1
     signal = octomate.kicks[0]
-    assert isinstance(signal, UserMessageAwake)
+    assert isinstance(signal, UserMessageSignal)
     address = signal.address
     assert signal.trigger_thread_message_id is not None
 
@@ -302,7 +302,7 @@ async def test_ingest_carries_the_surfaces_privacy_onto_the_address(
     octomate = channel.octomate
     assert isinstance(octomate, FakeOctomate)
     signal = octomate.kicks[0]
-    assert isinstance(signal, UserMessageAwake)
+    assert isinstance(signal, UserMessageSignal)
     assert signal.address.shared is shared
 
 
@@ -385,7 +385,7 @@ async def test_next_mention_prompt_includes_stored_unmentioned_messages(
     assert isinstance(octomate, FakeOctomate)
     assert len(octomate.kicks) == 1
     signal = octomate.kicks[0]
-    assert isinstance(signal, UserMessageAwake)
+    assert isinstance(signal, UserMessageSignal)
     assert signal.trigger_thread_message_id is not None
 
     thread = await octomate.threads.ensure(_key(chat_type="group", chat_id="lobby"))
@@ -427,7 +427,7 @@ async def test_submerge_downloads_images_and_rewrites_file(
     octomate = channel.octomate
     assert isinstance(octomate, FakeOctomate)
     signal = octomate.kicks[0]
-    assert isinstance(signal, UserMessageAwake)
+    assert isinstance(signal, UserMessageSignal)
     segment = signal.messages[0].segments[0]
     assert isinstance(segment, ImageSegment)
     saved = Path(segment.data.file)

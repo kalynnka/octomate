@@ -124,7 +124,7 @@ class HabitatTopic:
 
 @dataclass(frozen=True)
 class InvocationTopic:
-    """The agent receiver borrowing one core-owned invocation."""
+    """Signals addressed to one agent invocation."""
 
     invocation_id: UUID7
 

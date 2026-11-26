@@ -27,15 +27,15 @@ from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.nerve import ThreadTopic
 from octomate.reflex.state import ReflexResult
 from octomate.schemas.auth import UserApiKey
-from octomate.schemas.awakes import UserMessageAwake
 from octomate.schemas.conversation import Conversation
-from octomate.schemas.deferred import DeferredActionBatch, DeferredActionBatchResponse
+from octomate.schemas.deferred import DeferredActionBatch
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelResponse
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import MessageBinding, Thread, ThreadKey, ThreadMessage
 from octomate.schemas.user import UserProfile
+from octomate.signals import DeferredActionBatchResponse, UserMessageSignal
 from octomate.tentacles.acp.base import AcpAgentTentacle
 from octomate.tentacles.acp.channel import AcpChannelTentacle
 from octomate.tentacles.acp.client import AcpProvider
@@ -490,7 +490,7 @@ async def test_reflex_owns_dispatch_and_history(
     inbound = await app.threads.record_inbound(message)
     async with app.nerves.events.subscribe(ThreadTopic(thread.key)) as stream:
         task = await app.kick(
-            UserMessageAwake(
+            UserMessageSignal(
                 [message], agent_id=tentacle.id, trigger_thread_message_id=inbound.id
             )
         )
@@ -625,7 +625,7 @@ async def test_cancel_settles_provider_and_keeps_partial_history(
     inbound = await app.threads.record_inbound(message)
     async with app.nerves.events.subscribe(ThreadTopic(thread.key)) as stream:
         task = await app.kick(
-            UserMessageAwake(
+            UserMessageSignal(
                 [message], agent_id=tentacle.id, trigger_thread_message_id=inbound.id
             )
         )

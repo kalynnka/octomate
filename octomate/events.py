@@ -73,16 +73,15 @@ from octomate.schemas.commands import CommandOutcome
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredActionBatch,
-    DeferredActionBatchResponse,
     DeferredApproval,
     DeferredQuestion,
-    QuestionAnswer,
 )
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.thread import Handoff
 from octomate.schemas.todos import Todo
 from octomate.schemas.triage import GatewayAction
 from octomate.schemas.user import UserProfile
+from octomate.signals import DeferredActionBatchResponse, QuestionAnswer
 from octomate.types.deferred import DeferredResponseMode
 from octomate.types.threads import KickOutcome
 

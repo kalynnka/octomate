@@ -51,22 +51,22 @@ from octomate.reflex import (
     ReflexState,
     run_reflex,
 )
-from octomate.schemas.awakes import (
-    Awake,
-    CommandAwake,
-    DrivenGatewayAwake,
-    NativeGatewayAwake,
-    StillAwake,
-    SummonAwake,
-    UserMessageAwake,
-)
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.deferred import DeferredActionBatchResponse
 from octomate.schemas.mcp import OAuthMcp
 from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import ProfileInfo, User
+from octomate.signals import (
+    AwakeSignal,
+    CommandSignal,
+    DeferredActionBatchResponse,
+    DrivenGatewaySignal,
+    NativeGatewaySignal,
+    StillAwake,
+    SummonSignal,
+    UserMessageSignal,
+)
 from octomate.telemetry import octomate_logfire
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.base import Tentacle
@@ -328,7 +328,7 @@ class Octomate(FastAPI):
         tag = short_log_name(logger_name)
         return tag, SHARED_LOG_STYLES.get(tag) or muted_log_style(tag)
 
-    async def kick(self, signal: Awake) -> asyncio.Task[ReflexGraphResult] | None:
+    async def kick(self, signal: AwakeSignal) -> asyncio.Task[ReflexGraphResult] | None:
         """Wake the reflex on a user message turn or deferred response, unless the
         response answers a live request, which goes to the run waiting on it and
         wakes nothing. Returns once the reflex holds its thread, with the task it
@@ -342,17 +342,17 @@ class Octomate(FastAPI):
         ) as span:
             origin: ChannelAddress | None = None
             match signal:
-                case UserMessageAwake() if signal:
+                case UserMessageSignal() if signal:
                     origin = signal.address
                     span.set_attribute("channel_id", origin.channel_tentacle_id)
                     span.set_attribute("conversation_address", str(origin))
-                case CommandAwake():
+                case CommandSignal():
                     origin = signal.context.address
-                case DrivenGatewayAwake():
+                case DrivenGatewaySignal():
                     origin = signal.source
-                case SummonAwake():
+                case SummonSignal():
                     origin = signal.destination
-                case NativeGatewayAwake():
+                case NativeGatewaySignal():
                     origin = signal.source
                     span.set_attribute("agent_id", signal.agent_id)
                     span.set_attribute("action", signal.decision.action)

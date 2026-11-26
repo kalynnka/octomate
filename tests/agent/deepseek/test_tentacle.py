@@ -41,11 +41,11 @@ from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     ApprovalRequest,
-    DeferredActionBatchResponse,
     DeferredApproval,
     DeferredQuestion,
 )
 from octomate.schemas.volumes.storage import HostDirectory
+from octomate.signals import DeferredActionBatchResponse
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.deepseek import base as deepseek_base
 from octomate.tentacles.deepseek import ink as deepseek_ink

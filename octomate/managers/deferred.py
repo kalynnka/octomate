@@ -20,12 +20,12 @@ from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     DeferredAction,
     DeferredActionBatch,
-    DeferredActionBatchResponse,
     DeferredActionCollection,
     DeferredApproval,
     DeferredQuestion,
 )
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
+from octomate.signals import DeferredActionBatchResponse
 from octomate.telemetry import deferred_logfire
 from octomate.types.deferred import DeferredBatchStatus, DeferredResponseMode
 

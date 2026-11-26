@@ -15,9 +15,10 @@ from octomate.events import (
 )
 from octomate.nerve import ChannelTopic
 from octomate.reflex.suspender import ReflexSuspender
-from octomate.schemas.deferred import DeferredActionBatchResponse, QuestionRequest
+from octomate.schemas.deferred import QuestionRequest
 from octomate.schemas.thread import Thread
 from octomate.schemas.user import UserProfile
+from octomate.signals import DeferredActionBatchResponse
 from octomate.tentacles.acp.base import AcpAgentTentacle
 from octomate.tentacles.acp.elicitation import AcpForm, FormProperty
 from octomate.types.json import JsonObject

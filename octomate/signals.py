@@ -1,163 +1,162 @@
-"""Resolved work and controls sent by core to agent tentacles over the nerve.
-
-Core routes and prepares a turn before sending its signal. The agent publishes
-execution events outbound; it does not receive the request that woke core.
-"""
+"""Signals that wake the reflex or control an active run."""
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Annotated, Literal, Self
+from dataclasses import dataclass
+from functools import cached_property
+from typing import Annotated, Literal
 
-from pydantic import UUID7, BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic import UUID7, BaseModel, ConfigDict, Field, TypeAdapter, with_config
 
+from octomate.schemas.commands import CommandContext, CommandIntent
 from octomate.schemas.conversation import ChannelAddress
-from octomate.types.json import JsonObject
-from octomate.types.permissions import AgentPermissionMode
+from octomate.schemas.events import MessageEvent
+from octomate.schemas.triage import SchemeDecision, SummonDecision, TeleportDecision
+from octomate.schemas.user import UserProfile
 
 
-class Priming(BaseModel):
-    """What core resolved for a turn before asking for it: the session it runs
-    in, where, and under which settings. The run signal carries it. What holds
-    for as long as the tentacle's habitat does, such as its environment, is the
-    tentacle's own and is not sent."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    invocation_id: UUID7 = Field(
-        description="Allocated by core; names the turn to `InterruptRunSignal`."
-    )
-    session_id: str | None = Field(
-        description="The existing harness session; None lets the provider create a new one."
-    )
-    resume: bool = Field(
-        description="Whether this turn continues an existing harness session."
-    )
-    model: str | None = Field(
-        default=None, description="None leaves the harness's own choice."
-    )
-    effort: str | None = Field(
-        default=None, description="None leaves the harness's own choice."
-    )
-    permission_mode: AgentPermissionMode | None = Field(
-        default=None,
-        description="In the harness's own vocabulary; None leaves the mode the "
-        "tentacle is configured with.",
-    )
-    instructions: str | None = Field(
-        default=None,
-        description="Appended to the harness's system prompt for this turn.",
-    )
-    output_schema: JsonObject | None = Field(
-        default=None,
-        description="The JSON schema the turn's output must satisfy; None for a "
-        "plain text reply.",
-    )
-    interactive: bool = Field(
-        default=True,
-        description="Whether a human can be asked. A turn without one declines "
-        "what would need an approval or an answer.",
-    )
-    allowed_tools: list[str] = Field(
-        default_factory=list,
-        description="Tools already approved for this session, which run unasked.",
-    )
-    cwd: Path = Field(
-        description="The working directory, as the harness's machine shows it."
-    )
-    extra_roots: list[Path] = Field(
-        default_factory=list,
-        description="Other directories the turn may reach, on the same machine.",
-    )
+class BaseSignal:
+    """A request carried by the signal nerve."""
 
 
-class InterruptRunSignal(BaseModel):
-    """Asks an agent tentacle to stop a turn it is running."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    event_kind: Literal["interrupt_run_signal"] = "interrupt_run_signal"
-    invocation_id: UUID7 = Field(
-        description="Core's dispatch identity, not the provider run or session ID."
-    )
+class AwakeSignal(BaseSignal):
+    """Input that can wake a reflex or answer a live deferred request."""
 
 
-class RunAgentSignal(BaseModel):
-    """Execute core's resolved turn with its required priming.
+@with_config(ConfigDict(extra="forbid"))
+@dataclass(frozen=True)
+class UserMessageSignal(AwakeSignal):
+    """Messages using channel routing or a caller-selected agent."""
 
-    Core retains the invocation's resource context until execution settles. The
-    receiver resolves references through its owners; no live resource crosses
-    this boundary. Conversation ownership also selects any child agent context.
+    messages: list[MessageEvent]
+    trigger_thread_message_id: UUID7 | None = None
+    agent_id: str | None = None  # Caller-selected executor; otherwise Route selects it.
+    event_kind: Literal["user_message_signal"] = "user_message_signal"
+
+    def __bool__(self) -> bool:
+        return bool(self.messages)
+
+    @cached_property
+    def address(self) -> ChannelAddress:
+        if not self.messages:
+            raise ValueError("empty user message signal has no conversation address")
+        last_event = self.messages[-1]
+        return ChannelAddress(
+            channel_tentacle_id=last_event.tentacle_id,
+            chat_type=last_event.chat_type,
+            chat_id=last_event.chat_id,
+            user_id=last_event.user_id,
+            channel_thread_id=last_event.channel_thread_id,
+            shared=last_event.shared,
+        )
+
+
+@with_config(ConfigDict(extra="forbid"))
+@dataclass(frozen=True)
+class NativeGatewaySignal(AwakeSignal):
+    """A native session's own spell, kicked as its own turn.
+
+    A driven turn's decision is read off its Octomate session when the run ends; a
+    session running outside Octomate has no run in the graph, so its served
+    spell hands the validated decision straight to the graph instead.
     """
 
+    # A native session cannot be summoned: there is nothing here to hand over.
+    decision: SchemeDecision | TeleportDecision
+    # The native pseudo-channel the handoff is attributed to — its ledger `from` side.
+    agent_id: str
+    # The registry profile the native id is linked to; None when nobody claims it.
+    user_profile: UserProfile | None
+    # Where the spell came from: the session's own thread for a teleport, else a
+    # pseudo-address on the native id, for the crossing announce to speak to and
+    # any failure to land back against.
+    source: ChannelAddress | None = None
+    event_kind: Literal["native_gateway_signal"] = "native_gateway_signal"
+
+
+@with_config(ConfigDict(extra="forbid"))
+@dataclass(frozen=True)
+class CommandSignal(AwakeSignal):
+    """Explicit command intent on an authenticated, resolved conversation surface."""
+
+    context: CommandContext
+    intent: CommandIntent
+    delivery_id: str  # Stable across retries of the same explicit request.
+    event_kind: Literal["command_signal"] = "command_signal"
+
+
+@with_config(ConfigDict(extra="forbid"))
+@dataclass(frozen=True)
+class DrivenGatewaySignal(AwakeSignal):
+    """An authenticated, validated operation on an existing thread."""
+
+    thread_id: UUID7
+    decision: SummonDecision | TeleportDecision
+    agent_id: str
+    user_profile: UserProfile
+    source: ChannelAddress
+    event_kind: Literal["driven_gateway_signal"] = "driven_gateway_signal"
+
+
+@with_config(ConfigDict(extra="forbid"))
+@dataclass(frozen=True)
+class SummonSignal(AwakeSignal):
+    """Start independent work at a newly opened destination.
+
+    Awake initializes the thread and enters React with the selected agent.
+    React records the handoff from this requester before running the agent.
+    """
+
+    decision: SummonDecision
+    destination: ChannelAddress  # The newly opened thread to initialize.
+    agent_id: str  # The requesting agent, kept as the handoff's source.
+    user_profile: UserProfile
+    source_conversation_id: UUID7 | None = None
+    project: str | None = None  # The validated project to bind the new thread to.
+    ref: str | None = None  # The validated starting ref for that project's workspace.
+    event_kind: Literal["summon_signal"] = "summon_signal"
+
+
+# One question's answer: the text typed or the one choice picked, or the choices
+# picked on a multi-select question.
+type QuestionAnswer = str | list[str]
+
+
+class DeferredActionBatchResponse(BaseModel, AwakeSignal):
+    batch_id: UUID7
+    responder_id: str = ""
+    answers: dict[UUID7, QuestionAnswer] = Field(default_factory=dict)
+    approvals: dict[UUID7, bool] = Field(default_factory=dict)
+    allow_session: bool = False
+    event_kind: Literal["action_batch_response"] = "action_batch_response"
+
+
+class AsleepSignal(BaseModel, BaseSignal):
+    """Request interruption of an active invocation, not resumable suspension."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    event_kind: Literal["run_agent_signal"] = "run_agent_signal"
-    priming: Priming = Field(
-        description="Core-resolved invocation identity, session and execution settings."
-    )
-    conversation_id: UUID7 = Field(
-        description="Core-resolved conversation, including a child's own conversation; "
-        "its owner supplies thread, agent, parent and subagent identities."
-    )
-    user_id: UUID7 | None = Field(
-        description="Authorized registered user whose capabilities the receiver resolves; "
-        "None preserves an unregistered caller."
-    )
-    conversation_address: ChannelAddress = Field(
-        description="Destination resolved by core before dispatch."
-    )
-    source_thread_address: ChannelAddress | None = Field(
-        description="Origin retained for source-message and attachment resolution, when known."
-    )
-    source_thread_message_ids: list[UUID7] = Field(
-        description="Core ledger messages the receiver may resolve for this turn."
-    )
-    run_name: str = Field(
-        description="Core's run label, also used for commissioned runs."
-    )
-    user_prompt: str | None = Field(
-        default=None,
-        description="Resolved opening text; None continues deferred tool calls.",
-    )
-    deferred_batch_id: UUID7 | None = Field(
-        default=None,
-        description="Completed batch whose owner rebuilds deferred results for a new invocation.",
-    )
-    tool_results: dict[str, str] | None = Field(
-        default=None,
-        min_length=1,
-        description="Graph-generated answers keyed by tool call ID, such as a completed "
-        "teleport; the receiver builds SDK results without requiring a human-action batch.",
-    )
-
-    @model_validator(mode="after")
-    def validate_input(self) -> Self:
-        inputs = (self.user_prompt, self.deferred_batch_id, self.tool_results)
-        if sum(value is not None for value in inputs) != 1:
-            raise ValueError(
-                "a run requires exactly one prompt, deferred batch or tool result input"
-            )
-        return self
-
-
-class DeferredResponseSignal(BaseModel):
-    """Release a live invocation's deferred wait using an already resolved batch."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    event_kind: Literal["deferred_response_signal"] = "deferred_response_signal"
-    invocation_id: UUID7 = Field(
-        description="Core's identity of the still-live invocation."
-    )
-    batch_id: UUID7 = Field(
-        description="Persisted completed batch; its owner supplies the validated answers."
-    )
+    event_kind: Literal["asleep_signal"] = "asleep_signal"
+    invocation_id: UUID7 = Field(description="Identity of the invocation to interrupt.")
 
 
 type Signal = Annotated[
-    RunAgentSignal | DeferredResponseSignal | InterruptRunSignal,
+    UserMessageSignal
+    | DeferredActionBatchResponse
+    | CommandSignal
+    | NativeGatewaySignal
+    | DrivenGatewaySignal
+    | SummonSignal
+    | AsleepSignal,
     Field(discriminator="event_kind"),
 ]
 
 signal_adapter: TypeAdapter[Signal] = TypeAdapter(Signal)
+
+
+class StillAwake(RuntimeError):
+    """A kick refused because a reflex is still awake on the thread it was asked
+    on: a thread holds one at a time."""
+
+    def __init__(self) -> None:
+        super().__init__("A turn is still running in this thread.")

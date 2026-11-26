@@ -24,7 +24,6 @@ from pydantic_ai.tools import DeferredToolRequests
 from octomate.events import WireEvent
 from octomate.managers.base import Manager
 from octomate.nerve import ChannelTopic, Impulse, Nerve, ThreadTopic
-from octomate.schemas.awakes import DrivenGatewayAwake, NativeGatewayAwake, SummonAwake
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.operations import (
     OperationAvailability,
@@ -47,6 +46,7 @@ from octomate.schemas.triage import (
 )
 from octomate.schemas.user import UserProfile
 from octomate.schemas.volumes.git import run_git
+from octomate.signals import DrivenGatewaySignal, NativeGatewaySignal, SummonSignal
 from octomate.tentacles.agent import AgentTentacle
 from octomate.types.threads import NATIVE_CHANNEL_USER_ID
 
@@ -642,7 +642,7 @@ class OctomateSession:
             self.current_agent_id = thread.active_agent_tentacle_id
         self.conversation_address = thread.key.address(profile.channel_user_id)
 
-    def thread_operation(self) -> DrivenGatewayAwake:
+    def thread_operation(self) -> DrivenGatewaySignal:
         """Package a validated user action for the graph's existing-thread entry."""
         if (
             self.thread_id is None
@@ -653,7 +653,7 @@ class OctomateSession:
             raise ValueError(
                 "A thread operation requires a thread, user and validated decision."
             )
-        return DrivenGatewayAwake(
+        return DrivenGatewaySignal(
             thread_id=self.thread_id,
             source=self.conversation_address,
             agent_id=self.current_agent_id,
@@ -661,7 +661,7 @@ class OctomateSession:
             decision=self.decision,
         )
 
-    def native_handoff(self) -> NativeGatewayAwake:
+    def native_handoff(self) -> NativeGatewaySignal:
         """This native session's recorded decision, packaged to be kicked as its
         own turn. Only a native spell leaves one, so anything else asking is a
         wiring bug, not a refusal a model could correct from."""
@@ -670,7 +670,7 @@ class OctomateSession:
             decision, SchemeDecision | TeleportDecision
         ):
             raise RuntimeError("only a native teleport or scheme kicks a handoff")
-        return NativeGatewayAwake(
+        return NativeGatewaySignal(
             decision=decision,
             agent_id=self.current_agent_id,
             user_profile=self.user_profile,
@@ -838,7 +838,7 @@ class OctomateSession:
         except ValueError as error:
             raise GatewayRefusal(str(error)) from error
         await channel.octomate.kick(
-            SummonAwake(
+            SummonSignal(
                 decision=decision,
                 destination=opened,
                 agent_id=self.current_agent_id,

@@ -82,13 +82,8 @@ from octomate.managers.user import UserManager
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import ThreadTopic, UserTopic
 from octomate.schemas.agent import AgentInfo
-from octomate.schemas.awakes import StillAwake
 from octomate.schemas.conversation import ChannelAddress, Conversation
-from octomate.schemas.deferred import (
-    DeferredActionBatch,
-    DeferredActionBatchResponse,
-    QuestionAnswer,
-)
+from octomate.schemas.deferred import DeferredActionBatch
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.operations import ThreadOperations
 from octomate.schemas.project import Project
@@ -100,6 +95,7 @@ from octomate.schemas.thread import (
     ThreadMessage,
 )
 from octomate.schemas.user import ProfileInfo, User, UserProfile
+from octomate.signals import DeferredActionBatchResponse, QuestionAnswer, StillAwake
 from octomate.tentacles.trunkline.activity import watch_activity
 from octomate.tentacles.trunkline.base import (
     ROUTE_SEP,

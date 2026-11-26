@@ -18,11 +18,11 @@ from octomate.reflex.nodes.react import React
 from octomate.reflex.nodes.teleport import Teleport
 from octomate.reflex.state import ReflexDeps, ReflexResult, ReflexState, ResponseTarget
 from octomate.reflex.suspender import TeleportRequest
-from octomate.schemas.awakes import SummonAwake
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import AgentRouteKey, SummonDecision
 from octomate.schemas.user import UserProfile
 from octomate.schemas.volumes import GitVolume, UnregisteredProjectError
+from octomate.signals import SummonSignal
 from octomate.tentacles.channel import ChannelOutput
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
@@ -87,7 +87,7 @@ async def test_project_preparation_uses_the_sender_and_starting_ref(
         state.user_profile = UserProfile(channel_user_id="visitor")
     if entry == "summon":
         node = Awake(
-            SummonAwake(
+            SummonSignal(
                 decision=state.decision,
                 destination=state.target.address,
                 agent_id="inkling",

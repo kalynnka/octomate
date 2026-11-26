@@ -75,13 +75,13 @@ from octomate.reflex.suspender import ReflexSuspender, TeleportRequest
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     ApprovalRequest,
-    DeferredActionBatchResponse,
     DeferredApproval,
     DeferredQuestion,
 )
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
 from octomate.schemas.volumes.storage import HostDirectory
+from octomate.signals import DeferredActionBatchResponse
 from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import base as codex_base

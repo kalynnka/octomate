@@ -38,10 +38,10 @@ from octomate.reflex.state import (
     ReflexState,
     ResponseTarget,
 )
-from octomate.schemas.awakes import Awake as AwakeInput
 from octomate.schemas.commands import CommandError
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
+from octomate.signals import AwakeSignal
 from octomate.types.threads import KickOutcome
 
 __all__ = [
@@ -108,7 +108,7 @@ reflex_graph = build_reflex_graph()
 
 
 async def run_reflex(
-    signal: AwakeInput, *, origin: ChannelAddress, state: ReflexState, deps: ReflexDeps
+    signal: AwakeSignal, *, origin: ChannelAddress, state: ReflexState, deps: ReflexDeps
 ) -> ReflexGraphResult:
     """Wake the reflex with `signal`, and say so on the nerve before anything
     else. A failure is reported where the kick came from, and the reflex falls

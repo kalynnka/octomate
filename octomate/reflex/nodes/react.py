@@ -5,21 +5,18 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from pathlib import Path
 
 from pydantic import UUID7
-from pydantic_ai.tools import DeferredToolRequests
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_graph import BaseNode, End, GraphRunContext
 
 from octomate.events import HabitatPreparationEvent
-from octomate.nerve import InvocationTopic
 from octomate.reflex.state import (
     ReflexDeps,
     ReflexGraphResult,
     ReflexState,
 )
 from octomate.schemas.triage import SummonDecision
-from octomate.signals import Priming, RunAgentSignal
 from octomate.telemetry import reflex_logfire
 from octomate.tentacles.channel import ChannelOutput
 from octomate.tentacles.stream import ReactStreamEvent
@@ -103,6 +100,16 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 suspender=suspender,
                 capabilities=capabilities,
             )
+        deferred_results = (
+            DeferredToolResults(calls=self.tool_results)
+            if self.tool_results is not None
+            else None
+        )
+        if self.resume_batch_id is not None:
+            batch = await ctx.deps.action_manager.get_batch(self.resume_batch_id)
+            if batch.conversation_id != conversation.id:
+                raise ValueError("Deferred batch belongs to another conversation")
+            deferred_results = batch.build_results()
         user_prompt = (
             None
             if self.resume_batch_id is not None or self.tool_results is not None
@@ -119,34 +126,20 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     conversation=conversation,
                     owner_id=state.user_profile.user_id if state.user_profile else None,
                 ) as invocation,
-                agent.reflex(
+                agent.run_stream_events(
+                    user_prompt,
+                    conversation_address=target_address,
                     invocation=invocation,
+                    source_thread_address=state.source_thread_address,
+                    source_thread_message_ids=state.source_thread_message_ids,
+                    run_name=state.run_name,
+                    model=agent.models[model] if model is not None else None,
+                    effort=effort,
+                    deferred_tool_results=deferred_results,
                     deferred_suspender=suspender,
                     capabilities=capabilities,
                 ) as stream,
             ):
-                agent.octomate.nerves.signals.dispatch(
-                    InvocationTopic(invocation.id),
-                    RunAgentSignal(
-                        priming=Priming(
-                            invocation_id=invocation.id,
-                            session_id=conversation.external_id,
-                            resume=conversation.external_id is not None,
-                            model=model,
-                            effort=effort,
-                            cwd=Path(invocation.cwd),
-                        ),
-                        conversation_id=conversation.id,
-                        user_id=invocation.owner_id,
-                        conversation_address=target_address,
-                        source_thread_address=state.source_thread_address,
-                        source_thread_message_ids=state.source_thread_message_ids,
-                        run_name=state.run_name,
-                        user_prompt=user_prompt,
-                        deferred_batch_id=self.resume_batch_id,
-                        tool_results=self.tool_results,
-                    ),
-                )
                 yield HabitatPreparationEvent(phase="ready")
                 async for event in stream:
                     yield event

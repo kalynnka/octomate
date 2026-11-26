@@ -48,7 +48,6 @@ from octomate.schemas.conversation import (
 )
 from octomate.schemas.deferred import (
     DeferredActionBatch,
-    DeferredActionBatchResponse,
     DeferredApproval,
     DeferredQuestion,
 )
@@ -67,6 +66,7 @@ from octomate.schemas.thread import (
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.schemas.user import UserProfile
 from octomate.schemas.volumes import GitVolume, Volume
+from octomate.signals import DeferredActionBatchResponse
 from octomate.types.deferred import DeferredBatchStatus, DeferredResponseMode
 from octomate.types.permissions import AgentPermissionMode
 from octomate.types.volumes import VolumeUsage

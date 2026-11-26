@@ -25,7 +25,6 @@ from octomate.mcp.gateway import gateway_instructions, mount_gateway
 from octomate.mcp.history import HISTORY_TOOL_NAMES, mount_history
 from octomate.mcp.oauth import OAUTH_NAMESPACE, mount_oauth
 from octomate.mcp.todos import mount_todos, todo_instructions
-from octomate.schemas.awakes import NativeGatewayAwake
 from octomate.schemas.mcp import (
     McpInstallRequest,
     McpServerSummary,
@@ -35,6 +34,7 @@ from octomate.schemas.mcp import (
     OAuth,
 )
 from octomate.schemas.user import User
+from octomate.signals import NativeGatewaySignal
 from octomate.types.oauth import HttpsUrl
 
 if TYPE_CHECKING:
@@ -300,7 +300,7 @@ def octomate_mcp(
     resolve_session: Callable[[], Awaitable[OctomateSession]],
     thread_manager: ThreadManager,
     kick: Callable[
-        [NativeGatewayAwake], Awaitable[asyncio.Task[ReflexGraphResult] | None]
+        [NativeGatewaySignal], Awaitable[asyncio.Task[ReflexGraphResult] | None]
     ]
     | None = None,
     *,

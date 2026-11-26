@@ -19,8 +19,8 @@ from octomate.managers.gateway import OctomateSession
 from octomate.mcp.oauth import LINK_PROFILE_TOOL
 from octomate.mcp.server import tentacles_mcp
 from octomate.schemas.auth import LinkProfileSession
-from octomate.schemas.awakes import UserMessageAwake
 from octomate.schemas.segments import TextSegment
+from octomate.signals import UserMessageSignal
 from octomate.tentacles.discord.feelers.oauth import DiscordOAuthFeeler
 from octomate.tentacles.trunkline.base import TrunklineTentacle
 from tests.channels.discord.test_feelers import RecordingDiscordUIInk
@@ -57,7 +57,7 @@ async def link_profile_context(
         }
     )
     [signal] = app.kicks
-    assert isinstance(signal, UserMessageAwake)
+    assert isinstance(signal, UserMessageSignal)
     scope = OctomateSession(
         channel_routes={},
         current_agent_id="inkling",
@@ -279,7 +279,7 @@ async def test_bind_command_is_ordinary_agent_input(
     )
 
     [signal] = app.kicks
-    assert isinstance(signal, UserMessageAwake)
+    assert isinstance(signal, UserMessageSignal)
     assert signal.messages[-1].segments == [TextSegment(data={"text": "/bind"})]
     assert channel.sent == []
     async with async_session() as session:
