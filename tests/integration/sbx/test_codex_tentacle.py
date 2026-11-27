@@ -65,7 +65,7 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
     core_home.mkdir()
     state = ScriptedProvider("responses")
     host = Octomate(config=OctomateConfig(auth=auth_config()))
-    host.habitats.config = SbxHabitatConfig(image=image)
+    host.habitats["native"].config = SbxHabitatConfig(image=image)
     owner = await a_user("codex-owner")
     project_root = tmp_path / "project"
     project_root.mkdir()
@@ -88,12 +88,14 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
         user_id="codex-owner",
         channel_thread_id="codex-work",
     )
-    sandbox = host.habitats.residence(
-        InvocationScope(user_id=owner.id, conversation_id=uuid7())
-    ).habitat
+    sandbox = (
+        host.habitats["native"]
+        .residence(InvocationScope(user_id=owner.id, conversation_id=uuid7()))
+        .habitat
+    )
     assert isinstance(sandbox, SbxHabitat)
     sbx_cleanup.push_async_callback(remove_sandbox, sandbox)
-    sbx_cleanup.push_async_callback(host.habitats.close)
+    sbx_cleanup.push_async_callback(host.habitats["native"].close)
 
     async with AsyncExitStack() as resources:
         overrides: tuple[str, ...] = ()
@@ -119,7 +121,7 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
         )
         tentacle = CodexTentacle(
             host,
-            habitats=host.habitats,
+            habitats=host.habitats["native"],
             config=CodexConfig(runtime=runtime, permission_mode="user_review"),
             commands=host.commands,
             projects=host.projects,
@@ -166,7 +168,7 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
                     assert (
                         await sandbox.control(
                             "exec",
-                            sandbox.name,
+                            sandbox.id,
                             "cat",
                             "/proc/sys/kernel/random/boot_id",
                         )
@@ -199,7 +201,7 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
                     assert json.loads(
                         await sandbox.control(
                             "exec",
-                            sandbox.name,
+                            sandbox.id,
                             "cat",
                             f"{invocation.environment['CODEX_HOME']}/auth.json",
                         )
@@ -226,7 +228,7 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
                 expected_provider = "audit"
                 if live:
                     mode = await sandbox.control(
-                        "exec", sandbox.name, "printenv", "SBX_CRED_OPENAI_MODE"
+                        "exec", sandbox.id, "printenv", "SBX_CRED_OPENAI_MODE"
                     )
                     expected_provider = (
                         "sandboxd" if mode.strip() == b"oauth" else "openai"
@@ -254,14 +256,18 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
                 assert "octomate_driven" in await ink.mcp_status(
                     conversation.external_id
                 )
-            assert not host.habitats.residence(
-                InvocationScope(
-                    user_id=owner.id, conversation_id=invocation.conversation.id
+            assert (
+                not host.habitats["native"]
+                .residence(
+                    InvocationScope(
+                        user_id=owner.id, conversation_id=invocation.conversation.id
+                    )
                 )
-            ).invocations
+                .invocations
+            )
             if turn == 1:
                 boot = await expire_idle(
-                    host.habitats,
+                    host.habitats["native"],
                     InvocationScope(
                         user_id=owner.id, conversation_id=invocation.conversation.id
                     ),
@@ -272,7 +278,7 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
             source = await AsyncThread(client, external_id).read(include_turns=True)
             assert len(source.thread.turns) == 3
             destination = str(invocation.cwd / "fork")
-            await sandbox.control("exec", sandbox.name, "mkdir", "-p", destination)
+            await sandbox.control("exec", sandbox.id, "mkdir", "-p", destination)
             forked_id = await ink.fork_session(
                 external_id,
                 cwd=Path(destination),
@@ -437,7 +443,7 @@ async def exercise_uploaded_history(
     # A failed import must not leave a private rollout behind in the guest.
     home = invocation.environment["CODEX_HOME"]
     imports = f"{home}/sessions/users/{owner_id.hex}"
-    before = await habitat.control("exec", habitat.name, "ls", imports)
+    before = await habitat.control("exec", habitat.id, "ls", imports)
     with pytest.raises(RuntimeError, match="abort import"):
         async with tentacle.ink.import_transcript(
             uploaded,
@@ -447,4 +453,4 @@ async def exercise_uploaded_history(
             env=invocation.environment,
         ):
             raise RuntimeError("abort import")
-    assert await habitat.control("exec", habitat.name, "ls", imports) == before
+    assert await habitat.control("exec", habitat.id, "ls", imports) == before

@@ -1,19 +1,27 @@
 """Host and credential commands remain independent when invoked directly."""
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 import typer
 import yaml
-from octomate_cli import credentials
+from octomate_cli import credentials, habitat
 from octomate_cli import sbx as sbx_cli
-from octomate_cli.habitat import HabitatMode
+from octomate_cli.habitat import HabitatProvider
 from octomate_cli.installation import DeploymentTarget
 from octomate_cli.main import app
+from octomate_cli.wizard.agents import AGENTS
 from octomate_cli.wizard.habitat import habitat_step
 from typer.testing import CliRunner
+
+from octomate.config.acp import AcpAgentConfig
+from octomate.config.agents.claude import ClaudeCodeConfig
+from octomate.config.agents.codex import CodexConfig
+from octomate.config.agents.deepseek import DeepseekConfig
+from octomate.config.agents.inkling import InklingConfig
 
 runner = CliRunner()
 
@@ -198,16 +206,24 @@ def test_commands_require_their_own_inputs(sbx: Mock, arguments: list[str]) -> N
 @pytest.mark.parametrize("agent", ["claude", "codex", "deepseek", "acp", "inkling"])
 def test_sbx_selection_accepts_supported_agents(agent: str) -> None:
     image = "image@sha256:" + "a" * 64
-    assert (
-        habitat_step(
-            [agent],
-            HabitatMode.sbx,
-            image,
-            interactive=False,
-            target=DeploymentTarget.launchd,
-        )
-        == image
-    )
+    assert habitat_step(
+        [agent],
+        HabitatProvider.sbx,
+        image,
+        interactive=False,
+        target=DeploymentTarget.launchd,
+    ) == ({agent: HabitatProvider.sbx}, image)
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex", "deepseek", "inkling", "acp"])
+def test_srt_selection_accepts_supported_agents(agent: str) -> None:
+    assert habitat_step(
+        [agent],
+        HabitatProvider.srt,
+        None,
+        interactive=False,
+        target=DeploymentTarget.launchd,
+    ) == ({agent: HabitatProvider.srt}, None)
 
 
 def test_domains_match_the_shipped_kit() -> None:
@@ -238,8 +254,125 @@ def test_sbx_selection_rejects_unsupported_runtime(
     with pytest.raises(typer.BadParameter, match=r"support|host service"):
         habitat_step(
             agents,
-            HabitatMode.sbx,
+            HabitatProvider.sbx,
             "image@sha256:" + "a" * 64,
             interactive=False,
             target=target,
         )
+
+
+@pytest.mark.parametrize(
+    ("assignments", "message"),
+    [
+        (["claude=unknown"], "native, srt or sbx"),
+        (["other=native"], "selected AGENT=PROVIDER"),
+        (["claude"], "selected AGENT=PROVIDER"),
+        (["claude=srt", "claude=native"], "only once"),
+    ],
+)
+def test_per_agent_habitat_rejects_invalid_assignments(
+    assignments: list[str], message: str
+) -> None:
+    with pytest.raises(typer.BadParameter, match=message):
+        habitat_step(
+            ["claude", "codex", "deepseek"],
+            None,
+            None,
+            assignments=assignments,
+            interactive=False,
+            target=DeploymentTarget.launchd,
+        )
+
+
+def test_native_override_does_not_inherit_sbx() -> None:
+    image = "image@sha256:" + "a" * 64
+    assert habitat_step(
+        ["claude", "codex"],
+        HabitatProvider.sbx,
+        image,
+        assignments=["claude=native"],
+        interactive=False,
+        target=DeploymentTarget.launchd,
+    ) == ({"claude": HabitatProvider.native, "codex": HabitatProvider.sbx}, image)
+
+
+@pytest.mark.parametrize("missing", ["srt", "node", "sdk", None])
+def test_srt_setup_checks_runtime_installation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    missing: str | None,
+) -> None:
+    monkeypatch.setattr(habitat.platform, "system", lambda: "Darwin")
+    probe = Mock(return_value=subprocess.CompletedProcess([], 0, "", ""))
+    monkeypatch.setattr(habitat.subprocess, "run", probe)
+    entry = tmp_path / "cli.js"
+    entry.touch()
+    if missing != "sdk":
+        entry.with_name("index.js").touch()
+    monkeypatch.setattr(
+        habitat.shutil, "which", lambda name: None if name == missing else str(entry)
+    )
+    result = runner.invoke(app, ["habitat", "setup", "srt", "--check"])
+    assert result.exit_code == (0 if missing is None else 2), result.output
+    if missing is None:
+        assert "Runtime isolation is checked when a habitat starts" in result.output
+        assert probe.call_args.args[0] == [
+            str(entry),
+            str(Path(habitat.__file__).with_name("srt.mjs")),
+            entry.with_name("index.js").as_uri(),
+        ]
+    else:
+        probe.assert_not_called()
+
+
+@pytest.mark.parametrize("system", ["Linux", "Windows"])
+def test_srt_setup_rejects_unqualified_platform_before_runtime_checks(
+    monkeypatch: pytest.MonkeyPatch,
+    system: str,
+) -> None:
+    monkeypatch.setattr(habitat.platform, "system", lambda: system)
+    lookup = Mock()
+    monkeypatch.setattr(habitat.shutil, "which", lookup)
+    result = runner.invoke(app, ["habitat", "setup", "srt", "--check"])
+    assert result.exit_code == 2
+    assert "macOS only" in result.output
+    lookup.assert_not_called()
+
+
+@pytest.mark.parametrize("returncode", [0, 1])
+def test_srt_setup_surfaces_sdk_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+) -> None:
+    entry = tmp_path / "cli.js"
+    entry.touch()
+    entry.with_name("index.js").touch()
+    monkeypatch.setattr(habitat.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(habitat.shutil, "which", lambda name: str(entry))
+    monkeypatch.setattr(
+        habitat.subprocess,
+        "run",
+        Mock(
+            return_value=subprocess.CompletedProcess(
+                [], returncode, "", "runtime diagnostic"
+            )
+        ),
+    )
+    result = runner.invoke(app, ["habitat", "setup", "srt", "--check"])
+    assert result.exit_code == (2 if returncode else 0)
+    assert "runtime diagnostic" in result.output
+    assert ("SRT dependency check failed" in result.output) == bool(returncode)
+
+
+def test_standalone_wizard_contracts_match_agent_configurations() -> None:
+    configurations = {
+        "claude": ClaudeCodeConfig,
+        "codex": CodexConfig,
+        "deepseek": DeepseekConfig,
+        "acp": AcpAgentConfig,
+        "inkling": InklingConfig,
+    }
+    assert {name: setup.habitat_types for name, setup in AGENTS.items()} == {
+        name: config.habitat_types for name, config in configurations.items()
+    }

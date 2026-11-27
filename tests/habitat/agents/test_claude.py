@@ -127,7 +127,9 @@ async def test_native_fork_sends_the_completed_turn_into_the_guest(
 ) -> None:
     core, agent, sender = await a_native_session()
     assert sender.user_id is not None
-    core.habitats.config = SbxHabitatConfig(image=IMAGE, executable=str(executable))
+    core.habitats["native"].config = SbxHabitatConfig(
+        image=IMAGE, executable=str(executable)
+    )
     monkeypatch.setattr(SbxHabitat, "prepare", AsyncMock())
     guest = tmp_path / "guest"
     (guest / "tree").mkdir(parents=True)
@@ -200,7 +202,7 @@ async def test_native_fork_sends_the_completed_turn_into_the_guest(
             sender=sender,
         )
     finally:
-        await core.habitats.close()
+        await core.habitats["native"].close()
 
     [target] = await core.conversations.for_thread(landed.id)
     assert target.external_id is not None
@@ -243,7 +245,9 @@ async def test_driven_teleport_forks_the_guest_session(
     session_id = str(uuid7())
     await core.conversations.set_external_id(source, session_id)
     source = await core.conversations.get(source.id)
-    core.habitats.config = SbxHabitatConfig(image=IMAGE, executable=str(executable))
+    core.habitats["native"].config = SbxHabitatConfig(
+        image=IMAGE, executable=str(executable)
+    )
     monkeypatch.setattr(SbxHabitat, "prepare", AsyncMock())
     monkeypatch.setattr(SbxHabitat, "stop", AsyncMock())
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "empty-core"))
@@ -303,7 +307,7 @@ async def test_driven_teleport_forks_the_guest_session(
             )
             await node.run(GraphRunContext(state=state, deps=deps))
     finally:
-        await core.habitats.close()
+        await core.habitats["native"].close()
     assert state.thread is not None
     landed = await core.conversations.ensure(
         state.thread.id, agent_tentacle_id=agent.id
@@ -712,11 +716,13 @@ async def test_a_driven_turn_runs_inside_the_owners_sandbox(
         config=OctomateConfig(auth=auth_config()),
         conversations=FakeConversationManager(),
     )
-    host.habitats.config = SbxHabitatConfig(executable=str(executable), image=IMAGE)
+    host.habitats["native"].config = SbxHabitatConfig(
+        executable=str(executable), image=IMAGE
+    )
     tentacle = ClaudeTentacle(
         host,
         auth=host.auth,
-        habitats=host.habitats,
+        habitats=host.habitats["native"],
         config=ClaudeCodeConfig(),
         commands=host.commands,
         projects=host.projects,
@@ -759,26 +765,27 @@ async def test_a_driven_turn_runs_inside_the_owners_sandbox(
                 if isinstance(event, AgentRunResultEvent)
             ]
             assert isinstance(invocation.habitat, SbxHabitat)
-            assert host.habitats.residences[owner.id].invocations == {invocation.id}
+            assert host.habitats["native"].residences[owner.id].invocations == {
+                invocation.id
+            }
     finally:
         await tentacle.revoke_runtime_keys()
-        await host.habitats.close()
+        await host.habitats["native"].close()
     assert [event.result.output for event in results] == ["Approved"]
     stored = await tentacle.conversations.get(invocation.conversation.id)
     assert stored.external_id == "scripted-session"
     assert len(executions) == 1
     assert executions[0][0] == "claude"
-    assert not host.habitats.residences[owner.id].invocations
+    assert not host.habitats["native"].residences[owner.id].invocations
     info = ProcessInfo.model_validate_json(
         (await anyio.Path(log).read_text()).splitlines()[0]
     )
     assert info.cwd == str(invocation.cwd)
     assert info.config == invocation.environment["CLAUDE_CONFIG_DIR"]
     assert "--safe-mode" not in info.argv
-    # The sandbox is the boundary: Claude's own is not configured, and no
-    # host settings are loaded.
     settings = json.loads(info.argv[info.argv.index("--settings") + 1])
     assert settings == {
+        "sandbox": {"enabled": False},
         "hooks": {
             event: [
                 {
@@ -793,7 +800,7 @@ async def test_a_driven_turn_runs_inside_the_owners_sandbox(
                 }
             ]
             for event in ("SubagentStop", "Stop", "SessionEnd")
-        }
+        },
     }
     assert "--setting-sources=" in info.argv
     with pytest.raises(ProcessLookupError):

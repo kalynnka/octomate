@@ -1,16 +1,16 @@
 """Shared habitat lifecycle and managed runtime capabilities."""
 
+import asyncio
 import math
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
-from contextlib import AbstractAsyncContextManager, AsyncExitStack, suppress
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
+from typing import ClassVar
 
-import anyio
-from anyio import to_thread
 from anyio.abc import ByteStream
-from anyio.streams.buffered import BufferedByteReceiveStream
+from octomate_protocol.config import HabitatType
 from pydantic import UUID7, BaseModel
 from pydantic_ai.workspaces import (
     CommandResult,
@@ -22,7 +22,9 @@ from pydantic_ai.workspaces import (
 from yarl import URL
 
 from octomate.config.habitat import BaseHabitatConfig
+from octomate.habitat.client import ExecutorClient
 from octomate.habitat.executor import (
+    CommandEvent,
     CommandRequest,
     CommandResponse,
     FileError,
@@ -30,7 +32,6 @@ from octomate.habitat.executor import (
     Request,
     ValueErrorResponse,
     file_errors,
-    response_adapter,
 )
 from octomate.schemas.volumes import Volume
 
@@ -39,23 +40,14 @@ class HabitatError(RuntimeError):
     """An actionable failure safe to publish without guest or credential output."""
 
 
-async def finish_guest(stream: ByteStream, output: BufferedByteReceiveStream) -> None:
-    """Let EOF cancel and reap the guest command before detaching its transport."""
-    with anyio.fail_after(10, shield=True):
-        # A completed guest may already have closed its socket.
-        with suppress(anyio.BrokenResourceError, OSError):
-            await stream.send_eof()
-        try:
-            while await output.receive():
-                pass
-        except anyio.EndOfStream:
-            pass
-
-
 @dataclass(kw_only=True)
 class Habitat(ABC):
     """The execution environment core prepares for an agent invocation."""
 
+    type: ClassVar[HabitatType]
+    os_sandbox: ClassVar[bool] = (
+        True  # Whether harnesses should install their own OS sandbox.
+    )
     config: BaseHabitatConfig  # This environment's settings, including core access.
     resources: AsyncExitStack = field(
         default_factory=AsyncExitStack, init=False, repr=False, compare=False
@@ -74,8 +66,8 @@ class Habitat(ABC):
 
     @property
     @abstractmethod
-    def name(self) -> str:
-        """Stable identifier of this habitat."""
+    def id(self) -> str:
+        """Stable runtime identifier used for process routing and lifecycle operations."""
 
     @abstractmethod
     def path(self, volume: Volume) -> Path | PurePosixPath:
@@ -109,10 +101,16 @@ class Habitat(ABC):
         """
 
 
+@dataclass(kw_only=True)
 class ManagedHabitat(Habitat):
-    """One registered user's persistent runtime, hosting agent processes."""
+    """One registered user's storage and managed execution lifetime."""
 
     user_id: UUID7  # The registered user whose private runtime this is.
+    root: Path  # Owner storage and the executor's startup directory.
+    executor: ExecutorClient | None = field(default=None, init=False, repr=False)
+    executor_lock: asyncio.Lock = field(
+        default_factory=asyncio.Lock, init=False, repr=False
+    )
 
     def path(self, volume: Volume) -> PurePosixPath:
         raise HabitatError("Managed habitat volume mounts are not yet supported")
@@ -133,7 +131,7 @@ class ManagedHabitat(Habitat):
         """Keep a process attached through duplex stdio for the owning context.
 
         SDK clients and service runners keep this context open for their lifetime.
-        The same primitive carries the short-lived executor's request and response.
+        The same primitive carries the retained executor's requests and responses.
         Deliver stderr lines on the caller's event loop; close and reap the process
         on context exit, reporting an unsuccessful exit.
         """
@@ -167,30 +165,20 @@ class ManagedHabitat(Habitat):
         return response.result
 
     async def request[T: BaseModel](
-        self, request: Request, expected: type[T], *, workdir: str
+        self,
+        request: Request,
+        expected: type[T],
+        *,
+        workdir: str,
+        on_event: Callable[[CommandEvent], None] | None = None,
     ) -> T:
-        source = await to_thread.run_sync(
-            Path(__file__).with_name("executor.py").read_text
-        )
-        try:
-            async with self.resident("python", "-c", source, workdir=workdir) as stream:
-                output = BufferedByteReceiveStream(stream)
-                try:
-                    payload = request.model_dump_json().encode()
-                    await stream.send(str(len(payload)).encode() + b"\n" + payload)
-                    size = int(await output.receive_until(b"\n", 32))
-                    response = response_adapter.validate_json(
-                        await output.receive_exactly(size)
-                    )
-                finally:
-                    await finish_guest(stream, output)
-        except (
-            HabitatError,
-            anyio.IncompleteRead,
-            anyio.EndOfStream,
-            anyio.BrokenResourceError,
-        ) as error:
-            raise WorkspaceUnavailableError(str(error)) from error
+        """Execute an operation; streamed commands deliver output only to on_event."""
+        async with self.executor_lock:
+            if self.executor is None or self.executor.closed:
+                self.executor = ExecutorClient(self)
+                self.resources.push_async_callback(self.executor.close)
+            client = self.executor
+        response = await client.request(request, workdir, on_event)
         if isinstance(response, expected):
             return response
         match response:
@@ -216,3 +204,46 @@ class ManagedHabitat(Habitat):
                 raise ValueError(error.message)
             case _:
                 raise RuntimeError("Guest returned an unexpected workspace response")
+
+
+@dataclass(kw_only=True)
+class WorkspaceHabitat(ManagedHabitat):
+    """Owner storage with execution boundaries scoped to individual workspaces."""
+
+    type: ClassVar[HabitatType] = HabitatType.workspace
+
+    @abstractmethod
+    def scope(
+        self,
+        cwd: Path,
+        *,
+        read_only: bool = False,
+        read_paths: tuple[Path, ...] = (),
+        state_paths: tuple[Path, ...] = (),
+    ) -> AbstractAsyncContextManager["WorkspaceHabitat"]:
+        """Prepare a workspace boundary and release its processes on context exit."""
+
+    @abstractmethod
+    def environment(self) -> dict[str, str]:
+        """Minimal environment for processes within this execution boundary."""
+
+    @abstractmethod
+    def command_prefix(self) -> list[str]:
+        """Launch a scoped command from a host-side harness.
+
+        Append a JSON object with cwd, read_only and trusted read_paths, then
+        the command argv. The launcher owns confinement, stdio and cleanup;
+        OCTOMATE_EXECUTE_ENV carries explicit command environment as JSON.
+        Startup failures include the marker 'habitat-execution-start:'.
+        """
+
+
+@dataclass(kw_only=True)
+class HostedHabitat(ManagedHabitat):
+    """An owner's environment capable of hosting complete agent harnesses."""
+
+    type: ClassVar[HabitatType] = HabitatType.hosted
+
+    @abstractmethod
+    def publish(self, port: int) -> AbstractAsyncContextManager[str]:
+        """Expose a hosted TCP service to core for the owning context."""

@@ -17,8 +17,9 @@ from uuid_utils.compat import uuid7
 from websockets.asyncio.client import ClientConnection
 
 from octomate.config.agents.deepseek import DeepseekConfig
-from octomate.config.habitat import SbxHabitatConfig
+from octomate.config.habitat import SbxHabitatConfig, SrtHabitatConfig
 from octomate.habitat.sbx import SbxHabitat
+from octomate.habitat.srt import SrtHabitat
 from octomate.tentacles.deepseek import ink as ink_module
 from octomate.tentacles.deepseek.client import DeepseekApiClient
 from octomate.tentacles.deepseek.ink import DeepseekInk
@@ -93,8 +94,9 @@ async def test_guest_owns_private_home_listener_and_child(
         os.kill(info["pid"], 0)
 
 
+@pytest.mark.parametrize("srt", [False, True])
 async def test_pool_reuses_each_habitat_routes_sessions_and_releases_resources(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, srt: bool
 ) -> None:
     processes: list[DeepseekProcess] = []
     stopped: list[DeepseekProcess] = []
@@ -127,7 +129,14 @@ async def test_pool_reuses_each_habitat_routes_sessions_and_releases_resources(
     monkeypatch.setattr(DeepseekProcess, "start", start)
     monkeypatch.setattr(DeepseekProcess, "stop", stop)
     monkeypatch.setattr(ink_module, "DeepseekApiClient", client)
-    first, second = habitat(tmp_path), habitat(tmp_path)
+    first, second = (
+        (
+            SrtHabitat(config=SrtHabitatConfig(), user_id=uuid7(), root=tmp_path),
+            SrtHabitat(config=SrtHabitatConfig(), user_id=uuid7(), root=tmp_path),
+        )
+        if srt
+        else (habitat(tmp_path), habitat(tmp_path))
+    )
     env = {"DSH_HOME": str(tmp_path / ".dsh")}
     async with DeepseekInk(
         DeepseekConfig(port=0),
@@ -145,6 +154,8 @@ async def test_pool_reuses_each_habitat_routes_sessions_and_releases_resources(
         other = await ink.acquire(second, env=env, session_id="other")
         assert other is not connections[0]
         assert len(processes) == 3  # core discovery plus the two habitats
+        if srt:
+            assert all(process.port == 0 for process in processes[1:])
         assert await ink.acquire(session_id="session-1") is connections[0]
         assert await ink.acquire(session_id="other") is other
         assert connections[0].client.base_url == HttpUrl("http://127.0.0.1:4002")

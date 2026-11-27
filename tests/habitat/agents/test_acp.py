@@ -133,7 +133,7 @@ async def test_turns_use_guest_paths_home_mcp_and_resume(
     in_memory_engine: AsyncEngine,
 ) -> None:
     app = Octomate(config=OctomateConfig(auth=auth_config()))
-    app.habitats.config = SbxHabitatConfig(
+    app.habitats["native"].config = SbxHabitatConfig(
         image=IMAGE,
         executable=str(executable),
         core_address=HttpUrl("https://core.example:9443"),
@@ -155,7 +155,7 @@ async def test_turns_use_guest_paths_home_mcp_and_resume(
             app,
             config=AcpAgentConfig(provider=custom_provider),
             auth=app.auth,
-            habitats=app.habitats,
+            habitats=app.habitats["native"],
         )
     )
     user = await a_user("alice")
@@ -205,7 +205,7 @@ async def test_turns_use_guest_paths_home_mcp_and_resume(
                     == "https://host.docker.internal:9443/octomate/mcp"
                 )
     finally:
-        await app.habitats.close()
+        await app.habitats["native"].close()
 
 
 async def test_cancelling_guest_connection_reaps_process(

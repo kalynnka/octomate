@@ -9,7 +9,7 @@ from pathlib import PurePosixPath
 import anyio
 from openai_codex import CodexConfig
 
-from octomate.habitat import Habitat, ManagedHabitat
+from octomate.habitat import Habitat, ManagedHabitat, WorkspaceHabitat
 from octomate.telemetry import codex_logfire
 from octomate.tentacles.codex.client import RequestHandler, SharedCodex
 from octomate.types.json import JsonObject
@@ -121,10 +121,10 @@ class CodexClientPool:
         if self.watch_notifications is None:
             raise RuntimeError("Codex runtime is not running")
         async with self.creation_lock:
-            existing = self.habitat_clients.get(habitat.name)
+            existing = self.habitat_clients.get(habitat.id)
             codex_logfire.info(
                 "Acquire Codex client in {habitat}",
-                habitat=habitat.name,
+                habitat=habitat.id,
                 reused=existing is not None and not existing.transport.closing,
                 thread_id=thread_id,
             )
@@ -138,9 +138,15 @@ class CodexClientPool:
             if env is None:
                 raise ValueError("A new habitat client requires its environment")
             cwd = str(PurePosixPath(env["CODEX_HOME"]).parent)
+            if isinstance(habitat, WorkspaceHabitat):
+                home = anyio.Path(env["CODEX_HOME"])
+                await home.mkdir(parents=True, exist_ok=True)
+                await (home / "environments.toml").write_text("include_local = false\n")
             config = replace(
                 self.core_client.transport.config,
-                codex_bin=self.guest_binary,
+                codex_bin=self.core_client.transport.config.codex_bin
+                if isinstance(habitat, WorkspaceHabitat)
+                else self.guest_binary,
                 cwd=cwd,
                 env={**(self.core_client.transport.config.env or {}), **env},
             )
@@ -164,7 +170,7 @@ class CodexClientPool:
             )
             client.transport.thread_opened = partial(self.bind_thread, client)
             self.notification_readers[client] = await self.start_client(client)
-            self.habitat_clients[habitat.name] = client
+            self.habitat_clients[habitat.id] = client
             if existing is not None:
                 self.notification_readers.pop(existing)
             if thread_id is not None:

@@ -49,7 +49,7 @@ async def test_active_user_habitats_are_not_capped(
             )
         )
         assert len(states) == 8
-        assert len({state.habitat.name for state in states}) == 8
+        assert len({state.habitat.id for state in states}) == 8
         assert all(state.status.phase == "ready" for state in states)
         assert all(len(state.invocations) == 1 for state in states)
         assert all(state.idle is None for state in states)

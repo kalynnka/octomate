@@ -63,14 +63,15 @@ from openai_codex.generated.v2_all import (
     ThreadApproveGuardianDeniedActionResponse,
     ThreadClosedNotification,
     ThreadUnsubscribeResponse,
+    TurnEnvironmentParams,
 )
-from openai_codex.generated.v2_all import ThreadForkParams as SdkThreadForkParams
 from pydantic import UUID7, AnyUrl, SecretStr, TypeAdapter, ValidationError
 from pydantic.alias_generators import to_snake
 from uuid_utils.compat import uuid7
 
 from octomate.config.agents import CodexConfig
-from octomate.habitat import Habitat, HabitatError, ManagedHabitat
+from octomate.habitat import Habitat, HabitatError, ManagedHabitat, WorkspaceHabitat
+from octomate.managers.habitat import Invocation
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.schemas.mcp import McpAppResource
 from octomate.schemas.messages import ModelRequest, ModelResponse
@@ -97,6 +98,7 @@ from octomate.tentacles.codex.transcript import (
     is_injected_message,
     rollout_line_adapter,
 )
+from octomate.tentacles.codex.workspace import execution
 from octomate.types.json import JsonObject
 from octomate.utils import acquire_in_thread
 
@@ -203,6 +205,18 @@ class CodexInk(AgentInk):
     async def close(self) -> None:
         await self.pool.close()
         self.thread_bindings.clear()
+
+    @contextlib.asynccontextmanager
+    async def workspace(
+        self, invocation: Invocation, sandbox: Sandbox
+    ) -> AsyncGenerator[TurnEnvironmentParams | None]:
+        """Retain the harness while a run owns its workspace execution boundary."""
+        if not isinstance(invocation.habitat, WorkspaceHabitat):
+            yield None
+            return
+        client = await self.pool.acquire(invocation.habitat, env=invocation.environment)
+        async with execution(client, invocation, sandbox) as environment:
+            yield environment
 
     async def compaction_messages(
         self, thread_id: str, turn_id: str, item_id: str
@@ -375,6 +389,7 @@ class CodexInk(AgentInk):
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
+        environment: TurnEnvironmentParams | None = None,
     ) -> tuple[AsyncThread, str | None]:
         """Read native liveness and apply the calling conversation's MCP identity."""
         if not self.running:
@@ -405,6 +420,17 @@ class CodexInk(AgentInk):
                 and self.thread_bindings.get(thread_id) == binding
                 and not provider_changed
             ):
+                if environment is not None:
+                    await client._client.request(
+                        "thread/settings/update",
+                        {
+                            "threadId": thread_id,
+                            "environments": [
+                                environment.model_dump(by_alias=True, mode="json")
+                            ],
+                        },
+                        response_model=ThreadSettingsUpdateResponse,
+                    )
                 return thread, model or metadata.thread.model
             if loaded and not isinstance(metadata.thread.status.root, IdleThreadStatus):
                 raise RuntimeError(
@@ -445,7 +471,8 @@ class CodexInk(AgentInk):
                     base_instructions=base_instructions,
                     developer_instructions=developer_instructions,
                     ephemeral=ephemeral,
-                    permissions=PERMISSION_PROFILES[sandbox],
+                    permissions=self.bootstrap_profile(client, sandbox),
+                    environments=[environment] if environment is not None else None,
                     exclude_turns=True,
                 ),
             )
@@ -468,6 +495,7 @@ class CodexInk(AgentInk):
                 model_provider=model_provider,
                 personality=personality,
                 sandbox=sandbox,
+                environment=environment,
             )
         else:
             thread, model_name = await self.start_thread(
@@ -482,6 +510,7 @@ class CodexInk(AgentInk):
                 model_provider=model_provider,
                 personality=personality,
                 sandbox=sandbox,
+                environment=environment,
             )
         self.thread_bindings[thread.id] = binding
         return thread, model_name
@@ -557,6 +586,7 @@ class CodexInk(AgentInk):
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
+        environment: TurnEnvironmentParams | None = None,
     ) -> tuple[AsyncThread, str]:
         client = await self.pool.acquire() if client is None else client
         approval_policy, reviewer = (
@@ -580,7 +610,8 @@ class CodexInk(AgentInk):
                 model=model,
                 model_provider=model_provider,
                 personality=personality,
-                permissions=PERMISSION_PROFILES[sandbox],
+                permissions=self.bootstrap_profile(client, sandbox),
+                environments=[environment] if environment is not None else None,
             )
         )
         return AsyncThread(client, started.thread.id), started.model
@@ -599,6 +630,7 @@ class CodexInk(AgentInk):
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
+        environment: TurnEnvironmentParams | None = None,
     ) -> tuple[AsyncThread, str]:
         client = await self.pool.acquire() if client is None else client
         approval_policy, reviewer = (
@@ -623,7 +655,8 @@ class CodexInk(AgentInk):
                 model=model,
                 model_provider=model_provider,
                 personality=personality,
-                permissions=PERMISSION_PROFILES[sandbox],
+                permissions=self.bootstrap_profile(client, sandbox),
+                environments=[environment] if environment is not None else None,
             ),
         )
         return AsyncThread(client, resumed.thread.id), resumed.model
@@ -736,12 +769,15 @@ class CodexInk(AgentInk):
         config = await self.thread_config(str(cwd), None, None, client=client)
         forked = await client._client.thread_fork(
             session_id,
-            SdkThreadForkParams(
+            ThreadForkParams(
                 thread_id=session_id,
                 cwd=str(cwd),
                 config=config,
                 ephemeral=False,
                 last_turn_id=last_turn_id,
+                permissions=":read-only"
+                if client.habitat is not None and not client.habitat.os_sandbox
+                else None,
             ),
         )
         if forked.thread.id == session_id:
@@ -822,7 +858,7 @@ class CodexInk(AgentInk):
                 "threadId": thread_id,
                 "approvalPolicy": approval_policy.model_dump(mode="json"),
                 "approvalsReviewer": reviewer.value if reviewer is not None else None,
-                "permissions": PERMISSION_PROFILES[sandbox],
+                **self.execution_policy(client, sandbox),
             },
             response_model=ThreadSettingsUpdateResponse,
         )
@@ -1016,6 +1052,34 @@ class CodexInk(AgentInk):
             _subscription=started.subscription,
         )
 
+    @staticmethod
+    def bootstrap_profile(client: SharedCodex, sandbox: Sandbox) -> PermissionProfile:
+        """Initialize a thread before the turn API can select external sandboxing.
+
+        Thread start/resume/fork do not accept externalSandbox. The read-only
+        profile avoids the restricted-read helper's nested OS sandbox during
+        instruction loading; every execution then receives execution_policy.
+        """
+        if client.habitat is not None and not client.habitat.os_sandbox:
+            return ":read-only"
+        return PERMISSION_PROFILES[sandbox]
+
+    @staticmethod
+    def execution_policy(client: SharedCodex, sandbox: Sandbox) -> JsonObject:
+        """Select enforcement independently of the caller's approval policy.
+
+        External sandboxing leaves filesystem and network boundaries to the
+        habitat; it cannot retain Codex's narrower read-only/workspace policy.
+        """
+        if client.habitat is not None and not client.habitat.os_sandbox:
+            return {
+                "sandboxPolicy": {
+                    "type": "externalSandbox",
+                    "networkAccess": "enabled",
+                }
+            }
+        return {"permissions": PERMISSION_PROFILES[sandbox]}
+
     async def start_turn(
         self,
         thread: AsyncThread,
@@ -1030,6 +1094,7 @@ class CodexInk(AgentInk):
         personality: Personality | None,
         summary: ReasoningSummary | None,
         review: ReviewTarget | None = None,
+        environment: TurnEnvironmentParams | None = None,
     ) -> AsyncTurnHandle:
         client = await self.pool.acquire(thread_id=thread.id)
         # Apply both axes every turn, including on warm threads after a mode change.
@@ -1050,7 +1115,16 @@ class CodexInk(AgentInk):
                     "cwd": cwd,
                     "approvalPolicy": policy.model_dump(mode="json"),
                     "approvalsReviewer": reviewer.value if reviewer else None,
-                    "permissions": PERMISSION_PROFILES[sandbox],
+                    **self.execution_policy(client, sandbox),
+                    **(
+                        {
+                            "environments": [
+                                environment.model_dump(by_alias=True, mode="json")
+                            ]
+                        }
+                        if environment is not None
+                        else {}
+                    ),
                     "model": model,
                     "effort": effort.value if effort is not None else None,
                     "personality": personality.value
@@ -1074,13 +1148,14 @@ class CodexInk(AgentInk):
                     "input": inputs,
                     "approval_policy": policy,
                     "approvals_reviewer": reviewer,
-                    "permissions": PERMISSION_PROFILES[sandbox],
+                    **self.execution_policy(client, sandbox),
                     "cwd": cwd,
                     "effort": effort,
                     "model": model,
                     "output_schema": output_schema,
                     "personality": personality,
                     "summary": summary,
+                    "environments": [environment] if environment is not None else None,
                 }
             ),
             for_handle=True,

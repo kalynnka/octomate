@@ -10,8 +10,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager, AsyncExitStack
-from dataclasses import dataclass, field
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, nullcontext
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self, get_args, overload
@@ -52,7 +52,7 @@ from pydantic_ai_harness.step_persistence.conversations import conversation_text
 from rich.style import Style
 
 from octomate.config.agents import AgentRouteModelName, InklingConfig
-from octomate.habitat import ManagedHabitat
+from octomate.habitat import ManagedHabitat, WorkspaceHabitat
 from octomate.managers.conversation import ConversationManager, ConversationStore
 from octomate.managers.habitat import Invocation, RunInterrupted
 from octomate.mcp.gateway import CONVERSATION_HEADER
@@ -1001,8 +1001,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 max_retries=2,
             )
             capabilities.extend(OctomateTools.capabilities(client))
-        if invocation.project is not None:
-            capabilities.extend(self.workspace_capabilities(invocation))
         cancellation = CancellationToken()
 
         async def interrupt() -> None:
@@ -1066,12 +1064,29 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             handling = invocation.interruption.handling(interrupt)
             await handling.__aenter__()
             try:
-                async for event in iter_react_graph_events(
-                    start_node,
-                    state=state,
-                    deps=graph_deps,
+                workspace = (
+                    invocation.habitat.scope(Path(invocation.cwd))
+                    if invocation.project is not None
+                    and isinstance(invocation.habitat, WorkspaceHabitat)
+                    else nullcontext(invocation.habitat)
+                )
+                async with (
+                    workspace as habitat,
+                    ReactEventStream(
+                        iter_react_graph_events(
+                            start_node, state=state, deps=graph_deps
+                        )
+                    ) as events,
                 ):
-                    yield event
+                    if invocation.project is not None:
+                        graph_deps.capabilities = [
+                            *capabilities,
+                            *self.workspace_capabilities(
+                                replace(invocation, habitat=habitat)
+                            ),
+                        ]
+                    async for event in events:
+                        yield event
                 if naming_task is not None:
                     await naming_task
             except RunCancelled as error:

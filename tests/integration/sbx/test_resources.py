@@ -64,7 +64,7 @@ async def sample_load(sandbox: SbxHabitat, pids: set[int]) -> float:
         load = tasks.create_task(
             sandbox.control(
                 "exec",
-                sandbox.name,
+                sandbox.id,
                 "python",
                 "-c",
                 "import hashlib,time; data=bytearray(256*1024*1024); "
@@ -92,7 +92,7 @@ async def test_single_user_resource_cost(
     sandbox = manager.residence(scope).habitat
     assert isinstance(sandbox, SbxHabitat)
     assert (
-        sandbox.name
+        sandbox.id
         not in (await sandbox.control("ls", quiet=True)).decode().splitlines()
     )
     before = await host_usage()
@@ -133,7 +133,7 @@ async def test_single_user_resource_cost(
             guest = GuestMemory.model_validate_json(
                 await sandbox.control(
                     "exec",
-                    sandbox.name,
+                    sandbox.id,
                     "python",
                     "-c",
                     "import json,sys; from pathlib import Path; "

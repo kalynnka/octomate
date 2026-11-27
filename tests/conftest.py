@@ -43,6 +43,11 @@ HISTORY_MIGRATIONS = ScriptDirectory.from_config(
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
+        "--srt",
+        action="store_true",
+        help="Run real macOS SRT confinement checks; requires SRT_TEST_EXECUTABLE.",
+    )
+    parser.addoption(
         "--sbx",
         action="store_true",
         help="Run disposable local sbx VM checks; requires SBX_TEST_IMAGE by digest.",
@@ -60,6 +65,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
+    if collection_path == Path(__file__).parent / "integration" / "srt":
+        return not config.getoption("--srt")
     if collection_path == Path(__file__).parent / "integration" / "sbx":
         return not config.getoption("--sbx")
     if collection_path == Path(__file__).parent / "integration" / "native_sandbox":

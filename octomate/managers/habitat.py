@@ -18,11 +18,13 @@ from octomate.config.habitat import (
     HabitatConfig,
     NativeHabitatConfig,
     SbxHabitatConfig,
+    SrtHabitatConfig,
 )
 from octomate.events import HabitatEvent, HabitatFailedEvent, HabitatProgressEvent
 from octomate.habitat import Habitat, ManagedHabitat, NativeHabitat
 from octomate.habitat import HabitatError as HabitatError
 from octomate.habitat.sbx import SbxHabitat
+from octomate.habitat.srt import SrtHabitat
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import (
     HabitatTopic,
@@ -165,6 +167,7 @@ class HabitatManager:
     config: HabitatConfig
     nerve: Nerve
     workspaces: WorkspaceManager
+    name: str = "default"  # Separates named habitats for the same user.
     residences: dict[UUID7, Residence] = field(default_factory=dict, init=False)
     closed: bool = field(default=False, init=False)
 
@@ -190,7 +193,7 @@ class HabitatManager:
             thread_id=thread.id,
             conversation_id=conversation.id,
             user_id=owner_id,
-            mode=self.config.mode,
+            provider=self.config.provider,
         ):
             projects = self.workspaces.projects
             if isinstance(self.config, NativeHabitatConfig):
@@ -239,24 +242,33 @@ class HabitatManager:
     def residence(self, scope: InvocationScope) -> Residence:
         """Internal lookup; callers must supply a core-authorized owner."""
         if scope.user_id not in self.residences:
+            habitat: ManagedHabitat
             match self.config:
+                case SrtHabitatConfig() as config:
+                    habitat = SrtHabitat(
+                        config=config,
+                        user_id=scope.user_id,
+                        root=self.workspaces.root(scope.user_id),
+                        name=self.name,
+                    )
                 case SbxHabitatConfig() as config:
                     habitat = SbxHabitat(
                         config=config,
                         user_id=scope.user_id,
                         root=self.workspaces.root(scope.user_id),
+                        name=self.name,
                         config_dir=self.workspaces.host_storage.slot(
                             scope.user_id, "config"
                         ),
                     )
                 case NativeHabitatConfig():
-                    raise HabitatError("Habitat mode is 'native'; no habitat runs")
+                    raise HabitatError("Habitat provider is 'native'; no habitat runs")
             self.residences[scope.user_id] = Residence(
                 user_id=scope.user_id,
                 habitat=habitat,
                 status=HabitatProgressEvent(
                     user_id=scope.user_id,
-                    habitat=habitat.name,
+                    habitat=habitat.id,
                     sequence=0,
                     phase="unknown",
                 ),
@@ -282,7 +294,7 @@ class HabitatManager:
                 raise ValueError("Habitat errors require the failed phase")
             residence.status = HabitatFailedEvent(
                 user_id=residence.user_id,
-                habitat=residence.habitat.name,
+                habitat=residence.habitat.id,
                 sequence=residence.status.sequence + 1,
                 invocation_id=invocation_id,
                 thread_id=scope.thread_id if scope else None,
@@ -293,7 +305,7 @@ class HabitatManager:
                 raise ValueError("Failed habitat reports require an error")
             residence.status = HabitatProgressEvent(
                 user_id=residence.user_id,
-                habitat=residence.habitat.name,
+                habitat=residence.habitat.id,
                 sequence=residence.status.sequence + 1,
                 invocation_id=invocation_id,
                 thread_id=scope.thread_id if scope else None,
@@ -305,7 +317,7 @@ class HabitatManager:
             "error" if error is not None else "info",
             "Habitat {habitat} {phase}",
             attributes={
-                "habitat": residence.habitat.name,
+                "habitat": residence.habitat.id,
                 "phase": phase,
                 "invocation_id": invocation_id,
                 "thread_id": scope.thread_id if scope else None,

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, ClassVar, Literal
 
+from octomate_protocol.config import HabitatType
 from pydantic import (
     AfterValidator,
     ConfigDict,
@@ -36,6 +37,12 @@ class DeepseekConfig(AgentConfig):
     """
 
     model_config = ConfigDict(extra="ignore")
+
+    habitat_types: ClassVar[tuple[HabitatType, ...]] = (
+        HabitatType.native,
+        HabitatType.workspace,
+        HabitatType.hosted,
+    )
 
     type: Literal["deepseek"] = "deepseek"
 

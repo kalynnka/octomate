@@ -354,7 +354,7 @@ def _tentacle(
     return DeepseekTentacle(
         host,
         auth=host.auth,
-        habitats=host.habitats,
+        habitats=host.habitats["native"],
         config=config or DeepseekConfig(),
     )
 
@@ -439,7 +439,7 @@ async def test_driven_names_are_persisted_and_revised(
     tentacle = DeepseekTentacle(
         octomate,
         auth=octomate.auth,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=DeepseekConfig(),
     )
     names = [None, "", "  ", " First name ", "修复会话名称", "修复会话名称", None, " "]
@@ -499,7 +499,7 @@ async def test_driven_child_name_does_not_rename_parent_thread(
     tentacle = DeepseekTentacle(
         octomate,
         auth=octomate.auth,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=DeepseekConfig(),
     )
     async with (
@@ -1985,7 +1985,7 @@ async def test_shared_thread_cannot_resume_dsh_in_the_previous_owners_tree(
     agent = DeepseekTentacle(
         app,
         auth=app.auth,
-        habitats=app.habitats,
+        habitats=app.habitats["native"],
         config=DeepseekConfig(type="deepseek"),
     )
     async with agent:
@@ -2034,7 +2034,10 @@ async def test_signal_interrupts_the_native_turn(
     host = Octomate()
     agent = host.connect(
         DeepseekTentacle(
-            host, auth=host.auth, habitats=host.habitats, config=DeepseekConfig()
+            host,
+            auth=host.auth,
+            habitats=host.habitats["native"],
+            config=DeepseekConfig(),
         )
     )
     host.connect(

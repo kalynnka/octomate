@@ -94,7 +94,7 @@ async def test_driven_app_survives_its_session_and_reuses_the_owned_viewer(
     )
     tentacle = CodexTentacle(
         host,
-        habitats=host.habitats,
+        habitats=host.habitats["native"],
         config=CodexConfig(permission_mode="auto_review"),
         commands=host.commands,
         projects=host.projects,

@@ -17,6 +17,8 @@ args:
   internet_access:
     required: true
     enum: ["true", "false"]
+  denied_domains:
+    required: true
 sandbox:
   image: "${{ kit.args.image }}"
   entrypoint: [/bin/bash]
@@ -32,6 +34,7 @@ environment:
     OCTOMATE_HABITAT_CPUS: "${{ kit.args.cpus }}"
     OCTOMATE_HABITAT_MEMORY_MIB: "${{ kit.args.memory_mib }}"
     OCTOMATE_HABITAT_INTERNET_ACCESS: "${{ kit.args.internet_access }}"
+    OCTOMATE_HABITAT_DENIED_DOMAINS: "${{ kit.args.denied_domains }}"
 permissions:
   network:
     allow:

@@ -40,18 +40,20 @@ async def test_codex_acp_tools_and_fresh_process_resume(
             "Set SBX_TEST_IMAGE and CODEX_ACP_TEST_EXECUTABLE for live acceptance"
         )
     host = Octomate(config=OctomateConfig(auth=auth_config()))
-    host.habitats.config = SbxHabitatConfig(image=image)
+    host.habitats["native"].config = SbxHabitatConfig(image=image)
     owner = await a_user("codex-acp-owner")
     project_root = tmp_path / "project"
     project_root.mkdir()
     project = a_project(project_root, name="codex-acp-habitat")
     host.workspaces.projects = await a_registry(project)
-    sandbox = host.habitats.residence(
-        InvocationScope(user_id=owner.id, conversation_id=uuid7())
-    ).habitat
+    sandbox = (
+        host.habitats["native"]
+        .residence(InvocationScope(user_id=owner.id, conversation_id=uuid7()))
+        .habitat
+    )
     assert isinstance(sandbox, SbxHabitat)
     sbx_cleanup.push_async_callback(remove_sandbox, sandbox)
-    sbx_cleanup.push_async_callback(host.habitats.close)
+    sbx_cleanup.push_async_callback(host.habitats["native"].close)
     sandbox.root.mkdir(parents=True, exist_ok=True)
     adapter = sandbox.root / "codex-acp.mjs"
     await asyncio.to_thread(
@@ -79,7 +81,7 @@ async def test_codex_acp_tools_and_fresh_process_resume(
                 "codex-acp",
                 host,
                 auth=host.auth,
-                habitats=host.habitats,
+                habitats=host.habitats["native"],
                 config=AcpAgentConfig(
                     gateway=False,
                     provider=AcpProvider(
@@ -131,7 +133,7 @@ async def test_codex_acp_tools_and_fresh_process_resume(
                         assert (
                             await sandbox.control(
                                 "exec",
-                                sandbox.name,
+                                sandbox.id,
                                 "cat",
                                 "/proc/sys/kernel/random/boot_id",
                             )
@@ -161,7 +163,7 @@ async def test_codex_acp_tools_and_fresh_process_resume(
                     session_id = conversation.external_id
                 if boot is None:
                     boot = await expire_idle(
-                        host.habitats,
+                        host.habitats["native"],
                         InvocationScope(
                             user_id=owner.id, conversation_id=invocation.conversation.id
                         ),

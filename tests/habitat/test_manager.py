@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
@@ -56,6 +57,10 @@ def manager(monkeypatch: pytest.MonkeyPatch, scope: InvocationScope) -> HabitatM
             return (
                 f"{scope.user_id}\n{root}\n{root / 'config'}\n{IMAGE}\n"
                 f"2\n2048\n{internet_access}\n"
+                + json.dumps(
+                    sorted(set(manager.config.denied_domains)), separators=(",", ":")
+                )
+                + "\n"
             ).encode()
         return "\n".join(sorted(names)).encode() if args[0] == "ls" else b""
 
@@ -135,7 +140,7 @@ async def test_cancelled_prepare_stops_runtime_without_launching_an_agent(
     assert not manager.nerve.subscribers
     command = SbxHabitat.control
     assert isinstance(command, AsyncMock)
-    command.assert_any_await("stop", manager.residence(scope).habitat.name)
+    command.assert_any_await("stop", manager.residence(scope).habitat.id)
 
 
 async def test_cancel_scope_during_prepare_finishes_cleanup(
@@ -175,12 +180,27 @@ async def test_cancel_scope_during_prepare_finishes_cleanup(
         await manager.close()
 
 
+@pytest.mark.parametrize(
+    ("denied_domains", "deny_network"),
+    [
+        ([], []),
+        (["blocked.example:443"], ["blocked.example:443"]),
+        (["[::1]", "[::1]:443"], ["::1/128", "[::1]:443"]),
+    ],
+)
 @pytest.mark.parametrize("internet_access", [True, False])
 async def test_create_mounts_only_the_owners_root_scoped_and_budgeted(
-    manager: HabitatManager, scope: InvocationScope, internet_access: bool
+    manager: HabitatManager,
+    scope: InvocationScope,
+    internet_access: bool,
+    denied_domains: list[str],
+    deny_network: list[str],
 ) -> None:
     manager.config = SbxHabitatConfig(
-        image=IMAGE, idle_timeout=0.01, internet_access=internet_access
+        image=IMAGE,
+        idle_timeout=0.01,
+        internet_access=internet_access,
+        denied_domains=denied_domains,
     )
     async with (
         manager.nerve.subscribe(UserTopic(scope.user_id)) as events,
@@ -212,8 +232,11 @@ async def test_create_mounts_only_the_owners_root_scoped_and_budgeted(
         "cpus=2",
         "memory_mib=2048",
         f"internet_access={str(internet_access).lower()}",
+        f"denied_domains={json.dumps(denied_domains, separators=(',', ':'))}",
     ]
-    assert create.kwargs["deny_network"] == ([] if internet_access else ["**"])
+    assert create.kwargs["deny_network"] == (
+        deny_network if internet_access else ["**"]
+    )
     assert create.kwargs["skills"] == "off"
     assert not {"template", "cpus", "memory", "env", "kit"}.intersection(create.kwargs)
     assert not {"mount", "volume", "workspace"}.intersection(create.kwargs)
@@ -223,17 +246,18 @@ async def test_create_mounts_only_the_owners_root_scoped_and_budgeted(
 
 
 async def test_manager_uses_the_habitat_base_class(
-    manager: HabitatManager, scope: InvocationScope
+    manager: HabitatManager, scope: InvocationScope, tmp_path: Path
 ) -> None:
     calls: list[str] = []
 
     class OtherHabitat(ManagedHabitat):
         def __init__(self) -> None:
-            super().__init__(config=manager.config)
-            self.user_id = scope.user_id
+            super().__init__(
+                config=manager.config, user_id=scope.user_id, root=tmp_path
+            )
 
         @property
-        def name(self) -> str:
+        def id(self) -> str:
             return "another-runtime"
 
         @property
@@ -287,7 +311,7 @@ async def test_reuse_does_not_create_or_replace_a_habitat(
     assert "exec" in [c.args[0] for c in command.await_args_list]
 
 
-@pytest.mark.parametrize("field", [0, 1, 2, 3, 4, 5, 6])
+@pytest.mark.parametrize("field", [0, 1, 2, 3, 4, 5, 6, 7])
 async def test_configuration_mismatch_stops_runtime_without_replacing_it(
     manager: HabitatManager, scope: InvocationScope, field: int
 ) -> None:
@@ -301,12 +325,13 @@ async def test_configuration_mismatch_stops_runtime_without_replacing_it(
         b"2",
         b"2048",
         b"true",
+        b"[]",
     ]
     metadata[field] = b"mismatch"
 
     async def existing(*args: str, **options: Unpack[SbxOptions]) -> bytes:
         if args[0] == "ls":
-            return manager.residence(scope).habitat.name.encode() + b"\n"
+            return manager.residence(scope).habitat.id.encode() + b"\n"
         return b"\n".join(metadata)
 
     command.side_effect = existing
@@ -316,7 +341,7 @@ async def test_configuration_mismatch_stops_runtime_without_replacing_it(
     assert isinstance(manager.status(scope), HabitatFailedEvent)
     assert not manager.residence(scope).needs_cleanup
     assert "create" not in [c.args[0] for c in command.await_args_list]
-    command.assert_any_await("stop", manager.residence(scope).habitat.name)
+    command.assert_any_await("stop", manager.residence(scope).habitat.id)
     await manager.close()
 
 

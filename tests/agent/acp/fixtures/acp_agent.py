@@ -362,11 +362,15 @@ def main() -> None:
                                 },
                                 "fs/read_text_file": {
                                     "sessionId": session_id,
-                                    "path": "/project/file.txt",
+                                    "path": os.getenv(
+                                        "ACP_TEST_PATH", "/project/file.txt"
+                                    ),
                                 },
                                 "fs/write_text_file": {
                                     "sessionId": session_id,
-                                    "path": "/project/file.txt",
+                                    "path": os.getenv(
+                                        "ACP_TEST_PATH", "/project/file.txt"
+                                    ),
                                     "content": "client file",
                                 },
                                 "terminal/create": {

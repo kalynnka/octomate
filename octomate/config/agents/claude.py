@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import ClassVar, Literal
 
+from octomate_protocol.config import HabitatType
 from pydantic import ConfigDict, Field
 
 from octomate.config.agents.common import AgentConfig, Claim
@@ -18,6 +19,12 @@ class ClaudeCodeConfig(AgentConfig):
     """
 
     model_config = ConfigDict(extra="ignore")
+
+    habitat_types: ClassVar[tuple[HabitatType, ...]] = (
+        HabitatType.native,
+        HabitatType.workspace,
+        HabitatType.hosted,
+    )
 
     type: Literal["claude"] = "claude"
 

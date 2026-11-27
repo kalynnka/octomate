@@ -31,8 +31,8 @@ async def test_command_attachment_reuse_and_stop_start_persistence(
     sandbox = manager.residence(owner).habitat
     assert isinstance(sandbox, SbxHabitat)
     existing = (await sandbox.control("ls", "--quiet")).decode().splitlines()
-    assert manager.residence(owner).habitat.name not in existing
-    assert manager.residence(other).habitat.name not in existing
+    assert manager.residence(owner).habitat.id not in existing
+    assert manager.residence(other).habitat.id not in existing
     try:
         async with manager.enter(owner, uuid7()) as first:
             async with sandbox.resident(
@@ -50,12 +50,12 @@ async def test_command_attachment_reuse_and_stop_start_persistence(
                 assert first.status.phase == "ready"
                 assert len(first.invocations) == 2
             async with manager.enter(other, uuid7()) as second:
-                assert first.habitat.name != second.habitat.name
+                assert first.habitat.id != second.habitat.id
             await sandbox.control(
                 "exec",
                 "--workdir",
                 "/home/agent/workspace",
-                first.habitat.name,
+                first.habitat.id,
                 "python",
                 "-c",
                 "from pathlib import Path; "
@@ -72,7 +72,7 @@ async def test_command_attachment_reuse_and_stop_start_persistence(
                 "exec",
                 "--workdir",
                 "/home/agent/workspace",
-                restarted.habitat.name,
+                restarted.habitat.id,
                 "python",
                 "-c",
                 "from pathlib import Path; "
@@ -84,7 +84,7 @@ async def test_command_attachment_reuse_and_stop_start_persistence(
             assert output.strip() == b"persistent"
             assert (
                 await sandbox.control(
-                    "exec", restarted.habitat.name, "/home/agent/custom-tool"
+                    "exec", restarted.habitat.id, "/home/agent/custom-tool"
                 )
             ).strip() == b"installed"
     finally:

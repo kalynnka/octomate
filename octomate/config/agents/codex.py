@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import ClassVar, Literal
 
+from octomate_protocol.config import HabitatType
 from openai_codex import CodexConfig as CodexSdkConfig
 from openai_codex.generated.v2_all import ReasoningEffort as CodexReasoningEffort
 from pydantic import ConfigDict, Field
@@ -32,6 +33,12 @@ class CodexConfig(AgentConfig):
     """
 
     model_config = ConfigDict(extra="ignore")
+
+    habitat_types: ClassVar[tuple[HabitatType, ...]] = (
+        HabitatType.native,
+        HabitatType.workspace,
+        HabitatType.hosted,
+    )
 
     type: Literal["codex"] = "codex"
 

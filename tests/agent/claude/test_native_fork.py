@@ -57,7 +57,7 @@ async def a_native_session() -> tuple[Octomate, ClaudeTentacle, UserProfile]:
         ClaudeTentacle(
             octomate,
             auth=octomate.auth,
-            habitats=octomate.habitats,
+            habitats=octomate.habitats["native"],
             config=ClaudeCodeConfig(),
             commands=octomate.commands,
             projects=octomate.projects,

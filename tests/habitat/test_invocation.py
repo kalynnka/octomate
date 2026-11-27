@@ -250,7 +250,7 @@ async def test_core_prepares_and_releases_native_chat(
         )
     )
     conversation = Conversation(thread_id=thread.id, agent_tentacle_id="inkling")
-    async with app.habitats.invoke(
+    async with app.habitats["native"].invoke(
         thread=thread,
         conversation=conversation,
         owner_id=owner_id,
@@ -291,7 +291,7 @@ async def test_core_uses_the_workspace_volume_lifecycle(
         ),
         project=project,
     )
-    async with app.habitats.invoke(
+    async with app.habitats["native"].invoke(
         thread=thread,
         conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
         owner_id=owner_id,
@@ -331,7 +331,7 @@ async def test_core_stops_native_habitat_when_volume_preparation_fails(
     )
 
     with pytest.raises(RuntimeError, match="mirror failed"):
-        async with app.habitats.invoke(
+        async with app.habitats["native"].invoke(
             thread=thread,
             conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
             owner_id=owner.id,
@@ -358,7 +358,7 @@ async def test_core_and_workspace_contexts_share_the_same_storage(
             channel_thread_id="turn",
         )
     )
-    async with app.habitats.invoke(
+    async with app.habitats["native"].invoke(
         thread=thread,
         conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
         owner_id=owner.id,
@@ -392,12 +392,12 @@ async def test_core_isolates_two_owners_in_a_shared_thread(
     )
     conversation = Conversation(thread_id=thread.id, agent_tentacle_id="inkling")
     async with (
-        app.habitats.invoke(
+        app.habitats["native"].invoke(
             thread=thread,
             conversation=conversation,
             owner_id=alice.id,
         ) as first,
-        app.habitats.invoke(
+        app.habitats["native"].invoke(
             thread=thread,
             conversation=conversation,
             owner_id=bob.id,
@@ -420,7 +420,7 @@ async def test_core_releases_chat_on_failure_and_cancellation(
         ThreadKey(channel_tentacle_id="im", chat_type="dm", chat_id="alice")
     )
     with pytest.raises(error):
-        async with app.habitats.invoke(
+        async with app.habitats["native"].invoke(
             thread=thread,
             conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
             owner_id=None,
@@ -448,7 +448,7 @@ async def test_core_refuses_an_anonymous_project(
         project=project,
     )
     with pytest.raises(UnregisteredProjectError):
-        async with app.habitats.invoke(
+        async with app.habitats["native"].invoke(
             thread=thread,
             conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
             owner_id=None,
@@ -461,7 +461,7 @@ async def test_sandbox_dispatch_refuses_before_preparing_anything(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = Octomate()
-    app.habitats.config = SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64)
+    app.habitats["native"].config = SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64)
     prepare = AsyncMock()
     monkeypatch.setattr(SbxHabitat, "prepare", prepare)
     thread = await app.threads.ensure(
@@ -473,7 +473,7 @@ async def test_sandbox_dispatch_refuses_before_preparing_anything(
         )
     )
     agent = FakeAgent()
-    agent.habitats = app.habitats
+    agent.habitats = app.habitats["native"]
     with pytest.raises(HabitatError, match="registered user"):
         async with agent.inhabit(
             thread=thread,
@@ -482,7 +482,7 @@ async def test_sandbox_dispatch_refuses_before_preparing_anything(
         ):
             pytest.fail("Sandbox execution must not fall back to the host")
     prepare.assert_not_awaited()
-    assert not app.habitats.residences
+    assert not app.habitats["native"].residences
     assert not app.workspaces.volumes_dir.exists()
     assert not app.workspaces.host_storage.mirrors_dir.exists()
 
@@ -494,7 +494,7 @@ async def test_a_capable_agent_leases_the_owners_sandbox(
     kind: Literal["fake", "acp", "inkling"],
 ) -> None:
     app = Octomate()
-    app.habitats.config = SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64)
+    app.habitats["native"].config = SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64)
     monkeypatch.setattr(SbxHabitat, "prepare", AsyncMock())
     monkeypatch.setattr(SbxHabitat, "stop", AsyncMock())
     owner = await a_user()
@@ -512,7 +512,7 @@ async def test_a_capable_agent_leases_the_owners_sandbox(
             kind,
             app,
             auth=app.auth,
-            habitats=app.habitats,
+            habitats=app.habitats["native"],
             config=AcpAgentConfig(provider=AcpProvider(command="unused")),
         )
     elif kind == "inkling":
@@ -520,12 +520,12 @@ async def test_a_capable_agent_leases_the_owners_sandbox(
             kind,
             app,
             auth=app.auth,
-            habitats=app.habitats,
+            habitats=app.habitats["native"],
             models={"test": TestModel()},
         )
     else:
         agent = FakeAgent()
-        agent.habitats = app.habitats
+        agent.habitats = app.habitats["native"]
     try:
         async with agent.inhabit(
             thread=thread,
@@ -541,12 +541,12 @@ async def test_a_capable_agent_leases_the_owners_sandbox(
             assert invocation.environment["CLAUDE_CONFIG_DIR"] == str(
                 habitat.config_dir / ".claude"
             )
-            residence = app.habitats.residences[owner.id]
+            residence = app.habitats["native"].residences[owner.id]
             assert residence.invocations == {invocation.id}
         assert not residence.invocations
         assert not invocation.workspace.path.exists()
     finally:
-        await app.habitats.close()
+        await app.habitats["native"].close()
 
 
 async def test_core_checkpoints_an_empty_project_without_a_git_index(
@@ -567,7 +567,7 @@ async def test_core_checkpoints_an_empty_project_without_a_git_index(
         ),
         project=project,
     )
-    async with app.habitats.invoke(
+    async with app.habitats["native"].invoke(
         thread=thread,
         conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
         owner_id=(await a_user()).id,

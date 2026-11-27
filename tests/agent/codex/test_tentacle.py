@@ -472,6 +472,7 @@ class FakeCodex:
             if params.approvals_reviewer is ApprovalsReviewer.auto_review
             else None
         )
+        assert params.permissions is not None
         turn = await FakeThread(thread_id).turn(
             items[0].text
             if len(items) == 1 and isinstance(items[0], TextInput)
@@ -624,7 +625,7 @@ async def test_driven_names_are_persisted_and_revised_without_reading_turns(
             await session.commit()
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -687,7 +688,7 @@ async def test_driven_child_name_does_not_rename_parent_thread(
     )
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -761,7 +762,7 @@ def _tentacle(
     host = Octomate(conversations=conversations)
     return CodexTentacle(
         host,
-        habitats=host.habitats,
+        habitats=host.habitats["native"],
         config=config or CodexConfig(permission_mode="auto_review"),
         commands=host.commands,
         projects=host.projects,
@@ -1001,7 +1002,7 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
     thread = await octomate.threads.ensure(KEY)
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -1069,7 +1070,7 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
             )
         fork.assert_awaited_once_with(
             "thread-new",
-            ThreadForkParams(
+            codex_ink.ThreadForkParams(
                 thread_id="thread-new",
                 cwd=str(
                     (
@@ -1143,7 +1144,7 @@ async def test_codex_fork_passes_the_turn_cutoff(
     assert result == "thread-fork"
     fork.assert_awaited_once_with(
         "source",
-        ThreadForkParams(
+        codex_ink.ThreadForkParams(
             thread_id="source",
             cwd="/destination",
             config={"mcp_servers": {}},
@@ -1264,6 +1265,7 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
+        environment: codex_ink.TurnEnvironmentParams | None = None,
     ) -> tuple[FakeThread, str]:
         # `user_review` is the one posture with no public SDK knob, so it is the
         # reviewer path the bridge exists for.
@@ -1298,7 +1300,7 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
     octomate.deferred_actions = cast(DeferredActionManager, deferred_actions)
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode="user_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -1363,7 +1365,7 @@ async def test_question_requests_bridge_to_cards() -> None:
     octomate.deferred_actions = cast(DeferredActionManager, deferred_actions)
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode="user_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -1428,7 +1430,7 @@ async def test_an_mcp_tool_prompt_bridges_to_an_approval_card(approved: bool) ->
     octomate.deferred_actions = cast(DeferredActionManager, deferred_actions)
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode="user_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -1501,7 +1503,7 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
     octomate.deferred_actions = cast(DeferredActionManager, deferred_actions)
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode="user_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -1567,7 +1569,7 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
     octomate.deferred_actions = cast(DeferredActionManager, deferred_actions)
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode="user_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -2282,7 +2284,7 @@ async def test_native_identity_is_persisted_before_a_failed_first_turn(
     )
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -2329,7 +2331,7 @@ async def test_concurrent_first_turns_share_the_persisted_native_identity(
     thread_id = await a_thread()
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -2519,7 +2521,7 @@ async def test_shared_client_reuses_keys_per_user(
     )
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -2674,7 +2676,7 @@ async def test_expired_user_key_is_replaced_once_and_applied_to_each_thread(
     )
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -2837,7 +2839,7 @@ async def test_cached_binding_reconfigures_a_changed_caller(
     octomate.gateway.register(session)
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -2957,7 +2959,7 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
     )
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode=permission_mode),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -3163,7 +3165,7 @@ async def test_a_turn_kicked_by_an_unregistered_user_launches_clean(
     )
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -3207,7 +3209,7 @@ async def test_an_mcp_wiring_flip_reloads_only_the_conversations_thread(
     )
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -3292,7 +3294,7 @@ async def test_a_registered_gateway_uses_the_default_served_endpoint(
     )
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -3396,6 +3398,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
+        environment: codex_ink.TurnEnvironmentParams | None = None,
     ) -> tuple[FakeThread, str]:
         servers = config["mcp_servers"]
         assert isinstance(servers, dict)
@@ -3418,7 +3421,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
     monkeypatch.setattr(codex_ink.CodexInk, "start_thread", start_binding_thread)
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -3557,7 +3560,7 @@ async def test_async_questions_continue_and_answers_resume_the_same_thread(
     thread_id = (await octomate.threads.ensure(KEY)).id
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -3673,7 +3676,17 @@ async def test_async_questions_continue_and_answers_resume_the_same_thread(
         assert len(resumed.runs) == 2
 
 
+@pytest.mark.parametrize(
+    ("sandbox", "profile"),
+    [
+        (Sandbox.read_only, ":read-only"),
+        (Sandbox.workspace_write, "octomate-workspace"),
+        (Sandbox.full_access, ":danger-full-access"),
+    ],
+)
 @pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize("managed", [False, True])
+@pytest.mark.parametrize("os_sandbox", [True, False])
 @pytest.mark.parametrize(
     ("approval_mode", "reviewer", "policy"),
     [
@@ -3687,13 +3700,20 @@ async def test_async_questions_continue_and_answers_resume_the_same_thread(
     ],
 )
 async def test_thread_settings_preserve_reviewer_and_report_model(
+    sandbox: Sandbox,
+    profile: str,
     resume: bool,
+    managed: bool,
+    os_sandbox: bool,
     approval_mode: ApprovalMode | None,
     reviewer: ApprovalsReviewer | None,
     policy: AskForApprovalValue,
 ) -> None:
     tentacle = _tentacle(FakeConversationManager())
-    client = AsyncMock(spec=AsyncCodex)
+    client = AsyncMock(spec=SharedCodex)
+    client.habitat = (
+        Mock(spec=ManagedHabitat, os_sandbox=os_sandbox) if managed else None
+    )
     client._client = AsyncMock()
     client._client.thread_start.return_value.thread.id = "new-thread"
     client._client.thread_start.return_value.model = "runtime-model"
@@ -3711,7 +3731,7 @@ async def test_thread_settings_preserve_reviewer_and_report_model(
             model=None,
             model_provider=None,
             personality=None,
-            sandbox=Sandbox.workspace_write,
+            sandbox=sandbox,
         )
         params = client._client.thread_resume.call_args.args[1]
         assert isinstance(params, ThreadResumeParams)
@@ -3728,7 +3748,7 @@ async def test_thread_settings_preserve_reviewer_and_report_model(
             model=None,
             model_provider=None,
             personality=None,
-            sandbox=Sandbox.workspace_write,
+            sandbox=sandbox,
         )
         params = client._client.thread_start.call_args.args[0]
         assert isinstance(params, ThreadStartParams)
@@ -3738,13 +3758,17 @@ async def test_thread_settings_preserve_reviewer_and_report_model(
     assert params.approval_policy is not None
     assert params.approval_policy.root is policy
     assert params.approvals_reviewer is reviewer
-    assert params.permissions == "octomate-workspace"
+    assert params.permissions == (
+        ":read-only" if managed and not os_sandbox else profile
+    )
     assert params.sandbox is None
 
 
 @pytest.mark.parametrize("skill", [False, True])
+@pytest.mark.parametrize("os_sandbox", [True, False])
 async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread(
     skill: bool,
+    os_sandbox: bool,
 ) -> None:
     tentacle = _tentacle(FakeConversationManager())
     client = SharedCodex(CodexSdkConfig(), AsyncMock(return_value={}), instrument=False)
@@ -3755,6 +3779,7 @@ async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread(
     )
     client._initialized = True
     tentacle.ink.pool.core_client = client
+    client.habitat = Mock(spec=ManagedHabitat, os_sandbox=os_sandbox)
     thread = AsyncThread(client, "warm-thread")
     for approval, sandbox, reviewer, policy in (
         (ApprovalMode.deny_all, Sandbox.full_access, None, AskForApprovalValue.never),
@@ -3804,10 +3829,18 @@ async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread(
         assert params.approval_policy is not None
         assert params.approval_policy.root is policy
         assert params.approvals_reviewer is reviewer
-        assert params.permissions == (
-            ":danger-full-access"
-            if sandbox is Sandbox.full_access
-            else "octomate-workspace"
-        )
-        assert params.sandbox_policy is None
+        if os_sandbox:
+            assert params.permissions == (
+                ":danger-full-access"
+                if sandbox is Sandbox.full_access
+                else "octomate-workspace"
+            )
+            assert params.sandbox_policy is None
+        else:
+            assert params.permissions is None
+            assert params.sandbox_policy is not None
+            assert params.sandbox_policy.model_dump(mode="json", by_alias=True) == {
+                "type": "externalSandbox",
+                "networkAccess": "enabled",
+            }
         assert params.cwd == "/workspace"

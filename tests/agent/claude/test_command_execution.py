@@ -369,7 +369,7 @@ async def execution(
         ClaudeTentacle(
             app,
             auth=app.auth,
-            habitats=app.habitats,
+            habitats=app.habitats["native"],
             config=ClaudeCodeConfig(),
             commands=app.commands,
             projects=app.projects,

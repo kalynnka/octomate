@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import questionary
+from octomate_protocol.config import HabitatType
 from rich.console import Console
 from rich.theme import Theme
 
@@ -48,3 +49,4 @@ class TentacleSetup[T]:
     capabilities: tuple[Literal["Agent", "Channel", "MCP"], ...]
     configure: Callable[[Console], T]
     checked: bool = False
+    habitat_types: tuple[HabitatType, ...] = (HabitatType.native,)

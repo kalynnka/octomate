@@ -1,7 +1,7 @@
 """Configuration supplied to the DeepSeek harness process."""
 
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NotRequired
 
 from pydantic import Field, RootModel
 from typing_extensions import TypedDict
@@ -39,15 +39,23 @@ class SandboxRunnerConfig(TypedDict):
     runnerFailureSignatures: list[str]
 
 
+class WorkspaceConfig(TypedDict):
+    capability: Literal["sandbox", "shell", "fs"]
+    executable: str
+    command: list[str]
+    root: str
+
+
 class SandboxRunnerPatch(TypedDict):
     id: Literal["sandbox"]
     name: Literal["@deepseek-ai/dsh-sandbox-local"]
-    disabled: Literal[False]
+    disabled: bool
     config: SandboxRunnerConfig
 
 
 class SandboxPolicyConfig(TypedDict):
     mode: Literal["workspace-write"]
+    workspaceRoot: NotRequired[str]
 
 
 class SandboxPolicyPatch(TypedDict):
@@ -65,6 +73,16 @@ class SandboxedBackendPatch(TypedDict):
         "@deepseek-ai/dsh-fs-sandbox",
     ]
     disabled: bool
+
+
+class WorkspacePlugin(TypedDict):
+    id: Literal["workspace-sandbox", "workspace-shell", "workspace-fs"]
+    name: Path
+    config: WorkspaceConfig
+
+
+class WorkspaceInsertPatch(TypedDict):
+    insert: list[WorkspacePlugin]
 
 
 class ApprovalConfig(TypedDict):
@@ -127,6 +145,7 @@ class DrivenConfigPatch(
                 | PresetRegistryPatch,
                 Field(discriminator="id"),
             ]
+            | WorkspaceInsertPatch
         ]
     ]
 ):

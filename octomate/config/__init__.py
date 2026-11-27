@@ -38,7 +38,11 @@ from octomate.config.channels import (
     SlackStreamConfig,
 )
 from octomate.config.database import DatabaseSettings, database_settings
-from octomate.config.habitat import NativeHabitatConfig, SbxHabitatConfig
+from octomate.config.habitat import (
+    NativeHabitatConfig,
+    SbxHabitatConfig,
+    SrtHabitatConfig,
+)
 from octomate.config.mcp import (
     BareMcpConfig,
     DiscoveredOAuthMcpConfig,
@@ -80,6 +84,7 @@ __all__ = [  # noqa: RUF022
     "ArtifactConfig",
     "NativeHabitatConfig",
     "SbxHabitatConfig",
+    "SrtHabitatConfig",
     # agents
     "AgentConfig",
     "AgentRouteModelName",

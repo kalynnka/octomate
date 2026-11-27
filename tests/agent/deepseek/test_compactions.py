@@ -212,7 +212,7 @@ async def test_driven_command_compaction_has_summary_without_a_model_run(
             conversation, str(uuid7()), accumulator.messages, external_id="sess-1"
         )
     agent = DeepseekTentacle(
-        app, auth=app.auth, habitats=app.habitats, config=DeepseekConfig()
+        app, auth=app.auth, habitats=app.habitats["native"], config=DeepseekConfig()
     )
     queue: asyncio.Queue[TurnFrame] = asyncio.Queue()
     records = compaction_events()
@@ -275,7 +275,7 @@ async def test_automatic_driven_compaction_survives_the_enclosing_run(
     app = Octomate()
     thread = await app.threads.enter(KEY)
     agent = DeepseekTentacle(
-        app, auth=app.auth, habitats=app.habitats, config=DeepseekConfig()
+        app, auth=app.auth, habitats=app.habitats["native"], config=DeepseekConfig()
     )
     async with agent:
         if failed_run:
@@ -578,7 +578,7 @@ async def test_consecutive_prompts_keep_distinct_surface_identities(
     app = Octomate()
     thread = await app.threads.enter(KEY)
     agent = DeepseekTentacle(
-        app, auth=app.auth, habitats=app.habitats, config=DeepseekConfig()
+        app, auth=app.auth, habitats=app.habitats["native"], config=DeepseekConfig()
     )
     async with agent:
         conversation = await agent.resolve_conversation(

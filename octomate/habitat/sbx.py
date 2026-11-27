@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import platform
@@ -21,7 +22,7 @@ from pydantic import UUID7, BaseModel, Field, TypeAdapter
 from yarl import URL
 
 from octomate.config.habitat import SbxHabitatConfig
-from octomate.habitat.base import HabitatError, ManagedHabitat
+from octomate.habitat.base import HabitatError, HostedHabitat
 from octomate.schemas.volumes import Volume
 from octomate.telemetry import habitat_logfire
 
@@ -49,6 +50,7 @@ class SbxKitArgs(TypedDict):
     cpus: int
     memory_mib: int
     internet_access: Literal["true", "false"]
+    denied_domains: str
 
 
 class SbxOptions(TypedDict, total=False):
@@ -64,16 +66,17 @@ class SbxOptions(TypedDict, total=False):
 
 
 @dataclass
-class SbxHabitat(ManagedHabitat):
+class SbxHabitat(HostedHabitat):
     config: SbxHabitatConfig
     user_id: UUID7
     root: Path  # The owner's storage on the host, mounted when the sandbox is made.
     config_dir: Path  # The owner's agent-configuration volume, beneath the root.
+    name: str = "default"  # Configured habitat name, independent of the owner.
     managed: bool = field(default=False, init=False)  # Name found or create tried.
 
     @property
-    def name(self) -> str:
-        return f"octomate-{self.user_id.hex}"
+    def id(self) -> str:
+        return f"octomate-{self.name}-{self.user_id.hex}"
 
     @property
     def idle_timeout(self) -> float:
@@ -100,7 +103,7 @@ class SbxHabitat(ManagedHabitat):
     async def publish(self, port: int) -> AsyncGenerator[str]:
         """Expose a guest TCP port on ephemeral host loopback for this context."""
         data = await self.control(
-            "ports", self.name, "--publish", f"{port}/tcp4", "--json"
+            "ports", self.id, "--publish", f"{port}/tcp4", "--json"
         )
         ports = published_ports_adapter.validate_json(data)
         matches = [
@@ -117,7 +120,7 @@ class SbxHabitat(ManagedHabitat):
             with anyio.CancelScope(shield=True):
                 await self.control(
                     "ports",
-                    self.name,
+                    self.id,
                     "--unpublish",
                     f"{port}/tcp4",
                 )
@@ -180,7 +183,7 @@ class SbxHabitat(ManagedHabitat):
                 arguments.append(f"{flag}={value}")
         try:
             with habitat_logfire.span(
-                "sbx {operation}", operation=args[0], habitat=self.name
+                "sbx {operation}", operation=args[0], habitat=self.id
             ):
                 async with self.cli(*arguments) as process:
                     async with asyncio.timeout(
@@ -244,21 +247,29 @@ class SbxHabitat(ManagedHabitat):
             "cpus": self.config.cpus,
             "memory_mib": self.config.memory_mib,
             "internet_access": "true" if self.config.internet_access else "false",
+            "denied_domains": json.dumps(
+                sorted(set(self.config.denied_domains)), separators=(",", ":")
+            ),
         }
         self.managed = True
-        if self.name not in names:
+        if self.id not in names:
             # sbx takes host paths only when it makes the sandbox, so the whole
             # root is mounted now and every volume made under it later is seen.
             # The agents' credential file is written beneath the configuration
             # volume, where the harness is told to keep its configuration.
             await anyio.Path(self.config_dir).mkdir(parents=True, exist_ok=True)
+            # sbx requires port-free IPv6 addresses in CIDR notation.
+            denied_domains = [
+                f"{domain[1:-1]}/128" if domain.endswith("]") else domain
+                for domain in self.config.denied_domains
+            ]
             await self.control(
                 "create",
                 str(Path(__file__).parent),
                 str(self.root),
                 kit_arg=[f"{key}={value}" for key, value in kit_args.items()],
-                deny_network=[] if self.config.internet_access else ["**"],
-                name=self.name,
+                deny_network=denied_domains if self.config.internet_access else ["**"],
+                name=self.id,
                 pull="missing",
                 skills="off",
                 no_progress=True,
@@ -266,7 +277,7 @@ class SbxHabitat(ManagedHabitat):
             return
         metadata = await self.control(
             "exec",
-            self.name,
+            self.id,
             "printenv",
             *(f"OCTOMATE_HABITAT_{key.upper()}" for key in kit_args),
         )
@@ -295,7 +306,7 @@ class SbxHabitat(ManagedHabitat):
                     "--interactive",
                     f"--workdir={workdir}",
                     *(f"--env={key}={value}" for key, value in (env or {}).items()),
-                    self.name,
+                    self.id,
                     *command,
                     stdin=child.fileno(),
                     stdout=child.fileno(),
@@ -358,7 +369,9 @@ class SbxHabitat(ManagedHabitat):
         return b"".join(errors)
 
     async def stop(self) -> None:
+        if self.executor is not None:
+            await self.executor.close()
         if self.managed:
             names = (await self.control("ls", quiet=True)).decode().splitlines()
-            if self.name in names:
-                await self.control("stop", self.name)
+            if self.id in names:
+                await self.control("stop", self.id)
