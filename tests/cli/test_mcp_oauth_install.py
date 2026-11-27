@@ -121,7 +121,8 @@ def test_deepseek_oauth_missing_dsh_preserves_configuration(
         ],
     )
     assert result.exit_code != 0
-    assert "dsh is not on PATH" in result.output
+    assert "DSH executable" in result.output
+    assert "--dsh-executable" in result.output
     assert path.read_text() == "[]\n"
 
 

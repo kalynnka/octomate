@@ -110,8 +110,10 @@ def login(url: str | None = None) -> None:
             if authorization is None or authorization.id != attempt:
                 continue
             if authorization.phase == "authorized":
-                typer.echo(
-                    "DSH OAuth authorization completed; credentials are stored by DSH."
+                typer.secho(
+                    "DSH OAuth authorization completed; credentials are stored by DSH.",
+                    fg=typer.colors.GREEN,
+                    err=True,
                 )
                 return
             if authorization.phase in {"failed", "cancelled"}:
@@ -119,8 +121,9 @@ def login(url: str | None = None) -> None:
                     f"DSH OAuth authorization {authorization.phase}. Run `octomate deepseek mcp login` to try again."
                 )
             if authorization.authorization_url and not opened:
-                typer.echo(
-                    f"Authorize DSH in your browser:\n{authorization.authorization_url}"
+                typer.secho(
+                    "Authorize DSH in your browser:", fg=typer.colors.CYAN, err=True
                 )
+                typer.echo(str(authorization.authorization_url), err=True)
                 webbrowser.open(str(authorization.authorization_url))
                 opened = True

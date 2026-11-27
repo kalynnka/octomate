@@ -14,6 +14,9 @@ from octomate_cli.tentacles.deepseek import mcp, oauth
 from pydantic import JsonValue
 from typer.testing import CliRunner
 from uuid_utils.compat import uuid7
+from websockets.datastructures import Headers
+from websockets.exceptions import InvalidStatus
+from websockets.http11 import Response
 
 
 @pytest.fixture
@@ -226,3 +229,52 @@ def test_login_reports_unavailable_host(monkeypatch: pytest.MonkeyPatch) -> None
     assert result.exit_code == 1
     assert "Start or restart" in result.output
     assert "--dsh-url" in result.output
+
+
+@pytest.mark.parametrize("status", [401, 403, 404])
+def test_login_reports_websocket_rejection_without_credentials(
+    monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    def rejected(url: str | None) -> None:
+        raise InvalidStatus(
+            Response(status, "rejected", Headers({"Set-Cookie": "secret-cookie"}))
+        )
+
+    monkeypatch.setattr(oauth, "login", rejected)
+    result = CliRunner().invoke(app, ["deepseek", "mcp", "login"])
+    assert result.exit_code == 1
+    assert f"HTTP {status}" in result.output
+    assert "protocol failed" not in result.output
+    assert "secret-cookie" not in result.output
+    if status in {401, 403}:
+        assert "including its token" in result.output
+        assert "--dsh-url" in result.output
+    else:
+        assert "running DSH Web service" in result.output
+
+
+def test_install_and_uninstall_use_configured_launcher_without_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, installation: list[list[str]]
+) -> None:
+    launcher = tmp_path / "DSH source" / "bin.js"
+    launcher.parent.mkdir()
+    launcher.write_text("#!/usr/bin/env node\n")
+    launcher.chmod(0o700)
+    settings = CLISettings.model_validate({"deepseek": {"executable": str(launcher)}})
+    monkeypatch.setattr(mcp, "cli_settings", lambda: settings)
+    resolved: list[str] = []
+
+    def which(command: str) -> str | None:
+        resolved.append(command)
+        return str(launcher) if command == str(launcher) else None
+
+    monkeypatch.setattr(mcp.shutil, "which", which)
+    monkeypatch.setattr(oauth, "login", lambda url: None)
+    runner = CliRunner()
+    for command in ["install", "uninstall"]:
+        result = runner.invoke(
+            app, ["deepseek", "mcp", command, "--home", str(tmp_path)]
+        )
+        assert result.exit_code == 0, result.output
+    assert all(command[0] == str(launcher) for command in installation)
+    assert resolved == [str(launcher)] * 3

@@ -11,7 +11,7 @@ from typing import Annotated
 
 import typer
 
-from octomate_cli.config import CLISettings
+from octomate_cli.config import CLISettings, cli_settings
 from octomate_cli.tentacles.deepseek.config import (
     DshHomeOption,
     dsh_home,
@@ -115,10 +115,7 @@ def mcp_install(
         raise typer.BadParameter("DSH profile must be a profile name, not a path")
     connector = target_home / "octomate" / "mcp" / profile
     if secret is None:
-        if shutil.which("dsh") is None:
-            raise typer.BadParameter(
-                "dsh is not on PATH; install DSH before installing its Octomate connector"
-            )
+        dsh_executable()
         connector.mkdir(parents=True, exist_ok=True)
         source = Path(__file__).with_name("connector")
         for name in ["package.json", "index.mjs"]:
@@ -139,8 +136,10 @@ def mcp_install(
                 )
             )
         plugin_command(target_home, profile, "add", str(connector))
-        typer.echo(
-            f"Installed Octomate OAuth connector in DSH profile {profile!r} → {target}"
+        typer.secho(
+            f"Installed Octomate OAuth connector in DSH profile {profile!r} → {target}",
+            fg=typer.colors.CYAN,
+            err=True,
         )
         mcp_login(dsh_url)
         return
@@ -234,25 +233,47 @@ def mcp_login(dsh_url: DshUrlOption = None) -> None:
     """Authorize the installed connector on the running DSH host."""
     # Keep command discovery independent of the streaming and WebSocket clients.
     from pydantic import ValidationError
-    from websockets.exceptions import WebSocketException
+    from websockets.exceptions import InvalidStatus, WebSocketException
 
     from octomate_cli.streaming.deepseek import DshCompatibilityError
     from octomate_cli.tentacles.deepseek.oauth import login
 
     try:
         login(dsh_url)
+    except InvalidStatus as error:
+        status = error.response.status_code
+        typer.secho(
+            f"DSH rejected the authorization connection with HTTP {status}.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        typer.secho(
+            "Configure DSH's current launch URL, including its token, with "
+            "`octomate configure --dsh-url`, then retry "
+            "`octomate deepseek mcp login`."
+            if status in {401, 403}
+            else "Check that deepseek.url points to the running DSH Web service.",
+            dim=True,
+            err=True,
+        )
+        raise typer.Exit(1) from None
     except (ValidationError, WebSocketException):
-        typer.echo(
-            "DSH authorization protocol failed. Check the DSH launch URL and update DSH and Octomate together.",
+        typer.secho("DSH authorization protocol failed.", fg=typer.colors.RED, err=True)
+        typer.secho(
+            "Check the DSH launch URL and update DSH and Octomate together.",
+            dim=True,
             err=True,
         )
         raise typer.Exit(1) from None
     except (DshCompatibilityError, OSError) as error:
-        typer.echo(
-            f"DSH OAuth login did not complete: {error}\n"
+        typer.secho(
+            f"DSH OAuth login did not complete: {error}", fg=typer.colors.RED, err=True
+        )
+        typer.secho(
             "Start or restart the DSH profile containing the connector, configure its "
             "launch URL with `octomate configure --dsh-url`, then run "
             "`octomate deepseek mcp login`.",
+            dim=True,
             err=True,
         )
         raise typer.Exit(1) from None
@@ -262,13 +283,26 @@ def plugin_command(home: Path, profile: str, action: str, package: str) -> None:
     """Let DSH own profile dependency installation and live bundle activation."""
     try:
         result = subprocess.run(
-            ["dsh", "plugin", "--profile", profile, action, package],
+            [dsh_executable(), "plugin", "--profile", profile, action, package],
             env={**os.environ, "DSH_HOME": str(home)},
             check=False,
         )
     except FileNotFoundError:
         raise typer.BadParameter(
-            "dsh is not on PATH; install DSH before installing its Octomate connector"
+            "Could not start DSH; check deepseek.executable in cli.toml and the launcher interpreter on PATH"
         ) from None
     if result.returncode:
         raise typer.Exit(result.returncode)
+
+
+def dsh_executable() -> str:
+    """Resolve the configured native launcher before changing DSH configuration."""
+    command = cli_settings().deepseek.executable
+    executable = shutil.which(os.path.expanduser(command))
+    if executable is None:
+        raise typer.BadParameter(
+            f"DSH executable {command!r} was not found or is not executable. "
+            "Set deepseek.executable in cli.toml, or run "
+            "`octomate configure --dsh-executable /path/to/dsh`."
+        )
+    return executable

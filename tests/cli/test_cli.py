@@ -1172,3 +1172,23 @@ def test_the_cli_literals_match_the_server() -> None:
     assert cli_mcp.OCTOMATE_MCP_PATH == served.OCTOMATE_MCP_PATH
     assert cli_mcp.OCTOMATE_SERVER_KEY == served.OCTOMATE_SERVER_NAME
     assert cli_mcp.CLIENT_HEADER == served_gateway.CLIENT_HEADER
+
+
+def test_configure_dsh_launcher_and_url_preserve_each_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured(monkeypatch, None)
+    launcher = "/opt/DSH source/bin.js"
+    launch_url = "http://localhost:3080/?token=private-launch-token"
+    for args in [
+        ["--dsh-url", launch_url],
+        ["--dsh-executable", launcher],
+        ["--dsh-url", launch_url],
+    ]:
+        result = runner.invoke(app, ["configure", *args])
+        assert result.exit_code == 0, result.output
+        assert "private-launch-token" not in result.output
+    assert tomllib.loads(user_config_path().read_text())["deepseek"] == {
+        "url": launch_url,
+        "executable": launcher,
+    }
