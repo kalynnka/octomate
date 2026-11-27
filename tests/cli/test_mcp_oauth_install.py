@@ -6,6 +6,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from click import unstyle
 from octomate_cli.config import CLISettings, cli_settings
 from octomate_cli.main import app
 from octomate_cli.tentacles import mcp
@@ -122,7 +123,7 @@ def test_deepseek_oauth_missing_dsh_preserves_configuration(
     )
     assert result.exit_code != 0
     assert "DSH executable" in result.output
-    assert "--dsh-executable" in result.output
+    assert "--dsh-executable" in unstyle(result.output)
     assert path.read_text() == "[]\n"
 
 

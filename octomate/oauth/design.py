@@ -14,6 +14,11 @@ DESIGN_STYLE = "\n".join(
     for line in (DESIGN_ROOT / "src/styles/lonetrail.css").read_text().splitlines()
     if not line.startswith("@import")
 ).replace('url("/fonts/', 'url("/oauth/design/fonts/')
+DESIGN_FONTS = {
+    path.name: path
+    for path in (DESIGN_ROOT / "public/fonts").iterdir()
+    if path.suffix in {".otf", ".woff2"} and path.is_file()
+}
 
 
 design_router = APIRouter(prefix="/oauth/design", tags=["oauth"])
@@ -27,11 +32,7 @@ async def design_style() -> Response:
 
 @design_router.get("/fonts/{name}", include_in_schema=False)
 async def design_font(name: str) -> FileResponse:
-    path = DESIGN_ROOT / "public/fonts" / name
-    if (
-        Path(name).name != name
-        or path.suffix not in {".otf", ".woff2"}
-        or not path.is_file()
-    ):
+    path = DESIGN_FONTS.get(name)
+    if path is None:
         raise HTTPException(404, "Font not found")
     return FileResponse(path)

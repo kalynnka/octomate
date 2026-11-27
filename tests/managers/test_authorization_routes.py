@@ -98,6 +98,8 @@ async def start(client: httpx2.AsyncClient, client_id: str, **overrides: str) ->
     )
     assert response.status_code == 302, response.text
     location = urlsplit(response.headers["location"])
+    assert f"{location.scheme}://{location.netloc}" == ORIGIN
+    assert location.path == "/oauth/consent"
     assert not location.query
     return parse_qs(location.fragment)["ticket"][0]
 
@@ -652,15 +654,54 @@ async def test_callback_retains_local_trunkline_design_assets(
     font = await browser.get("/oauth/design/fonts/Novecentosanswide-DemiBold.otf")
     assert font.status_code == 200
     assert font.content.startswith(b"OTTO")
-    for name in ["unknown.woff2", "lonetrail.css", "..%2F..%2Fauthorization.py"]:
-        assert (await browser.get(f"/oauth/design/fonts/{name}")).status_code == 404
 
 
-async def test_consent_redirects_to_configured_trunkline_origin(
-    browser: httpx2.AsyncClient, auth: AuthManager
+@pytest.mark.parametrize(
+    "name",
+    [
+        "unknown.woff2",
+        "lonetrail.css",
+        "..%2F..%2Fauthorization.py",
+        "%2e%2e%2fauthorization.py",
+        "..%5C..%5Cauthorization.py",
+        "%2Fetc%2Fpasswd",
+        "Novecentosanswide-DemiBold.otf%00",
+    ],
+)
+async def test_design_fonts_reject_unlisted_paths(
+    browser: httpx2.AsyncClient, name: str
 ) -> None:
-    auth.config.oauth_ui_url = AnyHttpUrl("https://console.test")
-    response = await browser.get("/oauth/consent", headers={"host": "untrusted.test"})
+    assert (await browser.get(f"/oauth/design/fonts/{name}")).status_code == 404
+
+
+async def test_authorize_redirect_ignores_request_origin(
+    browser: httpx2.AsyncClient,
+) -> None:
+    client_id = await register(browser)
+    browser.headers.update(
+        {
+            "host": "untrusted.test",
+            "forwarded": "host=untrusted.test;proto=http",
+            "x-forwarded-host": "untrusted.test",
+        }
+    )
+    await start(browser, client_id, origin="https://untrusted.test")
+
+
+@pytest.mark.parametrize("ui_origin", [None, "https://console.test"])
+async def test_consent_redirects_to_configured_trunkline_origin(
+    browser: httpx2.AsyncClient, auth: AuthManager, ui_origin: str | None
+) -> None:
+    auth.config.oauth_ui_url = AnyHttpUrl(ui_origin) if ui_origin else None
+    response = await browser.get(
+        "/oauth/consent",
+        params={"origin": "https://untrusted.test"},
+        headers={
+            "host": "untrusted.test",
+            "forwarded": "host=untrusted.test;proto=http",
+            "x-forwarded-host": "untrusted.test",
+        },
+    )
     assert response.status_code == 302
-    assert response.headers["location"] == "https://console.test/auth/authorize"
+    assert response.headers["location"] == f"{ui_origin or ORIGIN}/auth/authorize"
     assert response.headers["cache-control"] == "no-store"

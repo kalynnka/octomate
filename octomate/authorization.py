@@ -259,8 +259,8 @@ async def register(
 async def authorize(
     request: Request,
     manager: Annotated[AuthManager, Depends(auth_manager)],
-    origin: Annotated[str, Depends(issuer)],
 ) -> Response:
+    origin = issuer(manager)
     params = request.query_params
     if any(len(params.getlist(key)) != 1 for key in params):
         return oauth_error("invalid_request")
@@ -323,8 +323,8 @@ async def authorize(
 @router.get("/consent")
 async def consent_page(
     manager: Annotated[AuthManager, Depends(auth_manager)],
-    origin: Annotated[str, Depends(issuer)],
 ) -> RedirectResponse:
+    origin = issuer(manager)
     # Browsers retain the request's ticket fragment when Location has no fragment.
     target = str(manager.config.oauth_ui_url or origin).rstrip("/")
     return RedirectResponse(
