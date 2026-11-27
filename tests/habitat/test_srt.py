@@ -1,7 +1,10 @@
 """SRT policy and ownership checks without installing or launching a runtime."""
 
+import asyncio
 import json
+import signal
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 
 import anyio
 import pytest
@@ -13,6 +16,67 @@ from octomate.habitat import HabitatError, WorkspaceHabitat
 from octomate.habitat.srt import SrtHabitat
 from octomate.schemas.volumes import Volume
 from octomate.schemas.volumes.storage import HostDirectory
+
+
+@pytest.mark.parametrize("gone", [False, True])
+async def test_reap_retries_after_waiting_for_exited_leader(
+    habitat: SrtHabitat, monkeypatch: pytest.MonkeyPatch, gone: bool
+) -> None:
+    process = Mock(spec=asyncio.subprocess.Process, pid=123)
+    process.wait = AsyncMock(return_value=0)
+    habitat.processes.add(process)
+    killpg = Mock(
+        side_effect=[
+            PermissionError("unreaped"),
+            ProcessLookupError() if gone else None,
+            ProcessLookupError(),
+        ]
+    )
+    monkeypatch.setattr("octomate.habitat.srt.os.killpg", killpg)
+
+    await habitat.reap(process)
+
+    assert not habitat.processes
+    process.wait.assert_awaited()
+    assert [call.args for call in killpg.call_args_list] == [
+        (123, signal.SIGTERM),
+        (123, signal.SIGTERM),
+        (123, signal.SIGKILL),
+    ]
+
+
+async def test_reap_preserves_permission_failure_after_leader_exit(
+    habitat: SrtHabitat, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = Mock(spec=asyncio.subprocess.Process, pid=123)
+    process.wait = AsyncMock(return_value=0)
+    habitat.processes.add(process)
+    failure = PermissionError("denied")
+    monkeypatch.setattr("octomate.habitat.srt.os.killpg", Mock(side_effect=failure))
+
+    with pytest.raises(PermissionError) as caught:
+        await habitat.reap(process)
+
+    assert caught.value is failure
+    assert process in habitat.processes
+
+
+async def test_reap_preserves_permission_failure_for_live_leader(
+    habitat: SrtHabitat, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = Mock(spec=asyncio.subprocess.Process, pid=123)
+    process.wait = AsyncMock(side_effect=anyio.sleep_forever)
+    habitat.processes.add(process)
+    failure = PermissionError("denied")
+    killpg = Mock(side_effect=failure)
+    monkeypatch.setattr("octomate.habitat.srt.os.killpg", killpg)
+
+    with pytest.raises(PermissionError) as caught:
+        await habitat.reap(process)
+
+    assert caught.value is failure
+    killpg.assert_called_once_with(123, signal.SIGTERM)
+    assert process in habitat.processes
 
 
 @pytest.mark.parametrize(

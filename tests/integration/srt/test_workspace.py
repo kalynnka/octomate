@@ -27,10 +27,19 @@ from tests.habitat.test_commands import (
     test_concurrent_runs_keep_their_directories_separate as test_concurrent_runs_keep_their_directories_separate,
 )
 from tests.habitat.test_commands import (
+    test_executor_shutdown_reaps_active_commands as test_executor_shutdown_reaps_active_commands,
+)
+from tests.habitat.test_commands import (
+    test_failed_executor_is_reported_without_automatic_restart as test_failed_executor_is_reported_without_automatic_restart,
+)
+from tests.habitat.test_commands import (
     test_invalid_command_is_rejected as test_invalid_command_is_rejected,
 )
 from tests.habitat.test_commands import (
     test_missing_program_returns_127 as test_missing_program_returns_127,
+)
+from tests.habitat.test_commands import (
+    test_retained_executor_reuses_imports_and_runs_operations_concurrently as test_retained_executor_reuses_imports_and_runs_operations_concurrently,
 )
 from tests.habitat.test_commands import (
     test_run_captures_output_exit_and_explicit_environment as test_run_captures_output_exit_and_explicit_environment,

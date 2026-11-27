@@ -11,15 +11,17 @@ const { SandboxManager, SandboxRuntimeConfigSchema } = await import(
 );
 const temp = await mkdtemp('/tmp/octo-workspace-');
 let child;
+let terminated = false;
 const cancellation = new AbortController();
 const terminate = () => {
   cancellation.abort();
-  if (child?.pid === undefined) return;
+  if (child?.pid === undefined || terminated) return;
   try {
     process.kill(-child.pid, 'SIGKILL');
   } catch (error) {
     if (error.code !== 'ESRCH') throw error;
   }
+  terminated = true;
 };
 process.once('SIGTERM', terminate);
 process.once('SIGINT', terminate);
@@ -65,7 +67,6 @@ try {
     child.once('error', reject);
     child.once('close', (code) => accept(code ?? 1));
   });
-  terminate();
 } catch (error) {
   console.error(`habitat-execution-start: ${error.message}`);
   process.exitCode = 1;

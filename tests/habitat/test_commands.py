@@ -13,7 +13,7 @@ from pydantic_ai.workspaces import WorkspaceTimeoutError, WorkspaceUnavailableEr
 from uuid_utils.compat import uuid7
 
 from octomate.config.habitat import SbxHabitatConfig
-from octomate.habitat import Habitat, NativeHabitat
+from octomate.habitat import Habitat, ManagedHabitat, NativeHabitat
 from octomate.habitat.sbx import SbxHabitat
 from tests.habitat.agents.test_claude import executable as executable
 from tests.habitat.test_contracts import IMAGE
@@ -135,7 +135,7 @@ async def test_retained_executor_reuses_imports_and_runs_operations_concurrently
     habitat: Habitat,
     tmp_path: Path,
 ) -> None:
-    if not isinstance(habitat, SbxHabitat):
+    if not isinstance(habitat, ManagedHabitat):
         pytest.skip("Native execution does not use the managed executor")
     command = ["python", "-c", "import os; print(os.getppid())"]
     first = await habitat.run(command, workdir=str(tmp_path))
@@ -168,7 +168,7 @@ async def test_failed_executor_is_reported_without_automatic_restart(
     habitat: Habitat,
     tmp_path: Path,
 ) -> None:
-    if not isinstance(habitat, SbxHabitat):
+    if not isinstance(habitat, ManagedHabitat):
         pytest.skip("Native execution does not use the managed executor")
     result = await habitat.run(
         ["python", "-c", "import os; print(os.getppid())"], workdir=str(tmp_path)
@@ -186,7 +186,7 @@ async def test_executor_shutdown_reaps_active_commands(
     habitat: Habitat,
     tmp_path: Path,
 ) -> None:
-    if not isinstance(habitat, SbxHabitat):
+    if not isinstance(habitat, ManagedHabitat):
         pytest.skip("Native execution does not use the managed executor")
     running = asyncio.create_task(
         habitat.run(

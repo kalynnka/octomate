@@ -335,14 +335,28 @@ class SrtHabitat(WorkspaceHabitat):
 
     async def reap(self, process: asyncio.subprocess.Process) -> None:
         """Terminate the process group, including children left after the leader exits."""
-        with suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGTERM)
+        await self.signal_group(process, signal.SIGTERM)
         with anyio.move_on_after(2):
             await process.wait()
-        with suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGKILL)
+        await self.signal_group(process, signal.SIGKILL)
         await process.wait()
         self.processes.discard(process)
+
+    async def signal_group(
+        self, process: asyncio.subprocess.Process, signum: signal.Signals
+    ) -> None:
+        try:
+            os.killpg(process.pid, signum)
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            # Reap an exited leader before retrying; keep live or persistent denial visible.
+            with anyio.move_on_after(2) as waiting:
+                await process.wait()
+            if waiting.cancel_called:
+                raise
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signum)
 
     async def read_stderr(
         self, source: asyncio.StreamReader, callback: Callable[[str], None] | None
