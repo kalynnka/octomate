@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.0.6](https://github.com/kalynnka/octomate/compare/octomate-protocol-v0.0.5...octomate-protocol-v0.0.6) (2026-11-27)
+
+
+### Features
+
+* **habitat:** add named habitats and macOS SRT workspace isolation ([#185](https://github.com/kalynnka/octomate/issues/185)) ([6b67720](https://github.com/kalynnka/octomate/commit/6b67720d12427304bc7482200f3bd4fcffa7a238))
+* **habitat:** run agent harnesses in user sandboxes ([#181](https://github.com/kalynnka/octomate/issues/181)) ([6e4c720](https://github.com/kalynnka/octomate/commit/6e4c7209bc2bfd2888b2752ebf921881df15e063))
+
 ## [0.0.5](https://github.com/kalynnka/octomate/compare/octomate-protocol-v0.0.4...octomate-protocol-v0.0.5) (2026-10-29)
 
 
