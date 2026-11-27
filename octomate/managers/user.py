@@ -61,6 +61,10 @@ class UserManager(Manager, Locks[tuple[str, str] | UUID7]):
         self.authorization_base_uri = authorization_base_uri
         self.authorization_lifetime = authorization_lifetime
 
+    async def get(self, user_id: UUID7) -> User | None:
+        async with async_session() as session:
+            return await session.get(User, user_id)
+
     async def unlink_profile(self, user: User, profile_id: UUID7) -> None:
         async with self.lock(profile_id), async_session() as session:
             profile = await session.get(UserProfile, profile_id)

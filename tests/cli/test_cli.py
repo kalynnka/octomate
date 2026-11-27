@@ -741,6 +741,8 @@ def gateway_ready(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OCTOMATE_CLI_URL", "http://127.0.0.1:9999")
     monkeypatch.setenv("OCTOMATE_CLI_TOKEN", "the-token")
 
+    monkeypatch.setenv("OCTOMATE_CLI_MCP_AUTH", "apikey")
+
 
 @pytest.mark.parametrize("runtime", ["claude", "codex", "deepseek"])
 def test_mcp_install_refuses_agent_id_overrides(runtime: str) -> None:
@@ -963,6 +965,7 @@ def test_mcp_install_refuses_without_the_credential_it_would_embed(
     would only 401, so the install refuses instead."""
     monkeypatch.setenv("OCTOMATE_CLI_URL", "http://127.0.0.1:9999")
     monkeypatch.delenv("OCTOMATE_CLI_TOKEN", raising=False)
+    monkeypatch.setenv("OCTOMATE_CLI_MCP_AUTH", "apikey")
     invocations = [
         (claude_typer, ["mcp", "install", "--file", str(tmp_path / "c.json")]),
         (codex_typer, ["mcp", "install", "--config-file", str(tmp_path / "c.toml")]),
@@ -1169,3 +1172,23 @@ def test_the_cli_literals_match_the_server() -> None:
     assert cli_mcp.OCTOMATE_MCP_PATH == served.OCTOMATE_MCP_PATH
     assert cli_mcp.OCTOMATE_SERVER_KEY == served.OCTOMATE_SERVER_NAME
     assert cli_mcp.CLIENT_HEADER == served_gateway.CLIENT_HEADER
+
+
+def test_configure_dsh_launcher_and_url_preserve_each_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured(monkeypatch, None)
+    launcher = "/opt/DSH source/bin.js"
+    launch_url = "http://localhost:3080/?token=private-launch-token"
+    for args in [
+        ["--dsh-url", launch_url],
+        ["--dsh-executable", launcher],
+        ["--dsh-url", launch_url],
+    ]:
+        result = runner.invoke(app, ["configure", *args])
+        assert result.exit_code == 0, result.output
+        assert "private-launch-token" not in result.output
+    assert tomllib.loads(user_config_path().read_text())["deepseek"] == {
+        "url": launch_url,
+        "executable": launcher,
+    }

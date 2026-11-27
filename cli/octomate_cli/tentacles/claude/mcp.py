@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
@@ -14,6 +15,7 @@ from octomate_cli.tentacles.claude.schema import McpContainer, McpServer
 from octomate_cli.tentacles.mcp import (
     CLIENT_HEADER,
     OCTOMATE_SERVER_KEY,
+    OAuthOption,
     octomate_secret,
     octomate_url,
 )
@@ -74,31 +76,34 @@ def mcp_install(
     ] = None,
     scope: McpScopeOption = McpScope.local,
     file: McpFileOption = None,
+    oauth: OAuthOption = None,
 ) -> None:
-    """Point native Claude Code sessions at the served MCP server.
+    """Install native claude MCP access, preserving other entries.
 
-    Writes the entry — the server's URL, the bearer, and the configured agent's
-    attribution header — resolved once, now: unlike the hooks, a static entry is
-    read by Claude itself, so the file holds the literal credential and rotating
-    it means re-running install. Everything else in the file is kept, and
-    re-running replaces the entry in place.
+    mcp_auth in cli.toml selects native OAuth login or an embedded API key.
+    --oauth/--api-key overrides it for this installation.
     """
     target = octomate_url(url)
-    secret = octomate_secret()
+    secret = octomate_secret(oauth)
     path = mcp_config_file(scope, file)
+    if secret is None and path.resolve() != mcp_config_file(scope, None).resolve():
+        raise typer.BadParameter(
+            "Claude OAuth login reads its native configuration. Use --scope local, "
+            "user, or project without a custom --file."
+        )
     document = load_settings(path)
     if scope is McpScope.local:
         container = document.projects.setdefault(str(Path.cwd()), McpContainer())
         document.model_fields_set.add("projects")
     else:
         container = document
+    headers = {CLIENT_HEADER: "claude"}
+    if secret is not None:
+        headers["Authorization"] = f"Bearer {secret}"
     container.mcp_servers[OCTOMATE_SERVER_KEY] = McpServer(
         type="http",
         url=target,
-        headers={
-            "Authorization": f"Bearer {secret}",
-            CLIENT_HEADER: "claude",
-        },
+        headers=headers,
     )
     container.model_fields_set.add("mcp_servers")
     write_settings(path, document)
@@ -107,10 +112,23 @@ def mcp_install(
     if scope is McpScope.local:
         typer.echo(f"  scope:  local ({Path.cwd()})")
     typer.echo("  client: claude")
-    typer.echo(
-        "  auth:   embedded — the file holds the literal credential; rotation "
-        "means re-running install"
-    )
+    if secret is None:
+        typer.echo("  auth:   OAuth — credentials managed by claude")
+        try:
+            result = subprocess.run(
+                ["claude", "mcp", "login", OCTOMATE_SERVER_KEY], check=False
+            )
+        except OSError as error:
+            raise typer.BadParameter(
+                f"Entry installed, but Claude login could not start: {error}"
+            ) from None
+        if result.returncode:
+            raise typer.Exit(result.returncode)
+    else:
+        typer.echo(
+            "  auth:   embedded — the file holds the literal credential; rotation "
+            "means re-running install"
+        )
 
 
 @mcp_typer.command("uninstall")
@@ -158,4 +176,7 @@ def mcp_show(
     typer.echo(f"Octomate MCP entry in {path}:")
     typer.echo(f"  url:    {entry.url}")
     typer.echo(f"  client: {client}")
-    typer.echo("  auth:   Bearer ***")
+    embedded = entry.headers is not None and "Authorization" in entry.headers
+    typer.echo(
+        "  auth:   Bearer ***" if embedded else "  auth:   OAuth (harness-managed)"
+    )

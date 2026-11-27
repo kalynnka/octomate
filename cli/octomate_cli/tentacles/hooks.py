@@ -1,5 +1,5 @@
 """What every agent's hook installer shares: the check that the credential the hooks
-will carry — a server-issued API token — actually resolves,
+will carry actually resolves,
 and the scripts the installed hooks run.
 """
 
@@ -9,6 +9,7 @@ from pathlib import Path
 
 import typer
 
+from octomate_cli.auth import LoginStore
 from octomate_cli.config import CLISettings, cli_settings, user_config_path
 
 # The forwarding command hook's script — it carries the event body from stdin to the
@@ -24,11 +25,15 @@ LAUNCH_SCRIPT = Path(__file__).parent.parent / "launch.py"
 def announce_secret() -> None:
     """Warn when hooks were just installed against a credential that resolves to
     nothing: the install reports success, and every turn after it 401s."""
-    if cli_settings().token is None:
-        typer.secho(
-            f"\nNo credential found — neither ./.octomate/cli.toml nor "
-            f"{user_config_path()} holds one, and ${CLISettings.env('token')} is "
-            "unset. Run `octomate configure --token <api-token>`, or every hook will be refused.",
-            fg=typer.colors.YELLOW,
-            err=True,
-        )
+    settings = cli_settings()
+    if settings.token is not None:
+        return
+    if settings.url is not None and LoginStore(settings.url).path.is_file():
+        return
+    typer.secho(
+        f"\nNo credential found — neither ./.octomate/cli.toml nor "
+        f"{user_config_path()} holds one, and ${CLISettings.env('token')} is "
+        "unset. Run `octomate login` or `octomate configure --token <api-token>`, or every hook will be refused.",
+        fg=typer.colors.YELLOW,
+        err=True,
+    )

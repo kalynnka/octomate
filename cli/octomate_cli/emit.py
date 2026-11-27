@@ -80,10 +80,22 @@ def resolved(key: str, env: str, tables: list[dict[str, object]]) -> str | None:
 def main(url: str, token: str | None) -> int:
     payload = NativeHookEvent.model_validate_json(sys.stdin.read())
     if not token:
+        # OAuth loads only when the lightweight API-key path has no credential.
+        from httpx2 import HTTPError
+
+        from octomate_cli.auth import bearer
+
+        try:
+            credential = bearer(url, None)
+        except (RuntimeError, ValueError, HTTPError, OSError) as error:
+            print(f"octomate: {error}", file=sys.stderr)
+            return 1
+        token = credential.get_secret_value() if credential is not None else None
+    if not token:
         print(
             f"octomate: no credential — {TOKEN_ENV} is unset and the "
             "client config holds none, so this session is not being ingested. "
-            "Run `octomate configure --token <api-token>`.",
+            "Run `octomate login` or `octomate configure --token <api-token>`.",
             file=sys.stderr,
         )
         return 1

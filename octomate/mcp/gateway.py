@@ -288,7 +288,7 @@ def served_session(octomate: Octomate) -> Callable[[], Awaitable[OctomateSession
     async def resolve() -> OctomateSession:
         headers = get_http_headers()
         access = get_access_token()
-        principal = access.client_id if access is not None else None
+        principal = access.subject if access is not None else None
         named = headers.get(CONVERSATION_HEADER.lower())
         if named is not None:
             try:

@@ -1,18 +1,12 @@
-"""Octomate's static MCP client config — the three facts every `octomate
-<runtime> mcp install` writes: where the server is, the credential, and which
-agent the calls are from.
+"""Shared native MCP endpoint, attribution, and installation authentication options.
 
-Owned here so the runtimes' installers cannot drift apart. The server holds the
-same literals (`octomate.mcp.server`, `octomate.mcp.gateway`);
-the CLI cannot import that half, so the tests are what
-hold the two together. Unlike the hook commands — whose scripts resolve the
-address and credential from the environment when each hook fires — a static MCP
-entry is read by the runtime itself, so both are resolved once, at install time,
-and written into the file: the file holds the literal credential, and rotating it
-means re-running install.
+API-key entries embed the configured bearer. OAuth entries let each harness own
+its authorization and token storage independently of the CLI login.
 """
 
 from __future__ import annotations
+
+from typing import Annotated
 
 import typer
 
@@ -20,6 +14,15 @@ from octomate_cli.config import (
     CLISettings,
     cli_settings,
 )
+
+OAuthOption = Annotated[
+    bool | None,
+    typer.Option(
+        "--oauth/--api-key",
+        help="Override mcp_auth in cli.toml: native OAuth login or an embedded API key.",
+    ),
+]
+
 
 # The served endpoint under the base URL: the host mounts its one MCP server
 # under the server's name, `octomate`, and the transport answers at `/mcp` in it.
@@ -49,10 +52,13 @@ def octomate_url(url: str | None) -> str:
     return base.rstrip("/") + OCTOMATE_MCP_PATH
 
 
-def octomate_secret() -> str:
-    """The credential an install embeds in the entry's Authorization header —
-    refused when nothing resolves, since the entry would 401 on every call."""
-    token = cli_settings().token
+def octomate_secret(oauth: bool | None = None) -> str | None:
+    """Resolve the install's auth mode; OAuth leaves token ownership to the harness."""
+    settings = cli_settings()
+    use_oauth = oauth if oauth is not None else settings.mcp_auth == "oauth"
+    if use_oauth:
+        return None
+    token = settings.token
     if token is None:
         raise typer.BadParameter(
             f"no credential resolves — {CLISettings.env('token')} is unset and no "

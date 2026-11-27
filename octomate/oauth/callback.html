@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>$title · Octomate</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E">
+  <link rel="stylesheet" href="/oauth/design/lonetrail.css">
+  <style>
+    :root {
+      color-scheme: light;
+      --grain-a: 3.2%;
+      --grain-b: 2.4%;
+    }
+    [data-theme="dark"] {
+      color-scheme: dark;
+      --grain-a: 1.6%;
+      --grain-b: 1.2%;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      display: grid;
+      align-items: start;
+      padding: clamp(120px, 22vh, 200px) 24px 64px;
+      color: var(--fg-1);
+      background-color: var(--page-bg);
+      background-image: radial-gradient(color-mix(in srgb, var(--color-ink) var(--grain-a), transparent) 0.5px, transparent 0.6px), radial-gradient(color-mix(in srgb, var(--color-ink) var(--grain-b), transparent) 0.5px, transparent 0.6px);
+      background-size: 4px 4px, 7px 7px;
+      background-position: 0 0, 2px 3px;
+      font-family: var(--font-sans);
+      -webkit-font-smoothing: antialiased;
+    }
+    ::selection { background: color-mix(in srgb, var(--color-accent) 22%, transparent); }
+    :focus-visible { outline: 2px solid var(--info-strong); outline-offset: 4px; }
+    main { width: min(520px, 100%); margin-inline: auto; }
+    .brand { font: 500 18px/1.1 var(--font-display); letter-spacing: .04em; text-transform: uppercase; color: var(--fg-2); }
+    .result-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-bottom: 22px; border-bottom: 1px solid var(--line-divider); }
+    .message { padding: 38px 0 0; }
+    h1 { margin: 0 0 16px; font: 500 27px/1.35 var(--font-sans); letter-spacing: -.025em; color: var(--fg-1); overflow-wrap: anywhere; text-wrap: balance; }
+    .message p { margin: 0; font: 400 15px/1.8 "Noto Serif SC", serif; color: var(--fg-2); }
+    @media (max-width: 600px) {
+      body { padding: 120px 24px 48px; }
+      .message { padding-top: 30px; }
+      h1 { font-size: 25px; }
+    }
+  </style>
+</head>
+<body>
+  <main aria-labelledby="connection-title">
+      <header class="result-header">
+        <span class="brand">Octomate</span>
+      </header>
+      <div class="message" role="status">
+        <h1 id="connection-title">$title</h1>
+        <p>$detail</p>
+      </div>
+  </main>
+  <script>
+    const preference = matchMedia('(prefers-color-scheme: dark)');
+    document.documentElement.dataset.theme = preference.matches ? 'dark' : 'light';
+    preference.addEventListener('change', event => {
+      document.documentElement.dataset.theme = event.matches ? 'dark' : 'light';
+    });
+  </script>
+</body>
+</html>

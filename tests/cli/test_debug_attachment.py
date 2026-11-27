@@ -22,7 +22,7 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     config.mkdir(parents=True)
     for name in ("debug", "macmini"):
         (config / f"cli.{name}.toml").write_text(
-            f'url = "https://{name}.example"\ntoken = "{name}-token"\n'
+            f'url = "https://{name}.example"\ntoken = "{name}-token"\nmcp_auth = "apikey"\n'
         )
     (config / "cli.toml").write_text('url = "https://before.example"\n')
     local_cli = root / ".venv" / "bin" / "octomate"

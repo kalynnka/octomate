@@ -245,14 +245,20 @@ async def test_registration_login_rotation_and_logout(
         assert "HttpOnly" in cookie
         assert "Secure" in cookie
         assert "SameSite=strict" in cookie
-        assert "Path=/api" in cookie
+        assert "Path=/api" in cookie or "Path=/oauth" in cookie
     assert registered.headers["cache-control"] == "no-store"
     account = (await client.get("/api/auth/me")).json()
     assert account["name"] == "Alice"
-    old_access = client.cookies["octomate_access"]
+    old_access = client.cookies.get("octomate_access", path="/api")
+    assert old_access is not None
+    assert client.cookies.get("octomate_access", path="/oauth") == old_access
+    assert client.cookies.get("octomate_refresh", path="/oauth") is None
     old_refresh = client.cookies["octomate_refresh"]
     assert (await client.post("/api/auth/refresh")).status_code == 204
-    assert client.cookies["octomate_access"] != old_access
+    assert client.cookies.get("octomate_access", path="/api") != old_access
+    assert client.cookies.get("octomate_access", path="/oauth") == client.cookies.get(
+        "octomate_access", path="/api"
+    )
     assert client.cookies["octomate_refresh"] != old_refresh
     assert await auth.authenticate_session(SecretStr(old_access)) is None
     with pytest.raises(InvalidCredentials):
@@ -299,7 +305,9 @@ async def test_logout_revokes_sessions_with_partial_or_expired_cookies(
     client: httpx2.AsyncClient, auth: AuthManager, cookies: str
 ) -> None:
     await enroll(client, auth)
-    access = SecretStr(client.cookies["octomate_access"])
+    access_cookie = client.cookies.get("octomate_access", path="/api")
+    assert access_cookie is not None
+    access = SecretStr(access_cookie)
     refresh = SecretStr(client.cookies["octomate_refresh"])
     if cookies == "refresh-only":
         client.cookies.delete("octomate_access")
@@ -326,7 +334,7 @@ async def test_logout_clears_invalid_cookies_without_requiring_a_session(
         headers={"Cookie": "octomate_access=unknown; octomate_refresh=unknown"},
     )
     assert response.status_code == 204
-    assert len(response.headers.get_list("set-cookie")) == 2
+    assert len(response.headers.get_list("set-cookie")) == 3
     assert all(
         "Max-Age=0" in cookie for cookie in response.headers.get_list("set-cookie")
     )
