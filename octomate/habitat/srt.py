@@ -41,8 +41,12 @@ class SrtHabitat(ManagedHabitat):
     user_id: UUID7
     root: Path  # Owner storage; the shared trust scope for this habitat's processes.
     name: str = "default"  # Configured habitat name, independent of the owner.
-    read_only: bool = False  # Confine a run to reads, except its runtime home and temp.
-    scratch: Path | None = None  # Disposable runtime storage for workspace-scoped runs.
+    # Read-only workspace; runtime and harness state stay writable.
+    read_only: bool = False
+    # Disposable runtime storage for workspace-scoped runs.
+    scratch: Path | None = None
+    # Writable harness state outside the workspace.
+    state_paths: tuple[Path, ...] = ()
     settings: TemporaryDirectory[str] | None = field(default=None, init=False)
     executable: str | None = field(default=None, init=False)
     node: str | None = field(default=None, init=False)
@@ -160,7 +164,9 @@ class SrtHabitat(ManagedHabitat):
         )
         if self.scratch is not None:
             readable.append(self.scratch)
+        readable.extend(path.resolve() for path in self.state_paths)
         writable = [] if self.read_only else [str(self.root)]
+        writable.extend(str(path.resolve()) for path in self.state_paths)
         if self.scratch is not None or self.read_only:
             writable.extend(self.environment()[key] for key in ("HOME", "TMPDIR"))
         policy = {

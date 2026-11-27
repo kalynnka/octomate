@@ -22,6 +22,7 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import Message
 
 from octomate.habitat import Habitat, HabitatError, ManagedHabitat
+from octomate.habitat.srt import SrtHabitat
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.tentacles.agent import AgentInk
 from octomate.tentacles.claude.catalog import (
@@ -37,7 +38,7 @@ from octomate.tentacles.claude.transcript import (
 from octomate.tentacles.claude.transcript import (
     relocate_session as relocate_session_files,
 )
-from octomate.tentacles.claude.transport import HabitatTransport
+from octomate.tentacles.claude.transport import HabitatTransport, workspace
 
 
 class ClaudeInk(AgentInk):
@@ -172,6 +173,10 @@ class ClaudeInk(AgentInk):
             raise ValueError("Driven Claude runs require a workspace")
         options.setting_sources = []
         async with contextlib.AsyncExitStack() as resources:
+            if isinstance(habitat, SrtHabitat):
+                habitat, options = await resources.enter_async_context(
+                    workspace(habitat, options)
+                )
             if isinstance(habitat, ManagedHabitat):
                 options.sandbox = {
                     **(options.sandbox or {}),
