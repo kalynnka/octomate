@@ -10,6 +10,12 @@ from octomate.models.auth import (
     UserInvitation,
     UserSession,
 )
+from octomate.models.authorization import (
+    OAuthAuthorization,
+    OAuthClient,
+    OAuthGrant,
+    OAuthToken,
+)
 from octomate.models.base import Base
 from octomate.models.compactions import (
     Compaction,
@@ -112,9 +118,13 @@ __all__ = [
     "ModelRequest",
     "ModelResponse",
     "NoAuthMcp",
+    "OAuthAuthorization",
+    "OAuthClient",
     "OAuthConnection",
+    "OAuthGrant",
     "OAuthMcp",
     "OAuthOperation",
+    "OAuthToken",
     "Png",
     "Project",
     "RuntimeApiKey",

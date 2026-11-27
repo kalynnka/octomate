@@ -47,6 +47,8 @@ interface AuthState {
   invitation: string
   /** the private profile-linking ticket being carried through sign-in */
   linkProfile: string
+  /** the inbound OAuth consent ticket carried through sign-in */
+  oauthConsent: string
   /** why the login page is back — a session that lapsed — or null on a first visit */
   notice: string | null
   relay: RelayState
@@ -81,16 +83,20 @@ export const useAuth = create<AuthState>()((set, get) => {
       const params = new URLSearchParams(window.location.hash.slice(1))
       const invitation = params.get('invitation')
       const linkProfile = params.get('link-profile')
-      if (!invitation && !linkProfile) return
+      const oauthConsent = params.get('ticket')
+      if (!invitation && !linkProfile && !oauthConsent) return
       history.replaceState(null, '', window.location.pathname + window.location.search)
-      if (linkProfile) {
+      if (oauthConsent) {
+        set({ oauthConsent, linkProfile: '', invitation: '', page: 'login', notice: null })
+      } else if (linkProfile) {
         set({
           linkProfile,
+          oauthConsent: '',
           page: 'login',
           notice: 'Sign in to choose the account for this channel profile.',
         })
       } else if (invitation) {
-        set({ invitation, page: 'register' })
+        set({ invitation, oauthConsent: '', page: 'register' })
       }
     },
 
@@ -151,6 +157,7 @@ export const useAuth = create<AuthState>()((set, get) => {
     page: 'login',
     invitation: '',
     linkProfile: '',
+    oauthConsent: '',
     notice: null,
     relay: 'ok',
     actions,

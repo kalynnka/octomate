@@ -9,6 +9,7 @@ import httpx2
 from fastmcp import FastMCP
 from fastmcp.dependencies import Depends
 from fastmcp.exceptions import ToolError
+from fastmcp.server.auth import AuthProvider, RemoteAuthProvider
 from fastmcp.server.dependencies import get_context
 from mcp.shared.exceptions import MCPError
 from mcp.types import ToolListChangedNotification
@@ -21,7 +22,8 @@ from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpManager, McpUnavailable
 from octomate.managers.thread import ThreadManager
-from octomate.mcp.base import KnownBearers
+from octomate.mcp.base import OCTOMATE_MCP_PATH as OCTOMATE_MCP_PATH
+from octomate.mcp.base import OCTOMATE_SERVER_NAME, KnownBearers
 from octomate.mcp.gateway import gateway_instructions, mount_gateway
 from octomate.mcp.history import HISTORY_TOOL_NAMES, mount_history
 from octomate.mcp.oauth import OAUTH_NAMESPACE, mount_oauth
@@ -39,12 +41,6 @@ from octomate.schemas.mcp import (
 from octomate.schemas.user import User
 from octomate.types.oauth import HttpsUrl
 
-# The name every runtime mounts the server under. Claude and dsh name a server's
-# tools `mcp__<server>__<tool>`, Codex namespaces them `mcp__<server>`.
-OCTOMATE_SERVER_NAME = "octomate"
-# The one endpoint: the host mounts the server's app under its name, and the
-# transport answers at `/mcp` inside it. Every install config copies this literal.
-OCTOMATE_MCP_PATH = f"/{OCTOMATE_SERVER_NAME}/mcp"
 HISTORY_NAMESPACE = "history"
 TENTACLES_SERVER_NAME = "tentacles"
 LIST_MCP_TOOLS = "mcp_list_tools"
@@ -293,10 +289,21 @@ def octomate_mcp(
 ) -> FastMCP:
     """Compose the gateway, history, and user-scoped MCP tools over one session resolver."""
     session = Depends(resolve_session)
+    auth: AuthProvider | None = bearers
+    if bearers is not None and bearers.auth is not None:
+        issuer = bearers.auth.config.oauth_issuer_url
+        if issuer is not None:
+            auth = RemoteAuthProvider(
+                token_verifier=bearers,
+                authorization_servers=[issuer],
+                base_url=issuer,
+                resource_base_url=f"{str(issuer).rstrip('/')}/{OCTOMATE_SERVER_NAME}",
+                scopes_supported=["mcp"],
+            )
     mcp = FastMCP(
         name=OCTOMATE_SERVER_NAME,
         instructions=octomate_instructions(),
-        auth=bearers,
+        auth=auth,
     )
     gateway = FastMCP(GATEWAY_NAMESPACE)
     mount_gateway(gateway, session, thread_manager, nerves, conversations=conversations)

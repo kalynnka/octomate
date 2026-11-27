@@ -32,6 +32,7 @@ export default defineConfig({
     // nothing. Requests that arrive that way carry the tailnet hostname.
     host: '127.0.0.1',
     allowedHosts: ['.ts.net'],
+    headers: { 'Content-Security-Policy': "frame-ancestors 'none'", 'X-Frame-Options': 'DENY' },
     proxy: {
       // `ws` carries the console's live socket, `/api/trunkline/live`, through too.
       '/api': { target: apiUrl, ws: true },

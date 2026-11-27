@@ -7,11 +7,26 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from pydantic import AliasPath, BaseModel, Field
 
 MARK_BEGIN = "# >>> octomate deepseek hooks >>>"
 
 
 MARK_END = "# <<< octomate deepseek hooks <<<"
+
+
+class DshProfileManifest(BaseModel):
+    """Native package registration used to detect an installed connector."""
+
+    dependencies: dict[str, str] = Field(
+        default_factory=dict,
+        description="Packages registered in the native DSH profile.",
+    )
+    bundles: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasPath("dsh", "profile", "bundles"),
+        description="Bundles enabled by the native DSH profile.",
+    )
 
 
 DshHomeOption = Annotated[

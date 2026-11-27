@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import logging
 from html import escape
+from pathlib import Path
+from string import Template
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response
@@ -29,6 +31,7 @@ from octomate.managers.oauth import OAuthManager, UnusableOAuthOperation
 from octomate.schemas.oauth import OAUTH_CALLBACK_PATH, OAUTH_START_PATH
 
 logger = logging.getLogger(__name__)
+CALLBACK_PAGE = Template(Path(__file__).with_name("callback.html").read_text())
 
 
 def page(title: str, detail: str, *, status_code: int = 200) -> HTMLResponse:
@@ -40,17 +43,7 @@ def page(title: str, detail: str, *, status_code: int = 200) -> HTMLResponse:
     who should learn nothing from having tried.
     """
     return HTMLResponse(
-        "<!doctype html>"
-        '<html lang="en"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        f"<title>{title}</title>"
-        "<style>body{font:16px/1.6 system-ui,sans-serif;margin:0;display:grid;"
-        "place-items:center;min-height:100vh;padding:2rem;color:#1c1c1e;"
-        "background:#fbfbfd}main{max-width:26rem;text-align:center}"
-        "h1{font-size:1.25rem;margin:0 0 .5rem}p{margin:0;color:#5f5f66}"
-        "@media(prefers-color-scheme:dark){body{color:#f2f2f7;background:#131315}"
-        "p{color:#a1a1aa}}</style></head>"
-        f"<body><main><h1>{title}</h1><p>{detail}</p></main></body></html>",
+        CALLBACK_PAGE.substitute(title=title, detail=detail),
         status_code=status_code,
     )
 
