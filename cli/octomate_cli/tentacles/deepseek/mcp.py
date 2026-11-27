@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -31,6 +35,20 @@ mcp_typer = typer.Typer(
 # The MCP client bridge the Octomate row mounts — part of dsh's own module
 # closure, unlike the hooks bridge, so no --bridge link step.
 MCP_CLIENT_PACKAGE = "@deepseek-ai/dsh-mcp-client"
+CONNECTOR_PACKAGE = "@octomate/dsh-connector"
+
+ProfileOption = Annotated[
+    str,
+    typer.Option(
+        help="DSH profile receiving the OAuth connector; requires Web, credentials, and MCP account services."
+    ),
+]
+DshUrlOption = Annotated[
+    str | None,
+    typer.Option(
+        help="DSH launch URL; defaults to DSH_API_URL, deepseek.url in cli.toml, then localhost:3080."
+    ),
+]
 
 
 # The Octomate MCP row's id and markers: what a re-install overwrites and an
@@ -82,23 +100,53 @@ def mcp_install(
     ] = None,
     home: DshHomeOption = None,
     oauth: OAuthOption = None,
+    profile: ProfileOption = "web",
+    dsh_url: DshUrlOption = None,
 ) -> None:
-    """Point native dsh sessions at the served MCP server.
+    """Install a native OAuth connector and start DSH login, or embed an API key.
 
-    Writes a marker-delimited row in $DSH_HOME/cordis.patch.yml mounting
-    `@deepseek-ai/dsh-mcp-client` on the served MCP server, the credential and the
-    agent attribution embedded — resolved once, now: the file holds the
-    literal credential, and rotating it means re-running install. Re-running
-    replaces the row in place; restart dsh processes for the change to take.
+    OAuth uses DSH's profile package manager, MCP manager, and credential store.
+    API-key mode writes a standalone client into the shared Cordis patch.
     """
     target = octomate_url(url)
     secret = octomate_secret(oauth)
+    target_home = dsh_home(home).resolve()
+    if not profile or Path(profile).name != profile or profile in {".", ".."}:
+        raise typer.BadParameter("DSH profile must be a profile name, not a path")
+    connector = target_home / "octomate" / "mcp" / profile
     if secret is None:
-        raise typer.BadParameter(
-            "DSH OAuth requires an MCP-manager-owned entry and host authorization. "
-            "This installer mounts a standalone client; use API-key mode until "
-            "the DSH connector integration is available."
+        if shutil.which("dsh") is None:
+            raise typer.BadParameter(
+                "dsh is not on PATH; install DSH before installing its Octomate connector"
+            )
+        connector.mkdir(parents=True, exist_ok=True)
+        source = Path(__file__).with_name("connector")
+        for name in ["package.json", "index.mjs"]:
+            shutil.copyfile(source / name, connector / name)
+        (connector / "cordis.patch.yml").write_text(
+            f"- insert:\n    - id: {MCP_ROW_ID}\n"
+            f"      name: '{CONNECTOR_PACKAGE}'\n"
+            f"      config:\n        url: {json.dumps(target)}\n"
         )
+        patch = patch_file(target_home)
+        if patch.exists():
+            text = patch_text_without_block(
+                patch.read_text(), MCP_MARK_BEGIN, MCP_MARK_END
+            )
+            patch.write_text(
+                patch_text_without_block(
+                    text, LEGACY_MCP_MARK_BEGIN, LEGACY_MCP_MARK_END
+                )
+            )
+        plugin_command(target_home, profile, "add", str(connector))
+        typer.echo(
+            f"Installed Octomate OAuth connector in DSH profile {profile!r} → {target}"
+        )
+        mcp_login(dsh_url)
+        return
+    if connector.exists():
+        plugin_command(target_home, profile, "remove", CONNECTOR_PACKAGE)
+        shutil.rmtree(connector)
     patch = patch_file(dsh_home(home))
     text = patch.read_text() if patch.exists() else "[]\n"
     text = patch_text_without_block(text, LEGACY_MCP_MARK_BEGIN, LEGACY_MCP_MARK_END)
@@ -122,10 +170,18 @@ def mcp_install(
 
 
 @mcp_typer.command("uninstall")
-def mcp_uninstall(home: DshHomeOption = None) -> None:
+def mcp_uninstall(home: DshHomeOption = None, profile: ProfileOption = "web") -> None:
     """Remove the Octomate MCP row, leaving the hooks row and everything else in
     the patch file untouched."""
-    patch = patch_file(dsh_home(home))
+    target_home = dsh_home(home).resolve()
+    if not profile or Path(profile).name != profile or profile in {".", ".."}:
+        raise typer.BadParameter("DSH profile must be a profile name, not a path")
+    connector = target_home / "octomate" / "mcp" / profile
+    if connector.exists():
+        plugin_command(target_home, profile, "remove", CONNECTOR_PACKAGE)
+        shutil.rmtree(connector)
+        typer.echo(f"Removed Octomate OAuth connector from DSH profile {profile!r}.")
+    patch = patch_file(target_home)
     if not patch.exists():
         typer.echo(f"No Octomate MCP row in {patch}")
         raise typer.Exit()
@@ -137,8 +193,15 @@ def mcp_uninstall(home: DshHomeOption = None) -> None:
 
 
 @mcp_typer.command("show")
-def mcp_show(home: DshHomeOption = None) -> None:
+def mcp_show(home: DshHomeOption = None, profile: ProfileOption = "web") -> None:
     """Show the Octomate MCP row, credential masked."""
+    if not profile or Path(profile).name != profile or profile in {".", ".."}:
+        raise typer.BadParameter("DSH profile must be a profile name, not a path")
+    connector = dsh_home(home) / "octomate" / "mcp" / profile / "cordis.patch.yml"
+    if connector.exists():
+        typer.echo(f"Octomate OAuth connector in DSH profile {profile!r}: {connector}")
+        typer.echo(connector.read_text())
+        return
     patch = patch_file(dsh_home(home))
     text = patch.read_text() if patch.exists() else ""
     lines = text.splitlines()
@@ -164,3 +227,48 @@ def mcp_show(home: DshHomeOption = None) -> None:
                 indent = line[: len(line) - len(line.lstrip())]
                 line = f'{indent}Authorization: "Bearer ***"'
             typer.echo(f"  {line}")
+
+
+@mcp_typer.command("login")
+def mcp_login(dsh_url: DshUrlOption = None) -> None:
+    """Authorize the installed connector on the running DSH host."""
+    # Keep command discovery independent of the streaming and WebSocket clients.
+    from pydantic import ValidationError
+    from websockets.exceptions import WebSocketException
+
+    from octomate_cli.streaming.deepseek import DshCompatibilityError
+    from octomate_cli.tentacles.deepseek.oauth import login
+
+    try:
+        login(dsh_url)
+    except (ValidationError, WebSocketException):
+        typer.echo(
+            "DSH authorization protocol failed. Check the DSH launch URL and update DSH and Octomate together.",
+            err=True,
+        )
+        raise typer.Exit(1) from None
+    except (DshCompatibilityError, OSError) as error:
+        typer.echo(
+            f"DSH OAuth login did not complete: {error}\n"
+            "Start or restart the DSH profile containing the connector, configure its "
+            "launch URL with `octomate configure --dsh-url`, then run "
+            "`octomate deepseek mcp login`.",
+            err=True,
+        )
+        raise typer.Exit(1) from None
+
+
+def plugin_command(home: Path, profile: str, action: str, package: str) -> None:
+    """Let DSH own profile dependency installation and live bundle activation."""
+    try:
+        result = subprocess.run(
+            ["dsh", "plugin", "--profile", profile, action, package],
+            env={**os.environ, "DSH_HOME": str(home)},
+            check=False,
+        )
+    except FileNotFoundError:
+        raise typer.BadParameter(
+            "dsh is not on PATH; install DSH before installing its Octomate connector"
+        ) from None
+    if result.returncode:
+        raise typer.Exit(result.returncode)

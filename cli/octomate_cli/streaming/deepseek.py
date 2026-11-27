@@ -42,7 +42,6 @@ from http.cookiejar import CookieJar
 from pathlib import Path
 from time import monotonic
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
-from uuid import uuid4
 
 from httpx2 import HTTPError
 from octomate_protocol.deepseek import (
@@ -63,6 +62,7 @@ from octomate_protocol.stream import (
     server_message_adapter,
 )
 from pydantic import JsonValue, TypeAdapter
+from uuid_utils.compat import uuid7
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
 from websockets.sync.client import connect as connect_sync
@@ -98,7 +98,7 @@ class DshCompatibilityError(RuntimeError):
 
 
 class DshHistoryClient:
-    """One authenticated cookie session for native history reads."""
+    """One authenticated cookie session for DSH Remote calls and history reads."""
 
     url: str
     cookies: CookieJar
@@ -130,8 +130,9 @@ class DshHistoryClient:
                     "launch URL with octomate configure --dsh-url, or check DSH_LAUNCH_TOKEN"
                 )
 
-    def rpc(self, method: str, args: dict[str, JsonValue]) -> dict[str, JsonValue]:
-        body = ClientRequest(rpc_id=str(uuid4()), method=method, payload={"args": args})
+    def call(self, method: str, args: dict[str, JsonValue]) -> JsonValue:
+        """Call a DSH Remote endpoint with this authenticated browser session."""
+        body = ClientRequest(rpc_id=str(uuid7()), method=method, payload={"args": args})
         request = urllib.request.Request(
             f"{self.url}/api/{method}",
             data=body.model_dump_json(by_alias=True).encode(),
@@ -150,7 +151,10 @@ class DshHistoryClient:
             raise DshCompatibilityError(
                 f"dsh Remote API {method} failed: {answer.result.error.message}"
             )
-        return json_object_adapter.validate_python(answer.result.value)
+        return answer.result.value
+
+    def rpc(self, method: str, args: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        return json_object_adapter.validate_python(self.call(method, args))
 
     def snapshot(self, session_id: str) -> dict[str, JsonValue]:
         request = urllib.request.Request(f"{self.url}/api/remote.mux")

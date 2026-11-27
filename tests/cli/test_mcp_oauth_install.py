@@ -101,7 +101,10 @@ def test_oauth_install_needs_no_key_and_preserves_other_entries(
         assert token in path.read_text()
 
 
-def test_deepseek_oauth_refuses_before_changing_configuration(tmp_path: Path) -> None:
+def test_deepseek_oauth_missing_dsh_preserves_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("shutil.which", lambda name: None)
     path = tmp_path / "cordis.patch.yml"
     path.write_text("[]\n")
     result = CliRunner().invoke(
@@ -118,7 +121,7 @@ def test_deepseek_oauth_refuses_before_changing_configuration(tmp_path: Path) ->
         ],
     )
     assert result.exit_code != 0
-    assert "MCP-manager-owned" in result.output
+    assert "dsh is not on PATH" in result.output
     assert path.read_text() == "[]\n"
 
 
