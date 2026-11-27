@@ -146,7 +146,8 @@ venv = ".venv"
 extraPaths = [".", "cli", "protocol"]
 
 [tool.pytest.ini_options]
-addopts = "--allow-hosts=127.0.0.1,::1 --allow-unix-socket"
+# Keep inherited AnyIO test marks from splitting fixtures and tests across loops.
+addopts = "-p no:anyio --allow-hosts=127.0.0.1,::1 --allow-unix-socket"
 asyncio_mode = "auto"
 timeout = 180
 # `database_settings` is built when octomate.config.database is imported, which is
@@ -166,6 +167,7 @@ filterwarnings = [
     'ignore:Field name "\w+" in "\w*(UserProfile|Sender)" shadows:UserWarning',
 ]
 markers = [
+    "anyio: upstream conformance tests run with this project's pytest-asyncio runner",
     "trigger: live model calls or IM replays (needs deployment credentials); auto-skipped unless explicitly targeted",
 ]
 
