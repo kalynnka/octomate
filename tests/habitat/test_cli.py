@@ -10,11 +10,18 @@ import typer
 import yaml
 from octomate_cli import credentials, habitat
 from octomate_cli import sbx as sbx_cli
-from octomate_cli.habitat import HabitatMode
+from octomate_cli.habitat import HabitatProvider
 from octomate_cli.installation import DeploymentTarget
 from octomate_cli.main import app
+from octomate_cli.wizard.agents import AGENTS
 from octomate_cli.wizard.habitat import habitat_step
 from typer.testing import CliRunner
+
+from octomate.config.acp import AcpAgentConfig
+from octomate.config.agents.claude import ClaudeCodeConfig
+from octomate.config.agents.codex import CodexConfig
+from octomate.config.agents.deepseek import DeepseekConfig
+from octomate.config.agents.inkling import InklingConfig
 
 runner = CliRunner()
 
@@ -201,30 +208,30 @@ def test_sbx_selection_accepts_supported_agents(agent: str) -> None:
     image = "image@sha256:" + "a" * 64
     assert habitat_step(
         [agent],
-        HabitatMode.sbx,
+        HabitatProvider.sbx,
         image,
         interactive=False,
         target=DeploymentTarget.launchd,
-    ) == ({agent: HabitatMode.sbx}, image)
+    ) == ({agent: HabitatProvider.sbx}, image)
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex", "deepseek"])
 def test_srt_selection_accepts_supported_agents(agent: str) -> None:
     assert habitat_step(
         [agent],
-        HabitatMode.srt,
+        HabitatProvider.srt,
         None,
         interactive=False,
         target=DeploymentTarget.launchd,
-    ) == ({agent: HabitatMode.srt}, None)
+    ) == ({agent: HabitatProvider.srt}, None)
 
 
 @pytest.mark.parametrize("agent", ["acp", "inkling"])
 def test_srt_selection_rejects_unsupported_agents(agent: str) -> None:
-    with pytest.raises(typer.BadParameter, match="SRT is currently supported only"):
+    with pytest.raises(typer.BadParameter, match="does not support workspace habitats"):
         habitat_step(
             [agent],
-            HabitatMode.srt,
+            HabitatProvider.srt,
             None,
             interactive=False,
             target=DeploymentTarget.launchd,
@@ -259,7 +266,7 @@ def test_sbx_selection_rejects_unsupported_runtime(
     with pytest.raises(typer.BadParameter, match=r"support|host service"):
         habitat_step(
             agents,
-            HabitatMode.sbx,
+            HabitatProvider.sbx,
             "image@sha256:" + "a" * 64,
             interactive=False,
             target=target,
@@ -270,8 +277,8 @@ def test_sbx_selection_rejects_unsupported_runtime(
     ("assignments", "message"),
     [
         (["claude=unknown"], "native, srt or sbx"),
-        (["other=native"], "selected AGENT=MODE"),
-        (["claude"], "selected AGENT=MODE"),
+        (["other=native"], "selected AGENT=PROVIDER"),
+        (["claude"], "selected AGENT=PROVIDER"),
         (["claude=srt", "claude=native"], "only once"),
     ],
 )
@@ -293,12 +300,12 @@ def test_native_override_does_not_inherit_sbx() -> None:
     image = "image@sha256:" + "a" * 64
     assert habitat_step(
         ["claude", "codex"],
-        HabitatMode.sbx,
+        HabitatProvider.sbx,
         image,
         assignments=["claude=native"],
         interactive=False,
         target=DeploymentTarget.launchd,
-    ) == ({"claude": HabitatMode.native, "codex": HabitatMode.sbx}, image)
+    ) == ({"claude": HabitatProvider.native, "codex": HabitatProvider.sbx}, image)
 
 
 @pytest.mark.parametrize("missing", ["srt", "node", "sdk", None])
@@ -368,3 +375,16 @@ def test_srt_setup_surfaces_sdk_diagnostics(
     assert result.exit_code == (2 if returncode else 0)
     assert "runtime diagnostic" in result.output
     assert ("SRT dependency check failed" in result.output) == bool(returncode)
+
+
+def test_standalone_wizard_contracts_match_agent_configurations() -> None:
+    configurations = {
+        "claude": ClaudeCodeConfig,
+        "codex": CodexConfig,
+        "deepseek": DeepseekConfig,
+        "acp": AcpAgentConfig,
+        "inkling": InklingConfig,
+    }
+    assert {name: setup.habitat_types for name, setup in AGENTS.items()} == {
+        name: config.habitat_types for name, config in configurations.items()
+    }

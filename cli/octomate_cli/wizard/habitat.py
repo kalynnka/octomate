@@ -6,8 +6,9 @@ import typer
 from rich.prompt import Prompt
 
 from octomate_cli.credentials import Service
-from octomate_cli.habitat import SBX_AGENTS, HabitatMode, parse_agent_habitats
+from octomate_cli.habitat import HabitatProvider, parse_agent_habitats
 from octomate_cli.installation import DeploymentTarget
+from octomate_cli.wizard.agents import AGENTS
 from octomate_cli.wizard.base import console
 
 AGENT_SERVICES: dict[str, Service] = {
@@ -19,22 +20,26 @@ AGENT_SERVICES: dict[str, Service] = {
 
 def habitat_step(
     agents: list[str],
-    mode: HabitatMode | None,
+    provider: HabitatProvider | None,
     image: str | None,
     *,
     assignments: list[str] | None = None,
     interactive: bool,
     target: DeploymentTarget,
-) -> tuple[dict[str, HabitatMode], str | None]:
+) -> tuple[dict[str, HabitatProvider], str | None]:
     """Generate one named definition per backend, shared by its selected agents."""
     selections = parse_agent_habitats(agents, assignments or [])
     for agent in agents:
+        if agent not in AGENTS:
+            raise typer.BadParameter(f"Agent {agent!r} has no supported habitat setup.")
         if agent not in selections:
-            choices = [HabitatMode.native, HabitatMode.sbx]
-            if agent in {"claude", "codex", "deepseek"}:
-                choices.insert(1, HabitatMode.srt)
-            selections[agent] = mode or (
-                HabitatMode(
+            choices = [
+                choice
+                for choice in HabitatProvider
+                if choice.type in AGENTS[agent].habitat_types
+            ]
+            selections[agent] = provider or (
+                HabitatProvider(
                     Prompt.ask(
                         f"Habitat for {agent}",
                         choices=[choice.value for choice in choices],
@@ -43,26 +48,18 @@ def habitat_step(
                     )
                 )
                 if interactive
-                else HabitatMode.native
+                else HabitatProvider.native
             )
-        if selections[agent] == HabitatMode.srt and agent not in {
-            "claude",
-            "codex",
-            "deepseek",
-        }:
+        if selections[agent].type not in AGENTS[agent].habitat_types:
             raise typer.BadParameter(
-                "SRT is currently supported only for Claude, Codex and DeepSeek."
+                f"Agent {agent!r} does not support {selections[agent].type} habitats."
             )
-        if selections[agent] == HabitatMode.sbx and agent not in SBX_AGENTS:
-            raise typer.BadParameter(
-                "sbx supports Claude, Codex, DeepSeek, ACP and Inkling."
-            )
-    managed = set(selections.values()) - {HabitatMode.native}
+    managed = set(selections.values()) - {HabitatProvider.native}
     if managed and target == DeploymentTarget.docker:
         raise typer.BadParameter(
             "Managed habitat setup requires a host service; Docker service integration is not supported."
         )
-    if HabitatMode.sbx not in managed:
+    if HabitatProvider.sbx not in managed:
         if image is not None:
             raise typer.BadParameter("--sandbox-image requires an agent selecting sbx.")
         return selections, None

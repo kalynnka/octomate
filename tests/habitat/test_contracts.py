@@ -70,7 +70,7 @@ async def test_native_default_constructs_an_idle_habitat_manager(
 async def test_native_manager_refuses_vm_acquisition() -> None:
     app = Octomate()
     scope = InvocationScope(user_id=uuid7(), conversation_id=uuid7())
-    with pytest.raises(HabitatError, match="mode is 'native'"):
+    with pytest.raises(HabitatError, match="provider is 'native'"):
         async with app.habitats["native"].enter(scope, uuid7()):
             pytest.fail("Native configuration must not allocate a VM")
     assert app.habitats["native"].residences == {}

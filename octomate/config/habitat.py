@@ -1,8 +1,9 @@
 """Named execution habitats and their resource budgets."""
 
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, ClassVar, Literal
 
+from octomate_protocol.config import HabitatType
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -53,6 +54,8 @@ type NetworkDomainPattern = Annotated[
 class BaseHabitatConfig(BaseModel):
     """The core API endpoint known to an isolated execution environment."""
 
+    type: ClassVar[HabitatType]
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     core_address: HttpUrl = Field(
@@ -64,13 +67,15 @@ class BaseHabitatConfig(BaseModel):
 class NativeHabitatConfig(BaseHabitatConfig):
     """Each harness runs directly on the host, inside its own sandbox."""
 
-    mode: Literal["native"] = "native"
+    type: ClassVar[HabitatType] = HabitatType.native
+    provider: Literal["native"] = "native"
 
 
 class SrtHabitatConfig(BaseHabitatConfig):
     """Owner-scoped host processes confined by the service-installed SRT runtime."""
 
-    mode: Literal["srt"] = "srt"
+    type: ClassVar[HabitatType] = HabitatType.workspace
+    provider: Literal["srt"] = "srt"
     executable: str = Field(
         default="srt",
         min_length=1,
@@ -95,7 +100,8 @@ class SrtHabitatConfig(BaseHabitatConfig):
 class SbxHabitatConfig(BaseHabitatConfig):
     """Each registered user's agents run in one persistent sbx VM."""
 
-    mode: Literal["sbx"] = "sbx"
+    type: ClassVar[HabitatType] = HabitatType.hosted
+    provider: Literal["sbx"] = "sbx"
     executable: str = Field(default="sbx", min_length=1)
     version: Literal["0.48.0"] = "0.48.0"
     image: str = Field(
@@ -130,5 +136,5 @@ class SbxHabitatConfig(BaseHabitatConfig):
 
 type HabitatConfig = Annotated[
     NativeHabitatConfig | SrtHabitatConfig | SbxHabitatConfig,
-    Field(discriminator="mode"),
+    Field(discriminator="provider"),
 ]

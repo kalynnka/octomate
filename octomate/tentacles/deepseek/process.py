@@ -1,7 +1,7 @@
 """One `dsh web` child: spawn it, confirm its URL from the banner, kill it with us.
 
-Native servers bind loopback; guest servers bind their routed interface so sbx
-can publish them on host loopback. Authenticated harnesses
+Native servers bind loopback; hosted servers bind their routed interface so the
+habitat can publish them to core. Authenticated harnesses
 log their launch URL once at INFO. The returned base URL and subsequent
 diagnostics omit the token.
 Extension configuration lives in a fresh private home. Settings, credentials,
@@ -32,8 +32,7 @@ from anyio.abc import ByteStream
 from anyio.streams.buffered import BufferedByteReceiveStream
 from pydantic import HttpUrl, SecretStr
 
-from octomate.habitat.sbx import SbxHabitat
-from octomate.habitat.srt import SrtHabitat
+from octomate.habitat import HostedHabitat, WorkspaceHabitat
 from octomate.tentacles.deepseek.schema import (
     DrivenConfigPatch,
     WorkspaceConfig,
@@ -90,7 +89,7 @@ class DeepseekProcess:
     dsh_home: Path
     ready_timeout: float
     browser_url: HttpUrl | None = None
-    habitat: SbxHabitat | SrtHabitat | None = None
+    habitat: HostedHabitat | WorkspaceHabitat | None = None
     env: dict[str, str] = field(default_factory=dict)
     guest_task: asyncio.Task[None] | None = field(default=None, init=False)
     guest_stop: asyncio.Event = field(default_factory=asyncio.Event, init=False)
@@ -161,7 +160,7 @@ class DeepseekProcess:
         the retry would only hide the real error behind a second identical
         failure.
         """
-        if isinstance(self.habitat, SbxHabitat):
+        if isinstance(self.habitat, HostedHabitat):
             endpoint: asyncio.Future[HttpUrl] = (
                 asyncio.get_running_loop().create_future()
             )
@@ -195,7 +194,7 @@ class DeepseekProcess:
             raise
 
     async def run_guest(
-        self, habitat: SbxHabitat, endpoint: asyncio.Future[HttpUrl]
+        self, habitat: HostedHabitat, endpoint: asyncio.Future[HttpUrl]
     ) -> None:
         """Keep the guest process and its port mapping in one owning task."""
         try:
@@ -242,7 +241,7 @@ class DeepseekProcess:
 
     async def connect_guest(
         self,
-        habitat: SbxHabitat,
+        habitat: HostedHabitat,
         stream: ByteStream,
         stdout: BufferedByteReceiveStream,
         endpoint: asyncio.Future[HttpUrl],
@@ -448,10 +447,8 @@ class DeepseekProcess:
                 },
             ]
         )
-        if isinstance(self.habitat, SrtHabitat):
+        if isinstance(self.habitat, WorkspaceHabitat):
             habitat = self.habitat
-            if habitat.settings is None or habitat.executable is None:
-                raise RuntimeError("Prepare the DSH SRT habitat before starting web")
             executable = shutil.which(self.executable)
             if executable is None:
                 raise RuntimeError("Configured DSH executable was not found")
@@ -480,8 +477,7 @@ class DeepseekProcess:
                         config=WorkspaceConfig(
                             capability=capability,
                             executable=str(Path(executable).resolve()),
-                            runtime=str(Path(habitat.executable).with_name("index.js")),
-                            settings=str(Path(habitat.settings.name) / "settings.json"),
+                            command=habitat.command_prefix(),
                             root=str(habitat.root),
                         ),
                     )

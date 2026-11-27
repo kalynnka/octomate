@@ -55,7 +55,7 @@ from octomate.config.habitat import (
     SrtHabitatConfig,
 )
 from octomate.mcp.server import OCTOMATE_MCP_PATH
-from octomate_cli.habitat import HabitatMode, parse_agent_habitats
+from octomate_cli.habitat import HabitatProvider, parse_agent_habitats
 from octomate_cli.installation import DeploymentTarget
 from octomate_cli.mcp import McpPreset
 
@@ -212,24 +212,24 @@ def prepare(
     inkling_model: str | None = None,
     habitat_assignments: list[str] | None = None,
 ) -> None:
-    default = HabitatMode.sbx if sandbox_image else HabitatMode.native
+    default = HabitatProvider.sbx if sandbox_image else HabitatProvider.native
     explicit = parse_agent_habitats(agents, habitat_assignments or [])
     selections = {name: explicit.get(name, default) for name in agents}
     if target == DeploymentTarget.docker and any(
-        backend != HabitatMode.native for backend in selections.values()
+        backend != HabitatProvider.native for backend in selections.values()
     ):
         raise ValueError("Managed habitats require a host service.")
-    if sandbox_image is not None and HabitatMode.sbx not in selections.values():
+    if sandbox_image is not None and HabitatProvider.sbx not in selections.values():
         raise ValueError("--sandbox-image requires an agent selecting sbx.")
     habitats: dict[str, HabitatConfig] = {}
     for backend in dict.fromkeys(selections.values()):
-        if backend == HabitatMode.sbx:
+        if backend == HabitatProvider.sbx:
             if sandbox_image is None:
                 raise ValueError("sbx requires an immutable sandbox image.")
             habitats[backend] = SbxHabitatConfig(
                 image=sandbox_image, core_address=HttpUrl(f"http://127.0.0.1:{port}")
             )
-        elif backend == HabitatMode.srt:
+        elif backend == HabitatProvider.srt:
             habitats[backend] = SrtHabitatConfig(
                 core_address=HttpUrl(f"http://127.0.0.1:{port}")
             )

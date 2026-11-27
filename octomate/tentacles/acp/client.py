@@ -25,7 +25,7 @@ from acp.utils import request_model
 from pydantic import JsonValue
 
 from octomate.config.acp import AcpProvider
-from octomate.habitat import Habitat, ManagedHabitat
+from octomate.habitat import Habitat, HostedHabitat
 from octomate.tentacles.acp.transport import stdio_connection
 from octomate.types.permissions import PermissionMode
 
@@ -327,7 +327,7 @@ class NativeAcpClient:
             for server in request.mcp_servers
         ):
             raise ValueError("Only HTTP MCP servers are supported")
-        if isinstance(self.habitat, ManagedHabitat):
+        if isinstance(self.habitat, HostedHabitat):
             if any(
                 not PurePosixPath(path).is_absolute()
                 for path in [request.cwd, *(request.additional_directories or [])]

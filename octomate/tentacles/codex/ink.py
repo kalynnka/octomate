@@ -70,8 +70,7 @@ from pydantic.alias_generators import to_snake
 from uuid_utils.compat import uuid7
 
 from octomate.config.agents import CodexConfig
-from octomate.habitat import Habitat, HabitatError, ManagedHabitat
-from octomate.habitat.srt import SrtHabitat
+from octomate.habitat import Habitat, HabitatError, ManagedHabitat, WorkspaceHabitat
 from octomate.managers.habitat import Invocation
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.schemas.mcp import McpAppResource
@@ -212,7 +211,7 @@ class CodexInk(AgentInk):
         self, invocation: Invocation, sandbox: Sandbox
     ) -> AsyncGenerator[TurnEnvironmentParams | None]:
         """Retain the harness while a run owns its workspace execution boundary."""
-        if not isinstance(invocation.habitat, SrtHabitat):
+        if not isinstance(invocation.habitat, WorkspaceHabitat):
             yield None
             return
         client = await self.pool.acquire(invocation.habitat, env=invocation.environment)

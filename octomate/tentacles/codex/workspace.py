@@ -1,4 +1,4 @@
-"""Run-scoped Codex execution behind SRT while its agent loop stays on core."""
+"""Run-scoped Codex execution behind a workspace habitat while its agent loop stays on core."""
 
 import asyncio
 import sys
@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 from http import HTTPStatus
 from pathlib import Path
 from secrets import compare_digest, token_urlsafe
-from tempfile import TemporaryDirectory
 
 import anyio
 from anyio.streams.buffered import BufferedByteReceiveStream
@@ -19,7 +18,7 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request, Response
 
-from octomate.habitat.srt import SrtHabitat
+from octomate.habitat import WorkspaceHabitat
 from octomate.managers.habitat import Invocation
 from octomate.tentacles.codex.client import SharedCodex
 from octomate.tentacles.codex.schemas import EnvironmentAddResponse
@@ -31,24 +30,18 @@ async def execution(
 ) -> AsyncGenerator[TurnEnvironmentParams]:
     """Expose only this invocation's executor, then close its listener and processes."""
     owner = invocation.habitat
-    if not isinstance(owner, SrtHabitat):
-        raise ValueError("Codex workspace execution requires an SRT habitat")
+    if not isinstance(owner, WorkspaceHabitat):
+        raise ValueError("Codex workspace execution requires a workspace habitat")
     binary = Path(
         await anyio.Path(
             client.transport.config.codex_bin or bundled_codex_path()
         ).resolve()
     )
-    with TemporaryDirectory(prefix="octomate-codex-") as scratch:
-        habitat = SrtHabitat(
-            config=owner.config.model_copy(
-                update={"read_paths": [*owner.config.read_paths, binary.parent]}
-            ),
-            user_id=owner.user_id,
-            root=Path(invocation.cwd),
-            name=owner.name,
-            read_only=sandbox == Sandbox.read_only,
-            scratch=Path(scratch),
-        )
+    async with owner.scope(
+        Path(invocation.cwd),
+        read_only=sandbox == Sandbox.read_only,
+        read_paths=(binary.parent,),
+    ) as habitat:
         token = token_urlsafe(32)
 
         def authenticate(
@@ -107,31 +100,26 @@ async def execution(
                         task.cancel()
                     await asyncio.gather(*tasks, return_exceptions=True)
 
-        try:
-            await habitat.prepare()
-            async with serve(
-                relay,
-                "127.0.0.1",
-                0,
-                process_request=authenticate,
-                max_size=None,
-            ) as server:
-                port = next(iter(server.sockets)).getsockname()[1]
-                # Loaded threads cache connections by identity, even after environment/add.
-                environment_id = str(uuid7())
-                await client._client.request(
-                    "environment/add",
-                    {
-                        "environmentId": environment_id,
-                        "execServerUrl": f"ws://127.0.0.1:{port}",
-                        "authBearerToken": token,
-                    },
-                    response_model=EnvironmentAddResponse,
-                )
-                yield TurnEnvironmentParams(
-                    environment_id=environment_id,
-                    cwd=LegacyAppPathString(str(invocation.cwd)),
-                )
-        finally:
-            with anyio.CancelScope(shield=True):
-                await habitat.stop()
+        async with serve(
+            relay,
+            "127.0.0.1",
+            0,
+            process_request=authenticate,
+            max_size=None,
+        ) as server:
+            port = next(iter(server.sockets)).getsockname()[1]
+            # Loaded threads cache connections by identity, even after environment/add.
+            environment_id = str(uuid7())
+            await client._client.request(
+                "environment/add",
+                {
+                    "environmentId": environment_id,
+                    "execServerUrl": f"ws://127.0.0.1:{port}",
+                    "authBearerToken": token,
+                },
+                response_model=EnvironmentAddResponse,
+            )
+            yield TurnEnvironmentParams(
+                environment_id=environment_id,
+                cwd=LegacyAppPathString(str(invocation.cwd)),
+            )

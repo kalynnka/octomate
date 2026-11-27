@@ -21,9 +21,7 @@ from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
 )
-from octomate.habitat import Habitat, ManagedHabitat
-from octomate.habitat.sbx import SbxHabitat
-from octomate.habitat.srt import SrtHabitat
+from octomate.habitat import Habitat, HostedHabitat, ManagedHabitat, WorkspaceHabitat
 from octomate.tentacles.agent import AgentInk
 from octomate.tentacles.deepseek.catalog import (
     DeepseekCommandDescriptor,
@@ -368,10 +366,6 @@ class DeepseekInk(AgentInk):
             if connection is None or not connection.running:
                 raise AgentRunError("DSH session has no active habitat connection")
             return connection
-        if isinstance(habitat, ManagedHabitat) and not isinstance(
-            habitat, SbxHabitat | SrtHabitat
-        ):
-            raise ValueError("DSH requires a native, SRT or sbx habitat")
         name = habitat.id if isinstance(habitat, ManagedHabitat) else "core"
         async with self.lock:
             connection = self.connections.get(name)
@@ -398,14 +392,16 @@ class DeepseekInk(AgentInk):
                 raise ValueError("A DSH habitat connection requires its environment")
         process = DeepseekProcess(
             executable=self.config.executable,
-            port=0 if isinstance(habitat, SrtHabitat) else self.config.port,
+            port=0 if isinstance(habitat, WorkspaceHabitat) else self.config.port,
             extra_args=list(self.config.extra_args),
             dsh_home=Path(env["DSH_HOME"])
             if isinstance(habitat, ManagedHabitat) and env is not None
             else self.config.dsh_home,
             ready_timeout=self.config.ready_timeout,
             browser_url=self.config.browser_url,
-            habitat=habitat if isinstance(habitat, SbxHabitat | SrtHabitat) else None,
+            habitat=habitat
+            if isinstance(habitat, HostedHabitat | WorkspaceHabitat)
+            else None,
             env=env or {},
         )
         endpoint = await process.start()

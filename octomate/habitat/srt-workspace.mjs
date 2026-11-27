@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const [rawConfig, rawScope, ...argv] = process.argv.slice(2);
 const config = JSON.parse(rawConfig);
@@ -9,7 +9,7 @@ const scope = JSON.parse(rawScope);
 const { SandboxManager, SandboxRuntimeConfigSchema } = await import(
   pathToFileURL(config.runtime).href
 );
-const temp = await mkdtemp('/tmp/octo-dsh-');
+const temp = await mkdtemp('/tmp/octo-workspace-');
 let child;
 const cancellation = new AbortController();
 const terminate = () => {
@@ -30,17 +30,10 @@ try {
     (entry) => entry.path !== config.root,
   );
   settings.filesystem.allowRead.push(
-    ...[
-      scope.workspaceRoot,
-      temp,
-      config.installation,
-      dirname(config.node),
-      dirname(fileURLToPath(import.meta.url)),
-    ].map(literal),
+    ...[scope.cwd, temp, ...scope.read_paths].map(literal),
   );
   settings.filesystem.allowWrite = [literal(temp)];
-  if (scope.mode !== 'read-only')
-    settings.filesystem.allowWrite.push(literal(scope.workspaceRoot));
+  if (!scope.read_only) settings.filesystem.allowWrite.push(literal(scope.cwd));
   await mkdir(join(temp, 'home'));
   await SandboxManager.initialize(
     SandboxRuntimeConfigSchema.parse(settings),
@@ -74,7 +67,7 @@ try {
   });
   terminate();
 } catch (error) {
-  console.error(`octomate-srt-start: ${error.message}`);
+  console.error(`habitat-execution-start: ${error.message}`);
   process.exitCode = 1;
 } finally {
   terminate();

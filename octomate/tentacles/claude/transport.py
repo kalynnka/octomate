@@ -6,7 +6,6 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 import anyio
 from anyio import to_thread
@@ -20,8 +19,7 @@ from opentelemetry import propagate
 from pydantic import TypeAdapter, ValidationError
 
 from octomate.fibers import MAX_FRAME_BYTES, FiberError
-from octomate.habitat import HabitatError, ManagedHabitat
-from octomate.habitat.srt import SrtHabitat
+from octomate.habitat import HabitatError, ManagedHabitat, WorkspaceHabitat
 from octomate.types.json import JsonObject
 
 message_adapter = TypeAdapter(JsonObject)
@@ -30,21 +28,21 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def workspace(
-    owner: SrtHabitat, options: ClaudeAgentOptions
-) -> AsyncGenerator[tuple[SrtHabitat, ClaudeAgentOptions]]:
+    owner: WorkspaceHabitat, options: ClaudeAgentOptions
+) -> AsyncGenerator[tuple[WorkspaceHabitat, ClaudeAgentOptions]]:
     """Confine the whole CLI to its workspace while retaining Claude session state.
 
     Native tool permissions remain Claude's responsibility. This outer policy
     also confines its file tools and children without nesting its Bash sandbox.
     """
     if options.cwd is None:
-        raise ValueError("SRT Claude runs require a workspace")
+        raise ValueError("Workspace-scoped Claude runs require a workspace")
     config = options.env.get("CLAUDE_CONFIG_DIR")
     if not config:
-        raise HabitatError("SRT Claude runs require an owner session directory")
+        raise HabitatError(
+            "Workspace-scoped Claude runs require an owner session directory"
+        )
     state = Path(await anyio.Path(config).resolve())
-    if not state.is_relative_to(owner.root):
-        raise HabitatError("Claude session storage must belong to the habitat owner")
     if options.cli_path is None:
         binary = await to_thread.run_sync(SubprocessCLITransport("", options)._find_cli)
     else:
@@ -52,17 +50,9 @@ async def workspace(
         if binary is None:
             raise HabitatError("Configured Claude executable was not found")
     executable = Path(await anyio.Path(binary).resolve())
-    with TemporaryDirectory(prefix="octo-", dir="/tmp") as scratch:
-        habitat = SrtHabitat(
-            config=owner.config.model_copy(
-                update={"read_paths": [*owner.config.read_paths, executable.parent]}
-            ),
-            user_id=owner.user_id,
-            root=Path(options.cwd),
-            name=owner.name,
-            scratch=Path(scratch),
-            state_paths=(state,),
-        )
+    async with owner.scope(
+        Path(options.cwd), read_paths=(executable.parent,), state_paths=(state,)
+    ) as habitat:
         runtime = habitat.environment()
         cache = Path(runtime["HOME"]) / ".cache"
         scoped = replace(
@@ -78,13 +68,8 @@ async def workspace(
                 "npm_config_store_dir": str(cache / "pnpm"),
             },
         )
-        try:
-            await anyio.Path(state).mkdir(parents=True, exist_ok=True)
-            await habitat.prepare()
-            yield habitat, scoped
-        finally:
-            with anyio.CancelScope(shield=True):
-                await habitat.stop()
+        await anyio.Path(state).mkdir(parents=True, exist_ok=True)
+        yield habitat, scoped
 
 
 @dataclass

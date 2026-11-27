@@ -21,8 +21,7 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import Message
 
-from octomate.habitat import Habitat, HabitatError, ManagedHabitat
-from octomate.habitat.srt import SrtHabitat
+from octomate.habitat import Habitat, HabitatError, ManagedHabitat, WorkspaceHabitat
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.tentacles.agent import AgentInk
 from octomate.tentacles.claude.catalog import (
@@ -173,7 +172,7 @@ class ClaudeInk(AgentInk):
             raise ValueError("Driven Claude runs require a workspace")
         options.setting_sources = []
         async with contextlib.AsyncExitStack() as resources:
-            if isinstance(habitat, SrtHabitat):
+            if isinstance(habitat, WorkspaceHabitat):
                 habitat, options = await resources.enter_async_context(
                     workspace(habitat, options)
                 )

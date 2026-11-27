@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, ClassVar
 
+from octomate_protocol.config import HabitatType
 from pydantic import BaseModel, Field, model_validator
 
 from octomate.config.habitat import HabitatName
@@ -33,6 +34,11 @@ class AgentConfig(BaseModel):
     """What every agent tentacle's config block declares, whichever runtime it
     drives: the agent reads the same way everywhere — declared and enabled, or
     absent — and carries its own half of the gateway switch."""
+
+    habitat_types: ClassVar[tuple[HabitatType, ...]] = (
+        HabitatType.native,
+        HabitatType.hosted,
+    )
 
     type: str
     habitat: HabitatName = Field(

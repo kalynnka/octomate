@@ -5,6 +5,7 @@ from dataclasses import fields
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from octomate_protocol.config import HabitatType
 from pydantic import ValidationError
 from pydantic_ai.models.test import TestModel
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -28,7 +29,7 @@ from tests.support.managers import a_workspace_manager
 
 @pytest.mark.parametrize(
     "habitat",
-    [None, {"mode": "native"}, {"mode": "sbx", "image": IMAGE}],
+    [None, {"provider": "native"}, {"provider": "sbx", "image": IMAGE}],
 )
 def test_factory_builds_every_harness_without_launching_a_habitat(
     monkeypatch: pytest.MonkeyPatch, habitat: dict[str, str] | None
@@ -71,19 +72,19 @@ def test_factory_builds_every_harness_without_launching_a_habitat(
     cli.assert_not_called()
 
 
-def test_native_is_the_default_mode() -> None:
+def test_native_is_the_default_provider() -> None:
     assert OctomateConfig().habitats["native"] == NativeHabitatConfig()
 
 
-def test_backend_types_are_class_metadata_and_native_instances_have_distinct_ids() -> (
+def test_habitat_types_are_class_metadata_and_native_instances_have_distinct_ids() -> (
     None
 ):
-    for cls, kind in (
-        (NativeHabitat, "native"),
-        (SbxHabitat, "sbx"),
-        (SrtHabitat, "srt"),
+    for cls, habitat_type in (
+        (NativeHabitat, HabitatType.native),
+        (SbxHabitat, HabitatType.hosted),
+        (SrtHabitat, HabitatType.workspace),
     ):
-        assert cls.type == kind
+        assert cls.type == habitat_type
         assert "type" not in {field.name for field in fields(cls)}
     first, second = NativeHabitat(), NativeHabitat()
     identifier = first.id
@@ -100,13 +101,13 @@ def test_unknown_agent_habitat_is_rejected() -> None:
 
 def test_service_wide_habitat_requires_explicit_migration() -> None:
     with pytest.raises(ValidationError, match="Replace service-wide habitat"):
-        OctomateConfig.model_validate({"habitat": {"mode": "native"}})
+        OctomateConfig.model_validate({"habitat": {"provider": "native"}})
 
 
 @pytest.mark.parametrize("name", ["", "../shared", "mixed name", "x" * 49])
 def test_habitat_names_are_safe_runtime_identifiers(name: str) -> None:
     with pytest.raises(ValidationError):
-        OctomateConfig.model_validate({"habitats": {name: {"mode": "native"}}})
+        OctomateConfig.model_validate({"habitats": {name: {"provider": "native"}}})
 
 
 async def test_agents_share_selected_pool_per_user_and_shutdown_all_pools(
@@ -116,9 +117,9 @@ async def test_agents_share_selected_pool_per_user_and_shutdown_all_pools(
     config = OctomateConfig.model_validate(
         {
             "habitats": {
-                "local-srt": {"mode": "srt"},
-                "shared-sbx": {"mode": "sbx", "image": IMAGE},
-                "other-sbx": {"mode": "sbx", "image": IMAGE},
+                "local-srt": {"provider": "srt"},
+                "shared-sbx": {"provider": "sbx", "image": IMAGE},
+                "other-sbx": {"provider": "sbx", "image": IMAGE},
             },
             "tentacles": {
                 "claude": {"type": "claude", "habitat": "local-srt"},
@@ -181,7 +182,7 @@ async def test_agents_share_selected_pool_per_user_and_shutdown_all_pools(
 def test_srt_accepts_supported_agents(agent: str) -> None:
     config = OctomateConfig.model_validate(
         {
-            "habitats": {"native": {"mode": "srt"}},
+            "habitats": {"native": {"provider": "srt"}},
             "tentacles": {agent: {"type": agent}},
         }
     )
@@ -192,7 +193,7 @@ def test_srt_accepts_supported_agents(agent: str) -> None:
 @pytest.mark.parametrize("enabled", [False, True])
 def test_srt_rejects_enabled_unsupported_agents(agent: str, enabled: bool) -> None:
     config = {
-        "habitats": {"native": {"mode": "srt"}},
+        "habitats": {"native": {"provider": "srt"}},
         "tentacles": {
             agent: {
                 "type": agent,
@@ -205,7 +206,7 @@ def test_srt_rejects_enabled_unsupported_agents(agent: str, enabled: bool) -> No
     if enabled:
         with pytest.raises(
             ValidationError,
-            match="SRT habitats support only Claude, Codex and DeepSeek",
+            match="does not support workspace habitats",
         ):
             OctomateConfig.model_validate(config)
     else:
@@ -216,20 +217,22 @@ def test_srt_rejects_enabled_unsupported_agents(agent: str, enabled: bool) -> No
 def test_habitat_rejects_removed_sandbox_switch(field: str) -> None:
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         OctomateConfig.model_validate(
-            {"habitats": {"native": {"mode": "srt", field: False}}}
+            {"habitats": {"native": {"provider": "srt", field: False}}}
         )
 
 
-def test_sbx_mode_round_trips() -> None:
+def test_sbx_provider_round_trips() -> None:
     config = OctomateConfig.model_validate(
-        {"habitats": {"native": {"mode": "sbx", "image": IMAGE, "cpus": 4}}}
+        {"habitats": {"native": {"provider": "sbx", "image": IMAGE, "cpus": 4}}}
     )
     assert config.habitats["native"] == SbxHabitatConfig(image=IMAGE, cpus=4)
     assert OctomateConfig.model_validate_json(config.model_dump_json()) == config
 
 
-def test_srt_mode_round_trips() -> None:
-    config = OctomateConfig.model_validate({"habitats": {"native": {"mode": "srt"}}})
+def test_srt_provider_round_trips() -> None:
+    config = OctomateConfig.model_validate(
+        {"habitats": {"native": {"provider": "srt"}}}
+    )
     assert config.habitats["native"] == SrtHabitatConfig()
     assert OctomateConfig.model_validate_json(config.model_dump_json()) == config
 
@@ -238,14 +241,14 @@ def test_srt_mode_round_trips() -> None:
     "habitat",
     [
         {"image": IMAGE},
-        {"mode": "srt", "version": "unsupported"},
-        {"mode": "cloud", "image": IMAGE},
-        {"mode": "sbx"},
-        {"mode": "native", "image": IMAGE},
-        [{"mode": "sbx", "image": IMAGE}],
+        {"provider": "srt", "version": "unsupported"},
+        {"provider": "cloud", "image": IMAGE},
+        {"provider": "sbx"},
+        {"provider": "native", "image": IMAGE},
+        [{"provider": "sbx", "image": IMAGE}],
     ],
 )
-def test_invalid_modes_are_rejected(
+def test_invalid_providers_are_rejected(
     habitat: dict[str, str] | list[dict[str, str]],
 ) -> None:
     with pytest.raises(ValidationError):
@@ -290,3 +293,22 @@ async def test_each_user_gets_one_habitat_shared_by_their_invocations(
         await manager.close()
     assert separate.status.phase == "stopped"
     assert stop.await_count == 2
+
+
+def test_validation_uses_execution_contract_not_provider_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(SrtHabitatConfig, "type", HabitatType.hosted)
+    config = OctomateConfig.model_validate(
+        {
+            "habitats": {"execution": {"provider": "srt"}},
+            "tentacles": {
+                "external": {
+                    "type": "acp_agent",
+                    "habitat": "execution",
+                    "provider": {"command": "unused-agent"},
+                }
+            },
+        }
+    )
+    assert config.habitats["execution"].type == HabitatType.hosted

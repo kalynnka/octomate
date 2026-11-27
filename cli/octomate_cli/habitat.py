@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import typer
+from octomate_protocol.config import HabitatType
 from rich.console import Console
 from rich.prompt import Confirm
 
@@ -19,28 +20,37 @@ habitat_typer = typer.Typer(help="Prepare the service account's agent habitats."
 habitat_typer.command("credentials")(setup_credentials)
 
 
-class HabitatMode(StrEnum):
+class HabitatProvider(StrEnum):
     native = "native"
-    sbx = "sbx"
     srt = "srt"
+    sbx = "sbx"
 
-
-SBX_AGENTS = frozenset({"claude", "codex", "deepseek", "acp", "inkling"})
+    @property
+    def type(self) -> HabitatType:
+        match self:
+            case HabitatProvider.native:
+                return HabitatType.native
+            case HabitatProvider.srt:
+                return HabitatType.workspace
+            case HabitatProvider.sbx:
+                return HabitatType.hosted
 
 
 def parse_agent_habitats(
     agents: list[str], assignments: list[str]
-) -> dict[str, HabitatMode]:
+) -> dict[str, HabitatProvider]:
     """Parse unique backend assignments to selected agents."""
-    selections: dict[str, HabitatMode] = {}
+    selections: dict[str, HabitatProvider] = {}
     for assignment in assignments:
         agent, separator, backend = assignment.partition("=")
         if not separator or agent not in agents:
-            raise typer.BadParameter("--agent-habitat requires a selected AGENT=MODE.")
+            raise typer.BadParameter(
+                "--agent-habitat requires a selected AGENT=PROVIDER."
+            )
         if agent in selections:
             raise typer.BadParameter(f"Choose the habitat for {agent} only once.")
         try:
-            selections[agent] = HabitatMode(backend)
+            selections[agent] = HabitatProvider(backend)
         except ValueError as error:
             raise typer.BadParameter("Habitat must be native, srt or sbx.") from error
     return selections

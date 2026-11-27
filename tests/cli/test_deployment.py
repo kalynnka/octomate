@@ -79,7 +79,7 @@ def test_prepare_persists_sbx_and_the_selected_core_port(
     deployment.prepare(8123, [], [agent], sandbox_image=image)
     config = OctomateConfig()
     habitat = config.habitats["sbx"]
-    assert habitat.mode == "sbx"
+    assert habitat.provider == "sbx"
     assert habitat.image == image
     assert str(habitat.core_address) == "http://127.0.0.1:8123/"
     assert not (preparation / "octomate.db").exists()
@@ -119,7 +119,7 @@ def test_prepare_acp_persists_provider_and_channel_routing(
     channel = config.tentacles["trunkline"]
     assert isinstance(channel, TrunklineChannelConfig)
     assert channel.agents == ["acp"]
-    assert config.habitats[agent.habitat].mode == ("sbx" if sandbox else "native")
+    assert config.habitats[agent.habitat].provider == ("sbx" if sandbox else "native")
     assert not (preparation / "octomate.db").exists()
 
 
@@ -152,7 +152,7 @@ def test_prepare_inkling_persists_model_and_channel_routing(
     channel = config.tentacles["trunkline"]
     assert isinstance(channel, TrunklineChannelConfig)
     assert channel.agents == ["inkling"]
-    assert config.habitats[agent.habitat].mode == ("sbx" if sandbox else "native")
+    assert config.habitats[agent.habitat].provider == ("sbx" if sandbox else "native")
     assert "config/providers.yaml" in (preparation / "CONFIGURATION.md").read_text()
     assert not (preparation / "octomate.db").exists()
 
@@ -777,7 +777,7 @@ def test_prepare_mixed_habitats_share_one_sbx_definition(
         agent = config.tentacles[name]
         assert isinstance(agent, AgentConfig)
         assert agent.habitat == selected
-        assert config.habitats[selected].mode == selected
+        assert config.habitats[selected].provider == selected
         if selected != "native":
             assert (
                 str(config.habitats[selected].core_address) == "http://127.0.0.1:8123/"

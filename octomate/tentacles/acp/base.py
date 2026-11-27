@@ -51,7 +51,7 @@ from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
 )
-from octomate.habitat import Habitat, ManagedHabitat
+from octomate.habitat import Habitat, HostedHabitat
 from octomate.managers.habitat import Invocation
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
@@ -353,7 +353,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         ] = asyncio.Queue()
         session_id: str | None = None
         env = invocation.environment
-        if isinstance(invocation.habitat, ManagedHabitat):
+        if isinstance(invocation.habitat, HostedHabitat):
             config = invocation.workspace.volumes.get("config")
             if config is None:
                 raise ValueError("Managed ACP requires a configuration volume")

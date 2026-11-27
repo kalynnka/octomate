@@ -246,7 +246,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         self.description = description or self.description
         self.ink = DeepseekInk(
             config,
-            native=self.habitats.config.mode == "native",
+            native=self.habitats.config.provider == "native",
             answer_interaction=self.answer_interaction,
             invalidate_commands=partial(self.commands.invalidate, agent_id=self.id),
         )

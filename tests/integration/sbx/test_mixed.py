@@ -38,11 +38,11 @@ async def test_named_habitats_share_isolate_and_expire(
         {
             "habitats": {
                 "local-srt": {
-                    "mode": "srt",
+                    "provider": "srt",
                     "executable": executable,
                     "idle_timeout": 0.1,
                 },
-                "shared-sbx": {"mode": "sbx", "image": image, "idle_timeout": 0.1},
+                "shared-sbx": {"provider": "sbx", "image": image, "idle_timeout": 0.1},
             },
             "tentacles": {
                 "claude": {"type": "claude", "habitat": "local-srt"},

@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from uuid_utils.compat import uuid7
 
 from octomate.config.habitat import SrtHabitatConfig
-from octomate.habitat import HabitatError
+from octomate.habitat import HabitatError, WorkspaceHabitat
 from octomate.habitat.srt import SrtHabitat
 from octomate.schemas.volumes import Volume
 from octomate.schemas.volumes.storage import HostDirectory
@@ -198,3 +198,54 @@ async def test_resident_rejects_unprepared_and_external_cwd(
                 pytest.fail("External directory was accepted")
     finally:
         await habitat.stop()
+
+
+@pytest.mark.parametrize("read_only", [False, True])
+async def test_workspace_scope_owns_policy_and_disposable_lifetime(
+    habitat: SrtHabitat, monkeypatch: pytest.MonkeyPatch, read_only: bool
+) -> None:
+    monkeypatch.setattr("octomate.habitat.srt.platform.system", lambda: "Darwin")
+    workspace = habitat.root / "work"
+    state = habitat.root / "config" / "harness"
+    workspace.mkdir(parents=True)
+    state.mkdir(parents=True)
+    (state / "history").write_text("retained")
+    # Check unwinding after inspecting the live scope and raising from its body.
+    with pytest.raises(RuntimeError, match="turn failed"):  # noqa: PT012
+        async with habitat.scope(
+            workspace,
+            read_only=read_only,
+            read_paths=(Path("/trusted-runtime"),),
+            state_paths=(state,),
+        ) as scoped:
+            assert isinstance(scoped, WorkspaceHabitat)
+            assert isinstance(scoped, SrtHabitat)
+            assert scoped.settings is not None
+            settings = Path(scoped.settings.name)
+            temporary = Path(scoped.environment()["HOME"]).parent.parent
+            policy = json.loads((settings / "settings.json").read_text())
+            writable = [entry["path"] for entry in policy["filesystem"]["allowWrite"]]
+            assert (str(workspace) in writable) is not read_only
+            assert str(state) in writable
+            assert str(habitat.root) not in writable
+            assert Path("/trusted-runtime") in scoped.config.read_paths
+            assert habitat.config.read_paths == []
+            assert habitat.settings is None
+            raise RuntimeError("turn failed")
+    assert not await anyio.Path(settings).exists()
+    assert not await anyio.Path(temporary).exists()
+    assert await anyio.Path(state / "history").read_text() == "retained"
+
+
+@pytest.mark.parametrize("escape", ["workspace", "state"])
+async def test_workspace_scope_rejects_another_owner(
+    habitat: SrtHabitat, tmp_path: Path, escape: str
+) -> None:
+    workspace = habitat.root / "work"
+    state = habitat.root / "config"
+    with pytest.raises(HabitatError, match="habitat owner"):
+        async with habitat.scope(
+            tmp_path / "outside" if escape == "workspace" else workspace,
+            state_paths=(tmp_path / "outside" if escape == "state" else state,),
+        ):
+            pytest.fail("An outside path must not create an execution scope")

@@ -31,8 +31,7 @@ from openai_codex.generated.v2_all import (
 )
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from octomate.habitat import ManagedHabitat
-from octomate.habitat.srt import SrtHabitat
+from octomate.habitat import HostedHabitat, ManagedHabitat
 from octomate.telemetry import codex_logfire
 from octomate.tentacles.codex.adapter import json_object_adapter
 from octomate.tentacles.codex.telemetry import TracedCodexClient
@@ -326,7 +325,7 @@ class SharedCodex(AsyncCodex):
                     "codex.connect",
                     habitat=self.habitat.id if self.habitat else "native",
                     transport="habitat-stdio"
-                    if self.habitat and not isinstance(self.habitat, SrtHabitat)
+                    if isinstance(self.habitat, HostedHabitat)
                     else "local-stdio",
                 ):
                     await self.connect()
@@ -339,7 +338,7 @@ class SharedCodex(AsyncCodex):
 
     async def connect(self) -> None:
         """Attach guest stdio before the SDK starts its reader and initializes."""
-        if self.habitat is None or isinstance(self.habitat, SrtHabitat):
+        if not isinstance(self.habitat, HostedHabitat):
             return
         config = self.transport.config
         if config.cwd is None:

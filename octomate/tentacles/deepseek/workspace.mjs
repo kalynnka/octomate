@@ -7,9 +7,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const inject = ['sandboxPolicy', 'subprocess'];
 
-const runner = fileURLToPath(
-  new URL('./workspace-runner.mjs', import.meta.url),
-);
 const worker = fileURLToPath(new URL('./workspace-files.mjs', import.meta.url));
 const mutations = {
   writeText: 4,
@@ -42,7 +39,6 @@ export async function apply(ctx, config) {
   const installation = dirname(
     dirname(dirname(require.resolve('@deepseek-ai/dsh-fs/package.json'))),
   );
-  const settings = { ...config, installation, node: process.execPath };
   const inside = (root, path) => {
     const suffix = relative(root, path);
     return (
@@ -77,10 +73,12 @@ export async function apply(ctx, config) {
     return { ...input, workspaceRoot: root };
   }
   const argv = (scope, command) => [
-    process.execPath,
-    runner,
-    JSON.stringify(settings),
-    JSON.stringify(scope),
+    ...config.command,
+    JSON.stringify({
+      cwd: scope.workspaceRoot,
+      read_only: scope.mode === 'read-only',
+      read_paths: [installation, dirname(process.execPath), dirname(worker)],
+    }),
     ...command,
   ];
 
@@ -96,7 +94,9 @@ export async function apply(ctx, config) {
             'permission denied',
             'read-only file system',
           ],
-          runnerFailureRules: [{ fatalSignatures: ['octomate-srt-start:'] }],
+          runnerFailureRules: [
+            { fatalSignatures: ['habitat-execution-start:'] },
+          ],
         };
       }
     }

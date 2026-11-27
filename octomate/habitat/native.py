@@ -6,6 +6,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import ClassVar
 
+from octomate_protocol.config import HabitatType
 from pydantic_ai.workspaces import (
     CommandResult,
     LocalWorkspaceBackend,
@@ -22,7 +23,7 @@ from octomate.schemas.volumes import Volume
 class NativeHabitat(Habitat):
     """No separate runtime to acquire; adapters own harness policy and clients."""
 
-    type: ClassVar[str] = "native"
+    type: ClassVar[HabitatType] = HabitatType.native
     config: NativeHabitatConfig = field(default_factory=NativeHabitatConfig)
 
     @cached_property

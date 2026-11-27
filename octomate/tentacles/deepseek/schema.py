@@ -42,8 +42,7 @@ class SandboxRunnerConfig(TypedDict):
 class WorkspaceConfig(TypedDict):
     capability: Literal["sandbox", "shell", "fs"]
     executable: str
-    runtime: str
-    settings: str
+    command: list[str]
     root: str
 
 

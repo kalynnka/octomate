@@ -9,8 +9,7 @@ from pathlib import PurePosixPath
 import anyio
 from openai_codex import CodexConfig
 
-from octomate.habitat import Habitat, ManagedHabitat
-from octomate.habitat.srt import SrtHabitat
+from octomate.habitat import Habitat, ManagedHabitat, WorkspaceHabitat
 from octomate.telemetry import codex_logfire
 from octomate.tentacles.codex.client import RequestHandler, SharedCodex
 from octomate.types.json import JsonObject
@@ -139,14 +138,14 @@ class CodexClientPool:
             if env is None:
                 raise ValueError("A new habitat client requires its environment")
             cwd = str(PurePosixPath(env["CODEX_HOME"]).parent)
-            if isinstance(habitat, SrtHabitat):
+            if isinstance(habitat, WorkspaceHabitat):
                 home = anyio.Path(env["CODEX_HOME"])
                 await home.mkdir(parents=True, exist_ok=True)
                 await (home / "environments.toml").write_text("include_local = false\n")
             config = replace(
                 self.core_client.transport.config,
                 codex_bin=self.core_client.transport.config.codex_bin
-                if isinstance(habitat, SrtHabitat)
+                if isinstance(habitat, WorkspaceHabitat)
                 else self.guest_binary,
                 cwd=cwd,
                 env={**(self.core_client.transport.config.env or {}), **env},

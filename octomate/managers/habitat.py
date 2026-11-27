@@ -155,7 +155,7 @@ class HabitatManager:
             thread_id=thread.id,
             conversation_id=conversation.id,
             user_id=owner_id,
-            mode=self.config.mode,
+            provider=self.config.provider,
         ):
             projects = self.workspaces.projects
             if isinstance(self.config, NativeHabitatConfig):
@@ -222,7 +222,7 @@ class HabitatManager:
                         ),
                     )
                 case NativeHabitatConfig():
-                    raise HabitatError("Habitat mode is 'native'; no habitat runs")
+                    raise HabitatError("Habitat provider is 'native'; no habitat runs")
             self.residences[scope.user_id] = Residence(
                 user_id=scope.user_id,
                 habitat=habitat,

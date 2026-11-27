@@ -19,7 +19,7 @@ from rich.table import Table
 from rich.text import Text
 
 from octomate_cli.credentials import setup as setup_credentials
-from octomate_cli.habitat import HabitatMode
+from octomate_cli.habitat import HabitatProvider
 from octomate_cli.habitat import setup as setup_habitat
 from octomate_cli.installation import DeploymentTarget, Installation
 from octomate_cli.mcp import McpPreset
@@ -91,7 +91,7 @@ def init(
         ),
     ] = None,
     habitat: Annotated[
-        HabitatMode | None,
+        HabitatProvider | None,
         typer.Option(
             help="Default habitat for selected agents; prompts per agent when omitted."
         ),
@@ -99,7 +99,7 @@ def init(
     agent_habitat: Annotated[
         list[str] | None,
         typer.Option(
-            help="Per-agent habitat override: AGENT=MODE; repeat for multiple agents."
+            help="Per-agent habitat override: AGENT=PROVIDER; repeat for multiple agents."
         ),
     ] = None,
     sandbox_image: Annotated[
@@ -235,12 +235,12 @@ def init(
         inkling_model,
         habitats,
     )
-    if HabitatMode.srt in habitats.values():
+    if HabitatProvider.srt in habitats.values():
         setup_habitat("srt", check=yes)
-    if HabitatMode.sbx in habitats.values():
+    if HabitatProvider.sbx in habitats.values():
         setup_habitat("sbx", check=yes)
         for name in tentacles.agents:
-            if habitats[name] == HabitatMode.sbx and name in AGENT_SERVICES:
+            if habitats[name] == HabitatProvider.sbx and name in AGENT_SERVICES:
                 setup_credentials("sbx", service=AGENT_SERVICES[name], check=yes)
     prepare_step(
         service,
@@ -438,7 +438,7 @@ def review_step(
     acp_command: str | None = None,
     acp_args: list[str] | None = None,
     inkling_model: str | None = None,
-    habitats: dict[str, HabitatMode] | None = None,
+    habitats: dict[str, HabitatProvider] | None = None,
 ) -> None:
     root = service.directory
     environment = service.environment
@@ -545,7 +545,7 @@ def prepare_step(
     acp_command: str | None = None,
     acp_args: list[str] | None = None,
     inkling_model: str | None = None,
-    habitats: dict[str, HabitatMode] | None = None,
+    habitats: dict[str, HabitatProvider] | None = None,
 ) -> None:
     root = service.directory
     environment = service.environment
@@ -625,7 +625,7 @@ def prepare_step(
                         *(
                             argument
                             for name, backend in (habitats or {}).items()
-                            if backend != HabitatMode.native
+                            if backend != HabitatProvider.native
                             or sandbox_image is not None
                             for argument in ("--agent-habitat", f"{name}={backend}")
                         ),

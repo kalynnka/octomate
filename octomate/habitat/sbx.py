@@ -14,7 +14,7 @@ from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import ClassVar, Literal, TypedDict, Unpack
+from typing import Literal, TypedDict, Unpack
 
 import anyio
 from anyio.abc import SocketStream
@@ -22,7 +22,7 @@ from pydantic import UUID7, BaseModel, Field, TypeAdapter
 from yarl import URL
 
 from octomate.config.habitat import SbxHabitatConfig
-from octomate.habitat.base import HabitatError, ManagedHabitat
+from octomate.habitat.base import HabitatError, HostedHabitat
 from octomate.schemas.volumes import Volume
 from octomate.telemetry import habitat_logfire
 
@@ -66,8 +66,7 @@ class SbxOptions(TypedDict, total=False):
 
 
 @dataclass
-class SbxHabitat(ManagedHabitat):
-    type: ClassVar[str] = "sbx"
+class SbxHabitat(HostedHabitat):
     config: SbxHabitatConfig
     user_id: UUID7
     root: Path  # The owner's storage on the host, mounted when the sandbox is made.

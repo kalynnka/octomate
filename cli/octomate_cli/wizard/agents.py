@@ -5,6 +5,7 @@ from __future__ import annotations
 import shlex
 
 import typer
+from octomate_protocol.config import HabitatType
 from rich.console import Console
 from rich.prompt import Prompt
 
@@ -99,14 +100,33 @@ def acp_step(
 
 AGENTS: dict[str, TentacleSetup[str]] = {
     "claude": TentacleSetup(
-        label="Claude Code", capabilities=("Agent",), configure=claude
+        label="Claude Code",
+        capabilities=("Agent",),
+        configure=claude,
+        habitat_types=(HabitatType.native, HabitatType.workspace, HabitatType.hosted),
     ),
-    "codex": TentacleSetup(label="Codex", capabilities=("Agent",), configure=codex),
+    "codex": TentacleSetup(
+        label="Codex",
+        capabilities=("Agent",),
+        configure=codex,
+        habitat_types=(HabitatType.native, HabitatType.workspace, HabitatType.hosted),
+    ),
     "deepseek": TentacleSetup(
-        label="DSH (experimental)", capabilities=("Agent",), configure=deepseek
+        label="DSH (experimental)",
+        capabilities=("Agent",),
+        configure=deepseek,
+        habitat_types=(HabitatType.native, HabitatType.workspace, HabitatType.hosted),
     ),
-    "acp": TentacleSetup(label="ACP provider", capabilities=("Agent",), configure=acp),
+    "acp": TentacleSetup(
+        label="ACP provider",
+        capabilities=("Agent",),
+        configure=acp,
+        habitat_types=(HabitatType.native, HabitatType.hosted),
+    ),
     "inkling": TentacleSetup(
-        label="Inkling", capabilities=("Agent",), configure=inkling
+        label="Inkling",
+        capabilities=("Agent",),
+        configure=inkling,
+        habitat_types=(HabitatType.native, HabitatType.hosted),
     ),
 }

@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 from typing import ClassVar
 
 from anyio.abc import ByteStream
+from octomate_protocol.config import HabitatType
 from pydantic import UUID7, BaseModel
 from pydantic_ai.workspaces import (
     CommandResult,
@@ -42,7 +43,7 @@ class HabitatError(RuntimeError):
 class Habitat(ABC):
     """The execution environment core prepares for an agent invocation."""
 
-    type: ClassVar[str]  # Backend kind, independent of configured names and owners.
+    type: ClassVar[HabitatType]
     os_sandbox: ClassVar[bool] = (
         True  # Whether harnesses should install their own OS sandbox.
     )
@@ -101,7 +102,7 @@ class Habitat(ABC):
 
 @dataclass(kw_only=True)
 class ManagedHabitat(Habitat):
-    """One registered user's persistent runtime, hosting agent processes."""
+    """One registered user's storage and managed execution lifetime."""
 
     user_id: UUID7  # The registered user whose private runtime this is.
     root: Path  # Owner storage and the executor's startup directory.
@@ -196,3 +197,46 @@ class ManagedHabitat(Habitat):
                 raise ValueError(error.message)
             case _:
                 raise RuntimeError("Guest returned an unexpected workspace response")
+
+
+@dataclass(kw_only=True)
+class WorkspaceHabitat(ManagedHabitat):
+    """Owner storage with execution boundaries scoped to individual workspaces."""
+
+    type: ClassVar[HabitatType] = HabitatType.workspace
+
+    @abstractmethod
+    def scope(
+        self,
+        cwd: Path,
+        *,
+        read_only: bool = False,
+        read_paths: tuple[Path, ...] = (),
+        state_paths: tuple[Path, ...] = (),
+    ) -> AbstractAsyncContextManager["WorkspaceHabitat"]:
+        """Prepare a workspace boundary and release its processes on context exit."""
+
+    @abstractmethod
+    def environment(self) -> dict[str, str]:
+        """Minimal environment for processes within this execution boundary."""
+
+    @abstractmethod
+    def command_prefix(self) -> list[str]:
+        """Launch a scoped command from a host-side harness.
+
+        Append a JSON object with cwd, read_only and trusted read_paths, then
+        the command argv. The launcher owns confinement, stdio and cleanup;
+        OCTOMATE_EXECUTE_ENV carries explicit command environment as JSON.
+        Startup failures include the marker 'habitat-execution-start:'.
+        """
+
+
+@dataclass(kw_only=True)
+class HostedHabitat(ManagedHabitat):
+    """An owner's environment capable of hosting complete agent harnesses."""
+
+    type: ClassVar[HabitatType] = HabitatType.hosted
+
+    @abstractmethod
+    def publish(self, port: int) -> AbstractAsyncContextManager[str]:
+        """Expose a hosted TCP service to core for the owning context."""

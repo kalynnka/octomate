@@ -26,7 +26,7 @@ from anyio.abc import SocketStream
 from pydantic import UUID7, BaseModel
 
 from octomate.config.habitat import SrtHabitatConfig
-from octomate.habitat.base import HabitatError, ManagedHabitat
+from octomate.habitat.base import HabitatError, WorkspaceHabitat
 from octomate.habitat.executor import Request
 from octomate.schemas.volumes import Volume
 
@@ -34,8 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class SrtHabitat(ManagedHabitat):
-    type: ClassVar[str] = "srt"
+class SrtHabitat(WorkspaceHabitat):
     os_sandbox: ClassVar[bool] = False
     config: SrtHabitatConfig
     user_id: UUID7
@@ -52,6 +51,57 @@ class SrtHabitat(ManagedHabitat):
     node: str | None = field(default=None, init=False)
     launcher: str = field(default="", init=False)
     processes: set[asyncio.subprocess.Process] = field(default_factory=set, init=False)
+
+    @asynccontextmanager
+    async def scope(
+        self,
+        cwd: Path,
+        *,
+        read_only: bool = False,
+        read_paths: tuple[Path, ...] = (),
+        state_paths: tuple[Path, ...] = (),
+    ) -> AsyncGenerator[WorkspaceHabitat]:
+        root = Path(await anyio.Path(cwd).resolve())
+        states = tuple([Path(await anyio.Path(path).resolve()) for path in state_paths])
+        if any(not path.is_relative_to(self.root) for path in (root, *states)):
+            raise HabitatError(
+                "Workspace and session storage must belong to the habitat owner"
+            )
+        with TemporaryDirectory(prefix="octo-", dir="/tmp") as scratch:
+            habitat = SrtHabitat(
+                config=self.config.model_copy(
+                    update={"read_paths": [*self.config.read_paths, *read_paths]}
+                ),
+                user_id=self.user_id,
+                root=root,
+                name=self.name,
+                read_only=read_only,
+                scratch=Path(scratch),
+                state_paths=states,
+            )
+            try:
+                await habitat.prepare()
+                yield habitat
+            finally:
+                with anyio.CancelScope(shield=True):
+                    await habitat.stop()
+
+    def command_prefix(self) -> list[str]:
+        if self.settings is None or self.executable is None or self.node is None:
+            raise HabitatError(
+                "Prepare the workspace habitat before launching commands"
+            )
+        return [
+            self.node,
+            str(Path(__file__).with_name("srt-workspace.mjs")),
+            json.dumps(
+                {
+                    "runtime": str(Path(self.executable).with_name("index.js")),
+                    "settings": str(Path(self.settings.name) / "settings.json"),
+                    "root": str(self.root),
+                }
+            ),
+        ]
 
     @property
     def id(self) -> str:
