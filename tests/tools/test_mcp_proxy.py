@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx2
 import pytest
 from arcanus import Relation
-from fastmcp import Client
+from fastmcp import Client, Context, FastMCP
 from fastmcp.exceptions import NotFoundError, ToolError
+from fastmcp.server.dependencies import get_context, get_http_headers
+from fastmcp.server.providers import Provider
+from fastmcp.tools import Tool as FastMcpTool
+from fastmcp.tools import ToolResult
+from fastmcp.tools.base import RawStructuredToolResult
 from mcp.types import ServerNotification, TextContent, Tool, ToolListChangedNotification
-from pydantic import TypeAdapter
+from pydantic import JsonValue, TypeAdapter
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
@@ -73,6 +79,112 @@ async def test_same_host_installations_keep_distinct_names_and_credentials() -> 
         assert search.content == []
         with pytest.raises(NotFoundError):
             await bob_server.call_tool("personal-work_answer", {})
+
+
+@pytest.mark.parametrize(
+    ("schema", "value"),
+    [
+        ({"type": ["object", "null"]}, {"answer": "found"}),
+        ({"type": ["null", "array"], "items": {"type": "string"}}, ["found"]),
+        ({"oneOf": [{"type": "object"}, {"type": "null"}]}, {"answer": "found"}),
+    ],
+)
+async def test_proxy_mirrors_protocol_for_discovery_and_calls(
+    schema: dict[str, JsonValue], value: JsonValue
+) -> None:
+    host = Octomate()
+    user = await a_user()
+    scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
+    await host.mcp.install(user.id, install_request())
+    server = tentacles_mcp(fixed_session(scope), manager=host.mcp)
+    calls: list[str] = []
+    legacy_schema: dict[str, JsonValue] = {
+        "type": "object",
+        "properties": {"result": schema},
+        "required": ["result"],
+    }
+
+    def answer(ctx: Context) -> ToolResult:
+        assert ctx.request_context is not None
+        protocol = ctx.request_context.protocol_version
+        calls.append(protocol)
+        headers = get_http_headers(include={"authorization", "x-octomate-private"})
+        assert "authorization" not in headers
+        assert "x-octomate-private" not in headers
+        if protocol == "2026-07-28":
+            return RawStructuredToolResult(content=[], structured_content=value)
+        return ToolResult(structured_content={"result": value})
+
+    class ProtocolTools(Provider):
+        async def get_tasks(self) -> list[FastMcpTool]:
+            return []
+
+        async def _list_tools(self) -> list[FastMcpTool]:
+            context = get_context().request_context
+            assert context is not None
+            return [
+                FastMcpTool.from_function(answer, output_schema=None).model_copy(
+                    update={
+                        "output_schema": (
+                            schema
+                            if context.protocol_version == "2026-07-28"
+                            else legacy_schema
+                        )
+                    }
+                )
+            ]
+
+    upstream = FastMCP("versioned-tools", providers=[ProtocolTools()])
+    app = server.http_app(stateless_http=True, json_response=True)
+    async with (
+        connected(host.mcp, upstream),
+        Client(server, mode="legacy", cache=False) as legacy,
+        Client(server, mode="2026-07-28", cache=False) as modern,
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app),
+            base_url="http://octomate",
+            headers={
+                "Accept": "application/json, text/event-stream",
+                "MCP-Protocol-Version": "2025-06-18",
+                "Authorization": "Bearer frontend-only",
+                "X-Octomate-Private": "frontend-only",
+            },
+        ) as older,
+    ):
+        for client, expected_schema, expected_value in (
+            (modern, schema, value),
+            (legacy, legacy_schema, {"result": value}),
+            (modern, schema, value),
+        ):
+            tools = await client.list_tools()
+            tool = next(t for t in tools if t.name == "personal-research_answer")
+            assert tool.output_schema == expected_schema
+            result = await client.call_tool(tool.name, {})
+            assert result.structured_content == expected_value
+        assert calls == ["2026-07-28", "2025-11-25", "2026-07-28"]
+        listed = await older.post(
+            "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        )
+        assert listed.status_code == 200
+        tool = next(
+            t
+            for t in listed.json()["result"]["tools"]
+            if t["name"] == "personal-research_answer"
+        )
+        assert tool["outputSchema"] == legacy_schema
+        called = await older.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": tool["name"], "arguments": {}},
+            },
+        )
+        assert called.status_code == 200
+        assert called.json()["result"]["structuredContent"] == {"result": value}
+        assert calls[-1] == "2025-11-25"
 
 
 @pytest.mark.parametrize("mode", ["legacy", "2026-07-28"])

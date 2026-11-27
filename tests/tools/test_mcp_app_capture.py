@@ -236,7 +236,7 @@ async def test_app_call_is_durable_before_publication(
         assert b"arguments" not in public
         assert turn.calls == [xml]
         assert turn.ui_support == [True]
-        assert requests.methods.count("tools/list") == 1
+        assert requests.methods.count("tools/list") == 1 + int(discovered)
         assert requests.methods.count("tools/call") == 1
 
 
@@ -281,7 +281,7 @@ async def test_two_calls_inside_a_wrapper_remain_two_invocations(
             "<first />",
         ]
         assert turn.calls == ["<first />", "<second />"]
-        assert requests.methods.count("tools/list") == 1
+        assert requests.methods.count("tools/list") == 2
         assert requests.methods.count("tools/call") == 2
 
 
@@ -333,7 +333,7 @@ async def test_capture_uses_refreshed_tool_declaration(
         assert artifact.invocation.tool == updated.to_mcp_tool()
         assert turn.calls == ["<updated />"]
         assert requests.methods.count("tools/list") == (
-            3 if refresh == "capacity" else 2
+            2 if refresh == "reconnect" else 3
         )
         assert requests.methods.count("tools/call") == 1
 

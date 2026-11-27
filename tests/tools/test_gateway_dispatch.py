@@ -372,7 +372,8 @@ async def test_summon_is_exposed_with_the_same_schema_and_result(
         "project": None,
         "ref": None,
     }
-    resolve_session.assert_awaited_once()
+    # FastMCP can rediscover mounted tools while resolving a call.
+    resolve_session.assert_awaited()
 
 
 async def test_native_summon_starts_work_without_a_source_thread(

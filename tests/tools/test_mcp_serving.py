@@ -574,10 +574,12 @@ async def test_native_summon_resolves_separately_for_discovery_and_execution(
                     },
                 },
             )
-    # The modern protocol looks up the catalog before executing the tool;
-    # each operation owns its dependency resolution.
-    resolutions = 2 if mode == "2026-07-28" else 1
-    assert resolve.await_args_list == [call(octomate, "claude", "luhui")] * resolutions
+    # Discovery during lookup and execution each resolve the authenticated caller.
+    assert resolve.await_args_list
+    assert all(
+        invocation == call(octomate, "claude", "luhui")
+        for invocation in resolve.await_args_list
+    )
     assert result.structured_content is not None
     opened = TypeAdapter(ChannelAddress).validate_python(
         result.structured_content["result"]

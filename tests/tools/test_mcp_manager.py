@@ -23,7 +23,6 @@ from octomate.database import async_session
 from octomate.managers.mcp import McpClientKey, McpManager, McpUnavailable
 from octomate.managers.oauth import OAuthManager
 from octomate.managers.user import UserManager
-from octomate.mcp.proxy import installation_prefix
 from octomate.mcp.server import LIST_MCPS, tentacles_mcp
 from octomate.schemas.mcp import (
     BearerMcp,
@@ -377,14 +376,11 @@ async def test_client_is_reused_across_turns_and_closed_at_shutdown(
             )
             async with manager.acquire(scope, instance.namespace) as reused:
                 assert reused is first
-            server = tentacles_mcp(fixed_session(scope), manager=manager)
             for _ in range(2):
-                catalog = await discover(server, instance.namespace)
+                catalog = await manager.catalog(scope, instance.namespace, refresh=True)
                 assert [tool.name for tool in catalog.tools] == ["answer"]
-                await server.call_tool(
-                    f"{installation_prefix(instance.namespace)}_answer",
-                    {},
-                )
+                async with manager.acquire(scope, instance.namespace) as client:
+                    await client.call_tool("answer", {})
         assert requests.methods.count("server/discover") == 1
         assert requests.methods.count("initialize") == 0
         assert requests.methods.count("tools/list") == 4
@@ -427,13 +423,15 @@ async def test_private_discovery_and_cached_calls_recheck_access(
         args: dict[str, JsonValue] = {}
         await cached.handler(args)
         key = McpClientKey(user_id=alice.id, mcp_id=installed.id)
-        retained = manager.clients[key]
+        async with manager.acquire(alice_scope, mcp_id=installed.id) as retained:
+            assert manager.clients[key] is retained
+        closed = requests.closed
         enabled = await manager.enable(user_id=alice.id, mcp_id=installed.id)
         assert enabled.enabled is True
         assert manager.clients[key] is retained
-        assert requests.closed == 0
+        assert requests.closed == closed
         await manager.disable(user_id=alice.id, mcp_id=installed.id)
-        assert requests.closed == 1
+        assert requests.closed == closed + 1
         assert (await cached.handler(args))["is_error"] is True
         await manager.enable(user_id=alice.id, mcp_id=installed.id)
         await cached.handler(args)
@@ -466,9 +464,9 @@ async def test_concurrent_users_never_share_credentials(manager: McpManager) -> 
                 for _ in range(2)
             )
         )
-        assert len(manager.clients) == 2
-        assert len({id(client) for client in manager.clients.values()}) == 2
-    assert requests.closed == 2
+        assert manager.clients == {}
+        assert requests.closed == 8
+    assert requests.closed == 8
     assert sorted(calls) == ["Bearer alice", "Bearer alice", "Bearer bob", "Bearer bob"]
 
 

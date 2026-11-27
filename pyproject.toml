@@ -48,7 +48,7 @@ dependencies = [
     # streamable-HTTP app it is served as. The client half already arrives with
     # pydantic-ai; the slim distribution is the same package without the CLI's
     # dependencies.
-    "fastmcp-slim[server]>=4.0.3,<5",
+    "fastmcp-slim[server]>=4.2.3,<5",
     "argon2-cffi>=25.1.0",
     "cachetools>=7.1.1,<8",
     "opendal>=0.47.10,<0.48",

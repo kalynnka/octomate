@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.config import OctomateConfig
-from octomate.managers.mcp import McpClientKey
 from octomate.mcp.gateway import CLIENT_HEADER
 from octomate.mcp.server import (
     DISABLE_MCP,
@@ -96,15 +95,12 @@ async def test_served_endpoint_uses_authenticated_owner_and_sees_new_installs(
                 result = await alice_client.call_tool("personal-research_answer", {})
                 assert isinstance(result.content[0], TextContent)
                 assert result.content[0].text == "answered"
-                key = McpClientKey(user_id=alice.id, mcp_id=instance.id)
-                cached = host.mcp.clients[key]
+                assert host.mcp.clients == {}
                 for tool in (ENABLE_MCP, DISABLE_MCP, UNINSTALL_MCP):
                     with pytest.raises(ToolError, match="unavailable"):
                         await bob_client.call_tool(tool, {"mcp_id": str(instance.id)})
-                assert host.mcp.clients[key] is cached
+                assert host.mcp.clients == {}
                 await alice_client.call_tool(DISABLE_MCP, {"mcp_id": str(instance.id)})
-                assert key not in host.mcp.clients
-                assert not cached.is_connected()
                 listed = await alice_client.call_tool(LIST_MCPS, {})
                 assert listed.structured_content is not None
                 [disabled] = TypeAdapter(list[McpServerSummary]).validate_python(
@@ -115,12 +111,10 @@ async def test_served_endpoint_uses_authenticated_owner_and_sees_new_installs(
                     await alice_client.call_tool("personal-research_answer", {})
                 await alice_client.call_tool(ENABLE_MCP, {"mcp_id": str(instance.id)})
                 await alice_client.call_tool("personal-research_answer", {})
-                cached = host.mcp.clients[key]
                 await alice_client.call_tool(
                     UNINSTALL_MCP, {"mcp_id": str(instance.id)}
                 )
-                assert key not in host.mcp.clients
-                assert not cached.is_connected()
+                assert host.mcp.clients == {}
                 assert (await alice_client.call_tool(LIST_MCPS, {})).data == []
     assert calls == ["Bearer alice-provider-secret"] * 2
 

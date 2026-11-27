@@ -5,18 +5,19 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Unpack
 
 import httpx2
-from fastmcp import Client
+from fastmcp.apps.config import UI_EXTENSION_ID, UI_MIME_TYPE
 from fastmcp.client.transports.base import (
     ClientTransport,
     SessionKwargs,
     TransportOptions,
 )
 from fastmcp.exceptions import ToolError
+from fastmcp.server import create_proxy
 from fastmcp.server.providers import Provider
-from fastmcp.server.providers.proxy import ProxyTool
 from fastmcp.server.transforms import GetToolNext, Namespace
 from fastmcp.server.transforms.search import RegexSearchTransform
 from fastmcp.tools import Tool, ToolResult
@@ -26,7 +27,6 @@ from fastmcp.utilities.versions import VersionSpec
 from mcp import ClientSession
 from mcp.shared.exceptions import MCPError
 from mcp.types import CallToolResult, ToolAnnotations
-from mcp.types import Tool as McpTool
 from pydantic import UUID7, JsonValue, ValidationError
 
 from octomate.managers.gateway import OctomateSession
@@ -47,7 +47,7 @@ def installation_prefix(namespace: str) -> str:
 
 
 class InstalledMcpTransport(ClientTransport):
-    """Borrow an already negotiated session after checking the current caller."""
+    """Supply installation credentials while FastMCP owns the proxy connection."""
 
     def __init__(
         self,
@@ -66,12 +66,22 @@ class InstalledMcpTransport(ClientTransport):
         transport_options: TransportOptions | None = None,
         **session_kwargs: Unpack[SessionKwargs],
     ) -> AsyncGenerator[ClientSession]:
-        # The pool owns negotiation, callbacks and credentials. A borrowed
-        # session must neither initialize again nor inherit frontend headers.
-        async with self.manager.acquire(
+        transport = await self.manager.transport(
             await self.resolve_session(), mcp_id=self.installation_id
-        ) as client:
-            yield client.session
+        )
+        # Each installation owns its credentials; never forward the caller's
+        # Octomate bearer or other frontend headers to an upstream server.
+        options = replace(
+            transport_options or TransportOptions(), forward_incoming_headers=False
+        )
+        session_kwargs["extensions"] = {
+            **(session_kwargs.get("extensions") or {}),
+            UI_EXTENSION_ID: {"mimeTypes": [UI_MIME_TYPE]},
+        }
+        async with transport.connect_session(
+            transport_options=options, **session_kwargs
+        ) as session:
+            yield session
 
 
 class InstalledMcpProvider(Provider):
@@ -94,13 +104,8 @@ class InstalledMcpProvider(Provider):
             return []
         return await self.manager.list(owner.id, enabled=True)
 
-    def proxy_tool(self, instance: Mcp, tool: McpTool) -> Tool:
-        transport = InstalledMcpTransport(
-            self.manager, self.resolve_session, instance.id
-        )
-        proxy = ProxyTool.from_mcp_tool(
-            lambda: Client(transport, auto_initialize=False, cache=False), tool
-        )
+    def proxy_tool(self, instance: Mcp, proxy: Tool) -> Tool:
+        tool = proxy.to_mcp_tool()
 
         async def invoke(**arguments: JsonValue) -> ToolResult:
             try:
@@ -124,7 +129,7 @@ class InstalledMcpProvider(Provider):
                         _meta=result.meta,
                     ),
                 )
-                return ToolResult.from_mcp_result(captured)
+                return result.model_copy(update={"meta": captured.meta})
             except (McpUnavailable, ValidationError) as error:
                 raise ToolError(str(error)) from error
             except (httpx2.HTTPError, MCPError, TimeoutError) as error:
@@ -142,10 +147,12 @@ class InstalledMcpProvider(Provider):
         tools: list[Tool] = []
         scope = await self.resolve_session()
         for instance in await self.installations(scope):
+            proxy = create_proxy(
+                InstalledMcpTransport(self.manager, self.resolve_session, instance.id),
+                provider_error_strategy="raise",
+            )
             try:
-                catalog = await self.manager.catalog(
-                    scope, mcp_id=instance.id, refresh=True
-                )
+                upstream_tools = await proxy.list_tools()
             except McpUnavailable:
                 continue
             except (httpx2.HTTPError, MCPError, TimeoutError, RuntimeError):
@@ -154,7 +161,7 @@ class InstalledMcpProvider(Provider):
             namespace = Namespace(installation_prefix(instance.namespace))
             tools.extend(
                 await namespace.list_tools(
-                    [self.proxy_tool(instance, tool) for tool in catalog.tools]
+                    [self.proxy_tool(instance, tool) for tool in upstream_tools]
                 )
             )
         return tools
@@ -169,13 +176,14 @@ class InstalledMcpProvider(Provider):
         for instance in await self.installations(scope):
             if installation_prefix(instance.namespace) != prefix:
                 continue
-            catalog = await self.manager.catalog(scope, mcp_id=instance.id)
-            upstream = catalog.tools_by_name.get(upstream_name)
+            proxy = create_proxy(
+                InstalledMcpTransport(self.manager, self.resolve_session, instance.id),
+                provider_error_strategy="raise",
+            )
+            upstream = await proxy.get_tool(upstream_name, version=version)
             if upstream is None:
                 return None
             tool = self.proxy_tool(instance, upstream)
-            if version is not None and not version.matches(tool.version):
-                return None
             return tool.model_copy(update={"name": name})
         return None
 
