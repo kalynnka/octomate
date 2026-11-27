@@ -344,7 +344,9 @@ def hello_json(session_id: str = SESSION_ID, protocol: int = STREAM_PROTOCOL) ->
 
 async def test_native_subagent_hooks_reach_the_thread_before_the_parent_ends() -> None:
     client, tentacle = stream_client()
-    key = ThreadKey("claude", "thread", SESSION_ID)
+    key = ThreadKey(
+        channel_tentacle_id="claude", chat_type="thread", chat_id=SESSION_ID
+    )
     async with tentacle.octomate.nerves.events.subscribe(ThreadTopic(key)) as live:
         with client:
             for event in ("SubagentStart", "SubagentStop"):
@@ -368,7 +370,9 @@ async def test_native_subagent_hooks_reach_the_thread_before_the_parent_ends() -
 
 async def test_a_native_subagent_left_open_settles_with_its_turn_or_session() -> None:
     client, tentacle = stream_client()
-    key = ThreadKey("claude", "thread", SESSION_ID)
+    key = ThreadKey(
+        channel_tentacle_id="claude", chat_type="thread", chat_id=SESSION_ID
+    )
     hooks: list[JsonObject] = [
         {"hook_event_name": "SubagentStart", "agent_id": "interrupted"},
         {"hook_event_name": "SubagentStart", "agent_id": "background"},
@@ -401,7 +405,9 @@ async def test_an_interrupted_native_subagent_settles_at_its_own_marker() -> Non
     interrupt marker into the child's own file. The child settles there, once:
     the session's end finds nothing left open."""
     client, tentacle = stream_client()
-    key = ThreadKey("claude", "thread", SESSION_ID)
+    key = ThreadKey(
+        channel_tentacle_id="claude", chat_type="thread", chat_id=SESSION_ID
+    )
     marker = sub_user_record(
         "p1",
         "s-u9",
@@ -507,7 +513,7 @@ def test_lines_over_the_socket_commit_and_the_next_welcome_resumes() -> None:
 
     # One entered client, so both connects share a portal loop — the in-memory
     # database's connection is loop-bound, and two portals would strand it.
-    key = ThreadKey.from_address(SESSION_ADDRESS)
+    key = ThreadKey.model_validate(SESSION_ADDRESS)
     with client, ExitStack() as subscriptions:
         assert client.portal is not None
         live = subscriptions.enter_context(
@@ -1019,7 +1025,8 @@ async def test_transcript_ledger_uses_the_authenticated_stream_sender(
     await feed(tailer, state, frames(TURN_ONE))
     await tailer.finish_remote(state)
     thread = await octomate.threads.ensure(
-        ThreadKey("claude", "thread", SESSION_ID), native=True
+        ThreadKey(channel_tentacle_id="claude", chat_type="thread", chat_id=SESSION_ID),
+        native=True,
     )
     page = await octomate.threads.messages_page(thread.id, limit=100)
     assert len(page.items) == 2
@@ -1040,7 +1047,9 @@ async def test_opening_transcript_prompt_grants_access_and_replays_once(
     user = await a_user("tail-owner")
     sender = await octomate.users.native_profile("claude", user.username)
     assert sender is not None
-    key = ThreadKey("claude", "thread", SESSION_ID)
+    key = ThreadKey(
+        channel_tentacle_id="claude", chat_type="thread", chat_id=SESSION_ID
+    )
 
     for _ in range(2):
         state, offsets = await tailer.attach_remote(

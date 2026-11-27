@@ -60,12 +60,7 @@ from octomate.schemas.conversation import Conversation
 from octomate.schemas.files import Html
 from octomate.schemas.messages import ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
-from octomate.schemas.thread import (
-    MessageBinding,
-    Thread,
-    ThreadArtifact,
-    ThreadKey,
-)
+from octomate.schemas.thread import MessageBinding, Thread, ThreadArtifact, ThreadKey
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer, TailState
@@ -156,7 +151,8 @@ def remote_tailer() -> tuple[Octomate, CodexTranscriptTailer]:
 
 async def runs_of(octomate: Octomate) -> list[ExternalAgentRun]:
     thread = await octomate.threads.ensure(
-        ThreadKey("codex", "thread", SESSION_ID), native=True
+        ThreadKey(channel_tentacle_id="codex", chat_type="thread", chat_id=SESSION_ID),
+        native=True,
     )
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id="codex"
@@ -282,7 +278,8 @@ async def test_sibling_child_rollouts_stream_into_child_runs(
     tailer.detach_remote(state)
 
     thread = await octomate.threads.ensure(
-        ThreadKey("codex", "thread", SESSION_ID), native=True
+        ThreadKey(channel_tentacle_id="codex", chat_type="thread", chat_id=SESSION_ID),
+        native=True,
     )
     parent = await octomate.conversations.ensure(thread.id, agent_tentacle_id="codex")
     child = await octomate.conversations.ensure(
@@ -355,7 +352,7 @@ async def test_a_stop_returns_before_the_late_reply_and_completion(
 ) -> None:
     """Codex can flush its reply and terminal line only after Stop returns."""
     octomate, tailer = remote_tailer()
-    key = ThreadKey.from_address(SESSION_ADDRESS)
+    key = ThreadKey.model_validate(SESSION_ADDRESS)
     async with octomate.nerves.events.subscribe(ThreadTopic(key)) as live:
         async with octomate.nerves.events.publish(SESSION_ADDRESS) as impulses:
             state, _ = await tailer.attach_remote(
@@ -567,7 +564,7 @@ def test_native_html_crosses_the_client_stream_and_reuses_the_owned_viewer(
         live = subscriptions.enter_context(
             client.portal.wrap_async_context_manager(
                 host.nerves.events.subscribe(
-                    ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
+                    ThreadTopic(ThreadKey.model_validate(SESSION_ADDRESS))
                 )
             )
         )

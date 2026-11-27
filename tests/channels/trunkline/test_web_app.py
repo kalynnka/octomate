@@ -146,7 +146,7 @@ async def _post(
     model: str | None = None,
     project: str | None = None,
 ) -> list[JsonObject]:
-    key = ThreadKey.from_address(_console_address(thread_id))
+    key = ThreadKey.model_validate(_console_address(thread_id))
     async with (
         listening(channel.octomate),
         channel.octomate.nerves.events.subscribe(ThreadTopic(key)) as live,
@@ -171,7 +171,7 @@ async def _send(
 ) -> httpx2.Response:
     """Post a directive over HTTP and wait for its turn to settle, as the console
     does on the thread's socket."""
-    key = ThreadKey.from_address(_console_address(thread_key))
+    key = ThreadKey.model_validate(_console_address(thread_key))
     async with (
         listening(octomate),
         octomate.nerves.events.subscribe(ThreadTopic(key)) as live,
@@ -364,7 +364,7 @@ async def test_activity_socket_multiplexes_without_streaming_content(
     # Nerve exposes the subscription registry, without a readiness notification.
     keys = [f"thread-{i}" for i in range(30)]
     topics = [
-        ThreadTopic(ThreadKey.from_address(_console_address(key))) for key in keys
+        ThreadTopic(ThreadKey.model_validate(_console_address(key))) for key in keys
     ]
     try:
         socket.inbound.put_nowait(
@@ -483,7 +483,14 @@ async def test_activity_socket_checks_thread_access_and_scopes_new_keys() -> Non
             await asyncio.sleep(0)
     assert topic not in octomate.nerves.events.subscribers
     assert (
-        ThreadTopic(ThreadKey("trunkline", "thread", str(other.id), "thread-1"))
+        ThreadTopic(
+            ThreadKey(
+                channel_tentacle_id="trunkline",
+                chat_type="thread",
+                chat_id=str(other.id),
+                channel_thread_id="thread-1",
+            )
+        )
         in octomate.nerves.events.subscribers
     )
     await scoped.leave()
@@ -549,7 +556,9 @@ async def test_activity_refresh_restores_a_native_turn_without_another_event() -
     )
     octomate.connect(agent)
     session_id = str(uuid7())
-    key = ThreadKey(agent.id, "thread", session_id)
+    key = ThreadKey(
+        channel_tentacle_id=agent.id, chat_type="thread", chat_id=session_id
+    )
     sender = UserProfile(channel_user_id="operator", user_id=CONSOLE_USER_ID)
     address = key.address(sender.channel_user_id)
     async with octomate.nerves.events.publish(address) as impulses:
@@ -1951,7 +1960,11 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
     project = a_project(Path("/srv/inky"))
     octomate.workspaces.projects = await a_registry(project)
     thread = await octomate.threads.ensure(
-        ThreadKey("claude", "thread", "session-1"), project=project, native=True
+        ThreadKey(
+            channel_tentacle_id="claude", chat_type="thread", chat_id="session-1"
+        ),
+        project=project,
+        native=True,
     )
     await octomate.threads.record_inbound(
         MessageEvent(
@@ -2214,7 +2227,9 @@ async def test_native_history_endpoints_page_by_message_id() -> None:
     octomate = Octomate()
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)
-    key = ThreadKey("claude", "thread", "native-session")
+    key = ThreadKey(
+        channel_tentacle_id="claude", chat_type="thread", chat_id="native-session"
+    )
     thread = await octomate.threads.ensure(key)
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id="claude"

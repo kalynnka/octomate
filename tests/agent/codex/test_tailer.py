@@ -427,7 +427,7 @@ async def test_tool_start_reaches_subscribers_before_a_result_or_turn_end(
         agent_tentacle_id="codex",
     )
     async with octomate.nerves.events.subscribe(
-        ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
+        ThreadTopic(ThreadKey.model_validate(SESSION_ADDRESS))
     ) as live:
         async with octomate.nerves.events.publish(SESSION_ADDRESS) as publisher:
             state, _ = await tailer.attach_remote(
@@ -472,7 +472,7 @@ async def test_completed_command_activity_is_published_and_saved() -> None:
         agent_tentacle_id="codex",
     )
     async with octomate.nerves.events.subscribe(
-        ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
+        ThreadTopic(ThreadKey.model_validate(SESSION_ADDRESS))
     ) as live:
         async with octomate.nerves.events.publish(SESSION_ADDRESS) as publisher:
             state, _ = await tailer.attach_remote(
@@ -535,7 +535,7 @@ async def test_encrypted_reasoning_placeholder_is_published_and_saved() -> None:
         agent_tentacle_id="codex",
     )
     async with octomate.nerves.events.subscribe(
-        ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
+        ThreadTopic(ThreadKey.model_validate(SESSION_ADDRESS))
     ) as live:
         async with octomate.nerves.events.publish(SESSION_ADDRESS) as publisher:
             state, _ = await tailer.attach_remote(
@@ -606,7 +606,7 @@ async def test_live_turn_restarts_then_settles_and_committed_replay_is_silent(
         octomate.files,
         agent_tentacle_id="codex",
     )
-    key = ThreadKey.from_address(SESSION_ADDRESS)
+    key = ThreadKey.model_validate(SESSION_ADDRESS)
     async with octomate.nerves.events.subscribe(ThreadTopic(key)) as live:
         for finished in (False, True, True):
             async with octomate.nerves.events.publish(SESSION_ADDRESS) as publisher:
@@ -666,7 +666,7 @@ async def test_failed_commit_never_publishes_run_ended(
         owner, method, AsyncMock(side_effect=RuntimeError("commit failed"))
     )
     async with octomate.nerves.events.subscribe(
-        ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
+        ThreadTopic(ThreadKey.model_validate(SESSION_ADDRESS))
     ) as live:
         async with octomate.nerves.events.publish(SESSION_ADDRESS) as publisher:
             state, _ = await tailer.attach_remote(
@@ -714,7 +714,7 @@ async def test_compaction_only_tasks_never_write_a_run(
     )
     monkeypatch.setattr(octomate.conversations, "record_external_run", record_run)
     ingest, tailer = wired(octomate)
-    key = ThreadKey.from_address(SESSION_ADDRESS)
+    key = ThreadKey.model_validate(SESSION_ADDRESS)
     records = [
         {
             "timestamp": NOW.isoformat(),
@@ -837,7 +837,7 @@ async def test_empty_reserved_turn_commits_its_checkpoint_and_settles(
         agent_tentacle_id="codex",
     )
     async with octomate.nerves.events.subscribe(
-        ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
+        ThreadTopic(ThreadKey.model_validate(SESSION_ADDRESS))
     ) as live:
         async with octomate.nerves.events.publish(SESSION_ADDRESS) as publisher:
             state, _ = await tailer.attach_remote(
@@ -890,7 +890,7 @@ async def test_catchup_offset_preserves_history_without_replaying_activity(
     app = Octomate()
     _, tailer = wired(app)
     async with app.nerves.events.subscribe(
-        ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
+        ThreadTopic(ThreadKey.model_validate(SESSION_ADDRESS))
     ) as live:
         async with app.nerves.events.publish(SESSION_ADDRESS) as publisher:
             state, _ = await tailer.attach_remote(

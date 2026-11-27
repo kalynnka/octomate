@@ -19,8 +19,12 @@ from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.trunkline import base as trunkline_base
 from octomate.tentacles.trunkline.base import TrunklineTentacle
 
-KEY = ThreadKey("web", "thread", "lu", "t1")
-OTHER = ThreadKey("web", "thread", "lu", "t2")
+KEY = ThreadKey(
+    channel_tentacle_id="web", chat_type="thread", chat_id="lu", channel_thread_id="t1"
+)
+OTHER = ThreadKey(
+    channel_tentacle_id="web", chat_type="thread", chat_id="lu", channel_thread_id="t2"
+)
 EVENT = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="hi"))
 
 

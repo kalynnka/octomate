@@ -150,7 +150,7 @@ async def test_receiver_owns_execution_and_handoff(
     async with (
         listening(host),
         host.nerves.events.subscribe(
-            ThreadTopic(ThreadKey.from_address(ADDRESS))
+            ThreadTopic(ThreadKey.model_validate(ADDRESS))
         ) as events,
         asyncio.timeout(5),
     ):
@@ -162,7 +162,7 @@ async def test_receiver_owns_execution_and_handoff(
         assert not host.agents["first"].reflexes
         if ending == "cancelled":
             await publish_signal(
-                host, AsleepSignal(thread=ThreadKey.from_address(ADDRESS))
+                host, AsleepSignal(thread=ThreadKey.model_validate(ADDRESS))
             )
         else:
             receiver.release.set()
@@ -222,7 +222,7 @@ async def test_final_thread_after_handoff_and_teleport(
     async with (
         listening(host),
         host.nerves.events.subscribe(
-            ThreadTopic(ThreadKey.from_address(ADDRESS))
+            ThreadTopic(ThreadKey.model_validate(ADDRESS))
         ) as events,
         asyncio.timeout(5),
     ):
@@ -230,7 +230,7 @@ async def test_final_thread_after_handoff_and_teleport(
         if ending == "cancelled":
             await receiver.resumed.wait()
             await publish_signal(
-                host, AsleepSignal(thread=ThreadKey.from_address(ADDRESS))
+                host, AsleepSignal(thread=ThreadKey.model_validate(ADDRESS))
             )
         observed = []
         async for impulse in events:
@@ -247,7 +247,7 @@ async def test_final_thread_after_handoff_and_teleport(
     assert observed[-1].address == final_address
     assert observed[-1].event == ReflexAsleepEvent(outcome=ending)
     final_thread = await host.threads.get(
-        ThreadKey.from_address(final_address), with_messages=False
+        ThreadKey.model_validate(final_address), with_messages=False
     )
     assert final_thread is not None
     async with async_session() as session:
@@ -271,12 +271,14 @@ async def test_immediate_interrupt_settles_on_the_event_stream(
     async with (
         listening(host),
         host.nerves.events.subscribe(
-            ThreadTopic(ThreadKey.from_address(ADDRESS))
+            ThreadTopic(ThreadKey.model_validate(ADDRESS))
         ) as events,
         asyncio.timeout(5),
     ):
         await publish_signal(host, signal)
-        await publish_signal(host, AsleepSignal(thread=ThreadKey.from_address(ADDRESS)))
+        await publish_signal(
+            host, AsleepSignal(thread=ThreadKey.model_validate(ADDRESS))
+        )
         async for impulse in events:
             if isinstance(impulse.event, ReflexAsleepEvent):
                 assert impulse.event.outcome == "cancelled"

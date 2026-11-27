@@ -115,7 +115,7 @@ async def test_inkling_calls_todos_through_authenticated_mcp_and_publishes_once(
     )
     assert scope.thread_id is not None
     assert scope.conversation_address is not None
-    topic = ThreadTopic(ThreadKey.from_address(scope.conversation_address))
+    topic = ThreadTopic(ThreadKey.model_validate(scope.conversation_address))
     async with (
         served_inkling_mcp(host, monkeypatch),
         inkling,
@@ -167,7 +167,7 @@ async def test_todo_mcp_rejects_another_users_conversation_and_has_no_owner_argu
     assert scope.conversation_id is not None
     assert scope.thread_id is not None
     assert scope.conversation_address is not None
-    topic = ThreadTopic(ThreadKey.from_address(scope.conversation_address))
+    topic = ThreadTopic(ThreadKey.model_validate(scope.conversation_address))
 
     async with (
         served(host),

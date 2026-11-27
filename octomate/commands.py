@@ -203,7 +203,7 @@ async def execute_command(
     outcome: CommandOutcomeEvent | None = None
     admitted = False
     async with nerves.events.subscribe(
-        ThreadTopic(ThreadKey.from_address(context.address))
+        ThreadTopic(ThreadKey.model_validate(context.address))
     ) as events:
         nerves.signals.dispatch(AgentTopic(context.agent_id), signal)
         async for impulse in events:

@@ -450,7 +450,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
         )
         # Refused before anything is written, so the next turn has no row of it to
         # answer. The receiving agent enforces admission for concurrent publications.
-        if ThreadKey.from_address(address) in self.octomate.awake_since:
+        if ThreadKey.model_validate(address) in self.octomate.awake_since:
             raise StillAwake()
         thread = await self.octomate.threads.ensure(
             address, project=self.chosen_project(directive.project)

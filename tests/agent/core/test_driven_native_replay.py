@@ -128,9 +128,11 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
                 SESSION_ID,
                 Path("/client/session.jsonl"),
                 SENDER,
-                address=ThreadKey(agent_tentacle_id, "thread", SESSION_ID).address(
-                    SENDER.channel_user_id
-                ),
+                address=ThreadKey(
+                    channel_tentacle_id=agent_tentacle_id,
+                    chat_type="thread",
+                    chat_id=SESSION_ID,
+                ).address(SENDER.channel_user_id),
                 impulses=tail_impulses,
             )
             assert state.conversation is not None
@@ -153,9 +155,11 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
                 SESSION_ID,
                 Path("/client/rollout.jsonl"),
                 SENDER,
-                ThreadKey(agent_tentacle_id, "thread", SESSION_ID).address(
-                    SENDER.channel_user_id
-                ),
+                ThreadKey(
+                    channel_tentacle_id=agent_tentacle_id,
+                    chat_type="thread",
+                    chat_id=SESSION_ID,
+                ).address(SENDER.channel_user_id),
                 tail_impulses,
             )
             assert codex_state.conversation is not None
@@ -197,9 +201,11 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
                 Path("/client/session.jsonl"),
                 "",
                 SENDER,
-                address=ThreadKey(agent_tentacle_id, "thread", SESSION_ID).address(
-                    SENDER.channel_user_id
-                ),
+                address=ThreadKey(
+                    channel_tentacle_id=agent_tentacle_id,
+                    chat_type="thread",
+                    chat_id=SESSION_ID,
+                ).address(SENDER.channel_user_id),
                 impulses=tail_impulses,
             )
             assert deepseek_state.conversation is not None
@@ -236,7 +242,11 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
                 assert owner is not None
                 assert owner.agent_tentacle_id == f"custom-{runtime}"
                 thread = await octomate.threads.get(
-                    ThreadKey(agent_tentacle_id, "thread", SESSION_ID)
+                    ThreadKey(
+                        channel_tentacle_id=agent_tentacle_id,
+                        chat_type="thread",
+                        chat_id=SESSION_ID,
+                    )
                 )
                 assert thread is not None
                 assert thread.id == owner.thread_id

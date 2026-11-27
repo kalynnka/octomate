@@ -32,7 +32,7 @@ async def replay_card_updates[RawT, MessageT](
     use the enclosing test's timeout so real platform calls can finish.
     """
     manager = channel.octomate.deferred_actions
-    thread = await channel.octomate.threads.ensure(ThreadKey.from_address(address))
+    thread = await channel.octomate.threads.ensure(ThreadKey.model_validate(address))
     conversation = await channel.octomate.conversations.ensure(
         thread.id, agent_tentacle_id="trigger"
     )

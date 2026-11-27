@@ -156,7 +156,11 @@ class CodexHookIngest:
         holder = self.projects.resolve(Path(event.cwd)) if event.cwd else None
         project = self.projects.get(holder) if holder is not None else None
         return await self.threads.ensure(
-            ThreadKey(self.tailer.agent_tentacle_id, "thread", event.session_id),
+            ThreadKey(
+                channel_tentacle_id=self.tailer.agent_tentacle_id,
+                chat_type="thread",
+                chat_id=event.session_id,
+            ),
             project=project,
             native=True,
         )

@@ -93,7 +93,9 @@ async def test_dsh_turns_resume_share_codex_vm_and_isolate_other_owner(
     project_root.mkdir()
     project = a_project(project_root, name="dsh-habitat")
     host.workspaces.projects = await a_registry(project)
-    thread = await host.threads.ensure(ThreadKey.from_address(address), project=project)
+    thread = await host.threads.ensure(
+        ThreadKey.model_validate(address), project=project
+    )
 
     # The same configured overlay path exists independently in core and each VM.
     overlay = sbx_cleanup.enter_context(

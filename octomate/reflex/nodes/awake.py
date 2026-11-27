@@ -181,7 +181,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     raise ValueError("a native teleport needs its thread's owner")
                 return await self.thread_operation(
                     ctx,
-                    ThreadKey.from_address(source),
+                    ThreadKey.model_validate(source),
                     decision,
                     agent_id=self.signal.agent_id,
                     sender=self.signal.user_profile,

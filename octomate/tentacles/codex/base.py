@@ -395,7 +395,7 @@ class CodexTentacle(AgentTentacle[str, None]):
     @property
     def native_running_threads(self) -> set[ThreadKey]:
         return {
-            ThreadKey.from_address(state.address)
+            ThreadKey.model_validate(state.address)
             for state in self.session_tailer.sessions.values()
             if state.open_turn is not None
             and state.open_turn.native is not None
@@ -510,7 +510,11 @@ class CodexTentacle(AgentTentacle[str, None]):
             holder = self.projects.resolve(Path(hello.cwd))
             project = self.projects.get(holder) if holder is not None else None
         await self.threads.ensure(
-            ThreadKey(self.id, "thread", hello.session_id),
+            ThreadKey(
+                channel_tentacle_id=self.id,
+                chat_type="thread",
+                chat_id=hello.session_id,
+            ),
             project=project,
             native=True,
         )
@@ -1009,7 +1013,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 )
                 target = await self.fork(
                     conversation,
-                    ThreadKey.from_address(destination),
+                    ThreadKey.model_validate(destination),
                     sender=profile,
                     model=context.model,
                 )

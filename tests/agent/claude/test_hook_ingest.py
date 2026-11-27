@@ -21,7 +21,9 @@ from tests.support.managers import a_loaded_thread, a_thread
 SENDER = UserProfile(channel_user_id="lu", name="lu")
 
 SESSION_ID = "sess-1"
-SESSION_KEY = ThreadKey("claude", "thread", SESSION_ID)
+SESSION_KEY = ThreadKey(
+    channel_tentacle_id="claude", chat_type="thread", chat_id=SESSION_ID
+)
 
 
 @pytest.fixture(autouse=True)

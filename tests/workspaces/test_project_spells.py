@@ -52,7 +52,9 @@ from tests.support.managers import (
 from tests.support.mcp import core_tool_server
 from tests.support.users import a_user
 
-CHAT = ThreadKey("im", "thread", "c", "t1")
+CHAT = ThreadKey(
+    channel_tentacle_id="im", chat_type="thread", chat_id="c", channel_thread_id="t1"
+)
 FAKE_CONTEXT = cast(RunContext[None], None)
 
 
@@ -227,7 +229,9 @@ async def test_only_a_thread_binds_and_a_dm_is_told_to_open_one(
 ) -> None:
     # Refused before the mirror is even synced: a DM or a group outlives every
     # project in it, and the way out is a sub-thread — `destination` `thread`.
-    harness = await a_harness(tmp_path, key=ThreadKey("im", "dm", "u1"))
+    harness = await a_harness(
+        tmp_path, key=ThreadKey(channel_tentacle_id="im", chat_type="dm", chat_id="u1")
+    )
 
     with pytest.raises(GatewayRefusal, match="`new_thread=true`"):
         await harness.session.teleport(hint="h", new_thread=False, project="inky")

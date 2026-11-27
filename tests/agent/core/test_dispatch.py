@@ -344,7 +344,7 @@ async def test_a_second_kick_on_an_awake_thread_is_refused() -> None:
     channel = FakeChannelTentacle(config=_entry_config(stream=False))
     _register_agents(octomate, entry)
     octomate.connect(channel)
-    thread = ThreadKey.from_address(_key(thread_id="t1"))
+    thread = ThreadKey.model_validate(_key(thread_id="t1"))
     signal = UserMessageSignal([_event(text="hello", thread_id="t1")])
 
     async with (
@@ -367,7 +367,7 @@ async def test_a_kick_retains_what_it_says_for_as_long_as_it_is_awake() -> None:
     _register_agents(octomate, FakeAgent(reception_output="answered"))
     octomate.connect(FakeChannelTentacle(config=_entry_config(stream=False)))
     address = _key(thread_id="t1")
-    thread = ThreadTopic(ThreadKey.from_address(address))
+    thread = ThreadTopic(ThreadKey.model_validate(address))
 
     async with (
         listening(octomate),
@@ -866,7 +866,7 @@ async def test_status_facts_keep_the_reflex_open_across_runs(ending: str) -> Non
 
     async with (
         app.nerves.events.subscribe(
-            ThreadTopic(ThreadKey.from_address(_key()))
+            ThreadTopic(ThreadKey.model_validate(_key()))
         ) as live,
         app.nerves.events.subscribe(ChannelTopic("im")) as channel_live,
     ):
@@ -933,7 +933,7 @@ async def test_status_facts_keep_the_reflex_open_across_runs(ending: str) -> Non
         [approval] = batch.approvals
         assert approval.batch_id is not None
         async with app.nerves.events.subscribe(
-            ThreadTopic(ThreadKey.from_address(_key()))
+            ThreadTopic(ThreadKey.model_validate(_key()))
         ) as live:
             await kicked(
                 app,
@@ -979,7 +979,7 @@ async def test_status_outcomes_survive_failed_or_cancelled_lifecycle(
         monkeypatch.setattr(ReflexRuntime, "finalizing", finalizing)
 
     async with app.nerves.events.subscribe(
-        ThreadTopic(ThreadKey.from_address(_key()))
+        ThreadTopic(ThreadKey.model_validate(_key()))
     ) as live:
         with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
             await kicked(app, UserMessageSignal([event]))

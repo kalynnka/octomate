@@ -115,13 +115,13 @@ async def test_summon_kicks_a_peer_thread_and_keeps_the_source_running(
     async with drawing(channel), awake_on(host, source):
         opened = await session.summon(**ARGUMENTS, destination=source)
         assert isinstance(opened, ChannelAddress)
-        assert ThreadKey.from_address(source) in host.awake_since
+        assert ThreadKey.model_validate(source) in host.awake_since
         assert opened != source
         assert session.conversation_address == source
         assert session.decision is None
-        await finished(host, ThreadKey.from_address(opened))
+        await finished(host, ThreadKey.model_validate(opened))
 
-    thread = await host.threads.get(ThreadKey.from_address(opened))
+    thread = await host.threads.get(ThreadKey.model_validate(opened))
     assert thread is not None
     assert thread.id != session.thread_id
     assert thread.active_agent_tentacle_id == "claude"
@@ -185,15 +185,15 @@ async def test_independent_summon_initializes_without_entering_the_handoff_node(
     signal = kick.call_args.args[1]
     assert isinstance(signal, SummonSignal)
     assert signal.destination == opened
-    assert await threads.get(ThreadKey.from_address(opened)) is None
+    assert await threads.get(ThreadKey.model_validate(opened)) is None
     handoff = AsyncMock(side_effect=AssertionError("Independent work entered Summon."))
     monkeypatch.setattr(Summon, "run", handoff)
     async with drawing(channel):
         await kick_and_wait(host, signal)
     handoff.assert_not_awaited()
-    thread = await threads.get(ThreadKey.from_address(opened))
+    thread = await threads.get(ThreadKey.model_validate(opened))
     assert thread is not None
-    assert thread.key == ThreadKey.from_address(opened)
+    assert thread.key == ThreadKey.model_validate(opened)
     assert len(thread.conversations) == 1
     assert thread.handoffs[0].brief == ARGUMENTS["brief"]
     assert thread.messages[0].message_text == ARGUMENTS["hint"]
@@ -300,8 +300,8 @@ async def test_summon_validates_project_access_and_ref_before_binding(
             **arguments, destination=session.conversation_address
         )
         assert isinstance(opened, ChannelAddress)
-        await finished(host, ThreadKey.from_address(opened))
-        thread = await host.threads.get(ThreadKey.from_address(opened))
+        await finished(host, ThreadKey.model_validate(opened))
+        thread = await host.threads.get(ThreadKey.model_validate(opened))
         assert thread is not None
         assert thread.project_id is not None
         assert profile.user_id is not None
@@ -407,12 +407,12 @@ async def test_native_summon_starts_work_without_a_source_thread(
         assert structured is not None
         address = structured["result"]
         opened = TypeAdapter(ChannelAddress).validate_python(address)
-        await finished(host, ThreadKey.from_address(opened))
+        await finished(host, ThreadKey.model_validate(opened))
     assert session.thread_id is None
     assert session.conversation_id is None
     assert session.conversation_address is None
     assert session.decision is None
-    thread = await host.threads.get(ThreadKey.from_address(opened))
+    thread = await host.threads.get(ThreadKey.model_validate(opened))
     assert thread is not None
     assert thread.active_agent_tentacle_id == "claude"
     [handoff] = thread.handoffs
@@ -460,8 +460,8 @@ async def test_native_summon_attributes_a_console_thread_to_its_owner(
         destination=ChannelAddress("web", "thread", str(user_id), str(user_id)),
     )
     assert isinstance(opened, ChannelAddress)
-    await finished(host, ThreadKey.from_address(opened))
-    thread = await host.threads.get(ThreadKey.from_address(opened), user_id=user_id)
+    await finished(host, ThreadKey.model_validate(opened))
+    thread = await host.threads.get(ThreadKey.model_validate(opened), user_id=user_id)
     assert thread is not None
     profile = await host.users.profile("web", str(user_id))
     assert profile is not None

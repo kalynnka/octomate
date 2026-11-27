@@ -301,7 +301,7 @@ async def test_codex_ingest_persists_clean_prompt_reply_and_annotations(
     assert isinstance(content, TextContent)
     assert content.content == "launch a PR."
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey.from_address(codex.SESSION_ADDRESS)
+        octomate.threads, ThreadKey.model_validate(codex.SESSION_ADDRESS)
     )
     assert [message.message_text for message in thread.messages] == [
         "launch a PR.",

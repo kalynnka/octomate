@@ -366,7 +366,7 @@ async def test_command_gateway_handoff_continues_on_the_receiving_agent(
     agent.behavior = "stream_complete"
     monkeypatch.setattr(agent, "events", events)
     async with app.nerves.events.subscribe(
-        ThreadTopic(ThreadKey.from_address(signal.context.address))
+        ThreadTopic(ThreadKey.model_validate(signal.context.address))
     ) as live:
         await kicked(app, signal)
         carried = [impulse.event for impulse in held(live)]
@@ -535,7 +535,7 @@ async def test_a_commands_events_reach_its_trunkline_thread(
         agent.behavior = "stream_complete"
         monkeypatch.setattr(agent, "events", events)
     async with app.nerves.events.subscribe(
-        ThreadTopic(ThreadKey.from_address(address))
+        ThreadTopic(ThreadKey.model_validate(address))
     ) as live:
         await kicked(app, signal)
         received = [impulse.event for impulse in held(live)]

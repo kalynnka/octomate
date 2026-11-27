@@ -796,7 +796,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
                     pending.set_result(signal)
                 if pending is not None:
                     continue
-                origin = ThreadKey.from_address(batch.source_address)
+                origin = ThreadKey.model_validate(batch.source_address)
                 impulse = Impulse(
                     RunErrorEvent(
                         message="This live request is no longer awaiting a response",
@@ -827,7 +827,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
                 raise ValueError("Unsupported awake signal")
             if origin is None:
                 raise ValueError("A reflex requires its original surface")
-            thread = ThreadKey.from_address(origin)
+            thread = ThreadKey.model_validate(origin)
             task = asyncio.create_task(self.reflex(signal, origin=origin))
             self.reflexes.setdefault(thread, set()).add(task)
             task.add_done_callback(self.relax)
@@ -841,7 +841,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         from octomate.reflex.state import ReflexDeps, ReflexState
 
         host = self.octomate
-        thread = ThreadKey.from_address(origin)
+        thread = ThreadKey.model_validate(origin)
         if isinstance(signal, DeferredActionBatchResponse):
             async with self.nerves.events.subscribe(ThreadTopic(thread)) as events:
                 while thread in host.awake_since:

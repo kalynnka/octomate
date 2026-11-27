@@ -545,6 +545,6 @@ async def test_native_summon_resolves_the_session_once_on_the_http_call(
     assert signal.user_profile is not None
     assert signal.user_profile.channel_tentacle_id == "im"
     assert signal.user_profile.channel_user_id == "alice"
-    thread = await octomate.threads.get(ThreadKey.from_address(opened))
+    thread = await octomate.threads.get(ThreadKey.model_validate(opened))
     assert thread is None
     assert signal.source_conversation_id is None

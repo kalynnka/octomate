@@ -207,7 +207,7 @@ async def test_plain_status_coalesces_changes_without_repeating_or_claiming_comp
     monkeypatch.setattr(feeler, "present", observe)
     address = ChannelAddress("qq", "group", "123", "456")
     feeler.feed(address, RunActivityChangedEvent(activity="thinking"))
-    key = ThreadKey.from_address(address)
+    key = ThreadKey.model_validate(address)
     try:
         assert await asyncio.wait_for(presented.get(), 1) == "Thinking…"
         feeler.feed(address, RunActivityChangedEvent(activity="using_tools"))

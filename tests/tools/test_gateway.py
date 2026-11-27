@@ -1244,9 +1244,15 @@ async def test_a_native_call_binds_only_a_session_its_caller_wrote(
     threads = ThreadManager(nerve=Nerve(), users=users)
     profile = await users.native_profile("claude", "luhui")
     assert profile is not None
-    written = await threads.ensure(ThreadKey("claude", "thread", "sess-1"), native=True)
+    written = await threads.ensure(
+        ThreadKey(channel_tentacle_id="claude", chat_type="thread", chat_id="sess-1"),
+        native=True,
+    )
     await ConversationManager().ensure(written.id, agent_tentacle_id="coding")
-    await threads.ensure(ThreadKey("claude", "thread", "sess-2"), native=True)
+    await threads.ensure(
+        ThreadKey(channel_tentacle_id="claude", chat_type="thread", chat_id="sess-2"),
+        native=True,
+    )
     await threads.record_outbound(
         written,
         agent_tentacle_id="claude",

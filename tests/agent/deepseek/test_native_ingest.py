@@ -29,9 +29,9 @@ from tests.support.nerve import held
 SENDER = UserProfile(channel_user_id="lu", name="lu")
 
 SESSION_ID = "session-native-0001"
-SESSION_ADDRESS = ThreadKey("deepseek", "thread", SESSION_ID).address(
-    SENDER.channel_user_id
-)
+SESSION_ADDRESS = ThreadKey(
+    channel_tentacle_id="deepseek", chat_type="thread", chat_id=SESSION_ID
+).address(SENDER.channel_user_id)
 BASE_TIME_MS = 1_786_899_000_000
 
 # The log path in the *client's* namespace: a label the server records, never opens.
@@ -143,7 +143,10 @@ async def stream_events(
 
 async def native_conversation(octomate: Octomate):
     thread = await octomate.threads.ensure(
-        ThreadKey("deepseek", "thread", SESSION_ID), native=True
+        ThreadKey(
+            channel_tentacle_id="deepseek", chat_type="thread", chat_id=SESSION_ID
+        ),
+        native=True,
     )
     return await octomate.conversations.ensure(thread.id, agent_tentacle_id="deepseek")
 
@@ -198,7 +201,10 @@ async def test_streamed_events_assemble_the_turn_and_its_ledger() -> None:
     assert [message.message_text for message in run.messages] == ["inspect it", "done"]
 
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey("deepseek", "thread", SESSION_ID)
+        octomate.threads,
+        ThreadKey(
+            channel_tentacle_id="deepseek", chat_type="thread", chat_id=SESSION_ID
+        ),
     )
     directions = [
         (message.direction, message.message_text) for message in thread.messages
@@ -308,7 +314,10 @@ async def test_injected_user_messages_stay_out_of_the_prompt_row() -> None:
     assert part.content == "hi"
     assert run.source == "gateway"
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey("deepseek", "thread", SESSION_ID)
+        octomate.threads,
+        ThreadKey(
+            channel_tentacle_id="deepseek", chat_type="thread", chat_id=SESSION_ID
+        ),
     )
     inbound = [m.message_text for m in thread.messages if m.direction == "inbound"]
     assert inbound == ["hi", "also check the tests"]
@@ -527,7 +536,10 @@ async def test_a_prompt_hook_creates_the_session_skeleton() -> None:
     )
 
     thread = await octomate.threads.ensure(
-        ThreadKey("deepseek", "thread", SESSION_ID), native=True
+        ThreadKey(
+            channel_tentacle_id="deepseek", chat_type="thread", chat_id=SESSION_ID
+        ),
+        native=True,
     )
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id="deepseek"
@@ -586,7 +598,9 @@ async def test_a_stop_with_no_attached_stream_settles_nothing() -> None:
 async def test_live_turn_restarts_then_settles_and_committed_replay_is_silent() -> None:
     octomate = Octomate()
     _, tailer = wired(octomate)
-    key = ThreadKey("deepseek", "thread", SESSION_ID)
+    key = ThreadKey(
+        channel_tentacle_id="deepseek", chat_type="thread", chat_id=SESSION_ID
+    )
     records = turn_events(1, 0, "inspect it", "done")
     async with octomate.nerves.events.subscribe(ThreadTopic(key)) as live:
         await stream_events(tailer, octomate.nerves.events, records[:-1])
@@ -609,7 +623,7 @@ async def test_live_turn_restarts_then_settles_and_committed_replay_is_silent() 
             for impulse in impulses
         )
         assert all(
-            impulse.origin == ThreadKey.from_address(SESSION_ADDRESS)
+            impulse.origin == ThreadKey.model_validate(SESSION_ADDRESS)
             for impulse in impulses
         )
         ended = impulses[-1].event
@@ -676,7 +690,9 @@ async def test_failed_commit_never_publishes_run_ended(
             "bind_native_run",
             AsyncMock(side_effect=RuntimeError("commit failed")),
         )
-    key = ThreadKey("deepseek", "thread", SESSION_ID)
+    key = ThreadKey(
+        channel_tentacle_id="deepseek", chat_type="thread", chat_id=SESSION_ID
+    )
     async with octomate.nerves.events.subscribe(ThreadTopic(key)) as live:
         with pytest.raises(RuntimeError, match="commit failed"):
             await stream_events(

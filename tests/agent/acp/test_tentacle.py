@@ -138,7 +138,12 @@ async def test_custom_harness_discovers_selects_and_reopens(
     assert sender is not None
     sender = await app.users.ensure_profile(agent.id, sender)
     thread = await app.threads.ensure(
-        ThreadKey(agent.id, "thread", str(user.id), uuid7().hex)
+        ThreadKey(
+            channel_tentacle_id=agent.id,
+            chat_type="thread",
+            chat_id=str(user.id),
+            channel_thread_id=uuid7().hex,
+        )
     )
     async with agent:
         assert set(agent.models) == (
@@ -226,7 +231,12 @@ async def test_harness_efforts_follow_model_and_reach_new_and_loaded_sessions(
     assert sender is not None
     sender = await app.users.ensure_profile(agent.id, sender)
     thread = await app.threads.ensure(
-        ThreadKey(agent.id, "thread", str(user.id), uuid7().hex)
+        ThreadKey(
+            channel_tentacle_id=agent.id,
+            chat_type="thread",
+            chat_id=str(user.id),
+            channel_thread_id=uuid7().hex,
+        )
     )
     conversation = await agent.resolve_conversation(
         thread.id, conversation_address=thread.key.address(sender.channel_user_id)
@@ -400,7 +410,12 @@ async def test_harness_without_http_mcp(
     assert sender is not None
     sender = await app.users.ensure_profile(agent.id, sender)
     thread = await app.threads.ensure(
-        ThreadKey(agent.id, "thread", str(user.id), uuid7().hex)
+        ThreadKey(
+            channel_tentacle_id=agent.id,
+            chat_type="thread",
+            chat_id=str(user.id),
+            channel_thread_id=uuid7().hex,
+        )
     )
     async with agent:
         if gateway:
@@ -468,7 +483,12 @@ async def agent(
     assert sender is not None
     sender = await app.users.ensure_profile(tentacle.id, sender)
     thread = await app.threads.ensure(
-        ThreadKey(tentacle.id, "thread", str(user.id), uuid7().hex),
+        ThreadKey(
+            channel_tentacle_id=tentacle.id,
+            chat_type="thread",
+            chat_id=str(user.id),
+            channel_thread_id=uuid7().hex,
+        ),
         project=app.projects.get("project"),
     )
     async with listening(app):
@@ -667,7 +687,12 @@ async def test_conversation_cannot_cross_threads(
 ) -> None:
     tentacle, sender, thread = agent
     other = await tentacle.threads.ensure(
-        ThreadKey(tentacle.id, "thread", "other", uuid7().hex)
+        ThreadKey(
+            channel_tentacle_id=tentacle.id,
+            chat_type="thread",
+            chat_id="other",
+            channel_thread_id=uuid7().hex,
+        )
     )
     conversation = await tentacle.conversations.ensure(
         other.id, agent_tentacle_id=tentacle.id

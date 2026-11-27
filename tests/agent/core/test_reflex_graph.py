@@ -183,7 +183,7 @@ def _source_target(address: ChannelAddress) -> ResponseTarget:
 
 
 def _thread(address: ChannelAddress) -> Thread:
-    key = ThreadKey.from_address(address)
+    key = ThreadKey.model_validate(address)
     return Thread(
         channel_tentacle_id=key.channel_tentacle_id,
         chat_type=key.chat_type,
@@ -1181,7 +1181,7 @@ async def test_a_handoff_row_names_the_turn_it_came_from() -> None:
     conversations.store[(thread.id, "other", "")] = source
     threads = FakeThreadManager()
     # Registered, so the here-landing resolves to this thread and not a fresh row.
-    threads.threads_by_key[ThreadKey.from_address(address)] = thread
+    threads.threads_by_key[ThreadKey.model_validate(address)] = thread
     target = _source_target(address)
 
     workspaces = RecordingWorkspaceManager()
@@ -2420,7 +2420,7 @@ async def test_send_to_dm_delivers_privately_and_leaves_the_group_alone() -> Non
     # It is on the DM's ledger — so whoever handles that DM meets it as pending
     # context next turn — while no conversation's model messages were touched.
     dm_thread = threads.threads_by_key[
-        ThreadKey.from_address(
+        ThreadKey.model_validate(
             ChannelAddress(
                 channel_tentacle_id="im",
                 chat_type="dm",

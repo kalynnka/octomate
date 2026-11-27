@@ -118,7 +118,8 @@ async def test_compaction_summary_never_becomes_a_prompt_or_run(
     assert (replayed.id, replayed.messages[0].id) == original_ids
     assert len(await runs_of(app)) == (0 if child else 2)
     thread = await a_loaded_thread(
-        app.threads, ThreadKey("claude", "thread", SESSION_ID)
+        app.threads,
+        ThreadKey(channel_tentacle_id="claude", chat_type="thread", chat_id=SESSION_ID),
     )
     assert all(item.message_text != message.message_text for item in thread.messages)
     if child:

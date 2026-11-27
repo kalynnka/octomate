@@ -146,7 +146,7 @@ def test_entries_flow_over_the_socket_and_the_next_connect_resumes() -> None:
     committed turn — the client re-reads its gateway from there."""
     client, tentacle = stream_client()
 
-    key = ThreadKey.from_address(SESSION_ADDRESS)
+    key = ThreadKey.model_validate(SESSION_ADDRESS)
     with client, ExitStack() as subscriptions:
         assert client.portal is not None
         live = subscriptions.enter_context(

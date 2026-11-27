@@ -489,7 +489,7 @@ async def test_send_here_reaches_the_console_watching_a_trunkline_thread() -> No
         conversations=FakeConversationManager(),
     )
     async with octomate.nerves.events.subscribe(
-        ThreadTopic(ThreadKey.from_address(address))
+        ThreadTopic(ThreadKey.model_validate(address))
     ) as live:
         async with Client(server) as client:
             result = await client.call_tool(

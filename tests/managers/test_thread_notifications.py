@@ -31,7 +31,12 @@ from tests.support.managers import a_project, a_registry
 from tests.support.nerve import held
 from tests.support.users import a_user
 
-KEY = ThreadKey("im", "thread", "room", "one")
+KEY = ThreadKey(
+    channel_tentacle_id="im",
+    chat_type="thread",
+    chat_id="room",
+    channel_thread_id="one",
+)
 
 
 @pytest.fixture
@@ -53,7 +58,12 @@ def prompt(account: str, message_id: str, *, key: ThreadKey = KEY) -> MessageEve
 
 
 @pytest.mark.parametrize(
-    "key", [KEY, ThreadKey("im", "group", "room"), ThreadKey("im", "dm", "room")]
+    "key",
+    [
+        KEY,
+        ThreadKey(channel_tentacle_id="im", chat_type="group", chat_id="room"),
+        ThreadKey(channel_tentacle_id="im", chat_type="dm", chat_id="room"),
+    ],
 )
 async def test_first_participation_notifies_each_user_once_and_only_on_user_topics(
     app: Octomate,
@@ -260,7 +270,14 @@ async def test_inherited_history_and_unlinked_profiles_do_not_receive_changes(
     source = await app.conversations.ensure(
         opening.thread_id, agent_tentacle_id="agent"
     )
-    target = await app.threads.ensure(ThreadKey("im", "thread", "room", "fork"))
+    target = await app.threads.ensure(
+        ThreadKey(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id="room",
+            channel_thread_id="fork",
+        )
+    )
     async with async_session() as session:
         session.add(ThreadLedger(thread_id=target.id, ledger_id=opening.thread_id))
         await session.commit()
@@ -295,7 +312,9 @@ async def test_inherited_history_and_unlinked_profiles_do_not_receive_changes(
 async def test_subthreads_do_not_publish_listing_changes(app: Octomate) -> None:
     alice = await a_user("alice", profiles={"im": "alice"})
     opening = await app.threads.record_inbound(prompt("alice", "opening"))
-    parent = await app.threads.ensure(ThreadKey("im", "group", "group"))
+    parent = await app.threads.ensure(
+        ThreadKey(channel_tentacle_id="im", chat_type="group", chat_id="group")
+    )
     async with app.nerves.events.subscribe(UserTopic(alice.id)) as live:
         child = await app.threads.open_sub_thread(parent)
         await app.threads.store_message(

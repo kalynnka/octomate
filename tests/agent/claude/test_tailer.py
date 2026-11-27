@@ -51,7 +51,9 @@ from tests.support.nerve import held
 SENDER = UserProfile(channel_user_id="lu", name="lu")
 
 SESSION_ID = "sess-tail"
-SESSION_KEY = ThreadKey("claude", "thread", SESSION_ID)
+SESSION_KEY = ThreadKey(
+    channel_tentacle_id="claude", chat_type="thread", chat_id=SESSION_ID
+)
 SESSION_ADDRESS = SESSION_KEY.address(SENDER.channel_user_id)
 
 # The transcript in the *client's* namespace: a label the server records, never opens.

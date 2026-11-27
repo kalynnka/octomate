@@ -751,7 +751,7 @@ def build_trunkline_router(
             raise HTTPException(status_code=409, detail=f"batch already {batch.status}")
         if (
             batch.response_mode == "resume"
-            and ThreadKey.from_address(batch.source_address) in octomate.awake_since
+            and ThreadKey.model_validate(batch.source_address) in octomate.awake_since
         ):
             # The kick would wait out the turn running there, holding this
             # request open for as long.
@@ -845,7 +845,12 @@ def build_trunkline_live_router(channel: TrunklineTentacle) -> APIRouter:
             key = thread.key
         elif thread_key is not None and thread_id is None:
             # The key a directive from this user files the thread under.
-            key = ThreadKey(channel.id, "thread", str(user.id), thread_key or None)
+            key = ThreadKey(
+                channel_tentacle_id=channel.id,
+                chat_type="thread",
+                chat_id=str(user.id),
+                channel_thread_id=thread_key or None,
+            )
         else:
             await websocket.close(
                 code=1008, reason="Name the thread by its id or by its key, not both"

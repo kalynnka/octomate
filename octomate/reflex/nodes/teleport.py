@@ -115,7 +115,7 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 agent = ctx.deps.agent(self.agent_id)
                 landed = await agent.fork(
                     source,
-                    ThreadKey.from_address(new_address),
+                    ThreadKey.model_validate(new_address),
                     sender=state.user_profile,
                 )
                 copied = await ctx.deps.conversation_manager.ensure(

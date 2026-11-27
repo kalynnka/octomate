@@ -316,7 +316,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
     @property
     def native_running_threads(self) -> set[ThreadKey]:
         return {
-            ThreadKey.from_address(state.address)
+            ThreadKey.model_validate(state.address)
             for state in self.session_tailer.sessions.values()
             if state.open_turn is not None
             and state.open_turn.native is not None
@@ -345,9 +345,11 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         ) -> JSONResponse:
             await self.session_ingest.handle(event)
             if activities := self.subagent_activities(event):
-                address = ThreadKey(self.id, "thread", event.session_id).address(
-                    sender.channel_user_id
-                )
+                address = ThreadKey(
+                    channel_tentacle_id=self.id,
+                    chat_type="thread",
+                    chat_id=event.session_id,
+                ).address(sender.channel_user_id)
                 async with self.nerve.publish(address) as impulses:
                     for activity in activities:
                         await impulses.send(Impulse(activity, address))
@@ -479,7 +481,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         else:
             project = None
         await self.threads.ensure(
-            ThreadKey.from_address(address),
+            ThreadKey.model_validate(address),
             project=project,
             native=True,
         )

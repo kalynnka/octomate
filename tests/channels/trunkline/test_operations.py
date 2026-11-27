@@ -69,7 +69,12 @@ async def case(in_memory_engine: AsyncEngine, tmp_path: Path) -> Case:
     await channel.probe()
     await far.probe()
     thread = await app.threads.ensure(
-        ThreadKey("trunkline", "thread", str(owner.id), uuid7().hex)
+        ThreadKey(
+            channel_tentacle_id="trunkline",
+            chat_type="thread",
+            chat_id=str(owner.id),
+            channel_thread_id=uuid7().hex,
+        )
     )
     await app.conversations.ensure(thread.id, agent_tentacle_id=agent.id)
     await app.threads.record_outbound(
@@ -150,7 +155,12 @@ async def test_inherited_chat_does_not_grant_access_to_a_private_fork(
     )
     source = (await case.app.conversations.for_thread(case.thread.id))[0]
     destination = await case.app.threads.ensure(
-        ThreadKey("trunkline", "thread", str(case.owner.id), uuid7().hex)
+        ThreadKey(
+            channel_tentacle_id="trunkline",
+            chat_type="thread",
+            chat_id=str(case.owner.id),
+            channel_thread_id=uuid7().hex,
+        )
     )
     target = await case.app.conversations.ensure(
         destination.id, agent_tentacle_id=case.agent.id
@@ -618,7 +628,12 @@ async def test_external_thread_unknown_privacy_does_not_export_history(
     case: Case, client: httpx2.AsyncClient
 ) -> None:
     thread = await case.app.threads.ensure(
-        ThreadKey("far", "thread", "room", uuid7().hex)
+        ThreadKey(
+            channel_tentacle_id="far",
+            chat_type="thread",
+            chat_id="room",
+            channel_thread_id=uuid7().hex,
+        )
     )
     await case.app.conversations.ensure(thread.id, agent_tentacle_id="first")
     profile = await case.app.users.profile("far", "alice")
@@ -656,7 +671,12 @@ async def test_external_thread_its_channel_calls_private_exports_history(
 ) -> None:
     monkeypatch.setattr(case.far, "is_shared", lambda address: False)
     thread = await case.app.threads.ensure(
-        ThreadKey("far", "thread", "alice", uuid7().hex)
+        ThreadKey(
+            channel_tentacle_id="far",
+            chat_type="thread",
+            chat_id="alice",
+            channel_thread_id=uuid7().hex,
+        )
     )
     await case.app.conversations.ensure(thread.id, agent_tentacle_id="first")
     profile = await case.app.users.profile("far", "alice")
@@ -735,7 +755,13 @@ async def test_native_teleport_requires_a_transcript_fork_agent(
     case: Case, client: httpx2.AsyncClient
 ) -> None:
     thread = await case.app.threads.ensure(
-        ThreadKey("codex", "thread", str(case.owner.id), uuid7().hex), native=True
+        ThreadKey(
+            channel_tentacle_id="codex",
+            chat_type="thread",
+            chat_id=str(case.owner.id),
+            channel_thread_id=uuid7().hex,
+        ),
+        native=True,
     )
     await case.app.conversations.ensure(
         thread.id, agent_tentacle_id="codex", native=True

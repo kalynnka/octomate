@@ -219,8 +219,8 @@ async def test_publish_keeps_channel_thread_origin_and_private_routing(
 ) -> None:
     core = Nerve()
     channel = ChannelTopic("web")
-    origin = ThreadTopic(ThreadKey.from_address(HERE))
-    destination = ThreadTopic(ThreadKey.from_address(THERE))
+    origin = ThreadTopic(ThreadKey.model_validate(HERE))
+    destination = ThreadTopic(ThreadKey.model_validate(THERE))
     async with (
         connected(core, channel, publishing=False) as (_, channel_client),
         connected(core, origin, publishing=False) as (_, origin_client),
@@ -349,7 +349,7 @@ async def test_habitat_transport_routes_only_to_the_core_bound_topic() -> None:
     impulse = Impulse(
         EVENT,
         HERE,
-        origin=ThreadKey.from_address(HERE),
+        origin=ThreadKey.model_validate(HERE),
     )
     async with connected(nerve, topic) as (_, guest):
         async with (
@@ -357,7 +357,7 @@ async def test_habitat_transport_routes_only_to_the_core_bound_topic() -> None:
             nerve.subscribe(UserTopic(owner)) as ui,
             nerve.subscribe(other) as other_user,
             nerve.subscribe(ChannelTopic(HERE.channel_tentacle_id)) as channel,
-            nerve.subscribe(ThreadTopic(ThreadKey.from_address(HERE))) as thread,
+            nerve.subscribe(ThreadTopic(ThreadKey.model_validate(HERE))) as thread,
         ):
             await guest.send(impulse)
             assert await events.receive() == impulse

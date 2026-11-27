@@ -279,7 +279,7 @@ class Nerve(Generic[SentT]):
         if publisher.closed:
             raise ValueError("Publisher fiber is closed")
         asked = (
-            ThreadKey.from_address(origin)
+            ThreadKey.model_validate(origin)
             if isinstance(origin, ChannelAddress)
             else None
         )
@@ -311,7 +311,9 @@ class Nerve(Generic[SentT]):
                     topics: set[Topic] = set()
                     if impulse.address is not None:
                         topics.add(ChannelTopic(impulse.address.channel_tentacle_id))
-                        topics.add(ThreadTopic(ThreadKey.from_address(impulse.address)))
+                        topics.add(
+                            ThreadTopic(ThreadKey.model_validate(impulse.address))
+                        )
                     if not impulse.private and asked is not None:
                         topics.add(ThreadTopic(asked))
                     if retaining is not None and retaining in topics:

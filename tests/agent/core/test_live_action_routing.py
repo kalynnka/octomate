@@ -285,10 +285,10 @@ async def test_missing_waiter_does_not_determine_response_routing(
         async with (
             listening(app),
             app.nerves.events.subscribe(
-                ThreadTopic(ThreadKey.from_address(ADDRESS))
+                ThreadTopic(ThreadKey.model_validate(ADDRESS))
             ) as events,
             app.nerves.events.subscribe(
-                ThreadTopic(ThreadKey.from_address(ADDRESS))
+                ThreadTopic(ThreadKey.model_validate(ADDRESS))
             ) as other_events,
             app.nerves.events.subscribe(
                 ChannelTopic(ADDRESS.channel_tentacle_id)
@@ -299,7 +299,7 @@ async def test_missing_waiter_does_not_determine_response_routing(
             assert await other_events.receive() == impulse
             assert await channel_events.receive() == impulse
             assert impulse.address == ADDRESS
-            assert impulse.origin == ThreadKey.from_address(ADDRESS)
+            assert impulse.origin == ThreadKey.model_validate(ADDRESS)
             error = impulse.event
         assert isinstance(error, RunErrorEvent)
         assert error.message == "This live request is no longer awaiting a response"

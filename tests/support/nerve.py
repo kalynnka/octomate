@@ -145,7 +145,7 @@ async def drained(*channels: ChannelTentacle) -> None:
 async def awake_on(octomate: Octomate, address: ChannelAddress) -> AsyncGenerator[None]:
     """A reflex awake on the thread at `address` for the block, doing nothing."""
 
-    thread = ThreadKey.from_address(address)
+    thread = ThreadKey.model_validate(address)
     octomate.awake_since[thread] = now_utc()
     try:
         yield
@@ -164,7 +164,7 @@ async def publish_signal(octomate: Octomate, signal: Signal) -> None:
             return
         case UserMessageSignal():
             thread = await octomate.threads.get(
-                ThreadKey.from_address(signal.address), with_messages=False
+                ThreadKey.model_validate(signal.address), with_messages=False
             )
             agent_id = (
                 signal.agent_id
@@ -197,7 +197,7 @@ async def kick_and_wait(
                     signal.batch_id
                 )
                 async with octomate.nerves.events.subscribe(
-                    ThreadTopic(ThreadKey.from_address(batch.source_address))
+                    ThreadTopic(ThreadKey.model_validate(batch.source_address))
                 ) as events:
                     await publish_signal(octomate, signal)
                     if pending is not None:
@@ -221,7 +221,7 @@ async def kick_and_wait(
                 raise AssertionError("Unsupported awake")
         assert origin is not None
         async with octomate.nerves.events.subscribe(
-            ThreadTopic(ThreadKey.from_address(origin))
+            ThreadTopic(ThreadKey.model_validate(origin))
         ) as events:
             await publish_signal(octomate, signal)
             tasks: set[asyncio.Task[ReflexGraphResult | None]] = set()

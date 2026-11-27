@@ -256,7 +256,7 @@ class CommandManager(Manager):
             route_matches = True
             if conversation_id is not None:
                 surface = await self.threads.get(
-                    ThreadKey.from_address(context.address),
+                    ThreadKey.model_validate(context.address),
                     with_messages=False,
                     user_id=context.user_id,
                 )

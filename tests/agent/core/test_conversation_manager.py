@@ -100,7 +100,10 @@ async def test_native_ownership_preserves_uploaded_thread_and_history(
 ) -> None:
     threads = ThreadManager(users=UserManager(), nerve=Nerve())
     thread = await threads.ensure(
-        ThreadKey(agent_tentacle_id, "thread", "session"), native=True
+        ThreadKey(
+            channel_tentacle_id=agent_tentacle_id, chat_type="thread", chat_id="session"
+        ),
+        native=True,
     )
     manager = ConversationManager()
     owner = "coding"
@@ -158,7 +161,10 @@ async def test_native_ownership_refuses_driven_threads_and_another_owner(
     with pytest.raises(ValueError, match="tailed thread"):
         await manager.ensure(await a_thread(), agent_tentacle_id="coding", native=True)
     threads = ThreadManager(users=UserManager(), nerve=Nerve())
-    thread = await threads.ensure(ThreadKey("codex", "thread", "session"), native=True)
+    thread = await threads.ensure(
+        ThreadKey(channel_tentacle_id="codex", chat_type="thread", chat_id="session"),
+        native=True,
+    )
     original = await manager.ensure(thread.id, agent_tentacle_id=owner)
     with pytest.raises(ValueError, match="another agent"):
         await manager.ensure(thread.id, agent_tentacle_id=claimant, native=True)
@@ -168,7 +174,10 @@ async def test_native_ownership_refuses_driven_threads_and_another_owner(
 async def test_native_claims_serialize_across_configured_agents() -> None:
     manager = ConversationManager()
     threads = ThreadManager(users=UserManager(), nerve=Nerve())
-    thread = await threads.ensure(ThreadKey("codex", "thread", "session"), native=True)
+    thread = await threads.ensure(
+        ThreadKey(channel_tentacle_id="codex", chat_type="thread", chat_id="session"),
+        native=True,
+    )
     outcomes = await asyncio.gather(
         manager.ensure(thread.id, agent_tentacle_id="coding", native=True),
         manager.ensure(thread.id, agent_tentacle_id="reviewer", native=True),

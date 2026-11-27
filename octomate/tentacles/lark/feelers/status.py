@@ -23,7 +23,7 @@ class LarkStatusFeeler(StatusFeeler):
         self.messages: dict[ThreadKey, str] = {}
 
     async def present(self, address: ChannelAddress, text: str) -> None:
-        key = ThreadKey.from_address(address)
+        key = ThreadKey.model_validate(address)
         message_id = self.messages.get(key)
         if not text:
             if message_id is not None:

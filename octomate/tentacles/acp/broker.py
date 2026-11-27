@@ -285,7 +285,10 @@ class AcpBroker:
         selection = next(iter(self.routes.values()))
         thread = await app.threads.ensure(
             ThreadKey(
-                self.tentacle.id, "thread", str(self.sender.user_id), uuid7().hex
+                channel_tentacle_id=self.tentacle.id,
+                chat_type="thread",
+                chat_id=str(self.sender.user_id),
+                channel_thread_id=uuid7().hex,
             ),
             project=project,
             new=True,

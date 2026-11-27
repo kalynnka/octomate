@@ -254,7 +254,7 @@ class OctomateSession:
             return
         self.nerves.events.deliver(ChannelTopic(address.channel_tentacle_id), impulse)
         self.nerves.events.deliver(
-            ThreadTopic(ThreadKey.from_address(address)), impulse
+            ThreadTopic(ThreadKey.model_validate(address)), impulse
         )
 
     @property
@@ -626,7 +626,11 @@ class OctomateSession:
         if not self.native or profile is None:
             raise RuntimeError("only a native session with a sender binds a thread")
         thread = await self.threads.get(
-            ThreadKey(self.current_agent_id, "thread", session_id),
+            ThreadKey(
+                channel_tentacle_id=self.current_agent_id,
+                chat_type="thread",
+                chat_id=session_id,
+            ),
             with_messages=False,
             user_id=profile.user_id,
         )

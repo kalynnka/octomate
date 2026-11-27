@@ -255,7 +255,7 @@ async def test_http_direct_command_before_conversation_creates_no_runtime_record
     async with async_session() as session:
         profiles_before = await session.count(UserProfile)
     async with app.nerves.events.subscribe(
-        ThreadTopic(ThreadKey.from_address(address))
+        ThreadTopic(ThreadKey.model_validate(address))
     ) as live:
         async with httpx2.AsyncClient(
             transport=httpx2.ASGITransport(app=app), base_url="http://test"
@@ -872,7 +872,7 @@ async def test_http_execution_preserves_arguments_and_replays_saved_outcome(
     address: ChannelAddress,
 ) -> None:
     async with app.nerves.events.subscribe(
-        ThreadTopic(ThreadKey.from_address(address))
+        ThreadTopic(ThreadKey.model_validate(address))
     ) as live:
         async with (
             drawing(*app.channels.values()),
@@ -972,7 +972,7 @@ async def test_http_execution_uses_manager_refusals(
     else:
         app.dependency_overrides[current_user] = lambda: User(username="other")
     async with app.nerves.events.subscribe(
-        ThreadTopic(ThreadKey.from_address(address))
+        ThreadTopic(ThreadKey.model_validate(address))
     ) as live:
         async with httpx2.AsyncClient(
             transport=httpx2.ASGITransport(app=app), base_url="http://test"
@@ -1035,7 +1035,7 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
     user_capabilities = AsyncMock(return_value=[])
     monkeypatch.setattr(agent, "user_capabilities", user_capabilities)
     async with app.nerves.events.subscribe(
-        ThreadTopic(ThreadKey.from_address(address))
+        ThreadTopic(ThreadKey.model_validate(address))
     ) as live:
         async with (
             drawing(*app.channels.values()),
@@ -1137,7 +1137,7 @@ async def test_command_presents_a_persisted_reflex_approval(
     agent.behavior = "stream_complete"
     monkeypatch.setattr(agent, "events", events)
     async with app.nerves.events.subscribe(
-        ThreadTopic(ThreadKey.from_address(address))
+        ThreadTopic(ThreadKey.model_validate(address))
     ) as live:
         async with (
             drawing(*app.channels.values()),

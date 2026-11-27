@@ -87,7 +87,11 @@ def _fake_runtimes(monkeypatch: pytest.MonkeyPatch) -> None:
 async def runs_of(
     octomate: Octomate, tentacle_id: str, session_id: str
 ) -> list[AgentRun]:
-    thread = await octomate.threads.ensure(ThreadKey(tentacle_id, "thread", session_id))
+    thread = await octomate.threads.ensure(
+        ThreadKey(
+            channel_tentacle_id=tentacle_id, chat_type="thread", chat_id=session_id
+        )
+    )
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id=tentacle_id
     )
@@ -194,9 +198,9 @@ async def stream_transcript(
 ) -> None:
     """Stream one transcript file the way production reaches it: attach and feed its
     framed lines — the server never opens the file itself."""
-    address = ThreadKey("claude", "thread", CLAUDE_SESSION).address(
-        SENDER.channel_user_id
-    )
+    address = ThreadKey(
+        channel_tentacle_id="claude", chat_type="thread", chat_id=CLAUDE_SESSION
+    ).address(SENDER.channel_user_id)
     async with nerve.publish(address) as impulses:
         state, _ = await tailer.attach_remote(
             CLAUDE_SESSION, transcript, SENDER, address, impulses
@@ -433,7 +437,12 @@ async def test_a_codex_rollout_naming_no_directory_records_none(
 
 async def a_thread(octomate: Octomate, project: str = "") -> Thread:
     return await octomate.threads.ensure(
-        ThreadKey("im", "thread", "chat", "t1"),
+        ThreadKey(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id="chat",
+            channel_thread_id="t1",
+        ),
         project=octomate.projects.get(project) if project else None,
     )
 

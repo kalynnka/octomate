@@ -181,7 +181,7 @@ async def run_reflex(
             finally:
                 if deps.executor is not None:
                     deps.agent(deps.executor).octomate.awake_since.pop(
-                        ThreadKey.from_address(origin), None
+                        ThreadKey.model_validate(origin), None
                     )
                 await deps.impulses.send(
                     Impulse(

@@ -305,7 +305,7 @@ class ReflexDeps:
             source_model_message_id=claim.source_model_message_id if claim else None,
             thread_id=state.thread.id,
             origin=self.origin,
-            woke_at=agent.octomate.awake_since[ThreadKey.from_address(self.origin)],
+            woke_at=agent.octomate.awake_since[ThreadKey.model_validate(self.origin)],
             source_address=source.address,
             target_mode=target.mode,
             run_name=state.run_name,

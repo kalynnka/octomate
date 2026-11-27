@@ -478,7 +478,7 @@ class FakeThreadManager(ThreadManager):
         native: bool = False,
     ) -> Thread:
         key = (
-            ThreadKey.from_address(address_or_key)
+            ThreadKey.model_validate(address_or_key)
             if isinstance(address_or_key, ChannelAddress)
             else address_or_key
         )
