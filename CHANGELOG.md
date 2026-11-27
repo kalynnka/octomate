@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.2.0](https://github.com/kalynnka/octomate/compare/octomate-v0.1.0...octomate-v0.2.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **mcp:** expose installed tools directly through FastMCP ([#186](https://github.com/kalynnka/octomate/issues/186))
+* **habitat:** add named habitats and macOS SRT workspace isolation ([#185](https://github.com/kalynnka/octomate/issues/185))
+* **habitat:** run agent harnesses in user sandboxes ([#181](https://github.com/kalynnka/octomate/issues/181))
+
+### Features
+
+* authorize native harnesses and CLI clients with OAuth ([#184](https://github.com/kalynnka/octomate/issues/184)) ([69936fb](https://github.com/kalynnka/octomate/commit/69936fb0fd9d28a9c867417bf6d4529da096b757))
+* dispatch agent reflexes through the signal nerve ([#183](https://github.com/kalynnka/octomate/issues/183)) ([839d27d](https://github.com/kalynnka/octomate/commit/839d27d72a69e848527e6d4e75d1365fe482f7df))
+* **habitat:** add named habitats and macOS SRT workspace isolation ([#185](https://github.com/kalynnka/octomate/issues/185)) ([6b67720](https://github.com/kalynnka/octomate/commit/6b67720d12427304bc7482200f3bd4fcffa7a238))
+* **habitat:** one habitat mode per service and a provider-agnostic manager ([#166](https://github.com/kalynnka/octomate/issues/166)) ([02d1c8a](https://github.com/kalynnka/octomate/commit/02d1c8ab5f36a8ace25fcd98a2244d978ff4c1cb))
+* **habitat:** run agent harnesses in user sandboxes ([#181](https://github.com/kalynnka/octomate/issues/181)) ([6e4c720](https://github.com/kalynnka/octomate/commit/6e4c7209bc2bfd2888b2752ebf921881df15e063))
+* **nerve:** replay an open kick to a console that opens mid-run ([#178](https://github.com/kalynnka/octomate/issues/178)) ([84d5ad8](https://github.com/kalynnka/octomate/commit/84d5ad8b9b4e28c876c6dc7c5fc570f2bb5b0eb4))
+* persist compactions and effective agent context ([#173](https://github.com/kalynnka/octomate/issues/173)) ([bbd290e](https://github.com/kalynnka/octomate/commit/bbd290edc5fafc248c99029932a3efd26ceccce4))
+* reuse persisted runtime API keys with sliding expiry ([#182](https://github.com/kalynnka/octomate/issues/182)) ([5883d1b](https://github.com/kalynnka/octomate/commit/5883d1b223d6c08e9a0142383bfcac8c9a645d01))
+* **sandbox:** add sbx lifecycle and Claude transport ([#169](https://github.com/kalynnka/octomate/issues/169)) ([3048cbd](https://github.com/kalynnka/octomate/commit/3048cbd28c501a9351ff40504d65346c6d590d0f))
+* **status:** narrate run status and smooth the live ledger in trunkline ([#177](https://github.com/kalynnka/octomate/issues/177)) ([04d31cf](https://github.com/kalynnka/octomate/commit/04d31cfc4d044037088a773c02637d045f845a39))
+* **volumes:** one storage root, per-owner slots and sandbox dispatch ([#176](https://github.com/kalynnka/octomate/issues/176)) ([d8c9e87](https://github.com/kalynnka/octomate/commit/d8c9e878d984e183feaebf313d8073b59272bd01))
+* **volumes:** record volumes and prepare each run's workspace in core ([#175](https://github.com/kalynnka/octomate/issues/175)) ([26a478b](https://github.com/kalynnka/octomate/commit/26a478bfd24a76e33e4a17149f6317c224f67971))
+
+
+### Bug Fixes
+
+* enable Astra 6.2 in Octomate and stabilize release tests ([#180](https://github.com/kalynnka/octomate/issues/180)) ([6ef646c](https://github.com/kalynnka/octomate/commit/6ef646cf05fea2a07dc78f04182571482175bc3b))
+* normalize harness annotations and refine chat rendering ([#171](https://github.com/kalynnka/octomate/issues/171)) ([f21019c](https://github.com/kalynnka/octomate/commit/f21019c7607a4139fef9f74448adfe1fc773872b))
+
+
+### Code Refactoring
+
+* **mcp:** expose installed tools directly through FastMCP ([#186](https://github.com/kalynnka/octomate/issues/186)) ([69f7416](https://github.com/kalynnka/octomate/commit/69f74167d9c84ee0d525c917d81af3151bb29a13))
+
 ## [0.1.0](https://github.com/kalynnka/octomate/compare/octomate-v0.0.6...octomate-v0.1.0) (2026-11-07)
 
 
