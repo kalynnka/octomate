@@ -15,7 +15,8 @@ does for every MCP server.
 from __future__ import annotations
 
 from claude_agent_sdk import McpSdkServerConfig, SdkMcpTool, create_sdk_mcp_server
-from fastmcp.exceptions import ToolError
+from fastmcp import FastMCP
+from fastmcp.exceptions import NotFoundError, ToolError
 from fastmcp.exceptions import ValidationError as McpValidationError
 from fastmcp.tools import Tool
 from pydantic import JsonValue, ValidationError
@@ -27,15 +28,18 @@ from octomate.managers.thread import ThreadManager
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_mcp
 
 
-def sdk_tool(tool: Tool) -> SdkMcpTool[dict[str, JsonValue]]:
+def sdk_tool(tool: Tool, server: FastMCP) -> SdkMcpTool[dict[str, JsonValue]]:
     """One of the server's tools as the SDK's in-process server takes it."""
-    if tool.description is None:
-        raise RuntimeError(f"the server's `{tool.name}` has no contract to project")
 
     async def handler(arguments: dict[str, JsonValue]) -> dict[str, JsonValue]:
         try:
-            result = await tool.run(arguments)
-        except (ToolError, McpValidationError, ValidationError) as refusal:
+            result = await server.call_tool(tool.name, arguments)
+        except (
+            NotFoundError,
+            ToolError,
+            McpValidationError,
+            ValidationError,
+        ) as refusal:
             # The same corrective sentence Inkling's ModelRetry carries, as a tool
             # error Claude retries from natively.
             return {
@@ -54,7 +58,7 @@ def sdk_tool(tool: Tool) -> SdkMcpTool[dict[str, JsonValue]]:
 
     return SdkMcpTool(
         name=tool.name,
-        description=tool.description,
+        description=tool.description or "",
         input_schema=tool.parameters,
         handler=handler,
     )
@@ -81,5 +85,5 @@ async def octomate_mcp_server(
     )
     return create_sdk_mcp_server(
         OCTOMATE_SERVER_NAME,
-        tools=[sdk_tool(tool) for tool in await server.list_tools()],
+        tools=[sdk_tool(tool, server) for tool in await server.list_tools()],
     )

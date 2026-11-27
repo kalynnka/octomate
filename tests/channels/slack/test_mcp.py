@@ -36,13 +36,13 @@ from octomate.managers.gateway import OctomateSession
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL, LINK_PROFILE_TOOL
 from octomate.mcp.server import (
-    CALL_MCP_TOOL,
     DISABLE_MCP,
     ENABLE_MCP,
     INSTALL_MCP,
     LIST_MCP_TENTACLES,
     LIST_MCP_TOOLS,
     LIST_MCPS,
+    SEARCH_MCP_TOOLS,
     UNINSTALL_MCP,
     octomate_instructions,
     octomate_mcp,
@@ -73,10 +73,10 @@ LISTED_TO_ALL = [
     DISABLE_MCP,
     UNINSTALL_MCP,
     LIST_MCP_TOOLS,
-    CALL_MCP_TOOL,
     CONNECT_TOOL,
     CONFIRM_TOOL,
     LINK_PROFILE_TOOL,
+    SEARCH_MCP_TOOLS,
 ]
 
 
@@ -317,14 +317,10 @@ async def test_slacks_tools_act_as_the_person_from_any_channel() -> None:
     async with served(octomate) as (octomate, app):
         away = await a_slack_turn(octomate, channel, elsewhere)
         async with over(octomate, app, naming(away)) as client:
-            with pytest.raises(ToolError, match="unavailable"):
+            with pytest.raises(ToolError, match="Unknown tool"):
                 await client.call_tool(
-                    CALL_MCP_TOOL,
-                    {
-                        "namespace": "personal/slack",
-                        "name": "slack_read_user_profile",
-                        "arguments": {},
-                    },
+                    "personal-slack_slack_read_user_profile",
+                    {},
                 )
 
         session = await a_slack_turn(octomate, channel, a_slack_thread())
@@ -338,15 +334,14 @@ async def test_slacks_tools_act_as_the_person_from_any_channel() -> None:
             tools = await client.list_tools()
             catalog = await discover(client, "personal/slack")
             result = await client.call_tool(
-                CALL_MCP_TOOL,
-                {
-                    "namespace": "personal/slack",
-                    "name": "slack_read_user_profile",
-                    "arguments": {},
-                },
+                "personal-slack_slack_read_user_profile",
+                {},
             )
 
-    assert [tool.name for tool in tools] == LISTED_TO_ALL
+    assert {tool.name for tool in tools} == {
+        *LISTED_TO_ALL,
+        "personal-slack_slack_read_user_profile",
+    }
     assert [tool.name for tool in catalog.tools] == ["slack_read_user_profile"]
     assert result.structured_content == {"result": "steve.li"}
     assert result.data == "steve.li"
@@ -370,14 +365,10 @@ async def test_an_unconnected_caller_is_listed_nothing_and_told_to_connect() -> 
         session = await a_slack_turn(octomate, channel, a_slack_thread())
         async with over(octomate, app, naming(session)) as client:
             tools = await client.list_tools()
-            with pytest.raises(ToolError, match="unavailable"):
+            with pytest.raises(ToolError, match="Unknown tool"):
                 await client.call_tool(
-                    CALL_MCP_TOOL,
-                    {
-                        "namespace": "personal/slack",
-                        "name": "slack_read_user_profile",
-                        "arguments": {},
-                    },
+                    "personal-slack_slack_read_user_profile",
+                    {},
                 )
             status = await client.call_tool(CONFIRM_TOOL, SLACK)
 
@@ -416,7 +407,11 @@ async def test_a_connected_caller_is_listed_slacks_tools_and_acts_as_themselves(
     channel = a_workspace(octomate, ink)
     upstream, seen = a_slack_upstream()
     upstream_app = upstream.http_app()
-    async with served(octomate) as (octomate, app):
+    octomate.mcp.httpx_client_factory = into(httpx2.ASGITransport(app=upstream_app))
+    async with (
+        upstream_app.router.lifespan_context(upstream_app),
+        served(octomate) as (octomate, app),
+    ):
         session = await a_slack_turn(octomate, channel, a_slack_thread())
         async with over(octomate, app, naming(session)) as client:
             await connected(octomate, ink, client)
@@ -426,7 +421,6 @@ async def test_a_connected_caller_is_listed_slacks_tools_and_acts_as_themselves(
         )
 
         async with (
-            upstream_app.router.lifespan_context(upstream_app),
             in_memory(
                 channel, session, httpx2.ASGITransport(app=upstream_app)
             ) as client,
@@ -434,17 +428,15 @@ async def test_a_connected_caller_is_listed_slacks_tools_and_acts_as_themselves(
             tools = await client.list_tools()
             catalog = await discover(client, "personal/slack")
             result = await client.call_tool(
-                CALL_MCP_TOOL,
-                {
-                    "namespace": "personal/slack",
-                    "name": "slack_read_user_profile",
-                    "arguments": {},
-                },
+                "personal-slack_slack_read_user_profile",
+                {},
             )
 
-    # Discovery returns Slack's catalog for this person; the initial list stays
-    # fixed, and the call carries the token Octomate holds for them.
-    assert [tool.name for tool in tools] == LISTED_TO_ALL
+    # Authorized discovery exposes Slack's tools; calls use the owner's token.
+    assert {tool.name for tool in tools} == {
+        *LISTED_TO_ALL,
+        "personal-slack_slack_read_user_profile",
+    }
     assert [tool.name for tool in catalog.tools] == ["slack_read_user_profile"]
     assert result.structured_content == {"result": "steve.li"}
     assert result.data == "steve.li"
@@ -464,12 +456,8 @@ async def test_a_token_slack_has_revoked_retires_the_connection() -> None:
         async with in_memory(channel, session, refusing) as client:
             with pytest.raises(ToolError):
                 await client.call_tool(
-                    CALL_MCP_TOOL,
-                    {
-                        "namespace": "personal/slack",
-                        "name": "slack_read_user_profile",
-                        "arguments": {},
-                    },
+                    "personal-slack_slack_read_user_profile",
+                    {},
                 )
 
         async with over(octomate, app, naming(session)) as client:

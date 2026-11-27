@@ -13,7 +13,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Literal, Self
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import httpx2
 import pytest
@@ -37,7 +37,6 @@ from octomate.mcp.gateway import (
 )
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL, LINK_PROFILE_TOOL
 from octomate.mcp.server import (
-    CALL_MCP_TOOL,
     DISABLE_MCP,
     ENABLE_MCP,
     INSTALL_MCP,
@@ -45,12 +44,14 @@ from octomate.mcp.server import (
     LIST_MCP_TOOLS,
     LIST_MCPS,
     OCTOMATE_MCP_PATH,
+    SEARCH_MCP_TOOLS,
     UNINSTALL_MCP,
     history_tool,
     octomate_instructions,
 )
 from octomate.nerve import Nerves
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.mcp import McpInstallRequest
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.triage import SchemeDecision
 from octomate.signals import NativeGatewaySignal, SummonSignal
@@ -252,10 +253,10 @@ async def test_a_provider_adds_the_link_tools_and_lists_nothing_of_its_own() -> 
         DISABLE_MCP,
         UNINSTALL_MCP,
         LIST_MCP_TOOLS,
-        CALL_MCP_TOOL,
         CONNECT_TOOL,
         CONFIRM_TOOL,
         LINK_PROFILE_TOOL,
+        SEARCH_MCP_TOOLS,
     ]
     # Codex runs a tool that says it only reads without asking first.
     assert [
@@ -268,6 +269,7 @@ async def test_a_provider_adds_the_link_tools_and_lists_nothing_of_its_own() -> 
         LIST_MCP_TENTACLES,
         LIST_MCPS,
         LIST_MCP_TOOLS,
+        SEARCH_MCP_TOOLS,
     ]
 
 
@@ -330,10 +332,10 @@ async def test_an_api_token_opens_the_shared_spells_and_the_history_tools(
         DISABLE_MCP,
         UNINSTALL_MCP,
         LIST_MCP_TOOLS,
-        CALL_MCP_TOOL,
         CONNECT_TOOL,
         CONFIRM_TOOL,
         LINK_PROFILE_TOOL,
+        SEARCH_MCP_TOOLS,
     ]
 
 
@@ -428,6 +430,42 @@ NATIVE = {CLIENT_HEADER: "claude"}
 USER_BEARER = {"Authorization": "Bearer luhui-token"}
 
 
+async def test_concurrent_native_calls_inject_their_own_sessions() -> None:
+    octomate = Octomate(config=OctomateConfig(auth=auth_config()))
+    octomate.connect(FakeAgent(id="claude"))
+    for username in ("alice", "bob"):
+        user = await a_user(username)
+        await a_api_key(user, f"{username}-token")
+        instance = await octomate.mcp.install(
+            user.id,
+            McpInstallRequest.model_validate(
+                {
+                    "name": username,
+                    "namespace": "work",
+                    "url": "https://mcp.example/mcp",
+                    "auth": {"kind": "none"},
+                }
+            ),
+        )
+        await octomate.mcp.disable(user.id, instance.id)
+
+    async with (
+        served(octomate) as (octomate, app),
+        over(octomate, app, {**NATIVE, "Authorization": "Bearer alice-token"}) as alice,
+        over(octomate, app, {**NATIVE, "Authorization": "Bearer bob-token"}) as bob,
+    ):
+        tools = {tool.name: tool for tool in await alice.list_tools()}
+        assert "scope" not in tools[LIST_MCPS].input_schema.get("properties", {})
+        assert "scope" not in tools[LIST_MCP_TOOLS].input_schema.get("properties", {})
+        results = await asyncio.gather(
+            alice.call_tool(LIST_MCPS, {}), bob.call_tool(LIST_MCPS, {})
+        )
+    for username, result in zip(("alice", "bob"), results, strict=True):
+        assert result.structured_content is not None
+        [installation] = result.structured_content["result"]
+        assert installation["name"] == username
+
+
 @pytest.mark.parametrize("agent_tentacle_id", ["claude", "codex", "deepseek"])
 async def test_native_client_resolves_the_named_agent_and_profile(
     agent_tentacle_id: str,
@@ -506,17 +544,20 @@ async def test_a_native_scheme_kicks_exactly_one_handoff() -> None:
     assert signal.decision.brief == "Please take this up."
 
 
-async def test_native_summon_resolves_the_session_once_on_the_http_call(
+@pytest.mark.parametrize("mode", ["legacy", "2026-07-28"])
+async def test_native_summon_resolves_separately_for_discovery_and_execution(
     monkeypatch: pytest.MonkeyPatch,
+    mode: Literal["legacy", "2026-07-28"],
 ) -> None:
     resolve = AsyncMock(wraps=native_session)
     monkeypatch.setattr("octomate.mcp.gateway.native_session", resolve)
     octomate = await a_native_deployment()
     async with served(octomate) as (octomate, app):
         resolve.assert_not_awaited()
-        async with over(octomate, app, {**USER_BEARER, **NATIVE}) as client:
+        async with over(octomate, app, {**USER_BEARER, **NATIVE}, mode=mode) as client:
             assert "gateway_summon" in {tool.name for tool in await client.list_tools()}
-            resolve.assert_not_awaited()
+            resolve.assert_awaited_once_with(octomate, "claude", "luhui")
+            resolve.reset_mock()
             result = await client.call_tool(
                 "gateway_summon",
                 {
@@ -533,7 +574,12 @@ async def test_native_summon_resolves_the_session_once_on_the_http_call(
                     },
                 },
             )
-    resolve.assert_awaited_once_with(octomate, "claude", "luhui")
+    # Discovery during lookup and execution each resolve the authenticated caller.
+    assert resolve.await_args_list
+    assert all(
+        invocation == call(octomate, "claude", "luhui")
+        for invocation in resolve.await_args_list
+    )
     assert result.structured_content is not None
     opened = TypeAdapter(ChannelAddress).validate_python(
         result.structured_content["result"]

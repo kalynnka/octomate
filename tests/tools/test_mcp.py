@@ -46,13 +46,13 @@ from octomate.managers.oauth import OAuthConnector
 from octomate.managers.user import UserManager
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL, LINK_PROFILE_TOOL
 from octomate.mcp.server import (
-    CALL_MCP_TOOL,
     DISABLE_MCP,
     ENABLE_MCP,
     INSTALL_MCP,
     LIST_MCP_TENTACLES,
     LIST_MCP_TOOLS,
     LIST_MCPS,
+    SEARCH_MCP_TOOLS,
     UNINSTALL_MCP,
     tentacles_mcp,
 )
@@ -261,8 +261,8 @@ async def test_an_installed_bare_tentacle_uses_its_operator_credential() -> None
         tools = await client.list_tools()
         catalog = await discover(client, "personal/linear")
         result = await client.call_tool(
-            CALL_MCP_TOOL,
-            {"namespace": "personal/linear", "name": "list_issues", "arguments": {}},
+            "personal-linear_list_issues",
+            {},
         )
 
     assert {tool.name for tool in tools} == {
@@ -273,10 +273,11 @@ async def test_an_installed_bare_tentacle_uses_its_operator_credential() -> None
         DISABLE_MCP,
         UNINSTALL_MCP,
         LIST_MCP_TOOLS,
-        CALL_MCP_TOOL,
+        "personal-linear_list_issues",
         CONNECT_TOOL,
         CONFIRM_TOOL,
         LINK_PROFILE_TOOL,
+        SEARCH_MCP_TOOLS,
     }
     assert [tool.name for tool in catalog.tools] == ["list_issues"]
     assert result.structured_content == {"result": "answered"}
@@ -300,12 +301,13 @@ async def test_a_linked_person_speaks_with_their_own_token() -> None:
         linked = await client.list_tools()
         catalog = await discover(client, "personal/gh")
         result = await client.call_tool(
-            CALL_MCP_TOOL,
-            {"namespace": "personal/gh", "name": "list_repos", "arguments": {}},
+            "personal-gh_list_repos",
+            {},
         )
 
-    # Linking enables discovery without changing the initial tool list.
-    assert [tool.name for tool in unlinked] == [tool.name for tool in linked]
+    assert {tool.name for tool in linked} - {tool.name for tool in unlinked} == {
+        "personal-gh_list_repos"
+    }
     assert [tool.name for tool in linked] == [
         LIST_MCP_TENTACLES,
         LIST_MCPS,
@@ -314,10 +316,11 @@ async def test_a_linked_person_speaks_with_their_own_token() -> None:
         DISABLE_MCP,
         UNINSTALL_MCP,
         LIST_MCP_TOOLS,
-        CALL_MCP_TOOL,
+        "personal-gh_list_repos",
         CONNECT_TOOL,
         CONFIRM_TOOL,
         LINK_PROFILE_TOOL,
+        SEARCH_MCP_TOOLS,
     ]
     assert [tool.name for tool in catalog.tools] == ["list_repos"]
     assert catalog.instructions == tentacle.instructions
@@ -332,10 +335,10 @@ async def test_a_turn_by_nobody_registered_gets_nothing_of_a_persons_provider() 
 
     async with proxied(tentacle, a_turn(), upstream) as client:
         tools = await client.list_tools()
-        with pytest.raises(ToolError, match="unavailable"):
+        with pytest.raises(ToolError, match="Unknown tool"):
             await client.call_tool(
-                CALL_MCP_TOOL,
-                {"namespace": "personal/gh", "name": "list_repos", "arguments": {}},
+                "personal-gh_list_repos",
+                {},
             )
 
     assert [tool.name for tool in tools] == [
@@ -346,10 +349,10 @@ async def test_a_turn_by_nobody_registered_gets_nothing_of_a_persons_provider() 
         DISABLE_MCP,
         UNINSTALL_MCP,
         LIST_MCP_TOOLS,
-        CALL_MCP_TOOL,
         CONNECT_TOOL,
         CONFIRM_TOOL,
         LINK_PROFILE_TOOL,
+        SEARCH_MCP_TOOLS,
     ]
     assert seen == []
 
@@ -395,7 +398,7 @@ async def test_inkling_mounts_the_tentacles_deferred_for_the_person_of_its_turn(
         DISABLE_MCP,
         UNINSTALL_MCP,
         LIST_MCP_TOOLS,
-        CALL_MCP_TOOL,
+        SEARCH_MCP_TOOLS,
     }
 
 
@@ -429,16 +432,16 @@ async def test_inkling_calls_a_tentacle_in_process_and_hears_a_refusal_as_a_retr
         await host.mcp.confirm(owner, installed.id, profile=profile)
         after = await toolset.get_tools(ctx)
         answer = await toolset.call_tool(
-            CALL_MCP_TOOL,
-            {"namespace": "personal/gh", "name": "list_repos", "arguments": {}},
+            "personal-gh_list_repos",
+            {},
             ctx,
-            after[CALL_MCP_TOOL],
+            after["personal-gh_list_repos"],
         )
 
     # MCP refusals are retries; once linked, the
     # call goes as the person and what comes back is what the provider said.
-    assert "gh_list_repos" not in before
-    assert "gh_list_repos" not in after
+    assert "personal-gh_list_repos" not in before
+    assert "personal-gh_list_repos" in after
     assert answer == "answered"
     assert seen == ["Bearer github-user-token"]
 

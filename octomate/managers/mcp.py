@@ -17,7 +17,7 @@ from fastmcp.apps.config import UI_EXTENSION_ID, UI_MIME_TYPE
 from fastmcp.client.transports import StreamableHttpTransport
 from mcp.client.extension import advertise
 from mcp.shared._httpx_utils import McpHttpClientFactory
-from mcp.types import CallToolResult, TextResourceContents
+from mcp.types import CallToolResult, TextResourceContents, Tool
 from pydantic import UUID7, JsonValue
 from sqlalchemy.exc import IntegrityError
 from uuid_utils.compat import uuid7
@@ -540,37 +540,26 @@ class McpManager(Manager, Locks[UUID7]):
             self.tool_catalogs[key] = catalog
             return catalog
 
-    async def call_tool(
+    async def capture_app(
         self,
         scope: OctomateSession,
-        namespace: str,
-        name: str,
+        user: User,
+        instance: Mcp,
+        tool: Tool,
+        ui: McpAppToolMeta,
         arguments: dict[str, JsonValue],
+        result: CallToolResult,
     ) -> CallToolResult:
-        """Execute one upstream call and retain its declared app before publishing.
-
-        This boundary sees each call independently, including calls a runtime
-        nests inside a code wrapper. Sessions without thread attribution return
-        the upstream result without producing an artifact or ledger reference.
-        App declarations reuse the connection's latest discovery, loading once
-        when absent. Explicit discovery refreshes them; client eviction clears them.
-        """
-        user, instance = await self.resolve(scope, namespace)
+        """Retain an attributed MCP App result before publishing its reference."""
         address = scope.conversation_address
         channel = scope.channels.get(address.channel_tentacle_id) if address else None
-        async with self.acquire(user, mcp_id=instance.id) as client:
-            if (
-                scope.native
-                or scope.thread_id is None
-                or channel is None
-                or address is None
-            ):
-                return await client.call_tool_mcp(name, arguments)
-            catalog = await self.catalog(user, mcp_id=instance.id)
-            tool = catalog.tools_by_name.get(name)
-            ui = McpAppToolMeta.model_validate(tool.meta or {}) if tool else None
-            result = await client.call_tool_mcp(name, arguments)
-        if tool is None or ui is None or ui.resource_uri is None:
+        if (
+            scope.native
+            or scope.thread_id is None
+            or channel is None
+            or address is None
+            or ui.resource_uri is None
+        ):
             return result
         message = await scope.threads.record_artifact(
             scope.thread_id,
@@ -639,6 +628,58 @@ class McpManager(Manager, Locks[UUID7]):
             ui=(resource.meta or {}).get("ui", {}),
         )
 
+    async def transport(
+        self, scope: OctomateSession | User, *, mcp_id: UUID7
+    ) -> StreamableHttpTransport:
+        """Build an authenticated transport for a currently authorized installation.
+
+        The caller owns the connection and protocol negotiation. Credentials are
+        resolved again for every connection, including retained proxy tools.
+        """
+        user, instance = await self.resolve(scope, mcp_id=mcp_id)
+        if isinstance(instance, OAuthMcp) and (
+            self.oauth is None
+            or await self.oauth.connection_status(
+                user, instance.tentacle_id or "mcp", mcp_id=instance.id
+            )
+            != "active"
+        ):
+            raise McpUnavailable
+        headers: dict[str, str] = {}
+        tentacle = self.tentacles.get(instance.tentacle_id or "")
+        if isinstance(instance, BearerMcp):
+            if self.cipher is None:
+                raise ValueError("MCP credential encryption is not configured")
+            token = self.cipher.decrypt(
+                instance.encrypted_token, context=f"mcp:{user.id}:{instance.id}"
+            )
+            headers["Authorization"] = f"Bearer {token}"
+        auth: McpBearerAuth | None = None
+        if isinstance(instance, OAuthMcp) and self.oauth is not None:
+            if isinstance(tentacle, LarkTentacle):
+                # Feishu renamed the bearer header and bolted on a tool allowlist.
+                auth = LarkMcpBearerAuth(
+                    manager=self.oauth,
+                    user=user,
+                    mcp_id=instance.id,
+                    url=instance.url,
+                    tentacle=tentacle,
+                )
+            else:
+                auth = McpBearerAuth(
+                    manager=self.oauth,
+                    user=user,
+                    mcp_id=instance.id,
+                    connector_id=instance.tentacle_id or "mcp",
+                    url=instance.url,
+                )
+        return StreamableHttpTransport(
+            url=instance.url,
+            headers=headers,
+            auth=auth,
+            httpx_client_factory=self.httpx_client_factory,
+        )
+
     @asynccontextmanager
     async def acquire(
         self,
@@ -652,63 +693,15 @@ class McpManager(Manager, Locks[UUID7]):
         async with self.lock(instance.id):
             # The first lookup finds the lock; reload under it so disabling or
             # deleting an instance wins before another call is dispatched.
-            async with async_session() as session:
-                current = await session.one_or_none(
-                    Mcp,
-                    expressions=[Mcp["id"] == instance.id],
-                )
-            if current is None or not current.enabled or current.user_id != user_id:
-                raise McpUnavailable
-            if isinstance(current, OAuthMcp) and (
-                self.oauth is None
-                or await self.oauth.connection_status(
-                    user,
-                    current.tentacle_id or "mcp",
-                    mcp_id=current.id,
-                )
-                != "active"
-            ):
-                raise McpUnavailable
-            key = McpClientKey(user_id=user_id, mcp_id=current.id)
+            transport = await self.transport(user, mcp_id=instance.id)
+            key = McpClientKey(user_id=user_id, mcp_id=instance.id)
             client = self.clients.get(key)
             if client is not None and not client.is_connected():
                 await self.evict(key)
                 client = None
             if client is None:
-                headers: dict[str, str] = {}
-                tentacle = self.tentacles.get(current.tentacle_id or "")
-                if isinstance(current, BearerMcp):
-                    if self.cipher is None:
-                        raise ValueError("MCP credential encryption is not configured")
-                    token = self.cipher.decrypt(
-                        current.encrypted_token, context=f"mcp:{user_id}:{current.id}"
-                    )
-                    headers["Authorization"] = f"Bearer {token}"
-                auth: McpBearerAuth | None = None
-                if isinstance(current, OAuthMcp) and self.oauth is not None:
-                    if isinstance(tentacle, LarkTentacle):
-                        auth = LarkMcpBearerAuth(
-                            manager=self.oauth,
-                            user=user,
-                            mcp_id=current.id,
-                            url=current.url,
-                            tentacle=tentacle,
-                        )
-                    else:
-                        auth = McpBearerAuth(
-                            manager=self.oauth,
-                            user=user,
-                            mcp_id=current.id,
-                            connector_id=current.tentacle_id or "mcp",
-                            url=current.url,
-                        )
                 client = Client(
-                    transport=StreamableHttpTransport(
-                        url=current.url,
-                        headers=headers,
-                        auth=auth,
-                        httpx_client_factory=self.httpx_client_factory,
-                    ),
+                    transport=transport,
                     mode="auto",
                     cache=False,
                     extensions=[
