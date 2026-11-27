@@ -67,24 +67,29 @@ def session_cookies(
 ) -> None:
     response.headers["Cache-Control"] = "no-store"
     if tokens is None:
-        for name in ("octomate_access", "octomate_refresh"):
+        for name, path in (
+            ("octomate_access", "/api"),
+            ("octomate_access", "/oauth"),
+            ("octomate_refresh", "/api"),
+        ):
             response.delete_cookie(
                 name,
-                path="/api",
+                path=path,
                 secure=manager.config.cookie_secure,
                 httponly=True,
                 samesite="strict",
             )
         return
-    for name, token, expires in (
-        ("octomate_access", tokens.access_token, tokens.access_expires_at),
-        ("octomate_refresh", tokens.refresh_token, tokens.refresh_expires_at),
+    for name, path, token, expires in (
+        ("octomate_access", "/api", tokens.access_token, tokens.access_expires_at),
+        ("octomate_access", "/oauth", tokens.access_token, tokens.access_expires_at),
+        ("octomate_refresh", "/api", tokens.refresh_token, tokens.refresh_expires_at),
     ):
         response.set_cookie(
             name,
             token.get_secret_value(),
             expires=expires,
-            path="/api",
+            path=path,
             secure=manager.config.cookie_secure,
             httponly=True,
             samesite="strict",

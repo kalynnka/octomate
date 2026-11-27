@@ -537,13 +537,22 @@ class Octomate(FastAPI):
         # The router imports the dependency providers, which import Octomate.
         from octomate.artifacts import ArtifactSandbox, artifact_router
         from octomate.auth import auth_router
+        from octomate.authorization import discovery_router
+        from octomate.authorization import router as authorization_router
         from octomate.commands import command_router
         from octomate.mcp.routes import mcp_router
+        from octomate.oauth.design import design_router
         from octomate.oauth.routes import oauth_router
         from octomate.tentacles.trunkline.base import ConsoleFiles, TrunklineTentacle
 
         self.include_router(artifact_router)
         self.include_router(auth_router)
+        authorization_enabled = (
+            self.auth is not None and self.auth.config.oauth_issuer_url is not None
+        )
+        if authorization_enabled:
+            self.include_router(authorization_router)
+            self.include_router(discovery_router)
         self.include_router(command_router)
         self.include_router(mcp_router)
         # FastAPI builds this on first serving, after tentacles have registered.
@@ -551,11 +560,14 @@ class Octomate(FastAPI):
         # only when a registered connector actually points a browser at it — the two
         # routes are the deployment's public surface, and a deployment with no
         # authorization-code integration should not be serving them at all.
-        if self.oauth.callback_base_uri is not None or any(
+        callback_enabled = self.oauth.callback_base_uri is not None or any(
             isinstance(connector.callback_transport, DirectHttpOAuthCallbackTransport)
             for connector in self.oauth.connectors.values()
-        ):
+        )
+        if callback_enabled:
             self.include_router(oauth_router)
+        if authorization_enabled or callback_enabled:
+            self.include_router(design_router)
 
         self.mount(f"/{OCTOMATE_SERVER_NAME}", self.fastmcp, name=OCTOMATE_SERVER_NAME)
 

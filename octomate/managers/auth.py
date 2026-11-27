@@ -495,6 +495,44 @@ class AuthManager(Manager, Locks[str]):
             key.revoked_at = datetime.now(UTC)
             await session.commit()
 
+    async def get_oauth_authorization(self, ticket: SecretStr) -> OAuthAuthorization:
+        """Inspect live, undecided consent without issuing credentials."""
+        async with async_session() as session:
+            pending = await session.one_or_none(
+                OAuthAuthorization,
+                expressions=[
+                    OAuthAuthorization["ticket_hash"]
+                    == self.hash_token(ticket, self.config.access_token_salt)
+                ],
+            )
+        if (
+            pending is None
+            or pending.expires_at <= datetime.now(UTC)
+            or pending.grant_id is not None
+        ):
+            raise InvalidCredentials
+        return pending
+
+    async def deny_oauth_authorization(self, ticket: SecretStr) -> OAuthAuthorization:
+        """Expire pending consent under the same lock as approval."""
+        pending = await self.get_oauth_authorization(ticket)
+        async with self.lock(f"oauth-consent:{pending.id}"), async_session() as session:
+            if session.get_bind().dialect.name == "sqlite":
+                await session.execute(text("BEGIN IMMEDIATE"))
+            pending = await session.get(
+                OAuthAuthorization, pending.id, with_for_update=True
+            )
+            now = datetime.now(UTC)
+            if (
+                pending is None
+                or pending.expires_at <= now
+                or pending.grant_id is not None
+            ):
+                raise InvalidCredentials
+            pending.expires_at = now
+            await session.commit()
+            return pending
+
     async def approve_oauth_authorization(
         self, user_id: UUID7, ticket: SecretStr
     ) -> OAuthAuthorization:

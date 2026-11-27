@@ -2,7 +2,15 @@
 
 from datetime import timedelta
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from mcp.server.auth.routes import validate_issuer_url
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+)
 
 
 class AuthConfig(BaseModel):
@@ -42,6 +50,20 @@ class AuthConfig(BaseModel):
         le=timedelta(minutes=10),
         description="Lifetime of pending OAuth consent and, after approval, its single-use code.",
     )
+    oauth_issuer_url: AnyHttpUrl | None = Field(
+        default=None,
+        description="Public origin for inbound OAuth. Enables native-harness and CLI authorization; HTTPS except for local development.",
+    )
+
+    @field_validator("oauth_issuer_url")
+    @classmethod
+    def validate_oauth_issuer(cls, value: AnyHttpUrl | None) -> AnyHttpUrl | None:
+        if value is not None:
+            validate_issuer_url(value)
+            if value.path not in {None, "/"} or value.username or value.password:
+                raise ValueError("OAuth issuer must be an origin without credentials")
+        return value
+
     oauth_grant_idle_lifetime: timedelta = Field(
         default=timedelta(days=30),
         gt=timedelta(0),
