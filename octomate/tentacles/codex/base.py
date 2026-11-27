@@ -108,8 +108,7 @@ from octomate.schemas.artifacts import (
     HtmlArtifact,
     McpAppArtifact,
 )
-from octomate.schemas.auth import IssuedApiKey
-from octomate.schemas.awakes import DeferredActionBatchResponse
+from octomate.schemas.auth import RuntimeApiKey
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
@@ -123,10 +122,7 @@ from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
 )
-from octomate.schemas.deferred import (
-    MAX_QUESTION_CHOICES,
-    QuestionRequest,
-)
+from octomate.schemas.deferred import MAX_QUESTION_CHOICES, QuestionRequest
 from octomate.schemas.files import Jsonl
 from octomate.schemas.mcp import McpAppInvocation, McpAppResultMeta
 from octomate.schemas.messages import ModelRequest, ModelResponse
@@ -135,6 +131,7 @@ from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
+from octomate.signals import DeferredActionBatchResponse
 from octomate.streaming.files import FileTransferError, FileTransferSlot
 from octomate.telemetry import (
     agent_input_message_attributes,
@@ -341,6 +338,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         super().__init__(
             id=self.id,
             octomate=octomate,
+            nerves=octomate.nerves,
             commands=commands,
             projects=projects,
             threads=threads,
@@ -397,7 +395,7 @@ class CodexTentacle(AgentTentacle[str, None]):
     @property
     def native_running_threads(self) -> set[ThreadKey]:
         return {
-            ThreadKey.from_address(state.address)
+            ThreadKey.model_validate(state.address)
             for state in self.session_tailer.sessions.values()
             if state.open_turn is not None
             and state.open_turn.native is not None
@@ -512,7 +510,11 @@ class CodexTentacle(AgentTentacle[str, None]):
             holder = self.projects.resolve(Path(hello.cwd))
             project = self.projects.get(holder) if holder is not None else None
         await self.threads.ensure(
-            ThreadKey(self.id, "thread", hello.session_id),
+            ThreadKey(
+                channel_tentacle_id=self.id,
+                chat_type="thread",
+                chat_id=hello.session_id,
+            ),
             project=project,
             native=True,
         )
@@ -1011,7 +1013,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 )
                 target = await self.fork(
                     conversation,
-                    ThreadKey.from_address(destination),
+                    ThreadKey.model_validate(destination),
                     sender=profile,
                     model=context.model,
                 )
@@ -1075,8 +1077,8 @@ class CodexTentacle(AgentTentacle[str, None]):
                 env=invocation.environment,
                 thread_id=thread_id,
                 conversation_id=conversation.id,
-                api_key_id=api_key.key.id if api_key is not None else None,
-                mcp_bearer=api_key.token if api_key is not None else None,
+                api_key_id=api_key.runtime_nonce if api_key is not None else None,
+                mcp_bearer=api_key.bearer if api_key is not None else None,
                 cwd=str(invocation.cwd),
                 approval_mode=ApprovalMode.auto_review
                 if permission_mode == "auto_review"
@@ -1281,7 +1283,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             "Choose a denial with /approve <review-id>: " + ", ".join(denials)
         )
 
-    async def runtime_api_key(self, user_id: uuid.UUID | None) -> IssuedApiKey | None:
+    async def runtime_api_key(self, user_id: uuid.UUID | None) -> RuntimeApiKey | None:
         """Issue credentials only while the native runtime is available."""
         if user_id is not None and self.auth is not None and not self.ink.running:
             raise RuntimeError("Codex runtime is not running")
@@ -1338,19 +1340,19 @@ class CodexTentacle(AgentTentacle[str, None]):
         exc_value: BaseException | None = None,
         traceback: TracebackType | None = None,
     ) -> None:
-        await super().__aexit__(exc_type, exc_value, traceback)
-        with anyio.CancelScope(shield=True):
-            cancelled = await drain_task(asyncio.gather(*self.run_tasks))
-            await self.session_tailer.shutdown()
-            await self.ink.close()
-            self.bridge_contexts.clear()
-            for future in list(self.pendings.values()):
-                if not future.done():
+        try:
+            await super().__aexit__(exc_type, exc_value, traceback)
+        finally:
+            with anyio.CancelScope(shield=True):
+                cancelled = await drain_task(asyncio.gather(*self.run_tasks))
+                await self.session_tailer.shutdown()
+                await self.ink.close()
+                self.bridge_contexts.clear()
+                for future in list(self.pendings.values()):
                     future.cancel()
-            self.pendings.clear()
-            await self.revoke_runtime_keys()
-        if cancelled:
-            raise asyncio.CancelledError
+                self.pendings.clear()
+            if cancelled:
+                raise asyncio.CancelledError
 
     async def _await_human(
         self,
@@ -1872,8 +1874,8 @@ class CodexTentacle(AgentTentacle[str, None]):
                 env=invocation.environment,
                 thread_id=conversation.external_id,
                 conversation_id=conversation.id,
-                api_key_id=api_key.key.id if api_key is not None else None,
-                mcp_bearer=api_key.token if api_key is not None else None,
+                api_key_id=api_key.runtime_nonce if api_key is not None else None,
+                mcp_bearer=api_key.bearer if api_key is not None else None,
                 cwd=run_cwd,
                 approval_mode=approval_mode,
                 base_instructions=self.config.base_instructions,
@@ -1917,6 +1919,13 @@ class CodexTentacle(AgentTentacle[str, None]):
                 environment=environment,
             )
             resources.enter_context(self.track_turn(conversation.id, turn))
+
+            async def interrupt() -> None:
+                await turn.interrupt()
+
+            await resources.enter_async_context(
+                invocation.interruption.handling(interrupt)
+            )
             completed_items: list[ThreadItem] = []
             resources.push_async_callback(
                 self.capture_compactions,
@@ -2079,6 +2088,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 source_thread,
                 source_message_ids[-1],
             )
+        invocation.interruption.check()
         if accumulator.turn_status == TurnStatus.failed:
             raise AgentRunError(accumulator.turn_error or "Codex turn failed")
         moving = session.decision if session is not None else None

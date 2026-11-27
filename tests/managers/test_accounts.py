@@ -27,7 +27,7 @@ from octomate.tentacles.trunkline import TrunklineTentacle
 from octomate.types.auth import ApiKeyScope
 from tests.support.agents import build_scripted_agent
 from tests.support.mcp import served_inkling_mcp
-from tests.support.nerve import settled
+from tests.support.nerve import listening, settled
 
 PASSWORD = "Correct horse battery staple1!"
 
@@ -65,7 +65,7 @@ async def app(
         )
     )
     await channel.probe()
-    async with served_inkling_mcp(application, monkeypatch):
+    async with served_inkling_mcp(application, monkeypatch), listening(application):
         yield application
 
 
@@ -245,14 +245,20 @@ async def test_registration_login_rotation_and_logout(
         assert "HttpOnly" in cookie
         assert "Secure" in cookie
         assert "SameSite=strict" in cookie
-        assert "Path=/api" in cookie
+        assert "Path=/api" in cookie or "Path=/oauth" in cookie
     assert registered.headers["cache-control"] == "no-store"
     account = (await client.get("/api/auth/me")).json()
     assert account["name"] == "Alice"
-    old_access = client.cookies["octomate_access"]
+    old_access = client.cookies.get("octomate_access", path="/api")
+    assert old_access is not None
+    assert client.cookies.get("octomate_access", path="/oauth") == old_access
+    assert client.cookies.get("octomate_refresh", path="/oauth") is None
     old_refresh = client.cookies["octomate_refresh"]
     assert (await client.post("/api/auth/refresh")).status_code == 204
-    assert client.cookies["octomate_access"] != old_access
+    assert client.cookies.get("octomate_access", path="/api") != old_access
+    assert client.cookies.get("octomate_access", path="/oauth") == client.cookies.get(
+        "octomate_access", path="/api"
+    )
     assert client.cookies["octomate_refresh"] != old_refresh
     assert await auth.authenticate_session(SecretStr(old_access)) is None
     with pytest.raises(InvalidCredentials):
@@ -299,7 +305,9 @@ async def test_logout_revokes_sessions_with_partial_or_expired_cookies(
     client: httpx2.AsyncClient, auth: AuthManager, cookies: str
 ) -> None:
     await enroll(client, auth)
-    access = SecretStr(client.cookies["octomate_access"])
+    access_cookie = client.cookies.get("octomate_access", path="/api")
+    assert access_cookie is not None
+    access = SecretStr(access_cookie)
     refresh = SecretStr(client.cookies["octomate_refresh"])
     if cookies == "refresh-only":
         client.cookies.delete("octomate_access")
@@ -326,7 +334,7 @@ async def test_logout_clears_invalid_cookies_without_requiring_a_session(
         headers={"Cookie": "octomate_access=unknown; octomate_refresh=unknown"},
     )
     assert response.status_code == 204
-    assert len(response.headers.get_list("set-cookie")) == 2
+    assert len(response.headers.get_list("set-cookie")) == 3
     assert all(
         "Max-Age=0" in cookie for cookie in response.headers.get_list("set-cookie")
     )
@@ -342,6 +350,7 @@ async def test_password_change_requires_current_password_and_ends_only_own_sessi
     alice = await auth.login("alice", SecretStr(PASSWORD))
     refresh = SecretStr(client.cookies["octomate_refresh"])
     key = await auth.create_api_key(alice.user_id, name="laptop", scopes=["hooks"])
+    assert key.bearer is not None
     replacement = "Replacement password1!"
     response = await client.post(
         "/api/auth/password",
@@ -358,7 +367,7 @@ async def test_password_change_requires_current_password_and_ends_only_own_sessi
         await auth.login("alice", SecretStr(PASSWORD))
     assert (await auth.login("alice", SecretStr(replacement))).user_id == alice.user_id
     assert await auth.authenticate_session(bob.access_token) is not None
-    assert await auth.authenticate_api_key(key.token, scope="hooks") is not None
+    assert await auth.authenticate_api_key(key.bearer, scope="hooks") is not None
 
 
 @pytest.mark.parametrize(
@@ -592,8 +601,15 @@ async def test_private_threads_and_mutations_are_isolated(
 ) -> None:
     assert (await client.get("/api/trunkline/threads")).status_code == 401
     alice = (await enroll(client, auth)).json()
-    async with app.nerve.subscribe(
-        ThreadTopic(ThreadKey("trunkline", "thread", alice["id"], "shared-key"))
+    async with app.nerves.events.subscribe(
+        ThreadTopic(
+            ThreadKey(
+                channel_tentacle_id="trunkline",
+                chat_type="thread",
+                chat_id=alice["id"],
+                channel_thread_id="shared-key",
+            )
+        )
     ) as live:
         posted = await client.post(
             "/api/trunkline/threads/shared-key/messages",
@@ -648,8 +664,15 @@ async def test_private_threads_and_mutations_are_isolated(
         )
     ).status_code == 404
     assert (await app.deferred_actions.get_batch(batch.id)).status == "pending"
-    async with app.nerve.subscribe(
-        ThreadTopic(ThreadKey("trunkline", "thread", bob["id"], "shared-key"))
+    async with app.nerves.events.subscribe(
+        ThreadTopic(
+            ThreadKey(
+                channel_tentacle_id="trunkline",
+                chat_type="thread",
+                chat_id=bob["id"],
+                channel_thread_id="shared-key",
+            )
+        )
     ) as live:
         second = await client.post(
             "/api/trunkline/threads/shared-key/messages",
@@ -710,6 +733,25 @@ async def test_api_keys_are_issued_once_and_managed_only_by_their_owner(
     assert (await client.delete(f"/api/auth/api-keys/{key_id}")).status_code == 204
     for scope in scopes:
         assert await auth.authenticate_api_key(SecretStr(token), scope=scope) is None
+
+
+async def test_personal_key_endpoints_exclude_runtime_credentials(
+    client: httpx2.AsyncClient, auth: AuthManager
+) -> None:
+    await enroll(client, auth)
+    user = User.model_validate((await client.get("/api/auth/me")).json())
+    runtime = await auth.runtime_api_key(user.id, agent_id="acp", scopes=["mcp"])
+    assert runtime.bearer is not None
+    created = await client.post(
+        "/api/auth/api-keys", json={"name": "Laptop", "scopes": ["mcp"]}
+    )
+    assert created.status_code == 201
+    listed = await client.get("/api/auth/api-keys")
+    assert listed.status_code == 200
+    assert [key["id"] for key in listed.json()] == [created.json()["key"]["id"]]
+    assert str(runtime.id) not in listed.text
+    assert (await client.delete(f"/api/auth/api-keys/{runtime.id}")).status_code == 404
+    assert await auth.authenticate_api_key(runtime.bearer, scope="mcp") is not None
 
 
 async def test_api_key_creation_rejects_invalid_scope_expiry_and_cross_origin_writes(

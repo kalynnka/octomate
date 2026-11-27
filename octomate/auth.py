@@ -67,24 +67,29 @@ def session_cookies(
 ) -> None:
     response.headers["Cache-Control"] = "no-store"
     if tokens is None:
-        for name in ("octomate_access", "octomate_refresh"):
+        for name, path in (
+            ("octomate_access", "/api"),
+            ("octomate_access", "/oauth"),
+            ("octomate_refresh", "/api"),
+        ):
             response.delete_cookie(
                 name,
-                path="/api",
+                path=path,
                 secure=manager.config.cookie_secure,
                 httponly=True,
                 samesite="strict",
             )
         return
-    for name, token, expires in (
-        ("octomate_access", tokens.access_token, tokens.access_expires_at),
-        ("octomate_refresh", tokens.refresh_token, tokens.refresh_expires_at),
+    for name, path, token, expires in (
+        ("octomate_access", "/api", tokens.access_token, tokens.access_expires_at),
+        ("octomate_access", "/oauth", tokens.access_token, tokens.access_expires_at),
+        ("octomate_refresh", "/api", tokens.refresh_token, tokens.refresh_expires_at),
     ):
         response.set_cookie(
             name,
             token.get_secret_value(),
             expires=expires,
-            path="/api",
+            path=path,
             secure=manager.config.cookie_secure,
             httponly=True,
             samesite="strict",
@@ -236,7 +241,9 @@ async def create_api_key(
         issued = await manager.create_api_key(user.id, **body)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    return {"key": issued.key, "token": issued.token.get_secret_value()}
+    if issued.bearer is None:
+        raise RuntimeError("Issued API key has no bearer")
+    return {"key": issued, "token": issued.bearer.get_secret_value()}
 
 
 @auth_router.get("/api-keys", response_model=list[UserApiKey])
@@ -254,6 +261,9 @@ async def revoke_api_key(
     manager: Annotated[AuthManager, Depends(auth_manager)],
 ) -> None:
     try:
+        key = await manager.get_api_key(user.id, key_id)
+        if not isinstance(key, UserApiKey):
+            raise InvalidCredentials
         await manager.revoke_api_key(user.id, key_id)
     except InvalidCredentials as error:
         raise HTTPException(status_code=404, detail="API key not found") from error

@@ -19,10 +19,11 @@ from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp, AsyncSay
 
 from octomate.config import SlackChannelConfig
+from octomate.nerve import AgentTopic
 from octomate.oauth.flows import AuthorizationCodeFlow
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
+from octomate.signals import DeferredActionBatchResponse
 from octomate.tentacles.channel import (
     ChannelSurfaces,
     ChannelTentacle,
@@ -126,6 +127,7 @@ class SlackTentacle(
         super().__init__(
             id=id,
             octomate=octomate,
+            nerves=octomate.nerves,
             ink=ink,
             chromo=chromo,
             config=config,
@@ -298,12 +300,14 @@ class SlackTentacle(
         actions = action_value["approvals"]
         page = max(0, min(action_value["page"], len(actions) - 1))
         approved_action = actions[page]
-        await self.octomate.kick(
+        batch = await self.octomate.deferred_actions.get_batch(action_value["batch_id"])
+        self.nerves.signals.dispatch(
+            AgentTopic(batch.agent_tentacle_id),
             DeferredActionBatchResponse(
                 batch_id=action_value["batch_id"],
                 responder_id=responder_id,
                 approvals={approved_action.id: approved},
-            )
+            ),
         )
 
     async def on_question_submit(self, ack, body: SlackQuestionActionBody) -> None:
@@ -324,12 +328,14 @@ class SlackTentacle(
         action_value = action_body["actions"][0]["value"]
         actions = action_value["questions"]
         answers = collect_answers(action_body["state"], actions)
-        await self.octomate.kick(
+        batch = await self.octomate.deferred_actions.get_batch(action_value["batch_id"])
+        self.nerves.signals.dispatch(
+            AgentTopic(batch.agent_tentacle_id),
             DeferredActionBatchResponse(
                 batch_id=action_value["batch_id"],
                 responder_id=action_body["user"]["id"],
                 answers={action.id: answers.get(action.id, "") for action in actions},
-            )
+            ),
         )
 
     async def open_dm(

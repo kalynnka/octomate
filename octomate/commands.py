@@ -14,20 +14,25 @@ from octomate.dependencies import (
     thread_manager,
     workspace_manager,
 )
+from octomate.dependencies import (
+    nerves as nervous_system,
+)
+from octomate.events import ReflexAsleepEvent, ReflexAwakeEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.workspaces import WorkspaceManager
-from octomate.schemas.awakes import CommandSignal, StillAwake
+from octomate.nerve import AgentTopic, Nerves, ThreadTopic
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
     CommandError,
     CommandIntent,
     CommandOutcomeEvent,
-    CommandResult,
 )
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import User
+from octomate.signals import CommandSignal
 
 command_router = APIRouter(
     prefix="/api/commands",
@@ -154,10 +159,10 @@ async def discover_commands(
     return await agent.discover_commands(context, refresh=refresh, prefix=prefix)
 
 
-@command_router.post("/execute")
+@command_router.post("/execute", response_model_exclude={"request_id"})
 async def execute_command(
     context: Annotated[CommandContext, Depends(command_context)],
-    app: Annotated[Octomate, Depends(application)],
+    nerves: Annotated[Nerves, Depends(nervous_system)],
     command_id: Annotated[
         str, Body(min_length=1, description="The selected descriptor's opaque ID.")
     ],
@@ -194,12 +199,37 @@ async def execute_command(
     Authentication and request-validation errors remain non-2xx JSON responses.
     """
     intent = CommandIntent(command_id=command_id, arguments=arguments)
-    try:
-        reflex = await app.kick(CommandSignal(context, intent, delivery_id))
-    except StillAwake as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    result = None if reflex is None else await reflex
-    outcome = (
-        result if isinstance(result, CommandResult | CommandError) else CommandResult()
-    )
-    return CommandOutcomeEvent(outcome=outcome)
+    signal = CommandSignal(context, intent, delivery_id)
+    outcome: CommandOutcomeEvent | None = None
+    admitted = False
+    async with nerves.events.subscribe(
+        ThreadTopic(ThreadKey.model_validate(context.address))
+    ) as events:
+        nerves.signals.dispatch(AgentTopic(context.agent_id), signal)
+        async for impulse in events:
+            event = impulse.event
+            if (
+                not isinstance(
+                    event, ReflexAwakeEvent | CommandOutcomeEvent | ReflexAsleepEvent
+                )
+                or event.request_id != signal.request_id
+            ):
+                continue
+            if isinstance(event, ReflexAwakeEvent):
+                admitted = True
+            if isinstance(event, CommandOutcomeEvent):
+                outcome = event.model_copy(update={"request_id": None})
+            if (
+                not admitted
+                and isinstance(event, CommandOutcomeEvent)
+                and isinstance(event.outcome, CommandError)
+                and event.outcome.status == "busy"
+            ):
+                raise HTTPException(status_code=409, detail=event.outcome.message)
+            if isinstance(event, ReflexAsleepEvent):
+                break
+        else:
+            raise RuntimeError("The command stream ended before completion")
+    if outcome is None:
+        raise HTTPException(status_code=500, detail="Command execution failed")
+    return outcome

@@ -67,6 +67,10 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["octomate"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"trunkline/src/styles/lonetrail.css" = "octomate/static/authorization/src/styles/lonetrail.css"
+"trunkline/public/fonts" = "octomate/static/authorization/public/fonts"
+
 [tool.uv]
 default-groups = "all"
 
@@ -151,6 +155,10 @@ timeout = 180
 # an in-memory database rather than writing to the developer's own.
 env = ["OCTOMATE_DB_URL=sqlite+aiosqlite:///:memory:"]
 filterwarnings = [
+    # lark-oapi's bundled protobuf and WebSocket module still use these deprecated
+    # APIs at import time. Keep the exemptions limited to their exact call sites.
+    'ignore:^datetime\.datetime\.utcfromtimestamp\(\) is deprecated and scheduled for removal in a future version\.:DeprecationWarning:^lark_oapi\.ws\.pb\.google\.protobuf\.internal\.well_known_types$',
+    'ignore:^There is no current event loop$:DeprecationWarning:^lark_oapi\.ws\.client$',
     # Channel profile schemas intentionally redeclare UserProfile fields (platform
     # aliases/defaults); the transmuter metaclass serves same-named class attributes,
     # which pydantic reports as shadowing. Mirrors the runtime filter in octomate/__init__.py,

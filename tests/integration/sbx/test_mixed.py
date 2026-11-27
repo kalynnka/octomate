@@ -68,8 +68,8 @@ async def test_named_habitats_share_isolate_and_expire(
         sbx_cleanup.push_async_callback(manager.close)
 
     async with (
-        app.nerve.subscribe(HabitatTopic(owner.user_id)) as owner_events,
-        app.nerve.subscribe(HabitatTopic(other.user_id)) as other_events,
+        app.nerves.events.subscribe(HabitatTopic(owner.user_id)) as owner_events,
+        app.nerves.events.subscribe(HabitatTopic(other.user_id)) as other_events,
     ):
         async with (
             codex.habitats.enter(owner, uuid7()) as first,

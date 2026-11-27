@@ -27,7 +27,6 @@ from octomate.events import (
     StreamEvents,
     TodoCompletedEvent,
 )
-from octomate.schemas.awakes import UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.deferred import (
     ApprovalRequest,
@@ -43,6 +42,7 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.schemas.todos import Todo
+from octomate.signals import UserMessageSignal
 from octomate.tentacles.channel import (
     ChannelOutput,
     ChannelTentacle,

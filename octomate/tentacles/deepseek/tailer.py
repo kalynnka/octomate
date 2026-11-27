@@ -277,7 +277,11 @@ class DeepseekEventTailer:
         holder = self.projects.resolve(Path(cwd)) if cwd else None
         project = self.projects.get(holder) if holder is not None else None
         return await self.thread_manager.ensure(
-            ThreadKey(self.agent_tentacle_id, "thread", session_id),
+            ThreadKey(
+                channel_tentacle_id=self.agent_tentacle_id,
+                chat_type="thread",
+                chat_id=session_id,
+            ),
             project=project,
             native=True,
         )

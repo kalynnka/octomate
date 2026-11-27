@@ -228,7 +228,12 @@ class Thread(Base, TransmuterProxiedMixin):
     )
     source_cursor_message_id: Mapped[UUID7 | None] = mapped_column(
         Uuid,
-        ForeignKey("thread_messages.id", ondelete="SET NULL"),
+        ForeignKey(
+            "thread_messages.id",
+            name="threads_source_cursor_message_id_fkey",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
         nullable=True,
         index=True,
     )

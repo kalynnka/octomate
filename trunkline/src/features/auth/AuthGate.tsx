@@ -12,6 +12,7 @@ import { useConsole } from '@/state/console'
 import { LoginPage } from './LoginPage'
 import { LinkProfilePage } from './LinkProfilePage'
 import { RegisterPage } from './RegisterPage'
+import { OAuthConsentPage } from './OAuthConsentPage'
 
 function Booting() {
   return (
@@ -41,6 +42,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const status = useAuth((s) => s.status)
   const page = useAuth((s) => s.page)
   const linkProfile = useAuth((s) => s.linkProfile)
+  const oauthConsent = useAuth((s) => s.oauthConsent)
   const { boot, takeEntryLink } = useAuth((s) => s.actions)
   const { signedOut } = useConsole((s) => s.actions)
   useEffect(() => {
@@ -57,6 +59,9 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }, [status, signedOut])
   if (status === 'booting') return <Booting />
   if (status === 'signed-out') return page === 'register' ? <RegisterPage /> : <LoginPage />
+  if (oauthConsent || window.location.pathname === '/auth/authorize') {
+    return <OAuthConsentPage key={oauthConsent} ticket={oauthConsent} />
+  }
   if (linkProfile) return <LinkProfilePage key={linkProfile} token={linkProfile} />
   return children
 }

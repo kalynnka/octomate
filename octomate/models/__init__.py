@@ -3,10 +3,18 @@ concern."""
 
 from octomate.models.artifacts import Artifact, HtmlArtifact, McpAppArtifact
 from octomate.models.auth import (
+    ApiKey,
     LinkProfileSession,
+    RuntimeApiKey,
     UserApiKey,
     UserInvitation,
     UserSession,
+)
+from octomate.models.authorization import (
+    OAuthAuthorization,
+    OAuthClient,
+    OAuthGrant,
+    OAuthToken,
 )
 from octomate.models.base import Base
 from octomate.models.compactions import (
@@ -75,6 +83,7 @@ from octomate.models.volumes import GitVolume, Volume
 
 __all__ = [
     "AgentRun",
+    "ApiKey",
     "Artifact",
     "Base",
     "BearerMcp",
@@ -109,11 +118,16 @@ __all__ = [
     "ModelRequest",
     "ModelResponse",
     "NoAuthMcp",
+    "OAuthAuthorization",
+    "OAuthClient",
     "OAuthConnection",
+    "OAuthGrant",
     "OAuthMcp",
     "OAuthOperation",
+    "OAuthToken",
     "Png",
     "Project",
+    "RuntimeApiKey",
     "Snapshot",
     "SnapshotMembership",
     "SnapshotMessage",

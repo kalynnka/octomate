@@ -26,7 +26,7 @@ async def test_inbound_group_messages_save_the_platform_name(
             mention_only=True,
         ),
     )
-    key = ThreadKey("napcat", "group", "2002")
+    key = ThreadKey(channel_tentacle_id="napcat", chat_type="group", chat_id="2002")
     if previous_title is not None:
         await octomate.threads.ensure(key, title=previous_title)
     group_name = "Our group"

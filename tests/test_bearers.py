@@ -33,7 +33,7 @@ def auth() -> AuthManager:
 async def test_owner_names_the_token_owner(auth: AuthManager) -> None:
     user = await a_user()
     await a_api_key(user, "omk_lu-token")
-    bearers = KnownBearers(auth)
+    bearers = KnownBearers(auth, users=UserManager())
 
     assert await bearers.owner("omk_lu-token", scope="hooks") == "lu"
     assert await bearers.owner("stranger", scope="hooks") is None
@@ -43,24 +43,28 @@ async def test_owner_names_the_token_owner(auth: AuthManager) -> None:
 async def test_scopes_separate_hooks_and_mcp(auth: AuthManager) -> None:
     user = await a_user()
     hook = await auth.create_api_key(user.id, name="hooks", scopes=["hooks"])
+    assert hook.bearer is not None
     mcp = await auth.create_api_key(user.id, name="editor", scopes=["mcp"])
-    bearers = KnownBearers(auth)
+    assert mcp.bearer is not None
+    bearers = KnownBearers(auth, users=UserManager())
     verify = hook_guard(bearers)
 
-    assert await verify(f"Bearer {hook.token.get_secret_value()}") == "lu"
-    assert await bearers.verify_token(hook.token.get_secret_value()) is None
+    assert await verify(f"Bearer {hook.bearer.get_secret_value()}") == "lu"
+    assert await bearers.verify_token(hook.bearer.get_secret_value()) is None
     with pytest.raises(HTTPException) as denial:
-        await verify(f"Bearer {mcp.token.get_secret_value()}")
+        await verify(f"Bearer {mcp.bearer.get_secret_value()}")
     assert denial.value.status_code == 401
-    principal = await bearers.verify_token(mcp.token.get_secret_value())
+    principal = await bearers.verify_token(mcp.bearer.get_secret_value())
     assert principal is not None
     assert principal.client_id == "lu"
+    assert principal.subject == "lu"
     assert principal.scopes == ["mcp"]
 
 
 async def test_octomate_uses_its_auth_manager() -> None:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
     assert octomate.bearers.auth is octomate.auth
+    assert octomate.bearers.users is octomate.users
     user = await a_user()
     await a_api_key(user, "omk_lu-token")
 
@@ -71,19 +75,21 @@ async def test_octomate_uses_its_auth_manager() -> None:
 async def test_revocation_applies_to_both_surfaces(auth: AuthManager) -> None:
     user = await a_user()
     key = await auth.create_api_key(user.id, name="laptop", scopes=["hooks", "mcp"])
+    assert key.bearer is not None
     other = await auth.create_api_key(user.id, name="desktop", scopes=["hooks", "mcp"])
-    token = key.token.get_secret_value()
-    bearers = KnownBearers(auth)
+    assert other.bearer is not None
+    token = key.bearer.get_secret_value()
+    bearers = KnownBearers(auth, users=UserManager())
     verify = hook_guard(bearers)
     assert await verify(f"Bearer {token}") == "lu"
     assert await bearers.verify_token(token) is not None
 
-    await auth.revoke_api_key(user.id, key.key.id)
+    await auth.revoke_api_key(user.id, key.id)
 
     assert await bearers.verify_token(token) is None
     with pytest.raises(HTTPException):
         await verify(f"Bearer {token}")
-    assert await bearers.verify_token(other.token.get_secret_value()) is not None
+    assert await bearers.verify_token(other.bearer.get_secret_value()) is not None
 
 
 async def test_expired_keys_are_rejected(auth: AuthManager) -> None:
@@ -94,7 +100,7 @@ async def test_expired_keys_are_rejected(auth: AuthManager) -> None:
         assert stored is not None
         stored.expires_at = datetime.now(UTC) - timedelta(seconds=1)
         await session.commit()
-    bearers = KnownBearers(auth)
+    bearers = KnownBearers(auth, users=UserManager())
     assert await bearers.verify_token("omk_expired") is None
     with pytest.raises(HTTPException):
         await hook_guard(bearers)("Bearer omk_expired")
@@ -104,7 +110,7 @@ async def test_password_session_tokens_are_not_api_tokens(auth: AuthManager) -> 
     password = SecretStr("Correct horse battery staple1!")
     user = await auth.register("lu", password, await auth.invite(), name="Lu")
     tokens = await auth.login(user.username, password)
-    bearers = KnownBearers(auth)
+    bearers = KnownBearers(auth, users=UserManager())
     for token in (tokens.access_token, tokens.refresh_token):
         assert await bearers.verify_token(token.get_secret_value()) is None
         with pytest.raises(HTTPException):
@@ -112,7 +118,7 @@ async def test_password_session_tokens_are_not_api_tokens(auth: AuthManager) -> 
 
 
 async def test_hook_guard_rejects_invalid_headers(auth: AuthManager) -> None:
-    verify = hook_guard(KnownBearers(auth))
+    verify = hook_guard(KnownBearers(auth, users=UserManager()))
     for authorization in (None, "Bearer stranger", "token", "Basic token"):
         with pytest.raises(HTTPException) as denial:
             await verify(authorization)
@@ -120,7 +126,9 @@ async def test_hook_guard_rejects_invalid_headers(auth: AuthManager) -> None:
 
 
 async def test_hook_sender_demands_a_registered_username() -> None:
-    resolve = hook_sender(UserManager(), "claude", hook_guard(KnownBearers()))
+    resolve = hook_sender(
+        UserManager(), "claude", hook_guard(KnownBearers(users=UserManager()))
+    )
     with pytest.raises(RuntimeError, match="registry holds no such user"):
         await resolve("lu")
 

@@ -1,10 +1,10 @@
 """Outbound ACP runs use ordinary threads, reflex dispatch, and deferred actions."""
 
-import asyncio
 import json
 import sys
+from collections.abc import AsyncGenerator
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import Mock
 from uuid import UUID
 
 import acp
@@ -21,13 +21,12 @@ from octomate.events import (
     ActionBatchEvent,
     ReflexAsleepEvent,
     RunEndedEvent,
+    RunResultEvent,
     RunStartedEvent,
 )
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.nerve import ThreadTopic
-from octomate.reflex.state import ReflexResult
-from octomate.schemas.auth import UserApiKey
-from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSignal
+from octomate.schemas.auth import RuntimeApiKey
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.deferred import DeferredActionBatch
 from octomate.schemas.events import MessageEvent
@@ -36,6 +35,11 @@ from octomate.schemas.runs import AgentRun
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import MessageBinding, Thread, ThreadKey, ThreadMessage
 from octomate.schemas.user import UserProfile
+from octomate.signals import (
+    AsleepSignal,
+    DeferredActionBatchResponse,
+    UserMessageSignal,
+)
 from octomate.tentacles.acp.base import AcpAgentTentacle
 from octomate.tentacles.acp.channel import AcpChannelTentacle
 from octomate.tentacles.acp.client import AcpProvider
@@ -43,7 +47,7 @@ from tests.agent.acp.test_client import adapter_environment as adapter_environme
 from tests.agent.acp.test_routes import initialize, new_session, rpc
 from tests.support.invocations import invocation_for
 from tests.support.managers import a_project, a_registry
-from tests.support.nerve import held
+from tests.support.nerve import listening, publish_signal, settled
 from tests.support.users import a_user, auth_config
 
 
@@ -142,7 +146,12 @@ async def test_custom_harness_discovers_selects_and_reopens(
     assert sender is not None
     sender = await app.users.ensure_profile(agent.id, sender)
     thread = await app.threads.ensure(
-        ThreadKey(agent.id, "thread", str(user.id), uuid7().hex)
+        ThreadKey(
+            channel_tentacle_id=agent.id,
+            chat_type="thread",
+            chat_id=str(user.id),
+            channel_thread_id=uuid7().hex,
+        )
     )
     async with agent:
         assert set(agent.models) == (
@@ -192,7 +201,9 @@ async def test_custom_harness_discovers_selects_and_reopens(
                 "outputTokens": 1,
                 "totalTokens": 10000,
             }
-        assert all(key.revoked_at is not None for key in await session.list(UserApiKey))
+        [key] = await session.list(RuntimeApiKey)
+        assert key.revoked_at is None
+        assert key.scopes == ["mcp"]
     messages = [
         json.loads(line)["message"]
         for line in (tmp_path / "custom-requests.jsonl").read_text().splitlines()
@@ -230,7 +241,12 @@ async def test_harness_efforts_follow_model_and_reach_new_and_loaded_sessions(
     assert sender is not None
     sender = await app.users.ensure_profile(agent.id, sender)
     thread = await app.threads.ensure(
-        ThreadKey(agent.id, "thread", str(user.id), uuid7().hex)
+        ThreadKey(
+            channel_tentacle_id=agent.id,
+            chat_type="thread",
+            chat_id=str(user.id),
+            channel_thread_id=uuid7().hex,
+        )
     )
     conversation = await agent.resolve_conversation(
         thread.id, conversation_address=thread.key.address(sender.channel_user_id)
@@ -320,11 +336,16 @@ async def test_public_endpoint_drives_custom_harness(
     user = await a_user("alice")
     assert app.auth is not None
     key = await app.auth.create_api_key(user.id, name="test", scopes=["acp"])
+    assert key.bearer is not None
     client = TestClient(
-        app, headers={"Authorization": f"Bearer {key.token.get_secret_value()}"}
+        app, headers={"Authorization": f"Bearer {key.bearer.get_secret_value()}"}
     )
-    async with agent:
-        with client.websocket_connect("/api/acp") as socket:
+    with client:
+        assert client.portal is not None
+        with (
+            client.portal.wrap_async_context_manager(agent),
+            client.websocket_connect("/api/acp") as socket,
+        ):
             initialize(socket)
             session_id = new_session(socket)
             frames = rpc(
@@ -369,7 +390,7 @@ async def test_public_endpoint_drives_custom_harness(
         assert conversation.agent_tentacle_id == "custom"
         assert run.model_name == "careful"
         assert len(await session.list(ThreadMessage)) == 2
-    assert not app.awakes
+    assert not app.awake_since
     assert not agent.pendings
 
 
@@ -400,7 +421,12 @@ async def test_harness_without_http_mcp(
     assert sender is not None
     sender = await app.users.ensure_profile(agent.id, sender)
     thread = await app.threads.ensure(
-        ThreadKey(agent.id, "thread", str(user.id), uuid7().hex)
+        ThreadKey(
+            channel_tentacle_id=agent.id,
+            chat_type="thread",
+            chat_id=str(user.id),
+            channel_thread_id=uuid7().hex,
+        )
     )
     async with agent:
         if gateway:
@@ -431,7 +457,7 @@ async def test_harness_without_http_mcp(
             )
         assert result.output == "custom harness answer"
     async with async_session() as session:
-        assert not await session.list(UserApiKey)
+        assert not await session.list(RuntimeApiKey)
 
 
 @pytest.fixture(params=["claude-agent-acp", "codex-acp"])
@@ -440,7 +466,7 @@ async def agent(
     adapter_environment: dict[str, str],
     in_memory_engine: AsyncEngine,
     tmp_path: Path,
-) -> tuple[AcpAgentTentacle, UserProfile, Thread]:
+) -> AsyncGenerator[tuple[AcpAgentTentacle, UserProfile, Thread]]:
     provider = AcpProvider(command=request.param)
     executable = tmp_path / provider.command
     source = executable.read_text()
@@ -468,10 +494,16 @@ async def agent(
     assert sender is not None
     sender = await app.users.ensure_profile(tentacle.id, sender)
     thread = await app.threads.ensure(
-        ThreadKey(tentacle.id, "thread", str(user.id), uuid7().hex),
+        ThreadKey(
+            channel_tentacle_id=tentacle.id,
+            chat_type="thread",
+            chat_id=str(user.id),
+            channel_thread_id=uuid7().hex,
+        ),
         project=app.projects.get("project"),
     )
-    return tentacle, sender, thread
+    async with listening(app):
+        yield tentacle, sender, thread
 
 
 @pytest.mark.parametrize("allowed", [True, False])
@@ -483,8 +515,8 @@ async def test_reflex_owns_dispatch_and_history(
 ) -> None:
     tentacle, sender, thread = agent
     app = tentacle.octomate
-    kick = AsyncMock(wraps=app.kick)
-    monkeypatch.setattr(app, "kick", kick)
+    kick = Mock(wraps=app.nerves.signals.dispatch)
+    monkeypatch.setattr(app.nerves.signals, "dispatch", kick)
     message = MessageEvent(
         tentacle_id=tentacle.id,
         chat_type="thread",
@@ -496,13 +528,13 @@ async def test_reflex_owns_dispatch_and_history(
         segments=[TextSegment(data={"text": "hello from the reflex"})],
     )
     inbound = await app.threads.record_inbound(message)
-    async with app.nerve.subscribe(ThreadTopic(thread.key)) as stream:
-        task = await app.kick(
+    async with app.nerves.events.subscribe(ThreadTopic(thread.key)) as stream:
+        await publish_signal(
+            app,
             UserMessageSignal(
                 [message], agent_id=tentacle.id, trigger_thread_message_id=inbound.id
-            )
+            ),
         )
-        assert task is not None
         seen = []
         async for impulse in stream:
             seen.append(impulse.event)
@@ -513,17 +545,15 @@ async def test_reflex_owns_dispatch_and_history(
                     responder_id=sender.channel_user_id,
                     approvals={batch.approvals[0].id: allowed},
                 )
-                assert await app.kick(response) is None
+                assert await publish_signal(app, response) is None
             if isinstance(impulse.event, ReflexAsleepEvent):
                 break
-        result = await task
-    assert isinstance(result, ReflexResult)
-    assert result.result is not None
-    assert result.result.output == "x" * 100_000
-    assert kick.await_count == 2  # The prompt and its live approval; no broker kick.
+    results = [event for event in seen if isinstance(event, RunResultEvent)]
+    assert results[-1].output == "x" * 100_000
+    assert kick.call_count == 2  # The prompt and its live approval; no broker kick.
     assert sum(isinstance(event, RunStartedEvent) for event in seen) == 1
     assert sum(isinstance(event, RunEndedEvent) for event in seen) == 1
-    assert not app.awakes
+    assert not app.awake_since
     assert not tentacle.pendings
     assert not tentacle.driven_sessions
     async with async_session() as session:
@@ -543,8 +573,8 @@ async def test_reflex_owns_dispatch_and_history(
             "assistant_reply",
         }
         assert all(binding.run_id == run.id for binding in bindings)
-        [key] = await session.list(UserApiKey)
-        assert key.revoked_at is not None
+        [key] = await session.list(RuntimeApiKey)
+        assert key.revoked_at is None
     log = await AsyncPath(adapter_environment["ACP_TEST_LOG"]).read_text()
     messages = [json.loads(line)["message"] for line in log.splitlines()]
     initialize = messages[0]["params"]
@@ -560,7 +590,7 @@ async def test_reflex_owns_dispatch_and_history(
     headers = {item["name"]: item["value"] for item in mcp["headers"]}
     assert headers[CONVERSATION_HEADER] == str(conversation.id)
     token = headers["Authorization"].removeprefix("Bearer ")
-    assert await app.bearers.owner(token, scope="mcp") is None
+    assert await app.bearers.owner(token, scope="mcp") is not None
     prompt = next(
         item["params"] for item in messages if item.get("method") == "session/prompt"
     )
@@ -580,8 +610,8 @@ async def test_direct_runs_reopen_the_conversation_without_dispatch(
 ) -> None:
     tentacle, sender, thread = agent
     app = tentacle.octomate
-    kick = AsyncMock()
-    monkeypatch.setattr(app, "kick", kick)
+    kick = Mock()
+    monkeypatch.setattr(app.nerves.signals, "dispatch", kick)
     for prompt in ("first", "second"):
         async with invocation_for(
             tentacle,
@@ -603,7 +633,9 @@ async def test_direct_runs_reopen_the_conversation_without_dispatch(
         assert conversation.external_id == "native-1"
         assert len(await session.list(AgentRun)) == 2
         assert not await session.list(ThreadMessage)
-        assert all(key.revoked_at is not None for key in await session.list(UserApiKey))
+        [key] = await session.list(RuntimeApiKey)
+        assert key.revoked_at is None
+        assert key.scopes == ["mcp"]
     log = await AsyncPath(adapter_environment["ACP_TEST_LOG"]).read_text()
     messages = [json.loads(line)["message"] for line in log.splitlines()]
     assert [item.get("method") for item in messages[:3]] == [
@@ -614,9 +646,11 @@ async def test_direct_runs_reopen_the_conversation_without_dispatch(
     assert messages[1]["params"]["sessionId"] == "native-1"
 
 
+@pytest.mark.parametrize("target", ["thread", "invocation"])
 async def test_cancel_settles_provider_and_keeps_partial_history(
     agent: tuple[AcpAgentTentacle, UserProfile, Thread],
     adapter_environment: dict[str, str],
+    target: str,
 ) -> None:
     tentacle, sender, thread = agent
     app = tentacle.octomate
@@ -631,21 +665,24 @@ async def test_cancel_settles_provider_and_keeps_partial_history(
         segments=[TextSegment(data={"text": "wait for approval"})],
     )
     inbound = await app.threads.record_inbound(message)
-    async with app.nerve.subscribe(ThreadTopic(thread.key)) as stream:
-        task = await app.kick(
+    async with app.nerves.events.subscribe(ThreadTopic(thread.key)) as stream:
+        await publish_signal(
+            app,
             UserMessageSignal(
                 [message], agent_id=tentacle.id, trigger_thread_message_id=inbound.id
-            )
+            ),
         )
-        assert task is not None
         async for impulse in stream:
             if isinstance(impulse.event, ActionBatchEvent):
                 break
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert any(isinstance(item.event, ReflexAsleepEvent) for item in held(stream))
-    assert not app.awakes
+        await publish_signal(
+            app,
+            AsleepSignal(thread=thread.key)
+            if target == "thread"
+            else AsleepSignal(invocation_id=next(iter(tentacle.invocations))),
+        )
+        await settled(stream)
+    assert not app.awake_since
     assert not tentacle.pendings
     assert not tentacle.driven_sessions
     async with async_session() as session:
@@ -656,10 +693,50 @@ async def test_cancel_settles_provider_and_keeps_partial_history(
         assert batch.status == "expired"
         assert len(run.messages) == 2
         assert len(await session.list(ThreadMessage)) == 2
-        assert all(key.revoked_at is not None for key in await session.list(UserApiKey))
+        [key] = await session.list(RuntimeApiKey)
+        assert key.revoked_at is None
+        assert key.scopes == ["mcp"]
     log = await AsyncPath(adapter_environment["ACP_TEST_LOG"]).read_text()
     assert any(
         json.loads(line)["message"].get("method") == "session/cancel"
+        for line in log.splitlines()
+    )
+
+    continued = message.model_copy(
+        update={
+            "message_id": uuid7().hex,
+            "segments": [TextSegment(data={"text": "Continue"})],
+        }
+    )
+    inbound = await app.threads.record_inbound(continued)
+    async with app.nerves.events.subscribe(ThreadTopic(thread.key)) as stream:
+        await publish_signal(
+            app,
+            UserMessageSignal(
+                [continued], agent_id=tentacle.id, trigger_thread_message_id=inbound.id
+            ),
+        )
+        async for impulse in stream:
+            event = impulse.event
+            if isinstance(event, ActionBatchEvent):
+                await publish_signal(
+                    app,
+                    DeferredActionBatchResponse(
+                        batch_id=UUID(event.batch_id),
+                        responder_id=sender.channel_user_id,
+                        approvals={event.approvals[0].id: True},
+                    ),
+                )
+            if isinstance(event, ReflexAsleepEvent):
+                assert event.outcome == "completed"
+                break
+    async with async_session() as session:
+        [conversation] = await session.list(Conversation)
+        assert conversation.external_id == "native-1"
+        assert len(await session.list(AgentRun)) == 2
+    log = await AsyncPath(adapter_environment["ACP_TEST_LOG"]).read_text()
+    assert any(
+        json.loads(line)["message"].get("method") == "session/load"
         for line in log.splitlines()
     )
 
@@ -670,7 +747,12 @@ async def test_conversation_cannot_cross_threads(
 ) -> None:
     tentacle, sender, thread = agent
     other = await tentacle.threads.ensure(
-        ThreadKey(tentacle.id, "thread", "other", uuid7().hex)
+        ThreadKey(
+            channel_tentacle_id=tentacle.id,
+            chat_type="thread",
+            chat_id="other",
+            channel_thread_id=uuid7().hex,
+        )
     )
     conversation = await tentacle.conversations.ensure(
         other.id, agent_tentacle_id=tentacle.id
@@ -691,7 +773,7 @@ async def test_conversation_cannot_cross_threads(
     assert not await AsyncPath(adapter_environment["ACP_TEST_LOG"]).exists()
 
 
-async def test_provider_failure_preserves_partial_run_and_revokes_key(
+async def test_provider_failure_preserves_partial_run_and_reusable_key(
     agent: tuple[AcpAgentTentacle, UserProfile, Thread],
     tmp_path: Path,
 ) -> None:
@@ -731,4 +813,6 @@ async def test_provider_failure_preserves_partial_run_and_revokes_key(
         [binding] = await session.list(MessageBinding)
         assert binding.kind == "assistant_reply"
         assert binding.run_id == run.id
-        assert all(key.revoked_at is not None for key in await session.list(UserApiKey))
+        [key] = await session.list(RuntimeApiKey)
+        assert key.revoked_at is None
+        assert key.scopes == ["mcp"]

@@ -21,7 +21,7 @@ import tomllib
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import tomlkit
 import typer
@@ -67,7 +67,13 @@ def project_config_path() -> Path:
 
 
 class DeepseekSettings(BaseModel):
-    """The local gateway used to read native DeepSeek history."""
+    """The native DeepSeek launcher and authenticated gateway."""
+
+    executable: str = Field(
+        default="dsh",
+        min_length=1,
+        description="DSH executable name or absolute launcher path used for native plugin installation.",
+    )
 
     url: str | None = Field(
         default=None,
@@ -116,6 +122,10 @@ class CLISettings(BaseSettings):
             "A server-issued API token with hooks and/or mcp scope, obtained through "
             "the authenticated account API."
         ),
+    )
+    mcp_auth: Literal["apikey", "oauth"] = Field(
+        default="oauth",
+        description="Native MCP installation authentication. OAuth installs invoke the harness's own login flow; API-key installs embed the configured token.",
     )
     deepseek: DeepseekSettings = Field(
         default_factory=DeepseekSettings,
@@ -216,6 +226,12 @@ def configure(
             help="Save DeepSeek's gateway launch URL (including ?token=) under [deepseek]."
         ),
     ] = None,
+    dsh_executable: Annotated[
+        str | None,
+        typer.Option(
+            help="Save the DSH executable name or launcher path under [deepseek]."
+        ),
+    ] = None,
     scope: Annotated[
         Scope,
         typer.Option(
@@ -236,8 +252,13 @@ def configure(
     current = load_config(path)
     if url is not None:
         current["url"] = url
-    if dsh_url is not None:
-        current["deepseek"] = DeepseekSettings(url=dsh_url).model_dump()
+    if dsh_url is not None or dsh_executable is not None:
+        deepseek = DeepseekSettings.model_validate(current.get("deepseek", {}))
+        if dsh_url is not None:
+            deepseek.url = dsh_url
+        if dsh_executable is not None:
+            deepseek.executable = dsh_executable
+        current["deepseek"] = deepseek.model_dump(exclude_unset=True)
     if token is None:
         token = cli_settings().token
     if token is not None:

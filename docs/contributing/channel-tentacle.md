@@ -189,8 +189,9 @@ rechecks membership and permissions before opening. Keep client lookups,
 permissions and API calls in Ink. Refuse a failed open rather than returning an
 existing conversation. Both local and cross-channel gateway moves use this path.
 
-`ingest` is the base class's and does everything from decoding to kicking the
-graph, including the redelivery guard and the mention gate.
+`ingest` is the base class's and does everything from decoding to publishing an
+awake signal to the selected agent, including the redelivery guard and the mention
+gate. Use the injected nerves for publication; the agent owns graph execution.
 
 ## 5. Register it
 
@@ -224,7 +225,8 @@ after `super().__init__`, keeping the defaults you do not replace.
   `present` posts the cards and returns each action's platform message id. For the
   way back, decide whether the button carries state (Slack, Lark) or ids the
   handler reloads from the database (Discord), build a
-  `DeferredActionBatchResponse`, and `kick` it only when the batch is complete.
+  `DeferredActionBatchResponse`, and publish it through the signal nerve to the
+  owning agent only when the batch is complete.
   Refuse a press on a batch that is no longer pending.
 - **OAuth.** Subclass `OAuthFeeler` and implement `send`; the base decides the
   private address.

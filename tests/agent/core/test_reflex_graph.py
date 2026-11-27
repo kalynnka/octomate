@@ -21,6 +21,7 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
+from octomate import Octomate
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.config.mirrors import MirrorsConfig
 from octomate.events import (
@@ -54,11 +55,6 @@ from octomate.reflex.graph import (
     Route,
     build_reflex_graph,
 )
-from octomate.schemas.awakes import (
-    DeferredActionBatchResponse,
-    NativeGatewaySignal,
-    UserMessageSignal,
-)
 from octomate.schemas.commands import CommandIntent
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import DeferredQuestion
@@ -80,6 +76,11 @@ from octomate.schemas.triage import (
 from octomate.schemas.user import UserProfile
 from octomate.schemas.volumes import GitVolume, UnregisteredProjectError
 from octomate.schemas.volumes.git import run_git
+from octomate.signals import (
+    DeferredActionBatchResponse,
+    NativeGatewaySignal,
+    UserMessageSignal,
+)
 from octomate.tentacles.acp.ink import AcpInk
 from octomate.tentacles.channel import ChannelOutput, ChannelSurfaces
 from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
@@ -143,7 +144,7 @@ async def _run(
     origin = state.source_target.address if state.source_target else None
     async with (
         drawing(*deps.channels.values()),
-        host.nerve.publish(origin) as impulses,
+        host.nerves.events.publish(origin) as impulses,
     ):
         return await build_reflex_graph(type(entry)).run(
             inputs=entry, state=state, deps=replace(deps, impulses=impulses)
@@ -182,7 +183,7 @@ def _source_target(address: ChannelAddress) -> ResponseTarget:
 
 
 def _thread(address: ChannelAddress) -> Thread:
-    key = ThreadKey.from_address(address)
+    key = ThreadKey.model_validate(address)
     return Thread(
         channel_tentacle_id=key.channel_tentacle_id,
         chat_type=key.chat_type,
@@ -367,7 +368,9 @@ async def test_agent_lifecycle_clears_routes_on_exit_and_prepares_them_on_entry(
     None
 ):
     claim = Claim("Test agent", efforts=("high",))
-    agent = FakeAgent(models={"test": "fake-model"}, claims={"test": claim})
+    agent = FakeAgent(
+        models={"test": "fake-model"}, claims={"test": claim}, octomate=Octomate()
+    )
     assert agent.routes[0].claim is claim
 
     with pytest.raises(RuntimeError, match="failed turn"):
@@ -1178,7 +1181,7 @@ async def test_a_handoff_row_names_the_turn_it_came_from() -> None:
     conversations.store[(thread.id, "other", "")] = source
     threads = FakeThreadManager()
     # Registered, so the here-landing resolves to this thread and not a fresh row.
-    threads.threads_by_key[ThreadKey.from_address(address)] = thread
+    threads.threads_by_key[ThreadKey.model_validate(address)] = thread
     target = _source_target(address)
 
     workspaces = RecordingWorkspaceManager()
@@ -2417,7 +2420,7 @@ async def test_send_to_dm_delivers_privately_and_leaves_the_group_alone() -> Non
     # It is on the DM's ledger — so whoever handles that DM meets it as pending
     # context next turn — while no conversation's model messages were touched.
     dm_thread = threads.threads_by_key[
-        ThreadKey.from_address(
+        ThreadKey.model_validate(
             ChannelAddress(
                 channel_tentacle_id="im",
                 chat_type="dm",
@@ -2746,7 +2749,7 @@ async def test_a_failed_turn_is_reported_where_it_came_from() -> None:
     )
     address = _key()
 
-    async with drawing(im), im.octomate.nerve.publish(address) as impulses:
+    async with drawing(im), im.octomate.nerves.events.publish(address) as impulses:
         kicked = replace(deps, impulses=impulses)
         await kicked.report(
             ReflexState(source_target=_source_target(address)), RuntimeError("here")

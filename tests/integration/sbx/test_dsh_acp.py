@@ -110,7 +110,12 @@ async def test_dsh_acp_tools_and_fresh_process_resume(
     assert sender is not None
     sender = await host.users.ensure_profile(agent.id, sender)
     thread = await host.threads.ensure(
-        ThreadKey(agent.id, "thread", str(owner.id), uuid7().hex)
+        ThreadKey(
+            channel_tentacle_id=agent.id,
+            chat_type="thread",
+            chat_id=str(owner.id),
+            channel_thread_id=uuid7().hex,
+        )
     )
     address = thread.key.address(sender.channel_user_id)
     scope = InvocationScope(user_id=owner.id, conversation_id=uuid7())

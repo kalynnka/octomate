@@ -42,8 +42,8 @@ from http.cookiejar import CookieJar
 from pathlib import Path
 from time import monotonic
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
-from uuid import uuid4
 
+from httpx2 import HTTPError
 from octomate_protocol.deepseek import (
     ClientRequest,
     ErrResult,
@@ -62,10 +62,12 @@ from octomate_protocol.stream import (
     server_message_adapter,
 )
 from pydantic import JsonValue, TypeAdapter
+from uuid_utils.compat import uuid7
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
 from websockets.sync.client import connect as connect_sync
 
+from octomate_cli.auth import LoginRequired, LoginStore, bearer
 from octomate_cli.config import CLISettings, cli_settings
 from octomate_cli.streaming.files import (
     BACKOFF_CAP,
@@ -96,7 +98,7 @@ class DshCompatibilityError(RuntimeError):
 
 
 class DshHistoryClient:
-    """One authenticated cookie session for native history reads."""
+    """One authenticated cookie session for DSH Remote calls and history reads."""
 
     url: str
     cookies: CookieJar
@@ -128,8 +130,9 @@ class DshHistoryClient:
                     "launch URL with octomate configure --dsh-url, or check DSH_LAUNCH_TOKEN"
                 )
 
-    def rpc(self, method: str, args: dict[str, JsonValue]) -> dict[str, JsonValue]:
-        body = ClientRequest(rpc_id=str(uuid4()), method=method, payload={"args": args})
+    def call(self, method: str, args: dict[str, JsonValue]) -> JsonValue:
+        """Call a DSH Remote endpoint with this authenticated browser session."""
+        body = ClientRequest(rpc_id=str(uuid7()), method=method, payload={"args": args})
         request = urllib.request.Request(
             f"{self.url}/api/{method}",
             data=body.model_dump_json(by_alias=True).encode(),
@@ -148,7 +151,10 @@ class DshHistoryClient:
             raise DshCompatibilityError(
                 f"dsh Remote API {method} failed: {answer.result.error.message}"
             )
-        return json_object_adapter.validate_python(answer.result.value)
+        return answer.result.value
+
+    def rpc(self, method: str, args: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        return json_object_adapter.validate_python(self.call(method, args))
 
     def snapshot(self, session_id: str) -> dict[str, JsonValue]:
         request = urllib.request.Request(f"{self.url}/api/remote.mux")
@@ -295,14 +301,18 @@ async def stream_session(
     session_id: str,
     transcript_path: Path,
     cwd: str,
-    token: str,
+    token: str | None,
     dsh_url: str,
 ) -> bool:
     """One connection's life. True when the session is done (the server said
     finalize, or it went idle); False to reconnect and resume."""
     history = await asyncio.to_thread(DshHistoryClient, dsh_url)
+    credential = await asyncio.to_thread(bearer, url, token)
+    if credential is None:
+        raise LoginRequired("No CLI credential found. Run `octomate login`.")
     async with connect(
-        url, additional_headers={"Authorization": f"Bearer {token}"}
+        url,
+        additional_headers={"Authorization": f"Bearer {credential.get_secret_value()}"},
     ) as websocket:
         await websocket.send(
             StreamHello(
@@ -397,7 +407,7 @@ async def run_tail(
     session_id: str,
     transcript_path: Path,
     cwd: str,
-    token: str,
+    token: str | None,
     dsh_url: str,
 ) -> None:
     """The reconnect loop around `stream_session`, mirroring the file tails':
@@ -420,11 +430,14 @@ async def run_tail(
                 print(f"octomate: stream refused: {reason}", file=sys.stderr)
                 return
             attempt += 1
+        except (LoginRequired, HTTPError) as error:
+            print(f"octomate: {error}", file=sys.stderr)
+            return
         except InvalidStatus as denied:
             if denied.response.status_code in {401, 403}:
                 print(
-                    "octomate: stream denied — a valid API token with hooks scope "
-                    "is required. Run `octomate configure --token <api-token>`.",
+                    "octomate: stream denied — a valid credential with hooks scope "
+                    "is required. Run `octomate login` or `octomate configure --token <api-token>`.",
                     file=sys.stderr,
                 )
                 return
@@ -446,11 +459,11 @@ def main(
     dsh_url: str,
 ) -> None:
     token = cli_settings().token
-    if not token:
+    if not token and not LoginStore(url).path.is_file():
         print(
             f"octomate: no credential — {CLISettings.env('token')} is unset and the "
             "client config holds none, so this session is not being streamed. "
-            "Run `octomate configure --token <api-token>`.",
+            "Run `octomate login` or `octomate configure --token <api-token>`.",
             file=sys.stderr,
         )
         raise SystemExit(1)

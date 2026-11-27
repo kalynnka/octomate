@@ -103,7 +103,13 @@ async def test_codex_acp_tools_and_fresh_process_resume(
         assert sender is not None
         sender = await host.users.ensure_profile(agent.id, sender)
         thread = await host.threads.ensure(
-            ThreadKey(agent.id, "thread", str(owner.id), uuid7().hex), project=project
+            ThreadKey(
+                channel_tentacle_id=agent.id,
+                chat_type="thread",
+                chat_id=str(owner.id),
+                channel_thread_id=uuid7().hex,
+            ),
+            project=project,
         )
         address = thread.key.address(sender.channel_user_id)
         async with agent:

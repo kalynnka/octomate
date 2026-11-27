@@ -5,6 +5,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import AsyncExitStack
 from dataclasses import replace
 from datetime import UTC, datetime
+from typing import Literal
 from unittest.mock import AsyncMock
 
 import pytest
@@ -53,6 +54,7 @@ from octomate.schemas.messages import ModelRequest as StoredModelRequest
 from octomate.schemas.thread import ThreadCommand
 from octomate.schemas.triage import Claim
 from octomate.schemas.user import UserProfile
+from octomate.signals import CommandSignal
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import ink as codex_ink
 from octomate.tentacles.codex import pool as codex_pool
@@ -69,6 +71,7 @@ from tests.agent.codex.test_tentacle import (
 )
 from tests.support.channels import FakeChannelTentacle
 from tests.support.invocations import invocation_for
+from tests.support.nerve import interrupt_and_wait, kick_and_wait
 from tests.support.users import a_user
 
 
@@ -1531,3 +1534,57 @@ async def test_review_rejects_invalid_targets_before_starting_a_run(
     assert isinstance(events[0], CommandError)
     assert events[0].status == "unsupported"
     assert not FakeCodex.thread_calls
+
+
+@pytest.mark.parametrize("target", ["thread", "invocation"])
+async def test_signal_interrupts_the_native_turn(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+    monkeypatch: pytest.MonkeyPatch,
+    target: Literal["thread", "invocation"],
+) -> None:
+    agent, context, _ = execution
+    ready, stopped = asyncio.Event(), asyncio.Event()
+
+    async def stream(turn: FakeTurn) -> AsyncIterator[Notification]:
+        yield FakeCodex.script[0]
+        ready.set()
+        await stopped.wait()
+        for notification in FakeCodex.script[1:]:
+            yield notification
+
+    async def interrupt(turn: FakeTurn) -> None:
+        turn.interrupted = True
+        stopped.set()
+
+    monkeypatch.setattr(FakeTurn, "stream", stream)
+    monkeypatch.setattr(FakeTurn, "interrupt", interrupt)
+    catalog = await agent.discover_commands(context)
+    descriptor = next(
+        item for item in catalog.descriptors if item.id.startswith("skill:")
+    )
+    await interrupt_and_wait(
+        agent,
+        CommandSignal(context, CommandIntent(command_id=descriptor.id), "interrupt"),
+        ready,
+        target=target,
+    )
+    assert FakeCodex.turns[0].interrupted
+    assert not agent.live_turns
+    assert not agent.run_tasks
+    assert not agent.bridge_contexts
+    assert context.conversation is not None
+    saved = await agent.conversations.get(context.conversation.id)
+    assert len(saved.runs) == 1
+    assert saved.runs[0].messages
+    external_id = saved.external_id
+    await kick_and_wait(
+        agent.octomate,
+        CommandSignal(
+            replace(context, conversation=saved),
+            CommandIntent(command_id=descriptor.id),
+            "resume",
+        ),
+    )
+    resumed = await agent.conversations.get(saved.id)
+    assert len(resumed.runs) == 2
+    assert resumed.external_id == external_id

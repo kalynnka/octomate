@@ -32,6 +32,7 @@ from octomate.config.agents import AgentConfig, CodexConfig, DeepseekConfig
 from octomate.config.agents.inkling import InklingConfig
 from octomate.config.channels import ChannelConfig, TrunklineChannelConfig
 from octomate.config.database import database_settings
+from octomate.managers.user import UserManager
 from octomate.mcp.base import KnownBearers
 from octomate.schemas.oauth import OAuthCipher
 
@@ -624,7 +625,7 @@ async def test_verification_checks_protected_mcp_and_console_routes(
             refresh_token_salt=SecretStr("refresh-test-salt-123"),
             api_key_salt=SecretStr("api-key-test-salt-123"),
         )
-    server = FastMCP("octomate", auth=KnownBearers())
+    server = FastMCP("octomate", auth=KnownBearers(users=UserManager()))
 
     @server.tool
     def hello() -> str:

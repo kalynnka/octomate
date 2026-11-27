@@ -421,7 +421,11 @@ class ClaudeTranscriptTailer:
         """Map a native Claude session id to its Octomate home — the session's thread and
         the conversation hanging off it — creating either if this is its first sighting."""
         thread = await self.thread_manager.ensure(
-            ThreadKey(self.agent_tentacle_id, "thread", session_id),
+            ThreadKey(
+                channel_tentacle_id=self.agent_tentacle_id,
+                chat_type="thread",
+                chat_id=session_id,
+            ),
             native=True,
         )
         return await self.conversation_manager.ensure(
@@ -575,7 +579,11 @@ class ClaudeTranscriptTailer:
             return
         await self.conversation_manager.set_name(conversation, title)
         thread = await self.thread_manager.ensure(
-            ThreadKey(self.agent_tentacle_id, "thread", state.session_id)
+            ThreadKey(
+                channel_tentacle_id=self.agent_tentacle_id,
+                chat_type="thread",
+                chat_id=state.session_id,
+            )
         )
         await self.thread_manager.rename(thread, title)
 

@@ -89,7 +89,13 @@ async def test_approved_project_tools_run_in_the_habitat(
     project = a_project(core)
     app.workspaces.projects = await a_registry(project)
     thread = await app.threads.ensure(
-        ThreadKey("im", "thread", "alice", "work"), project=project
+        ThreadKey(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id="alice",
+            channel_thread_id="work",
+        ),
+        project=project,
     )
     conversation = await app.conversations.ensure(
         thread.id, agent_tentacle_id="inkling"

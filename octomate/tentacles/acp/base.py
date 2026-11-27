@@ -10,7 +10,6 @@ from contextlib import (
     aclosing,
     asynccontextmanager,
 )
-from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, ClassVar, Self
@@ -54,14 +53,14 @@ from octomate.events import (
     ActionBatchEvent,
 )
 from octomate.habitat import Habitat, HostedHabitat
-from octomate.managers.habitat import Invocation
+from octomate.managers.habitat import Interruption, Invocation
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import MAX_QUESTION_CHOICES, DeferredActionBatch
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.user import UserProfile
+from octomate.signals import DeferredActionBatchResponse
 from octomate.tentacles.acp.adapter import json_value_adapter
 from octomate.tentacles.acp.client import NativeAcpClient, NativeAcpSession
 from octomate.tentacles.acp.elicitation import AcpForm, AcpFormValidationError
@@ -113,6 +112,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         super().__init__(
             id=id,
             octomate=octomate,
+            nerves=octomate.nerves,
             commands=octomate.commands,
             projects=octomate.projects,
             threads=octomate.threads,
@@ -513,6 +513,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                         run_name,
                         updates,
                         selected_model,
+                        invocation.interruption,
                     )
                 ) as events,
             ):
@@ -731,7 +732,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         *,
         habitat: Habitat,
     ) -> AsyncGenerator[list[schema.HttpMcpServer]]:
-        """Supply the caller's remote Octomate MCP, revoking its key after the turn."""
+        """Supply remote Octomate MCP with the caller's shared runtime API key."""
         if not self.gateway:
             yield []
             return
@@ -747,33 +748,25 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             raise ValueError(
                 "ACP MCP access requires a registered user and authentication"
             )
-        with CancelScope(shield=True):
-            issued = await auth.create_api_key(
-                user_id,
-                name=f"ACP {self.id}",
-                scopes=["mcp"],
-                expires_at=datetime.now(UTC) + auth.config.runtime_api_key_lifetime,
+        issued = await auth.runtime_api_key(user_id, agent_id=self.id, scopes=["mcp"])
+        if issued.bearer is None:
+            raise RuntimeError("Issued runtime API key has no bearer")
+        yield [
+            schema.HttpMcpServer(
+                name=OCTOMATE_SERVER_NAME,
+                type="http",
+                url=f"{habitat.core_url}{OCTOMATE_MCP_PATH}",
+                headers=[
+                    schema.HttpHeader(
+                        name="Authorization",
+                        value=f"Bearer {issued.bearer.get_secret_value()}",
+                    ),
+                    schema.HttpHeader(
+                        name=CONVERSATION_HEADER, value=str(conversation_id)
+                    ),
+                ],
             )
-        try:
-            yield [
-                schema.HttpMcpServer(
-                    name=OCTOMATE_SERVER_NAME,
-                    type="http",
-                    url=f"{habitat.core_url}{OCTOMATE_MCP_PATH}",
-                    headers=[
-                        schema.HttpHeader(
-                            name="Authorization",
-                            value=f"Bearer {issued.token.get_secret_value()}",
-                        ),
-                        schema.HttpHeader(
-                            name=CONVERSATION_HEADER, value=str(conversation_id)
-                        ),
-                    ],
-                )
-            ]
-        finally:
-            with CancelScope(shield=True):
-                await auth.revoke_api_key(user_id, issued.key.id)
+        ]
 
     async def invoke(
         self,
@@ -790,11 +783,19 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             StreamEvent | ActionBatchEvent | ActionBatchAnsweredEvent | None
         ],
         model: str | None,
+        interruption: Interruption,
     ) -> AsyncGenerator[ReactStreamEvent[str]]:
+        interruption.check()
+        sent = asyncio.Event()
         history = AcpHistory(request)
         run_id = str(uuid7())
 
         def observe(event: StreamEvent) -> None:
+            if (
+                event.direction == StreamDirection.OUTGOING
+                and event.message.get("method") == "session/prompt"
+            ):
+                sent.set()
             params = event.message.get("params")
             if (
                 event.direction == StreamDirection.INCOMING
@@ -814,7 +815,18 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             )
         )
         prompt.add_done_callback(lambda task: updates.put_nowait(None))
+
+        async def interrupt() -> None:
+            await sent.wait()
+            await notify_model(
+                client.connection,
+                acp.AGENT_METHODS["session_cancel"],
+                schema.CancelNotification(session_id=request.session_id),
+            )
+
         failed = False
+        handling = interruption.handling(interrupt)
+        await handling.__aenter__()
         try:
             while (event := await updates.get()) is not None:
                 if isinstance(event, ActionBatchEvent | ActionBatchAnsweredEvent):
@@ -860,6 +872,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                 await prompt
             raise
         finally:
+            await handling.__aexit__(None, None, None)
             with CancelScope(shield=True):
                 await self.record(
                     conversation,
@@ -873,8 +886,9 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                     run_name,
                     updates,
                     model,
-                    failed=failed,
+                    failed=failed or interruption.requested,
                 )
+        interruption.check()
         yield AgentRunResultEvent(
             AgentRunResult(
                 output=history.answer,

@@ -97,7 +97,6 @@ from octomate.habitat import HabitatError, ManagedHabitat
 from octomate.managers.habitat import Invocation
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
 from octomate.nerve import Impulse
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
@@ -111,16 +110,14 @@ from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
 )
-from octomate.schemas.deferred import (
-    MAX_QUESTION_CHOICES,
-    QuestionRequest,
-)
+from octomate.schemas.deferred import MAX_QUESTION_CHOICES, QuestionRequest
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
+from octomate.signals import DeferredActionBatchResponse
 from octomate.telemetry import (
     agent_input_message_attributes,
     claude_logfire,
@@ -223,7 +220,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
     model_aliases: dict[str, str] = field(init=False)
 
     # A Claude run stays live in-process; `pending` (from `AgentTentacle`) parks a
-    # waiter per gated tool / question until `Octomate.kick` delivers the response.
+    # waiter per gated tool / question until the signal receiver delivers the response.
     in_process: ClassVar[bool] = True
 
     permission_modes: tuple[PermissionMode, ...] = tuple(
@@ -273,6 +270,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         super().__init__(
             id=self.id,
             octomate=octomate,
+            nerves=octomate.nerves,
             commands=commands,
             projects=projects,
             threads=threads,
@@ -318,7 +316,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
     @property
     def native_running_threads(self) -> set[ThreadKey]:
         return {
-            ThreadKey.from_address(state.address)
+            ThreadKey.model_validate(state.address)
             for state in self.session_tailer.sessions.values()
             if state.open_turn is not None
             and state.open_turn.native is not None
@@ -347,9 +345,11 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         ) -> JSONResponse:
             await self.session_ingest.handle(event)
             if activities := self.subagent_activities(event):
-                address = ThreadKey(self.id, "thread", event.session_id).address(
-                    sender.channel_user_id
-                )
+                address = ThreadKey(
+                    channel_tentacle_id=self.id,
+                    chat_type="thread",
+                    chat_id=event.session_id,
+                ).address(sender.channel_user_id)
                 async with self.nerve.publish(address) as impulses:
                     for activity in activities:
                         await impulses.send(Impulse(activity, address))
@@ -481,7 +481,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         else:
             project = None
         await self.threads.ensure(
-            ThreadKey.from_address(address),
+            ThreadKey.model_validate(address),
             project=project,
             native=True,
         )
@@ -802,7 +802,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         """Pause the run on a human through the graph's suspender, putting the
         batch on this run's stream. The reply waiter
         is registered before the cards go up, so a quick answer arriving through
-        `Octomate.kick` cannot miss it. The Claude session stays open in-process
+        the signal receiver cannot miss it. The Claude session stays open in-process
         while this awaits, so the answer is not durable across an Octomate restart.
 
         Returns `(batch, None)` if the wait exceeds `config.approval_timeout`; the
@@ -1041,16 +1041,18 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         """Cancel any approvals/questions still awaiting a human so their parked
         runs unblock instead of hanging shutdown. The pending tools are denied as
         the cancellation unwinds; the live sessions are not durable across this."""
-        self.server_info = None
-        self.commands.invalidate(agent_id=self.id)
-        await super().__aexit__(exc_type, exc_value, traceback)
-        for future in list(self.pendings.values()):
-            if not future.done():
-                future.cancel()
-        self.pendings.clear()
-        await self.ink.close()
-        # Cancel any live transcript follow loops.
-        await self.session_tailer.shutdown()
+        try:
+            await super().__aexit__(exc_type, exc_value, traceback)
+        finally:
+            self.server_info = None
+            self.commands.invalidate(agent_id=self.id)
+            for future in list(self.pendings.values()):
+                if not future.done():
+                    future.cancel()
+            self.pendings.clear()
+            await self.ink.close()
+            # Cancel any live transcript follow loops.
+            await self.session_tailer.shutdown()
 
     async def _iter_events(
         self,
@@ -1283,11 +1285,11 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         settings = None
         if managed:
             key = await self.runtime_api_key(invocation.owner_id)
-            if key is None:
+            if key is None or key.bearer is None:
                 raise HabitatError("Claude transcript upload requires authentication")
             env.update(
                 OCTOMATE_CLI_URL=invocation.habitat.core_url,
-                OCTOMATE_CLI_TOKEN=key.token.get_secret_value(),
+                OCTOMATE_CLI_TOKEN=key.bearer.get_secret_value(),
             )
             settings = json.dumps(
                 {
@@ -1412,6 +1414,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                             and isinstance(octomate_session.decision, TeleportDecision)
                         ),
                         command=command,
+                        interruption=invocation.interruption,
                     )
                 ) as native_messages,
                 contextlib.aclosing(interjections.around(native_messages)) as merged,
@@ -1484,13 +1487,18 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                 await self.conversations.record_native_memberships(
                     conversation, accumulator.session_id
                 )
-            if command_result is not None and command_result.is_error:
+            if (
+                command_result is not None
+                and command_result.is_error
+                and not invocation.interruption.requested
+            ):
                 raise RuntimeError(
                     command_result.result
                     or "; ".join(command_result.errors or ())
                     or f"Claude command failed: {command_result.subtype}"
                 )
             if command is not None and recorded_run is None:
+                invocation.interruption.check()
                 yield CommandResult(
                     segments=[TextSegment(data={"text": accumulator.result_text})]
                     if accumulator.result_text
@@ -1528,6 +1536,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                     source_thread,
                     source_message_ids[-1],
                 )
+            invocation.interruption.check()
             moving = octomate_session.decision if octomate_session is not None else None
             if isinstance(moving, TeleportDecision):
                 if deferred_suspender is None:

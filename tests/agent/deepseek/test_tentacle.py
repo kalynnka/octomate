@@ -10,7 +10,7 @@ import uuid
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar, cast
+from typing import ClassVar, Literal, cast
 from unittest.mock import AsyncMock
 
 import anyio
@@ -33,19 +33,24 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
+from octomate.config import ChannelConfig
 from octomate.config.agents import DeepseekConfig
 from octomate.database import async_session
 from octomate.events import ActionBatchEvent
 from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.deferred import DeferredActionManager
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     ApprovalRequest,
     DeferredApproval,
     DeferredQuestion,
 )
+from octomate.schemas.events import MessageEvent
+from octomate.schemas.runs import AgentRun
+from octomate.schemas.segments import TextSegment
+from octomate.schemas.user import UserProfile
 from octomate.schemas.volumes.storage import HostDirectory
+from octomate.signals import DeferredActionBatchResponse, UserMessageSignal
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.deepseek import base as deepseek_base
 from octomate.tentacles.deepseek import ink as deepseek_ink
@@ -61,6 +66,7 @@ from octomate.tentacles.deepseek.wire import (
 )
 from octomate.tentacles.stream import ReactStreamEvent
 from octomate.types.json import JsonObject, JsonValue
+from tests.support.channels import MainOnlyChannelTentacle
 from tests.support.invocations import invocation_for
 from tests.support.managers import (
     FakeConversation,
@@ -68,6 +74,7 @@ from tests.support.managers import (
     FakePresentedBatch,
     RecordingSuspender,
 )
+from tests.support.nerve import interrupt_and_wait, kick_and_wait
 from tests.support.users import a_user
 
 KEY = ChannelAddress(
@@ -1212,10 +1219,11 @@ async def test_an_approval_mid_run_bridges_to_a_card_and_back(
     async with tentacle:
         run = asyncio.ensure_future(drain())
         batch_id = await wait_for_pending(tentacle, suspender)
-        await octomate.kick(
+        await kick_and_wait(
+            octomate,
             DeferredActionBatchResponse(
                 batch_id=batch_id, approvals={approval.id: True}
-            )
+            ),
         )
         events = await run
 
@@ -1264,8 +1272,9 @@ async def test_a_declined_approval_answers_rejected() -> None:
         )
     )
     batch_id = await wait_for_pending(tentacle, suspender)
-    await octomate.kick(
-        DeferredActionBatchResponse(batch_id=batch_id, approvals={approval.id: False})
+    await kick_and_wait(
+        octomate,
+        DeferredActionBatchResponse(batch_id=batch_id, approvals={approval.id: False}),
     )
     await task
 
@@ -1346,10 +1355,11 @@ async def test_allow_session_short_circuits_the_next_approval() -> None:
         )
     )
     batch_id = await wait_for_pending(tentacle, suspender)
-    await octomate.kick(
+    await kick_and_wait(
+        octomate,
         DeferredActionBatchResponse(
             batch_id=batch_id, approvals={approval.id: True}, allow_session=True
-        )
+        ),
     )
     await task
     second = ApprovalRequestedFrame(
@@ -1474,11 +1484,12 @@ async def test_questions_map_labels_to_selected_and_text_to_custom() -> None:
         )
     )
     batch_id = await wait_for_pending(tentacle, suspender)
-    await octomate.kick(
+    await kick_and_wait(
+        octomate,
         DeferredActionBatchResponse(
             batch_id=batch_id,
             answers={first.id: "main", second.id: "ship it"},
-        )
+        ),
     )
     await task
 
@@ -1540,10 +1551,11 @@ async def test_a_multi_select_answer_comes_back_as_its_picks() -> None:
         )
     )
     batch_id = await wait_for_pending(tentacle, suspender)
-    await octomate.kick(
+    await kick_and_wait(
+        octomate,
         DeferredActionBatchResponse(
             batch_id=batch_id, answers={question.id: ["lint", "tests"]}
-        )
+        ),
     )
     await task
 
@@ -1995,3 +2007,75 @@ async def test_shared_thread_cannot_resume_dsh_in_the_previous_owners_tree(
                 )
         assert subsequent.workspace.path != initial.workspace.path
         assert calls_of("session/prompt") == []
+
+
+@pytest.mark.parametrize("target", ["thread", "invocation"])
+async def test_signal_interrupts_the_native_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    in_memory_engine: AsyncEngine,
+    target: Literal["thread", "invocation"],
+) -> None:
+    patch_gateway(monkeypatch)
+    FakeDeepseekApi.reset(turn_events("unfinished")[:2])
+    ready = asyncio.Event()
+    original = FakeDeepseekApi.call
+
+    async def call(
+        client: FakeDeepseekApi, method: str, payload: JsonValue
+    ) -> RpcResult:
+        result = await original(client, method, payload)
+        if method == "session/prompt":
+            ready.set()
+        if method == "session/cancel":
+            FakeDeepseekApi.push("sess-1", turn_events("unfinished")[2:])
+        return result
+
+    monkeypatch.setattr(FakeDeepseekApi, "call", call)
+    host = Octomate()
+    agent = host.connect(
+        DeepseekTentacle(
+            host,
+            auth=host.auth,
+            habitats=host.habitats["native"],
+            config=DeepseekConfig(),
+        )
+    )
+    host.connect(
+        MainOnlyChannelTentacle(config=ChannelConfig(type="fake", agents=[agent.id]))
+    )
+    message = MessageEvent(
+        tentacle_id="im",
+        chat_type="dm",
+        chat_id="alice",
+        user_id="alice",
+        sender=UserProfile(channel_tentacle_id="im", channel_user_id="alice"),
+        segments=[TextSegment(data={"text": "Work"})],
+    )
+    async with agent:
+        await interrupt_and_wait(
+            agent, UserMessageSignal([message], agent_id=agent.id), ready, target=target
+        )
+        assert calls_of("session/cancel") == [{"sessionId": "sess-1"}]
+        assert not agent.run_tasks
+        assert not agent.bridge_contexts
+        assert not agent.driven_sessions
+        async with async_session() as session:
+            [run] = await session.list(AgentRun)
+        saved = await agent.conversations.get(run.conversation_id)
+        assert len(saved.runs) == 1
+        assert saved.runs[0].messages
+        FakeDeepseekApi.turn_script = turn_events("resumed")
+        async with invocation_for(
+            agent,
+            conversation_address=KEY,
+            thread_id=saved.thread_id,
+            conversation_id=saved.id,
+        ) as invocation:
+            result = await agent.run(
+                "Continue", conversation_address=KEY, invocation=invocation
+            )
+        assert result.output == "resumed"
+        resumed = await host.conversations.get(saved.id)
+        assert len(resumed.runs) == 2
+        assert resumed.external_id == saved.external_id
+        assert len(calls_of("session/create")) == 1

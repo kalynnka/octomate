@@ -39,9 +39,9 @@ from tests.support.managers import a_loaded_thread, a_thread
 SENDER = UserProfile(channel_user_id="lu", name="lu")
 
 SESSION_ID = "codex-session"
-SESSION_ADDRESS = ThreadKey("codex", "thread", SESSION_ID).address(
-    SENDER.channel_user_id
-)
+SESSION_ADDRESS = ThreadKey(
+    channel_tentacle_id="codex", chat_type="thread", chat_id=SESSION_ID
+).address(SENDER.channel_user_id)
 
 
 @pytest.mark.parametrize("order", ["driven_first", "native_first", "interleaved"])
@@ -101,7 +101,7 @@ async def test_native_completion_correlates_with_driven_compaction_without_new_i
         first = rows[0]
         return str(first.id), [str(message.id) for message in first.messages]
 
-    async with app.nerve.publish(SESSION_ADDRESS) as impulses:
+    async with app.nerves.events.publish(SESSION_ADDRESS) as impulses:
         state, _ = await tailer.attach_remote(
             SESSION_ID, ROLLOUT_LABEL, SENDER, SESSION_ADDRESS, impulses
         )
@@ -273,7 +273,9 @@ async def stream_rollout(
     rollout: Path,
 ) -> None:
     """Stream one client file through the same scoped publisher as the route."""
-    address = ThreadKey("codex", "thread", session_id).address(SENDER.channel_user_id)
+    address = ThreadKey(
+        channel_tentacle_id="codex", chat_type="thread", chat_id=session_id
+    ).address(SENDER.channel_user_id)
     async with Nerve().publish(address) as publisher:
         state, _ = await tailer.attach_remote(
             session_id, rollout, SENDER, address, publisher
@@ -315,7 +317,8 @@ async def test_context_snapshot_and_last_response_usage_persist_together(
     _, tailer = wired(octomate)
     await stream_rollout(tailer, SESSION_ID, path)
     thread = await octomate.threads.ensure(
-        ThreadKey("codex", "thread", SESSION_ID), native=True
+        ThreadKey(channel_tentacle_id="codex", chat_type="thread", chat_id=SESSION_ID),
+        native=True,
     )
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id="codex"
@@ -349,7 +352,8 @@ async def test_hooks_bind_session_and_only_rollout_writes_runs_and_messages(
         ),
     )
     thread = await octomate.threads.ensure(
-        ThreadKey("codex", "thread", SESSION_ID), native=True
+        ThreadKey(channel_tentacle_id="codex", chat_type="thread", chat_id=SESSION_ID),
+        native=True,
     )
     unbound = await octomate.threads.messages_page(thread.id, unbound=True, limit=100)
     assert not unbound.items
@@ -367,7 +371,10 @@ async def test_hooks_bind_session_and_only_rollout_writes_runs_and_messages(
     conversation = await octomate.conversations.ensure(
         (
             await octomate.threads.ensure(
-                ThreadKey("codex", "thread", SESSION_ID), native=True
+                ThreadKey(
+                    channel_tentacle_id="codex", chat_type="thread", chat_id=SESSION_ID
+                ),
+                native=True,
             )
         ).id,
         agent_tentacle_id="codex",
@@ -498,7 +505,7 @@ async def test_a_session_start_hook_never_tails_the_claimed_path(
 async def test_hooks_persist_and_revise_the_codex_session_name(event: str) -> None:
     octomate = Octomate()
     ingest, _ = wired(octomate)
-    key = ThreadKey("codex", "thread", SESSION_ID)
+    key = ThreadKey(channel_tentacle_id="codex", chat_type="thread", chat_id=SESSION_ID)
     await ingest.handle(
         CodexHookInput(
             hook_event_name="UserPromptSubmit",
@@ -547,7 +554,8 @@ async def test_a_child_hook_cannot_rename_the_parent_session() -> None:
         ),
     )
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey("codex", "thread", SESSION_ID)
+        octomate.threads,
+        ThreadKey(channel_tentacle_id="codex", chat_type="thread", chat_id=SESSION_ID),
     )
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id="codex"
@@ -579,7 +587,8 @@ async def test_hooks_for_an_sdk_session_are_recorded_as_external() -> None:
     )
 
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey("codex", "thread", SESSION_ID)
+        octomate.threads,
+        ThreadKey(channel_tentacle_id="codex", chat_type="thread", chat_id=SESSION_ID),
     )
     assert not thread.messages
     sdk = await octomate.conversations.get(sdk_conversation.id)
@@ -608,7 +617,9 @@ async def test_a_legacy_driven_flag_does_not_suppress_ingestion() -> None:
     )
 
     [thread] = await octomate.threads.list_threads()
-    assert thread.key == ThreadKey("codex", "thread", SESSION_ID)
+    assert thread.key == ThreadKey(
+        channel_tentacle_id="codex", chat_type="thread", chat_id=SESSION_ID
+    )
     await tailer.shutdown()
 
 
@@ -705,7 +716,8 @@ async def streamed_runs(
     await feed_records(tailer, state, records)
     tailer.detach_remote(state)
     thread = await octomate.threads.ensure(
-        ThreadKey("codex", "thread", SESSION_ID), native=True
+        ThreadKey(channel_tentacle_id="codex", chat_type="thread", chat_id=SESSION_ID),
+        native=True,
     )
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id="codex"
@@ -781,7 +793,8 @@ async def test_a_backfilled_row_is_dated_by_the_rollout_not_the_replay(
     await stream_rollout(tailer, SESSION_ID, path)
 
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey("codex", "thread", SESSION_ID)
+        octomate.threads,
+        ThreadKey(channel_tentacle_id="codex", chat_type="thread", chat_id=SESSION_ID),
     )
     dated = {message.direction: message.happened_at for message in thread.messages}
     assert dated  # the tailer did write the ledger
@@ -815,7 +828,8 @@ async def test_hook_receipt_time_never_becomes_message_time(
     )
 
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey("codex", "thread", SESSION_ID)
+        octomate.threads,
+        ThreadKey(channel_tentacle_id="codex", chat_type="thread", chat_id=SESSION_ID),
     )
     assert not thread.messages
     write_rollout(path)
@@ -871,7 +885,8 @@ async def test_thread_spawn_rollout_tree_records_resumed_child_runs(
     tailer.detach_remote(state)
 
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey("codex", "thread", SESSION_ID)
+        octomate.threads,
+        ThreadKey(channel_tentacle_id="codex", chat_type="thread", chat_id=SESSION_ID),
     )
     parent = await octomate.conversations.ensure(thread.id, agent_tentacle_id="codex")
     child = await octomate.conversations.ensure(
@@ -938,7 +953,8 @@ async def test_guardian_rollout_is_not_ingested_as_a_subagent(
     tailer.detach_remote(state)
 
     thread = await octomate.threads.ensure(
-        ThreadKey("codex", "thread", SESSION_ID), native=True
+        ThreadKey(channel_tentacle_id="codex", chat_type="thread", chat_id=SESSION_ID),
+        native=True,
     )
     assert all(
         conversation.subagent_id == ""
@@ -1007,7 +1023,8 @@ async def test_compactions_without_turns_are_replay_safe(
     assert [(row.id, row.messages[0].id) for row in replayed] == identities
     octomate = Octomate()
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey("codex", "thread", SESSION_ID)
+        octomate.threads,
+        ThreadKey(channel_tentacle_id="codex", chat_type="thread", chat_id=SESSION_ID),
     )
     assert not thread.messages
 

@@ -16,8 +16,9 @@ def acp_sender(
 
     A router uses this dependency before accepting a WebSocket.
     Only the Authorization header supplies a credential; browser cookies
-    and query parameters cannot authorize agent execution. The existing API-key
-    verifier checks scope, expiry and revocation on each connection attempt.
+    and query parameters cannot authorize agent execution. The bearer
+    verifier accepts scoped API keys and resource-bound OAuth tokens, checking
+    scope, expiry and revocation on each connection attempt.
 
     The returned profile is transient. Authenticating creates no thread, session
     or ledger entry and grants no authority over another connection's sessions.

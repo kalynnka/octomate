@@ -119,7 +119,7 @@ async def test_native_compactions_between_turns_and_replay_preserve_archive(
         *turn_events(2, 9, "second", "two"),
     ]
     for _ in range(2):
-        await stream_events(tailer, app.nerve, records)
+        await stream_events(tailer, app.nerves.events, records)
     conversation = await native_conversation(app)
     assert len(conversation.runs) == 2
     assert [
@@ -169,7 +169,7 @@ async def test_unfinished_or_failed_compaction_never_persists(
         records = records[:3]
     elif stage == "malformed":
         records[1]["data"] = {"compactionId": "broken"}
-    await stream_events(tailer, app.nerve, records)
+    await stream_events(tailer, app.nerves.events, records)
     async with async_session() as session:
         assert await session.count(Compaction) == 0
     assert not (await native_conversation(app)).runs
@@ -321,7 +321,7 @@ async def test_native_membership_retains_tail_and_is_shared_by_forks(
         *turn_events(2, 4, "keep", "two"),
         *compaction_events(base=9),
     ]
-    await stream_events(tailer, app.nerve, records)
+    await stream_events(tailer, app.nerves.events, records)
     source = await native_conversation(app)
     archive = await app.conversations.history(source.id)
     effective = await app.conversations.effective_messages(source)
@@ -336,7 +336,7 @@ async def test_native_membership_retains_tail_and_is_shared_by_forks(
         message.id for message in await app.conversations.effective_messages(fork)
     ] == [message.id for message in effective]
     await stream_events(
-        tailer, app.nerve, [*records, *turn_events(3, 14, "next", "three")]
+        tailer, app.nerves.events, [*records, *turn_events(3, 14, "next", "three")]
     )
     assert len(await app.conversations.effective_messages(source)) == 5
     assert len(await app.conversations.effective_messages(fork)) == 3
@@ -360,12 +360,12 @@ async def test_multiple_in_turn_compactions_wait_for_durable_messages(
         later[2],
         *compaction_events(manual=False, base=12, shadowed=[7, 9]),
     ]
-    await stream_events(tailer, app.nerve, records)
+    await stream_events(tailer, app.nerves.events, records)
     source = await native_conversation(app)
     async with async_session() as session:
         assert await session.count(CompactionMembership) == 0
     # Reconnect with the complete turn: both boundaries now refer to saved UUIDs.
-    await stream_events(tailer, app.nerve, [*records, later[3]])
+    await stream_events(tailer, app.nerves.events, [*records, later[3]])
     async with async_session() as session:
         rows = await session.list(Compaction)
         assert len(rows) == 2
@@ -380,11 +380,11 @@ async def test_in_turn_compaction_includes_uncommitted_retained_prompt(
 ) -> None:
     app = Octomate()
     _, tailer = wired(app)
-    await stream_events(tailer, app.nerve, turn_events(1, 0, "first", "one"))
+    await stream_events(tailer, app.nerves.events, turn_events(1, 0, "first", "one"))
     current = turn_events(2, 4, "retain", "two")
     current[2]["seq"] = 13
     current[3]["seq"] = 14
-    async with app.nerve.publish(SESSION_ADDRESS) as impulses:
+    async with app.nerves.events.publish(SESSION_ADDRESS) as impulses:
         state, _ = await tailer.attach_remote(
             SESSION_ID, LOG_LABEL, "/repo", SENDER, SESSION_ADDRESS, impulses
         )
@@ -441,7 +441,7 @@ async def test_compaction_cannot_split_a_normalized_tool_pair(
     _, tailer = wired(app)
     await stream_events(
         tailer,
-        app.nerve,
+        app.nerves.events,
         [
             *turn_events(1, 0, "list files", "unused")[:2],
             ev(
@@ -503,7 +503,7 @@ async def test_unmapped_or_noncontiguous_surface_stays_unknown(
     _, tailer = wired(app)
     await stream_events(
         tailer,
-        app.nerve,
+        app.nerves.events,
         [
             *turn_events(1, 0, "first", "one"),
             *turn_events(2, 4, "second", "two"),
@@ -541,7 +541,7 @@ async def test_injected_context_does_not_make_retained_answers_shadowed(
     )
     await stream_events(
         tailer,
-        app.nerve,
+        app.nerves.events,
         [
             *records,
             *compaction_events(shadowed=[1, 2] if retain_answer else [1, 2, 3]),

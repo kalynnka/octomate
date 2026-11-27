@@ -22,6 +22,7 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import Message
 
 from octomate.habitat import Habitat, HabitatError, ManagedHabitat, WorkspaceHabitat
+from octomate.managers.habitat import Interruption
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.tentacles.agent import AgentInk
 from octomate.tentacles.claude.catalog import (
@@ -162,6 +163,7 @@ class ClaudeInk(AgentInk):
         conversation_id: uuid.UUID,
         should_interrupt: Callable[[], bool],
         command: ClaudeCommandDescriptor | None = None,
+        interruption: Interruption | None = None,
     ) -> AsyncGenerator[Message]:
         """Stream a turn, superseding the prior client for this conversation.
 
@@ -240,6 +242,10 @@ class ClaudeInk(AgentInk):
                 with contextlib.suppress(Exception):
                     await previous.interrupt()
             await client.query(prompt)
+            if interruption is not None:
+                await resources.enter_async_context(
+                    interruption.handling(client.interrupt)
+                )
             interrupted = False
             async for message in client.receive_response():
                 yield message

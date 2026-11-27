@@ -69,10 +69,11 @@ from octomate.habitat import ManagedHabitat
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import OctomateSession
+from octomate.nerve import Nerves
 from octomate.reflex.nodes.teleport import Teleport
 from octomate.reflex.state import ReflexDeps, ReflexState, ResponseTarget
 from octomate.reflex.suspender import ReflexSuspender, TeleportRequest
-from octomate.schemas.awakes import DeferredActionBatchResponse
+from octomate.schemas.auth import RuntimeApiKey
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     ApprovalRequest,
@@ -82,6 +83,7 @@ from octomate.schemas.deferred import (
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
 from octomate.schemas.volumes.storage import HostDirectory
+from octomate.signals import DeferredActionBatchResponse
 from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import base as codex_base
@@ -108,9 +110,9 @@ from tests.support.managers import (
     RecordingSuspender,
     a_thread,
 )
-from tests.support.nerve import unwired
+from tests.support.nerve import kick_and_wait, unwired
 from tests.support.scenarios import play
-from tests.support.users import a_user, auth_config
+from tests.support.users import a_user, auth_config, runtime_api_keys
 
 KEY = ChannelAddress(
     channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
@@ -1048,7 +1050,7 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
             origin=origin,
             agent_id="codex",
         )
-        async with octomate.nerve.publish(KEY) as impulses:
+        async with octomate.nerves.events.publish(KEY) as impulses:
             await node.run(
                 GraphRunContext(state=state, deps=replace(deps, impulses=impulses))
             )
@@ -1331,10 +1333,11 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
     async with tentacle:
         task = asyncio.ensure_future(drain())
         batch_id = await wait_for_pending(tentacle, suspender)
-        await octomate.kick(
+        await kick_and_wait(
+            octomate,
             DeferredActionBatchResponse(
                 batch_id=batch_id, approvals={approval.id: True}
-            )
+            ),
         )
         events = await task
 
@@ -1391,11 +1394,12 @@ async def test_question_requests_bridge_to_cards() -> None:
         )
     )
     batch_id = await wait_for_pending(tentacle, suspender)
-    await octomate.kick(
+    await kick_and_wait(
+        octomate,
         DeferredActionBatchResponse(
             batch_id=batch_id,
             answers={question.id: "main"},
-        )
+        ),
     )
     response = await task
 
@@ -1463,10 +1467,11 @@ async def test_an_mcp_tool_prompt_bridges_to_an_approval_card(approved: bool) ->
         )
     )
     batch_id = await wait_for_pending(tentacle, suspender)
-    await octomate.kick(
+    await kick_and_wait(
+        octomate,
         DeferredActionBatchResponse(
             batch_id=batch_id, approvals={approval.id: approved}
-        )
+        ),
     )
     response = await task
 
@@ -1522,11 +1527,12 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
         )
     )
     batch_id = await wait_for_pending(tentacle, suspender)
-    await octomate.kick(
+    await kick_and_wait(
+        octomate,
         DeferredActionBatchResponse(
             batch_id=batch_id,
             approvals={approval.id: False},
-        )
+        ),
     )
     response = await task
 
@@ -1587,12 +1593,13 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
         )
     )
     batch_id = await wait_for_pending(tentacle, suspender)
-    await octomate.kick(
+    await kick_and_wait(
+        octomate,
         DeferredActionBatchResponse(
             batch_id=batch_id,
             approvals={approval.id: True},
             allow_session=True,
-        )
+        ),
     )
     response = await task
     second_response = await tentacle.handle_sdk_request(
@@ -2539,6 +2546,7 @@ async def test_shared_client_reuses_keys_per_user(
         principals[str(conversation.id)] = user.id
         octomate.gateway.register(
             OctomateSession(
+                nerves=Nerves(),
                 channel_routes={},
                 current_agent_id="codex",
                 conversation_id=conversation.id,
@@ -2604,8 +2612,7 @@ async def test_shared_client_reuses_keys_per_user(
             assert key.user_id == principals[conversation_id]
         assert len(tokens) == 2
         assert len(set(tokens.values())) == (1 if same_user else 2)
-        assert len(tentacle.api_keys) == (1 if same_user else 2)
-        assert len(await octomate.auth.list_api_keys(alice.id)) == 1
+        assert len(await runtime_api_keys(alice.id)) == 1
 
         first = await conversations.ensure(thread_ids[0], agent_tentacle_id="codex")
         first_token = tokens[str(first.id)]
@@ -2645,14 +2652,12 @@ async def test_shared_client_reuses_keys_per_user(
             await asyncio.wait_for(reader, 1)
             assert not tentacle.ink.running
             assert not tentacle.ink.thread_bindings
-            assert len(tentacle.api_keys) == (1 if same_user else 2)
             assert (
                 await octomate.auth.authenticate_api_key(first_token, scope="mcp")
                 is not None
             )
     for token in tokens.values():
-        assert await octomate.auth.authenticate_api_key(token, scope="mcp") is None
-    assert not tentacle.api_keys
+        assert await octomate.auth.authenticate_api_key(token, scope="mcp") is not None
     assert not tentacle.ink.thread_bindings
     assert FakeCodex.closed == 1
 
@@ -2692,6 +2697,7 @@ async def test_expired_user_key_is_replaced_once_and_applied_to_each_thread(
         conversation = await conversations.ensure(thread_id, agent_tentacle_id="codex")
         octomate.gateway.register(
             OctomateSession(
+                nerves=Nerves(),
                 channel_routes={},
                 current_agent_id="codex",
                 conversation_id=conversation.id,
@@ -2713,8 +2719,15 @@ async def test_expired_user_key_is_replaced_once_and_applied_to_each_thread(
                 await tentacle.run(
                     "work", conversation_address=KEY, invocation=invocation
                 )
-        expired = tentacle.api_keys[profile.user_id]
-        expired.key.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        assert profile.user_id is not None
+        expired = await tentacle.runtime_api_key(profile.user_id)
+        assert expired is not None
+        assert expired.bearer is not None
+        async with async_session() as session:
+            stored_key = await session.get(RuntimeApiKey, expired.id)
+            assert stored_key is not None
+            stored_key.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            await session.commit()
 
         if cancel_refresh:
             client = tentacle.ink.pool.core_client
@@ -2763,14 +2776,18 @@ async def test_expired_user_key_is_replaced_once_and_applied_to_each_thread(
                 )
 
         await asyncio.gather(*(run_turn(thread_id) for thread_id in thread_ids))
-        current = tentacle.api_keys[profile.user_id]
-        assert current.key.id != expired.key.id
-        assert len(await octomate.auth.list_api_keys(profile.user_id)) == 2
+        current = await tentacle.runtime_api_key(profile.user_id)
+        assert current is not None
+        assert current.bearer is not None
+        assert current.id == expired.id
+        assert current.bearer != expired.bearer
+        assert len(await runtime_api_keys(profile.user_id)) == 1
         assert (
-            await octomate.auth.authenticate_api_key(expired.token, scope="mcp") is None
+            await octomate.auth.authenticate_api_key(expired.bearer, scope="mcp")
+            is None
         )
         assert (
-            await octomate.auth.authenticate_api_key(current.token, scope="mcp")
+            await octomate.auth.authenticate_api_key(current.bearer, scope="mcp")
             is not None
         )
         assert [call.kind for call in FakeCodex.thread_calls] == [
@@ -2781,16 +2798,19 @@ async def test_expired_user_key_is_replaced_once_and_applied_to_each_thread(
         ]
         for call in FakeCodex.thread_calls[-2:]:
             assert driven_headers(call)["Authorization"] == (
-                f"Bearer {current.token.get_secret_value()}"
+                f"Bearer {current.bearer.get_secret_value()}"
             )
         for thread_id in thread_ids:
             stored = await conversations.ensure(thread_id, agent_tentacle_id="codex")
             assert stored.external_id is not None
             assert tentacle.ink.thread_bindings[stored.external_id] == (
                 stored.id,
-                current.key.id,
+                current.runtime_nonce,
             )
-    assert await octomate.auth.authenticate_api_key(current.token, scope="mcp") is None
+    assert (
+        await octomate.auth.authenticate_api_key(current.bearer, scope="mcp")
+        is not None
+    )
 
 
 @pytest.mark.parametrize("moved", [False, True])
@@ -2807,6 +2827,7 @@ async def test_cached_binding_reconfigures_a_changed_caller(
     source = await conversations.ensure(thread_id, agent_tentacle_id="codex")
     alice = await a_kicker()
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id="codex",
         conversation_id=source.id,
@@ -2846,6 +2867,7 @@ async def test_cached_binding_reconfigures_a_changed_caller(
             source = await conversations.get(source.id)
             await conversations.fork(source, target, carry_external_id=True)
             session = OctomateSession(
+                nerves=Nerves(),
                 channel_routes={},
                 current_agent_id="codex",
                 conversation_id=target.id,
@@ -2874,14 +2896,16 @@ async def test_cached_binding_reconfigures_a_changed_caller(
         assert headers["X-Octomate-Conversation"] == str(session.conversation_id)
         assert session.user_profile is not None
         assert session.user_profile.user_id is not None
-        key = tentacle.api_keys[session.user_profile.user_id]
-        assert headers["Authorization"] == f"Bearer {key.token.get_secret_value()}"
+        key = await tentacle.runtime_api_key(session.user_profile.user_id)
+        assert key is not None
+        assert key.bearer is not None
+        assert headers["Authorization"] == f"Bearer {key.bearer.get_secret_value()}"
         assert session.conversation_id is not None
         stored = await conversations.get(session.conversation_id, with_runs=False)
         assert stored.external_id == "thread-new"
         assert tentacle.ink.thread_bindings[stored.external_id] == (
             stored.id,
-            key.key.id,
+            key.runtime_nonce,
         )
 
 
@@ -2923,6 +2947,7 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
     profile = await a_kicker()
     octomate.gateway.register(
         OctomateSession(
+            nerves=Nerves(),
             channel_routes={},
             current_agent_id="codex",
             conversation_id=conversation.id,
@@ -2969,7 +2994,7 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
         key = await octomate.auth.authenticate_api_key(token, scope="mcp")
         assert key is not None
         assert key.scopes == ["hooks", "mcp"]
-    assert await octomate.auth.authenticate_api_key(token, scope="mcp") is None
+    assert await octomate.auth.authenticate_api_key(token, scope="mcp") is not None
 
     config = FakeCodex.last_config
     assert config is not None
@@ -3126,6 +3151,7 @@ async def test_a_turn_kicked_by_an_unregistered_user_launches_clean(
     conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
     octomate.gateway.register(
         OctomateSession(
+            nerves=Nerves(),
             channel_routes={},
             current_agent_id="codex",
             conversation_id=conversation.id,
@@ -3208,6 +3234,7 @@ async def test_an_mcp_wiring_flip_reloads_only_the_conversations_thread(
         conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
         profile = await a_kicker()
         session = OctomateSession(
+            nerves=Nerves(),
             channel_routes={},
             current_agent_id="codex",
             conversation_id=conversation.id,
@@ -3255,6 +3282,7 @@ async def test_a_registered_gateway_uses_the_default_served_endpoint(
     profile = await a_kicker()
     octomate.gateway.register(
         OctomateSession(
+            nerves=Nerves(),
             channel_routes={},
             current_agent_id="codex",
             conversation_id=conversation.id,
@@ -3344,6 +3372,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
     conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
     profile = await a_kicker()
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id="codex",
         conversation_id=conversation.id,
@@ -3620,20 +3649,18 @@ async def test_async_questions_continue_and_answers_resume_the_same_thread(
         )
 
         # Partial replies settle their cards without starting a premature turn.
-        task = await octomate.kick(
+        await kick_and_wait(
+            octomate,
             DeferredActionBatchResponse(
                 batch_id=batch.id, answers={second.id: "Use staging"}
-            )
+            ),
         )
-        assert task is not None
-        await task
         assert len(FakeCodex.turn_calls) == 1
         FakeCodex.script = text_script("Continuing in eu.", thread_id="thread-new")
-        task = await octomate.kick(
-            DeferredActionBatchResponse(batch_id=batch.id, answers={first.id: "eu"})
+        await kick_and_wait(
+            octomate,
+            DeferredActionBatchResponse(batch_id=batch.id, answers={first.id: "eu"}),
         )
-        assert task is not None
-        await task
 
         assert len(FakeCodex.turn_calls) == 2
         assert FakeCodex.turn_calls[-1].prompt == (

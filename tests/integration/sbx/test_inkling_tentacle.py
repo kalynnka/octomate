@@ -52,7 +52,13 @@ async def test_project_tools_approve_resume_and_reuse_the_habitat(
     host.workspaces.projects = await a_registry(project)
     owner = await a_user("inkling-owner")
     thread = await host.threads.ensure(
-        ThreadKey("im", "thread", "acceptance", uuid7().hex), project=project
+        ThreadKey(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id="acceptance",
+            channel_thread_id=uuid7().hex,
+        ),
+        project=project,
     )
     address = thread.key.address("inkling-owner")
     scope = InvocationScope(user_id=owner.id, conversation_id=uuid7())

@@ -40,6 +40,7 @@ from tests.agent.claude.test_tentacle import FakeClaudeClient
 from tests.support.agents import ScriptedStream, ScriptedTurn
 from tests.support.managers import a_project, a_registry
 from tests.support.mcp import served_inkling_mcp
+from tests.support.nerve import listening
 from tests.support.users import a_user, auth_config
 
 
@@ -73,11 +74,14 @@ async def client(
     user = await a_user("alice")
     assert app.auth is not None
     key = await app.auth.create_api_key(user.id, name="ACP client", scopes=["acp"])
+    assert key.bearer is not None
     async with served_inkling_mcp(app, monkeypatch, lifespan=False):
         with TestClient(
-            app, headers={"Authorization": f"Bearer {key.token.get_secret_value()}"}
+            app, headers={"Authorization": f"Bearer {key.bearer.get_secret_value()}"}
         ) as client:
-            yield client
+            assert client.portal is not None
+            with client.portal.wrap_async_context_manager(listening(app)):
+                yield client
 
 
 def rpc(
@@ -152,7 +156,7 @@ async def test_unified_model_selection_stream_and_history(
         assert isinstance(app, Octomate)
         thread = await app.threads.get(UUID(session_id), with_messages=False)
         assert thread is not None
-        async with app.nerve.subscribe(ThreadTopic(thread.key)) as events:
+        async with app.nerves.events.subscribe(ThreadTopic(thread.key)) as events:
             first = prompt(socket, session_id)
             heard = []
             while True:
@@ -260,8 +264,9 @@ async def test_foreign_account_cannot_load_list_or_prompt(client: TestClient) ->
     assert app.auth is not None
     other = await a_user("bob")
     key = await app.auth.create_api_key(other.id, name="other", scopes=["acp"])
+    assert key.bearer is not None
     with client.websocket_connect(
-        "/api/acp", headers={"Authorization": f"Bearer {key.token.get_secret_value()}"}
+        "/api/acp", headers={"Authorization": f"Bearer {key.bearer.get_secret_value()}"}
     ) as socket:
         initialize(socket)
         assert session_id not in str(rpc(socket, "session/list", {}))
@@ -430,7 +435,11 @@ async def test_questions_resume_or_cancel_through_reflex(
             gateway=False,
         )
     )
-    with client.websocket_connect("/api/acp") as socket:
+    assert client.portal is not None
+    with (
+        client.portal.wrap_async_context_manager(listening(app)),
+        client.websocket_connect("/api/acp") as socket,
+    ):
         initialize(socket, elicitation=True)
         session_id = new_session(socket)
         rpc(
@@ -476,7 +485,7 @@ async def test_questions_resume_or_cancel_through_reflex(
             if frame.get("id") == "prompt":
                 break
         assert frame["result"] == {"stopReason": "cancelled" if cancel else "end_turn"}
-    assert not app.awakes
+    assert not app.awake_since
 
 
 @pytest.mark.parametrize("decision", ["allow", "deny", "cancel", "disconnect"])
@@ -517,7 +526,11 @@ async def test_agent_permissions_and_cancellation(
             capabilities=[Toolset(toolset)],
         )
     )
-    with client.websocket_connect("/api/acp") as socket:
+    assert client.portal is not None
+    with (
+        client.portal.wrap_async_context_manager(listening(app)),
+        client.websocket_connect("/api/acp") as socket,
+    ):
         initialize(socket)
         session_id = new_session(socket)
         rpc(
@@ -577,7 +590,7 @@ async def test_agent_permissions_and_cancellation(
             }
             assert "second answer" in str(prompt(socket, session_id))
     assert calls == (["echo"] if decision == "allow" else [])
-    assert not app.awakes
+    assert not app.awake_since
     bridge = app.tentacles["bridge"]
     assert isinstance(bridge, AcpChannelTentacle)
     assert not bridge.clients
@@ -744,7 +757,11 @@ async def test_native_live_approval_returns_to_existing_run(
         )
     )
     agent.models = {"anthropic:sonnet": "sonnet"}
-    with client.websocket_connect("/api/acp") as socket:
+    assert client.portal is not None
+    with (
+        client.portal.wrap_async_context_manager(listening(app)),
+        client.websocket_connect("/api/acp") as socket,
+    ):
         initialize(socket)
         session_id = new_session(socket)
         rpc(
@@ -787,5 +804,5 @@ async def test_native_live_approval_returns_to_existing_run(
         assert frame["result"] == {"stopReason": "end_turn"}
     async with async_session() as session:
         assert len(await session.list(AgentRun)) == 1
-    assert not app.awakes
+    assert not app.awake_since
     assert not agent.pendings

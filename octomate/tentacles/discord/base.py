@@ -89,6 +89,7 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
         super().__init__(
             id=id,
             octomate=octomate,
+            nerves=octomate.nerves,
             ink=self.ink,
             chromo=self.chromo,
             config=config,
@@ -120,7 +121,9 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
                 deferred_actions=self.octomate.deferred_actions,
             ),
         )
-        self.component_router = DiscordComponentRouter(self.octomate)
+        self.component_router = DiscordComponentRouter(
+            self.octomate, nerves=self.nerves
+        )
         self.component_router.bind(self.client)
         self.client.add_dynamic_items(
             DiscordApprovalButton,

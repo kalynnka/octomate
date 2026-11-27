@@ -1,6 +1,7 @@
 """A live action reply never starts another agent run."""
 
 import asyncio
+from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock
 from uuid import UUID
 
@@ -12,11 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.config.agents import ClaudeCodeConfig, CodexConfig, DeepseekConfig
-from octomate.events import ActionBatchEvent
+from octomate.events import ActionBatchEvent, RunErrorEvent
+from octomate.nerve import ChannelTopic, ThreadTopic
 from octomate.reflex.graph import reflex_graph
 from octomate.reflex.suspender import ReflexSuspender
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
+from octomate.schemas.thread import ThreadKey
+from octomate.signals import DeferredActionBatchResponse
 from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex.base import CodexBridgeContext
@@ -24,9 +27,10 @@ from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.deepseek.base import DeepseekBridgeContext
 from octomate.tentacles.deferred import Interjections
 from octomate.types.deferred import DeferredResponseMode
+from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import a_thread
-from tests.support.nerve import awake_on, kick_and_wait
+from tests.support.nerve import awake_on, kick_and_wait, listening, publish_signal
 
 type LiveAgent = ClaudeTentacle | CodexTentacle | DeepseekTentacle
 
@@ -38,7 +42,7 @@ ADDRESS = ChannelAddress(
 @pytest.fixture(params=["claude", "codex", "deepseek"])
 async def live_agent(
     request: pytest.FixtureRequest, in_memory_engine: AsyncEngine
-) -> tuple[LiveAgent, Conversation]:
+) -> AsyncGenerator[tuple[LiveAgent, Conversation]]:
     app = Octomate(tentacles={"im": FakeChannelTentacle()})
     if request.param == "claude":
         agent = ClaudeTentacle(
@@ -85,7 +89,8 @@ async def live_agent(
     conversation = await app.conversations.ensure(
         await a_thread(), agent_tentacle_id=agent.id
     )
-    return agent, conversation
+    async with listening(app):
+        yield agent, conversation
 
 
 def a_suspender(agent: LiveAgent, conversation: Conversation) -> ReflexSuspender:
@@ -169,10 +174,11 @@ async def test_a_reply_reaches_the_live_request(
         asking = tasks.create_task(ask(agent, conversation))
         batch = await put_up.get()
         [approval] = batch.approvals
-        await app.kick(
+        await publish_signal(
+            app,
             DeferredActionBatchResponse(
                 batch_id=UUID(batch.batch_id), approvals={approval.id: True}
-            )
+            ),
         )
     _, response = asking.result()
 
@@ -201,10 +207,11 @@ async def test_pending_batches_accept_replies_in_reverse_order(
         batches = [await put_up.get(), await put_up.get()]
         for batch, approved in zip(reversed(batches), [True, False], strict=True):
             [approval] = batch.approvals
-            await app.kick(
+            await publish_signal(
+                app,
                 DeferredActionBatchResponse(
                     batch_id=UUID(batch.batch_id), approvals={approval.id: approved}
-                )
+                ),
             )
 
     replies = {
@@ -275,8 +282,29 @@ async def test_missing_waiter_does_not_determine_response_routing(
     monkeypatch.setattr(reflex_graph, "run", run)
     response = DeferredActionBatchResponse(batch_id=batch.id)
     if response_mode == "live":
-        with pytest.raises(RuntimeError, match="no longer awaiting a response"):
-            await app.kick(response)
+        async with (
+            listening(app),
+            app.nerves.events.subscribe(
+                ThreadTopic(ThreadKey.model_validate(ADDRESS))
+            ) as events,
+            app.nerves.events.subscribe(
+                ThreadTopic(ThreadKey.model_validate(ADDRESS))
+            ) as other_events,
+            app.nerves.events.subscribe(
+                ChannelTopic(ADDRESS.channel_tentacle_id)
+            ) as channel_events,
+        ):
+            await publish_signal(app, response)
+            impulse = await events.receive()
+            assert await other_events.receive() == impulse
+            assert await channel_events.receive() == impulse
+            assert impulse.address == ADDRESS
+            assert impulse.origin == ThreadKey.model_validate(ADDRESS)
+            error = impulse.event
+        assert isinstance(error, RunErrorEvent)
+        assert error.message == "This live request is no longer awaiting a response"
+        async with listening(app):
+            await publish_signal(app, response)
         run.assert_not_awaited()
     else:
         await kick_and_wait(app, response)
@@ -290,6 +318,7 @@ async def test_an_answer_that_finds_its_thread_busy_waits_out_the_turn(
     that finds its thread busy is not refused: it resumes its run once the turn
     running there ends."""
     app = Octomate()
+    app.connect(FakeAgent(id="codex"))
     conversation = await app.conversations.ensure(
         await a_thread(), agent_tentacle_id="codex"
     )
@@ -306,17 +335,15 @@ async def test_an_answer_that_finds_its_thread_busy_waits_out_the_turn(
     )
     run = AsyncMock()
     monkeypatch.setattr(reflex_graph, "run", run)
-    # The last wait before the kick looks at the thread.
     delivered = asyncio.Event()
-    deliver = app.deliver_live_response
+    get_batch = app.deferred_actions.get_batch
 
-    async def delivering(response: DeferredActionBatchResponse) -> str | None:
-        try:
-            return await deliver(response)
-        finally:
-            delivered.set()
+    async def getting_batch(batch_id: UUID7):
+        result = await get_batch(batch_id)
+        delivered.set()
+        return result
 
-    monkeypatch.setattr(app, "deliver_live_response", delivering)
+    monkeypatch.setattr(app.deferred_actions, "get_batch", getting_batch)
 
     async with awake_on(app, ADDRESS):
         answering = asyncio.create_task(

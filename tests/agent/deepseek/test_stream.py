@@ -146,12 +146,12 @@ def test_entries_flow_over_the_socket_and_the_next_connect_resumes() -> None:
     committed turn — the client re-reads its gateway from there."""
     client, tentacle = stream_client()
 
-    key = ThreadKey.from_address(SESSION_ADDRESS)
+    key = ThreadKey.model_validate(SESSION_ADDRESS)
     with client, ExitStack() as subscriptions:
         assert client.portal is not None
         live = subscriptions.enter_context(
             client.portal.wrap_async_context_manager(
-                tentacle.octomate.nerve.subscribe(ThreadTopic(key))
+                tentacle.octomate.nerves.events.subscribe(ThreadTopic(key))
             )
         )
         with client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket:
@@ -173,7 +173,7 @@ def test_entries_flow_over_the_socket_and_the_next_connect_resumes() -> None:
         ] == ["run_started", "run_ended"]
         assert all(impulse.address == SESSION_ADDRESS for impulse in impulses)
         assert all(impulse.origin == key for impulse in impulses)
-        assert not tentacle.octomate.awakes
+        assert not tentacle.octomate.awake_since
         with client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())

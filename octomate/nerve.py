@@ -34,8 +34,8 @@ user notifications by delivering separately to each authorized user's topic.
 `Nerve.publish` owns channel and thread routing for kicks and native tails.
 
 A nerve runs one way and carries one kind of envelope. Events run outbound, as
-impulses, from whoever acted to whoever watches. Signals run inbound, as
-stimuli, to whoever is to act, on a nerve of their own over the same topics, so
+impulses, from whoever acted to whoever watches. Signals run inbound
+to whoever is to act, on a nerve of their own over the same topics, so
 a subscriber of one direction never reads the other. Kick routing belongs to
 the outbound nerve alone: `Nerve.publish` takes impulses.
 """
@@ -47,7 +47,7 @@ import math
 from collections import Counter, defaultdict
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager, suppress
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Generic
 
 import anyio
@@ -65,11 +65,10 @@ from octomate.fibers import FIBER_BUFFER as FIBER_BUFFER
 from octomate.fibers import Fiber, FiberError, MemoryFiber, ReplayFiber
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
-from octomate.signals import Priming, Signal
+from octomate.signals import Signal
 
 EventT = TypeVar("EventT", default=WireEvent, covariant=True)
 NerveEventT = TypeVar("NerveEventT", default=WireEvent)
-SignalT = TypeVar("SignalT", default=Signal, covariant=True)
 
 
 # Python 3.12 needs typing_extensions for a type parameter with a default.
@@ -93,22 +92,6 @@ class Impulse(Generic[EventT]):
     # for a kick, the native thread for a tail, or None when neither names a thread.
     origin: ThreadKey | None = None
     replay: bool = False  # Historical transcript events must not animate live activity.
-
-
-@with_config(
-    ConfigDict(
-        extra="forbid",
-        ser_json_bytes="base64",
-        val_json_bytes="base64",
-    )
-)
-@dataclass(frozen=True)
-class Stimulus(Generic[SignalT]):
-    """One signal on its way in, to whoever is to act on it."""
-
-    signal: SignalT
-    # What core resolved for the turn the signal asks for; None when it asks for none.
-    priming: Priming | None = None
 
 
 @dataclass(frozen=True)
@@ -139,17 +122,31 @@ class HabitatTopic:
     user_id: UUID7
 
 
+@dataclass(frozen=True)
+class InvocationTopic:
+    """Signals addressed to one agent invocation."""
+
+    invocation_id: UUID7
+
+
+@dataclass(frozen=True)
+class AgentTopic:
+    """One agent's long-lived signal receiver."""
+
+    agent_id: str
+
+
 type EventTopic = ChannelTopic | ThreadTopic | UserTopic
-type Topic = EventTopic | HabitatTopic
+type Topic = EventTopic | HabitatTopic | InvocationTopic | AgentTopic
 
 
 SentT = TypeVar("SentT", default=Impulse[WireEvent])
 
-impulse_adapter: TypeAdapter[Impulse[WireEvent]] = TypeAdapter(Impulse[WireEvent])
+wire_impulse_adapter: TypeAdapter[Impulse[WireEvent]] = TypeAdapter(Impulse[WireEvent])
 
 
 class Nerve(Generic[SentT]):
-    """Route one kind of envelope, impulses or stimuli, through publishers and
+    """Route one kind of payload, impulses or signals, through publishers and
     subscribers backed by any fiber."""
 
     def __init__(self) -> None:
@@ -195,6 +192,17 @@ class Nerve(Generic[SentT]):
                 anyio.ClosedResourceError,
             ):
                 fiber.fail(FiberError("Subscriber fiber cannot accept publication"))
+
+    def dispatch(self, topic: Topic, sent: SentT) -> None:
+        """Send to exactly one ready receiver, refusing missing or ambiguous delivery."""
+        recipients = [
+            fiber
+            for fiber in self.subscribers.get(topic, set())
+            if not fiber.closed and fiber.failure is None
+        ]
+        if len(recipients) != 1:
+            raise FiberError("Directed delivery requires exactly one ready receiver")
+        recipients[0].send_nowait(sent)
 
     @asynccontextmanager
     async def subscribe(
@@ -271,13 +279,21 @@ class Nerve(Generic[SentT]):
         if publisher.closed:
             raise ValueError("Publisher fiber is closed")
         asked = (
-            ThreadKey.from_address(origin)
+            ThreadKey.model_validate(origin)
             if isinstance(origin, ChannelAddress)
             else None
         )
         topic = (
             origin
-            if isinstance(origin, ChannelTopic | ThreadTopic | UserTopic | HabitatTopic)
+            if isinstance(
+                origin,
+                ChannelTopic
+                | ThreadTopic
+                | UserTopic
+                | HabitatTopic
+                | InvocationTopic
+                | AgentTopic,
+            )
             else None
         )
 
@@ -295,7 +311,9 @@ class Nerve(Generic[SentT]):
                     topics: set[Topic] = set()
                     if impulse.address is not None:
                         topics.add(ChannelTopic(impulse.address.channel_tentacle_id))
-                        topics.add(ThreadTopic(ThreadKey.from_address(impulse.address)))
+                        topics.add(
+                            ThreadTopic(ThreadKey.model_validate(impulse.address))
+                        )
                     if not impulse.private and asked is not None:
                         topics.add(ThreadTopic(asked))
                     if retaining is not None and retaining in topics:
@@ -328,3 +346,11 @@ class Nerve(Generic[SentT]):
                     await pumping
                 finally:
                     publisher.close()
+
+
+@dataclass
+class Nerves:
+    """The host's independent inbound signals and outbound event stream."""
+
+    signals: Nerve[Signal] = field(default_factory=Nerve[Signal])
+    events: Nerve[Impulse[WireEvent]] = field(default_factory=Nerve[Impulse[WireEvent]])

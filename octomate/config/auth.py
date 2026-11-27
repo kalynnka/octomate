@@ -2,7 +2,15 @@
 
 from datetime import timedelta
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from mcp.server.auth.routes import validate_issuer_url
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+)
 
 
 class AuthConfig(BaseModel):
@@ -36,6 +44,36 @@ class AuthConfig(BaseModel):
     cookie_secure: bool = Field(
         default=True, description="Require HTTPS for browser session cookies."
     )
+    oauth_authorization_lifetime: timedelta = Field(
+        default=timedelta(minutes=5),
+        gt=timedelta(0),
+        le=timedelta(minutes=10),
+        description="Lifetime of pending OAuth consent and, after approval, its single-use code.",
+    )
+    oauth_issuer_url: AnyHttpUrl | None = Field(
+        default=None,
+        description="Public origin for inbound OAuth. Enables native-harness and CLI authorization; HTTPS except for local development.",
+    )
+
+    oauth_ui_url: AnyHttpUrl | None = Field(
+        default=None,
+        description="Trunkline origin for OAuth sign-in and consent; defaults to the issuer origin when Trunkline is served there.",
+    )
+
+    @field_validator("oauth_issuer_url", "oauth_ui_url")
+    @classmethod
+    def validate_oauth_issuer(cls, value: AnyHttpUrl | None) -> AnyHttpUrl | None:
+        if value is not None:
+            validate_issuer_url(value)
+            if value.path not in {None, "/"} or value.username or value.password:
+                raise ValueError("OAuth origins must not contain a path or credentials")
+        return value
+
+    oauth_grant_idle_lifetime: timedelta = Field(
+        default=timedelta(days=30),
+        gt=timedelta(0),
+        description="Idle lifetime of native-harness and CLI OAuth grants, renewed by successful token refresh; no absolute lifetime.",
+    )
 
     api_key_prefix: str = Field(
         default="omk_", description="Prefix prepended to newly issued API keys."
@@ -46,5 +84,5 @@ class AuthConfig(BaseModel):
     runtime_api_key_lifetime: timedelta = Field(
         default=timedelta(days=1),
         gt=timedelta(0),
-        description="Maximum lifetime of a driven runtime's temporary MCP API key.",
+        description="Idle lifetime of a runtime API key, extended by acquisition and successful authentication.",
     )

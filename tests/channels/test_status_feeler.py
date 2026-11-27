@@ -317,15 +317,15 @@ async def test_siphon_delivers_status_outside_runs_and_with_streaming_disabled(
     channel.feelers.status = feeler
     address = replace(ADDRESS, channel_tentacle_id=channel.id)
     async with drawing(channel):
-        channel.octomate.nerve.deliver(
+        channel.octomate.nerves.events.deliver(
             ChannelTopic(channel.id), Impulse(ReflexAwakeEvent(), address)
         )
         assert await feeler.next() == "Waking…"
         start, *rest = a_run(address)
-        channel.octomate.nerve.deliver(ChannelTopic(channel.id), start)
+        channel.octomate.nerves.events.deliver(ChannelTopic(channel.id), start)
         assert await feeler.next() == "Starting…"
         for impulse in rest:
-            channel.octomate.nerve.deliver(ChannelTopic(channel.id), impulse)
+            channel.octomate.nerves.events.deliver(ChannelTopic(channel.id), impulse)
         assert await feeler.next() == ""
     assert texts(channel) == ["done"]
 
@@ -340,7 +340,7 @@ async def test_failed_status_presentation_does_not_break_message_delivery(
     monkeypatch.setattr(feeler, "present", present)
     async with drawing(channel):
         for impulse in a_run(ADDRESS):
-            channel.octomate.nerve.deliver(ChannelTopic(channel.id), impulse)
+            channel.octomate.nerves.events.deliver(ChannelTopic(channel.id), impulse)
     assert present.await_count > 0
     assert texts(channel) == ["done"]
     assert not feeler.queues

@@ -125,8 +125,9 @@ async def test_guest_claude_hook_uploads_before_the_invocation_is_released(
                 child_path.write_bytes(child_bytes)
                 key = await tentacle.runtime_api_key(user.id)
                 assert key is not None
+                assert key.bearer is not None
                 await upload_subagent(
-                    sandbox, stored, path, child_path, key.token.get_secret_value()
+                    sandbox, stored, path, child_path, key.bearer.get_secret_value()
                 )
                 [child] = await octomate.conversations.subagents(conversation.id)
                 assert child.subagent_id == "proof"

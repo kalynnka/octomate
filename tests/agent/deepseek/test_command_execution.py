@@ -15,7 +15,6 @@ from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.config.agents import DeepseekConfig
 from octomate.database import async_session
 from octomate.reflex.state import ReflexResult
-from octomate.schemas.awakes import CommandSignal
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
@@ -27,6 +26,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadCommand
 from octomate.schemas.user import UserProfile
+from octomate.signals import CommandSignal
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,

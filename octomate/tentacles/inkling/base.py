@@ -16,7 +16,6 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self, get_args, overload
 
-import anyio
 from httpx2 import URL
 from opentelemetry.trace import get_tracer
 from pydantic import UUID7, TypeAdapter
@@ -26,6 +25,7 @@ from pydantic_ai import (
     AgentNativeTool,
     AgentRunResult,
     AgentRunResultEvent,
+    CancellationToken,
     UsageLimits,
 )
 from pydantic_ai.agent import EventStreamHandler
@@ -36,6 +36,7 @@ from pydantic_ai.agent.abstract import (
 )
 from pydantic_ai.capabilities import LocalWorkspace, Toolset
 from pydantic_ai.conversation import ConversationTypeAdapter
+from pydantic_ai.exceptions import RunCancelled
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import ModelRequest, UserContent, UserPromptPart
 from pydantic_ai.models import KnownModelName, Model
@@ -53,7 +54,7 @@ from rich.style import Style
 from octomate.config.agents import AgentRouteModelName, InklingConfig
 from octomate.habitat import ManagedHabitat, WorkspaceHabitat
 from octomate.managers.conversation import ConversationManager, ConversationStore
-from octomate.managers.habitat import Invocation
+from octomate.managers.habitat import Invocation, RunInterrupted
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH
 from octomate.schemas.commands import (
@@ -354,6 +355,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         super().__init__(
             id=id,
             octomate=octomate,
+            nerves=octomate.nerves,
             commands=octomate.commands,
             projects=octomate.projects,
             threads=octomate.threads,
@@ -550,19 +552,19 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         exc_value: BaseException | None = None,
         traceback: TracebackType | None = None,
     ) -> None:
-        await super().__aexit__(exc_type, exc_value, traceback)
-        # Settle warming before the stack unwinds: an exit racing a half-opened
-        # toolset would close sessions the warm task is still entering.
-        if self.warm_task is not None:
-            self.warm_task.cancel()
-            try:
-                await self.warm_task
-            except asyncio.CancelledError:
-                pass
-            self.warm_task = None
-        await self._exit_stack.aclose()
-        with anyio.CancelScope(shield=True):
-            await self.revoke_runtime_keys()
+        try:
+            await super().__aexit__(exc_type, exc_value, traceback)
+        finally:
+            # Settle warming before the stack unwinds: an exit racing a half-opened
+            # toolset would close sessions the warm task is still entering.
+            if self.warm_task is not None:
+                self.warm_task.cancel()
+                try:
+                    await self.warm_task
+                except asyncio.CancelledError:
+                    pass
+                self.warm_task = None
+            await self._exit_stack.aclose()
 
     async def resolve_conversation(
         self,
@@ -974,7 +976,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         )
         if profile is not None and profile.user_id is not None:
             key = await self.runtime_api_key(profile.user_id)
-            if key is None:
+            if key is None or key.bearer is None:
                 raise ValueError("Inkling MCP tools require configured authentication")
             if octomate_session is None or octomate_session.conversation_id is None:
                 raise ValueError("Inkling MCP tools require a core-owned conversation")
@@ -992,18 +994,24 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 ),
                 id="octomate",
                 headers={
-                    "Authorization": f"Bearer {key.token.get_secret_value()}",
+                    "Authorization": f"Bearer {key.bearer.get_secret_value()}",
                     CONVERSATION_HEADER: str(octomate_session.conversation_id),
                 },
                 process_tool_call=OctomateTools.call,
                 max_retries=2,
             )
             capabilities.extend(OctomateTools.capabilities(client))
+        cancellation = CancellationToken()
+
+        async def interrupt() -> None:
+            cancellation.cancel()
+
         graph_deps = ReactDeps(
             agent=self.agent,
             conversation_manager=self.conversation_manager,
             thread_manager=self.threads,
             agent_deps=deps,
+            cancellation_token=cancellation,
             choose_resolvers=InklingDeferrals(
                 interactive=interactive,
                 configured=self.permission_mode,
@@ -1053,6 +1061,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                         conversation, user_prompt, model=naming_model
                     )
                 )
+            handling = invocation.interruption.handling(interrupt)
+            await handling.__aenter__()
             try:
                 workspace = (
                     invocation.habitat.scope(Path(invocation.cwd))
@@ -1079,7 +1089,10 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                         yield event
                 if naming_task is not None:
                     await naming_task
+            except RunCancelled as error:
+                raise RunInterrupted from error
             finally:
+                await handling.__aexit__(None, None, None)
                 if naming_task is not None:
                     naming_task.cancel()
                     await asyncio.gather(naming_task, return_exceptions=True)

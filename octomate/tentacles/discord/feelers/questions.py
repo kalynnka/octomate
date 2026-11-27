@@ -16,7 +16,8 @@ from octomate.events import (
 )
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.deferred import DeferredQuestion, QuestionAnswer
+from octomate.schemas.deferred import DeferredQuestion
+from octomate.signals import QuestionAnswer
 from octomate.telemetry import channel_logfire
 from octomate.tentacles.discord.feelers.actions import (
     DiscordActionUnavailable,

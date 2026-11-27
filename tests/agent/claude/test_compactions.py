@@ -85,7 +85,7 @@ async def test_compaction_summary_never_becomes_a_prompt_or_run(
     for _ in range(2):
         await stream_in(
             tailer,
-            app.nerve,
+            app.nerves.events,
             [] if child else [*TURN_ONE, *records, *TURN_TWO],
             sub=records if child else None,
         )
@@ -118,7 +118,8 @@ async def test_compaction_summary_never_becomes_a_prompt_or_run(
     assert (replayed.id, replayed.messages[0].id) == original_ids
     assert len(await runs_of(app)) == (0 if child else 2)
     thread = await a_loaded_thread(
-        app.threads, ThreadKey("claude", "thread", SESSION_ID)
+        app.threads,
+        ThreadKey(channel_tentacle_id="claude", chat_type="thread", chat_id=SESSION_ID),
     )
     assert all(item.message_text != message.message_text for item in thread.messages)
     if child:
@@ -146,7 +147,7 @@ async def test_boundary_without_summary_still_persists_without_a_run(
         level="info",
         compactMetadata={"trigger": "manual"},
     )
-    await stream_in(tailer, app.nerve, [boundary])
+    await stream_in(tailer, app.nerves.events, [boundary])
     async with async_session() as session:
         [row] = await session.list(
             Compaction, options=[selectinload(Compaction["messages"])]
@@ -190,7 +191,7 @@ async def test_retained_transcript_uuids_preserve_existing_messages(
     notice = {**boundary, "uuid": "stop-notice", "subtype": "stop_hook_summary"}
     notice.pop("compactMetadata")
     records = [*TURN_ONE, notice, boundary, summary, *TURN_TWO]
-    await stream_in(tailer, app.nerve, records)
+    await stream_in(tailer, app.nerves.events, records)
     async with async_session() as session:
         [row] = await session.list(
             Compaction, options=[selectinload(Compaction["messages"])]
@@ -216,7 +217,7 @@ async def test_retained_transcript_uuids_preserve_existing_messages(
         assert [
             message.id for message in await app.conversations.effective_messages(child)
         ] == expected
-    await stream_in(tailer, app.nerve, records)
+    await stream_in(tailer, app.nerves.events, records)
     assert [message.id for message in await app.conversations.history(owner.id)] == [
         message.id for message in archive
     ]

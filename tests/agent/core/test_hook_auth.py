@@ -40,8 +40,8 @@ async def db(in_memory_engine: AsyncEngine) -> None:
     return
 
 
-def client_for(path: str) -> TestClient:
-    octomate = Octomate(config=OctomateConfig(auth=auth_config()))
+def client_for(path: str, octomate: Octomate | None = None) -> TestClient:
+    octomate = octomate or Octomate(config=OctomateConfig(auth=auth_config()))
     if path == CLAUDE_HOOK_PATH:
         tentacle = ClaudeTentacle(
             octomate,

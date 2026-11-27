@@ -51,6 +51,26 @@ each operation. Applied conversation and credential bindings stay in ink memory
 until the native thread closes or the client disconnects. The tentacle also owns
 credentials, human approvals and run recording.
 
+## Sensing and reflexes
+
+The base tentacle owns its signal receiver, sensing task and active reflexes.
+Subclass lifecycle methods must enter and exit the base lifecycle, keeping native
+clients available until its reflexes have drained. Use the resource stack for
+resources that share the tentacle's lifetime. See the
+[agent lifecycle](../api/tentacles/base.md#octomate.tentacles.agent.AgentTentacle).
+
+Sensing remains available while a reflex runs, so interruption and live human
+answers reach the active run. The receiving tentacle prepares and executes the
+graph; when routing selects another agent, it publishes a continuation to that
+agent. See [the reflex graph](../concepts/reflex.md).
+
+A harness must honor the invocation's interruption control through its native stop
+operation or cooperative cancellation token. Keep collecting and persisting the
+terminal state before reporting interruption, so the same conversation can resume.
+Use the [invocation and interruption contracts](../api/managers/workspaces.md#octomate.managers.habitat)
+for callback lifetime and pending stop requests. User interruption must preserve
+this cleanup; tentacle shutdown separately cancels and drains remaining reflexes.
+
 ## The contract
 
 `AgentTentacle` is abstract over two methods, each taking the same arguments:
@@ -221,9 +241,21 @@ command discovery and execution. DSH implements live session-scoped discovery,
 direct results and immediate command-started runs. The remaining runtime adapters and channel
 command controls are not wired yet.
 
-Channels can dispatch explicit intent with
-`await octomate.kick(CommandSignal(context, invocation, delivery_id))`. Reflex's
-command entry delivers direct feedback or consumes the same native agent stream
+Channels receive `Nerves` as a dependency and dispatch explicit intent directly:
+
+```python
+from octomate.nerve import AgentTopic
+from octomate.signals import CommandSignal
+
+signal = CommandSignal(context, intent, delivery_id)
+nerves.signals.dispatch(AgentTopic(context.agent_id), signal)
+```
+
+The [signal nerve](../api/tentacles/nerve.md) requires exactly one ready receiver.
+A caller waiting for completion must subscribe to the outbound events before
+publishing and match the signal's request ID; the HTTP command handler follows
+this contract using injected nerves. The agent's reflex command entry delivers
+direct feedback or consumes the same native agent stream
 with gateway capabilities, approvals and normal channel delivery. The context
 must already identify the authenticated user and originating surface. The command
 manager revalidates it before dispatch; retries use the same delivery ID.
@@ -597,7 +629,7 @@ address = ChannelAddress(
 )
 async with (
     self.driving(hello.session_id, native=True),
-    self.octomate.nerve.publish(address) as impulses,
+    self.octomate.nerves.events.publish(address) as impulses,
 ):
     await self.stream_attached(websocket, hello, sender, address, impulses)
 ```

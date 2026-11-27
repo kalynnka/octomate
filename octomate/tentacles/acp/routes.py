@@ -13,6 +13,8 @@ from anyio import CancelScope
 from fastapi import APIRouter, Depends, WebSocket
 from pydantic import JsonValue
 
+from octomate.dependencies import nerves as nervous_system
+from octomate.nerve import Nerves
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.acp.auth import acp_sender
 from octomate.tentacles.acp.broker import AcpBroker
@@ -27,6 +29,7 @@ def build_acp_router(tentacle: AcpChannelTentacle) -> APIRouter:
     @router.websocket("")
     async def acp_connection(
         websocket: WebSocket,
+        nerves: Annotated[Nerves, Depends(nervous_system)],
         sender: Annotated[UserProfile, Depends(acp_sender(tentacle))],
     ) -> None:
         """Serve the authenticated caller through registered agents and the reflex."""
@@ -38,7 +41,7 @@ def build_acp_router(tentacle: AcpChannelTentacle) -> APIRouter:
 
         await websocket.accept()
         async with websocket_connection(websocket, handle) as connection:
-            broker = AcpBroker(tentacle, sender, connection)
+            broker = AcpBroker(tentacle, sender, connection, nerves)
 
             async def shutdown() -> None:
                 broker.disconnected = True

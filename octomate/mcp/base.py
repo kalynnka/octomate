@@ -1,4 +1,4 @@
-"""What every Octomate MCP server shares: the bearer verifier for scoped API
+"""What every Octomate MCP server shares: the bearer verifier for API keys and OAuth
 tokens, and the docstring projection that keeps a spell's MCP tool and its
 Inkling tool identical."""
 
@@ -10,34 +10,67 @@ from inspect import cleandoc
 from fastmcp.server.auth import AccessToken, TokenVerifier
 from pydantic import SecretStr
 
-from octomate.database import async_session
 from octomate.managers.auth import AuthManager
-from octomate.schemas.user import User
+from octomate.managers.user import UserManager
 from octomate.types.auth import ApiKeyScope
+
+# The name every runtime mounts the server under. Claude and dsh name a server's
+# tools `mcp__<server>__<tool>`, Codex namespaces them `mcp__<server>`.
+OCTOMATE_SERVER_NAME = "octomate"
+# The one endpoint: the host mounts the server's app under its name, and the
+# transport answers at `/mcp` inside it. Every install config copies this literal.
+OCTOMATE_MCP_PATH = f"/{OCTOMATE_SERVER_NAME}/mcp"
 
 
 class KnownBearers(TokenVerifier):
-    """Verify scoped API tokens through the application's auth manager."""
+    """Verify API keys and resource-bound OAuth tokens through the auth manager."""
 
-    def __init__(self, auth: AuthManager | None = None) -> None:
-        super().__init__()
+    def __init__(self, auth: AuthManager | None = None, *, users: UserManager) -> None:
+        super().__init__(required_scopes=["mcp"])
         self.auth: AuthManager | None = auth
+        self.users: UserManager = users
 
     async def owner(self, token: str, *, scope: ApiKeyScope) -> str | None:
+        principal = await self.verify_token(token, scope=scope)
+        return principal.subject if principal is not None else None
+
+    async def verify_token(
+        self, token: str, *, scope: ApiKeyScope = "mcp"
+    ) -> AccessToken | None:
         if self.auth is None:
             return None
         key = await self.auth.authenticate_api_key(SecretStr(token), scope=scope)
-        if key is None:
+        if key is not None:
+            user = await self.users.get(key.user_id)
+            if user is None:
+                return None
+            return AccessToken(
+                token=token,
+                client_id=user.username,
+                subject=user.username,
+                scopes=[scope],
+            )
+        if self.auth.config.oauth_issuer_url is None:
             return None
-        async with async_session() as session:
-            user = await session.get(User, key.user_id)
-        return user.username if user is not None else None
-
-    async def verify_token(self, token: str) -> AccessToken | None:
-        principal = await self.owner(token, scope="mcp")
+        issuer = str(self.auth.config.oauth_issuer_url).rstrip("/")
+        resource_path = OCTOMATE_MCP_PATH if scope == "mcp" else "/api"
+        principal = await self.auth.authenticate_oauth_token(
+            SecretStr(token), resource=f"{issuer}{resource_path}", scope=scope
+        )
         if principal is None:
             return None
-        return AccessToken(token=token, client_id=principal, scopes=["mcp"])
+        user = await self.users.get(principal.user_id)
+        if user is None:
+            return None
+        return AccessToken(
+            token=token,
+            client_id=str(principal.client_id),
+            subject=user.username,
+            scopes=list(principal.scopes),
+            expires_at=int(principal.expires_at.timestamp()),
+            resource=principal.resource,
+            claims={"iss": str(self.auth.config.oauth_issuer_url)},
+        )
 
 
 def capability_contract(spell: Callable[..., Awaitable[object]]) -> str:

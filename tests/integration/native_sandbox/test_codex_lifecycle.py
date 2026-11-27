@@ -25,7 +25,13 @@ async def test_codex_profile_survives_mode_changes_and_resume(
         sandbox_tree.workspace.parent / "runs"
     ).resolve()
     thread = await octomate.threads.ensure(
-        ThreadKey("sandbox-audit", "thread", "synthetic", "audit"), project=project
+        ThreadKey(
+            channel_tentacle_id="sandbox-audit",
+            chat_type="thread",
+            chat_id="synthetic",
+            channel_thread_id="audit",
+        ),
+        project=project,
     )
     owner = await a_user("sandbox-owner")
     workspace = await octomate.workspaces.resolve(thread.id, project, owner.id)

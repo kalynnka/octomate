@@ -10,11 +10,11 @@ from collections import Counter
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import (
     AbstractAsyncContextManager,
+    AsyncExitStack,
     aclosing,
     asynccontextmanager,
     nullcontext,
 )
-from datetime import UTC, datetime
 from functools import cached_property
 from io import BytesIO
 from pathlib import Path, PurePosixPath
@@ -25,6 +25,7 @@ import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from octomate_protocol.stream import TranscriptKept, TranscriptOffsets
+from opentelemetry import trace
 from pydantic import UUID7
 from pydantic_ai import (
     AgentCapability,
@@ -35,6 +36,7 @@ from pydantic_ai import (
     ToolDenied,
     UsageLimits,
 )
+from pydantic_ai._utils import now_utc
 from pydantic_ai.agent.abstract import (
     AgentInstructions,
     AgentMetadata,
@@ -49,13 +51,16 @@ from pydantic_ai.toolsets import AbstractToolset
 from starlette.datastructures import Headers
 
 from octomate.config.agents import AgentConfig, AgentRouteModelName
+from octomate.database import async_session
+from octomate.events import RunErrorEvent
+from octomate.fibers import MemoryFiber
 from octomate.habitat import Habitat
 from octomate.managers.conversation import ConversationNotFound
 from octomate.managers.files import FileOffsetConflict
-from octomate.managers.habitat import Invocation
+from octomate.managers.habitat import Interruption, Invocation
+from octomate.nerve import AgentTopic, ChannelTopic, Impulse, Nerves, ThreadTopic
 from octomate.schemas.agent import AgentInfo
-from octomate.schemas.auth import IssuedApiKey, UserApiKey
-from octomate.schemas.awakes import DeferredActionBatchResponse
+from octomate.schemas.auth import ApiKey, RuntimeApiKey
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
@@ -63,6 +68,7 @@ from octomate.schemas.commands import (
     CommandError,
     CommandIntent,
     CommandOutcome,
+    CommandOutcomeEvent,
 )
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.project import Project
@@ -70,6 +76,18 @@ from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import AgentRoute, Claim
 from octomate.schemas.user import UserProfile
+from octomate.signals import (
+    AsleepSignal,
+    AwakeSignal,
+    CommandSignal,
+    DeferredActionBatchResponse,
+    DrivenGatewaySignal,
+    NativeGatewaySignal,
+    Signal,
+    StillAwake,
+    SummonSignal,
+    UserMessageSignal,
+)
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from octomate.types.json import JsonObject
@@ -86,6 +104,7 @@ if TYPE_CHECKING:
     from octomate.managers.project import ProjectManager
     from octomate.managers.thread import ThreadManager
     from octomate.managers.workspaces import WorkspaceManager
+    from octomate.reflex.state import ReflexGraphResult
     from octomate.tentacles.deferred import DeferredSuspender
 
 # The tentacle's output type is whatever its builder's agent produces (a deferring
@@ -125,6 +144,15 @@ class AgentInk:
 class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     """Base class for Octomate agents wrapping pydantic-ai run entrypoints."""
 
+    resources: AsyncExitStack  # Closed after the receiver and active reflexes.
+    nerves: Nerves
+    signals: MemoryFiber[Signal] | None = None
+    sensing_task: asyncio.Task[None] | None = None
+    reflexes: dict[
+        ThreadKey, dict[asyncio.Task[ReflexGraphResult | None], Interruption]
+    ]  # Owned execution tasks and their stop controls.
+    invocations: dict[UUID7, Interruption]
+
     ink: AgentInk  # Runtime operations, including a no-op adapter for Octomate history.
     commands: CommandManager
     projects: ProjectManager
@@ -133,8 +161,6 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     conversations: ConversationManager
     workspaces: WorkspaceManager
     auth: AuthManager | None
-    api_keys: dict[UUID7, IssuedApiKey]  # One credential per user for this agent.
-    api_key_lock: asyncio.Lock
     habitats: HabitatManager
     # Programmatically assembled agents may have no deployment config.
     config: AgentConfig | None = None
@@ -144,6 +170,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         id: str,
         octomate: Octomate,
         *,
+        nerves: Nerves,
         commands: CommandManager,
         projects: ProjectManager,
         threads: ThreadManager,
@@ -152,13 +179,15 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         habitats: HabitatManager,
     ) -> None:
         super().__init__(id=id, octomate=octomate)
+        self.resources = AsyncExitStack()
+        self.nerves = nerves
+        self.reflexes = {}
+        self.invocations = {}
         self.commands = commands
         self.projects = projects
         self.threads = threads
         self.files = files
         self.auth = auth
-        self.api_keys = {}
-        self.api_key_lock = asyncio.Lock()
         self.habitats = habitats
 
     def routers(self) -> tuple[APIRouter, ...]:
@@ -180,7 +209,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         async def active_conversation(
             conversation_id: UUID7,
             # FastAPI binds these router-local dependencies when registering the routes.
-            key: UserApiKey = Depends(verify_hook_key),  # noqa: B008
+            key: ApiKey = Depends(verify_hook_key),  # noqa: B008
         ) -> Conversation:
             if not self.habitats.residenced(key.user_id, conversation_id):
                 raise HTTPException(
@@ -196,7 +225,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         @router.get("/{conversation_id}", response_class=Response)
         async def download_transcript(
             conversation_id: UUID7,
-            key: UserApiKey = Depends(verify_hook_key),  # noqa: B008
+            key: ApiKey = Depends(verify_hook_key),  # noqa: B008
         ) -> Response:
             """Serve the authenticated owner's retained JSONL for this conversation."""
             try:
@@ -219,7 +248,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         async def transcript_offsets(
             subagent_ids: list[str],
             conversation: Conversation = Depends(active_conversation),  # noqa: B008
-            key: UserApiKey = Depends(verify_hook_key),  # noqa: B008
+            key: ApiKey = Depends(verify_hook_key),  # noqa: B008
         ) -> TranscriptOffsets:
             """Where each of the conversation's transcripts resumes. A subagent named
             for the first time gets its conversation here, and starts at zero."""
@@ -254,7 +283,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             transcript_id: UUID7,
             request: Request,
             conversation: Conversation = Depends(active_conversation),  # noqa: B008
-            key: UserApiKey = Depends(verify_hook_key),  # noqa: B008
+            key: ApiKey = Depends(verify_hook_key),  # noqa: B008
         ) -> TranscriptKept | JSONResponse:
             """Append complete transcript lines for the owner's active habitat invocation.
 
@@ -299,39 +328,28 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
 
         return router
 
-    async def runtime_api_key(self, user_id: UUID7 | None) -> IssuedApiKey | None:
-        """Reuse the user's runtime credential, replacing it when its lifetime expires."""
+    async def runtime_api_key(self, user_id: UUID7 | None) -> RuntimeApiKey | None:
+        """Acquire the user's persisted credential shared by this agent's replicas."""
         auth = self.auth
         if user_id is None or auth is None:
             return None
-        async with self.api_key_lock:
-            issued = self.api_keys.get(user_id)
-            if issued is not None and (
-                issued.key.expires_at is None
-                or issued.key.expires_at > datetime.now(UTC)
-            ):
-                return issued
-            with anyio.CancelScope(shield=True):
-                if issued is not None:
-                    await auth.revoke_api_key(user_id, issued.key.id)
-                issued = await auth.create_api_key(
-                    user_id,
-                    name=f"{self.id} runtime",
-                    scopes=["hooks", "mcp"],
-                    expires_at=datetime.now(UTC) + auth.config.runtime_api_key_lifetime,
-                )
-                self.api_keys[user_id] = issued
-            return issued
+        return await auth.runtime_api_key(
+            user_id, agent_id=self.id, scopes=["hooks", "mcp"]
+        )
 
     async def revoke_runtime_keys(self) -> None:
-        """Revoke this agent's credentials after its active runs have finished."""
-        async with self.api_key_lock:
-            api_keys, self.api_keys = self.api_keys, {}
-            auth = self.auth
-            if auth is None:
-                return
-            for issued in api_keys.values():
-                await auth.revoke_api_key(issued.key.user_id, issued.key.id)
+        """Explicitly revoke this agent's persisted credentials across all cores."""
+        auth = self.auth
+        if auth is None:
+            return
+        async with async_session() as session:
+            keys = await session.list(
+                RuntimeApiKey,
+                expressions=[RuntimeApiKey["runtime_agent_id"] == self.id],
+                limit=None,
+            )
+        for key in keys:
+            await auth.revoke_api_key(key.user_id, key.id)
 
     # Capability blurb the triage agent reads when routing to a reception agent.
     # Subclasses refine this default; overridable at init.
@@ -485,6 +503,29 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     async def __aenter__(self) -> Self:
         """Enter after the subclass has prepared its models and claims."""
         self.routes = self.build_routes()
+        signals = MemoryFiber[Signal]()
+        self.resources.enter_context(
+            self.nerves.signals.accept(AgentTopic(self.id), signals)
+        )
+
+        async def cancel_reflexes() -> None:
+            tasks = [task for running in self.reflexes.values() for task in running]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        self.resources.push_async_callback(cancel_reflexes)
+        self.signals = signals
+        self.sensing_task = asyncio.create_task(self.sensing(signals))
+
+        def sensed(task: asyncio.Task[None]) -> None:
+            signals.close()
+            if not task.cancelled() and (error := task.exception()) is not None:
+                logging.getLogger(type(self).__module__).error(
+                    "Agent %s signal receiver failed", self.id, exc_info=error
+                )
+
+        self.sensing_task.add_done_callback(sensed)
         return self
 
     async def __aexit__(
@@ -493,7 +534,16 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         exc_value: BaseException | None = None,
         traceback: TracebackType | None = None,
     ) -> None:
-        self.routes = []
+        try:
+            if self.signals is not None:
+                self.signals.close_send()
+            if self.sensing_task is not None:
+                await self.sensing_task
+        finally:
+            self.signals = None
+            self.sensing_task = None
+            self.routes = []
+            await self.resources.__aexit__(exc_type, exc_value, traceback)
 
     @cached_property
     def default_model(self) -> str | None:
@@ -695,17 +745,163 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             message=f"{self.id} does not expose command discovery.",
         )
 
-    def inhabit(
-        self, *, thread: Thread, conversation: Conversation, owner_id: UUID7 | None
-    ) -> AbstractAsyncContextManager[Invocation]:
-        """Prepare this agent's run in the service's habitat.
+    @asynccontextmanager
+    async def inhabit(
+        self,
+        *,
+        thread: Thread,
+        conversation: Conversation,
+        owner_id: UUID7 | None,
+        interruption: Interruption | None = None,
+    ) -> AsyncGenerator[Invocation]:
+        """Own invocation resources and expose its harness stop control while active."""
+        control = interruption or Interruption()
+        control.check()
+        async with self.habitats.invoke(
+            thread=thread,
+            conversation=conversation,
+            owner_id=owner_id,
+            interruption=control,
+        ) as invocation:
+            control.check()
+            self.invocations[invocation.id] = control
+            try:
+                yield invocation
+            finally:
+                self.invocations.pop(invocation.id, None)
 
-        Creating the context acquires nothing; the caller enters it and closes
-        it after the run is consumed.
-        """
-        return self.habitats.invoke(
-            thread=thread, conversation=conversation, owner_id=owner_id
-        )
+    async def sensing(self, signals: MemoryFiber[Signal]) -> None:
+        """Receive signals, apply controls and live answers, and start reflexes."""
+        async for signal in signals:
+            if isinstance(signal, AsleepSignal):
+                if signal.thread is not None:
+                    controls = list(self.reflexes.get(signal.thread, {}).values())
+                elif (
+                    signal.invocation_id is not None
+                    and signal.invocation_id in self.invocations
+                ):
+                    controls = [self.invocations[signal.invocation_id]]
+                else:
+                    controls = []
+                for control in controls:
+                    await control.request()
+                continue
+            batch = (
+                await self.octomate.deferred_actions.get_batch(signal.batch_id)
+                if isinstance(signal, DeferredActionBatchResponse)
+                else None
+            )
+            if (
+                isinstance(signal, DeferredActionBatchResponse)
+                and batch is not None
+                and batch.response_mode != "resume"
+            ):
+                pending = self.pendings.get(batch.id)
+                if pending is not None and not pending.done():
+                    pending.set_result(signal)
+                if pending is not None:
+                    continue
+                origin = ThreadKey.model_validate(batch.source_address)
+                impulse = Impulse(
+                    RunErrorEvent(
+                        message="This live request is no longer awaiting a response",
+                        trace_id=format(
+                            trace.get_current_span().get_span_context().trace_id,
+                            "032x",
+                        ),
+                    ),
+                    batch.source_address,
+                    origin=origin,
+                )
+                self.nerves.events.deliver(
+                    ChannelTopic(batch.source_address.channel_tentacle_id), impulse
+                )
+                self.nerves.events.deliver(ThreadTopic(origin), impulse)
+                continue
+            if batch is not None:
+                origin = batch.source_address
+            elif isinstance(signal, UserMessageSignal):
+                origin = signal.address
+            elif isinstance(signal, CommandSignal):
+                origin = signal.context.address
+            elif isinstance(signal, SummonSignal):
+                origin = signal.origin or signal.destination
+            elif isinstance(signal, NativeGatewaySignal | DrivenGatewaySignal):
+                origin = signal.source
+            else:
+                raise ValueError("Unsupported awake signal")
+            if origin is None:
+                raise ValueError("A reflex requires its original surface")
+            thread = ThreadKey.model_validate(origin)
+            control = Interruption()
+            task = asyncio.create_task(
+                self.reflex(signal, origin=origin, interruption=control)
+            )
+            self.reflexes.setdefault(thread, {})[task] = control
+            task.add_done_callback(self.relax)
+
+    async def reflex(
+        self, signal: AwakeSignal, *, origin: ChannelAddress, interruption: Interruption
+    ) -> ReflexGraphResult | None:
+        """Execute a received awake signal with this agent's graph and resources."""
+        # Graph nodes depend on AgentTentacle; load them after this class exists.
+        from octomate.reflex.graph import run_reflex
+        from octomate.reflex.state import ReflexDeps, ReflexState
+
+        host = self.octomate
+        thread = ThreadKey.model_validate(origin)
+        if isinstance(signal, DeferredActionBatchResponse):
+            async with self.nerves.events.subscribe(ThreadTopic(thread)) as events:
+                while thread in host.awake_since:
+                    await events.receive()
+        continuation = isinstance(signal, SummonSignal) and signal.thread_id is not None
+        if not continuation and thread in host.awake_since:
+            if isinstance(signal, CommandSignal):
+                refusal = CommandError(status="busy", message=str(StillAwake()))
+                async with self.nerves.events.publish(origin) as events:
+                    await events.send(
+                        Impulse(
+                            CommandOutcomeEvent(
+                                outcome=refusal, request_id=signal.request_id
+                            ),
+                            origin,
+                        )
+                    )
+                return refusal
+            logging.getLogger(type(self).__module__).info(
+                "Thread %s is already awake; leaving input in its ledger", thread
+            )
+            return None
+        if not continuation:
+            host.awake_since[thread] = now_utc()
+        async with self.nerves.events.publish(origin, retain=True) as impulses:
+            return await run_reflex(
+                signal,
+                origin=origin,
+                state=ReflexState(interruption=interruption),
+                deps=ReflexDeps(
+                    workspaces=host.workspaces,
+                    agents=host.agents,
+                    channels=host.channels,
+                    conversation_manager=host.conversations,
+                    thread_manager=host.threads,
+                    action_manager=host.deferred_actions,
+                    gateway=host.gateway,
+                    impulses=impulses,
+                    executor=self.id,
+                    origin=origin,
+                ),
+            )
+
+    def relax(self, task: asyncio.Task[ReflexGraphResult | None]) -> None:
+        for thread, running in list(self.reflexes.items()):
+            running.pop(task, None)
+            if not running:
+                del self.reflexes[thread]
+        if not task.cancelled() and (error := task.exception()) is not None:
+            logging.getLogger(type(self).__module__).error(
+                "Agent %s reflex failed", self.id, exc_info=error
+            )
 
     def needs_invocation(self, descriptor: CommandDescriptor) -> bool:
         """Whether this command runs in a workspace and habitat.
@@ -721,8 +917,9 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         descriptor: CommandDescriptor,
         *,
         thread: Thread | None,
+        interruption: Interruption | None = None,
     ) -> AbstractAsyncContextManager[Invocation | None]:
-        """Select the resource context core enters for this command.
+        """Select the resource context the reflex enters for this command.
 
         Creating the context does not acquire resources. Core enters it with the
         validated thread and turn owner, then closes it after command consumption.
@@ -736,6 +933,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             thread=thread,
             conversation=context.conversation,
             owner_id=context.user_id,
+            interruption=interruption,
         )
 
     async def execute_command(

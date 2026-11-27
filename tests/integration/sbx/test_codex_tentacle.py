@@ -72,7 +72,13 @@ async def test_driven_turns_reuse_the_guest_client_and_native_session(
     project = a_project(project_root, name="codex-habitat")
     host.workspaces.projects = await a_registry(project)
     thread = await host.threads.ensure(
-        ThreadKey("im", "thread", "codex-owner", "codex-work"), project=project
+        ThreadKey(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id="codex-owner",
+            channel_thread_id="codex-work",
+        ),
+        project=project,
     )
     thread_id = thread.id
     address = ChannelAddress(
@@ -347,7 +353,13 @@ async def exercise_uploaded_history(
     else:
         pytest.fail("Native rollout has no completed first turn")
     native_thread = await tentacle.threads.ensure(
-        ThreadKey("codex", "thread", str(owner_id), native_id), native=True
+        ThreadKey(
+            channel_tentacle_id="codex",
+            chat_type="thread",
+            chat_id=str(owner_id),
+            channel_thread_id=native_id,
+        ),
+        native=True,
     )
     native = await tentacle.conversations.ensure(
         native_thread.id, agent_tentacle_id=tentacle.id
@@ -377,7 +389,12 @@ async def exercise_uploaded_history(
         channel_thread_id="imported",
     )
     target_thread = await tentacle.threads.ensure(
-        ThreadKey("im", "thread", "codex-owner", "imported"),
+        ThreadKey(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id="codex-owner",
+            channel_thread_id="imported",
+        ),
         project=invocation.project,
     )
     target = await tentacle.conversations.ensure(

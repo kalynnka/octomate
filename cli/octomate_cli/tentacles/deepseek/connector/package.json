@@ -1,0 +1,8 @@
+{
+  "name": "@octomate/dsh-connector",
+  "version": "0.1.0",
+  "description": "Octomate MCP tools with native DSH OAuth authorization",
+  "type": "module",
+  "main": "index.mjs",
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}

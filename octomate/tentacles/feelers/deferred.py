@@ -17,8 +17,8 @@ from octomate.schemas.deferred import (
     DeferredActionBatch,
     DeferredApproval,
     DeferredQuestion,
-    QuestionAnswer,
 )
+from octomate.signals import QuestionAnswer
 from octomate.telemetry import channel_logfire
 from octomate.tentacles.feelers.output import IMMessageID, MarkdownFeeler
 
