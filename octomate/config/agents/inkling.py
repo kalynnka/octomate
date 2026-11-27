@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Annotated, Literal
+from typing import Annotated, ClassVar, Literal
 
+from octomate_protocol.config import HabitatType
 from pydantic import BaseModel, Field
 from pydantic_ai.models import KnownModelName
 from pydantic_ai_harness.tool_output_limits import TruncationStrategy
@@ -128,6 +129,11 @@ class InklingConfig(AgentConfig):
     """The in-process pydantic-ai agent, selected by `type: inkling`: its models,
     request limit, tool-output handling and permission posture."""
 
+    habitat_types: ClassVar[tuple[HabitatType, ...]] = (
+        HabitatType.native,
+        HabitatType.workspace,
+        HabitatType.hosted,
+    )
     type: Literal["inkling"] = "inkling"
 
     models: list[ModelConfig] = Field(min_length=1)

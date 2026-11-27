@@ -127,6 +127,6 @@ AGENTS: dict[str, TentacleSetup[str]] = {
         label="Inkling",
         capabilities=("Agent",),
         configure=inkling,
-        habitat_types=(HabitatType.native, HabitatType.hosted),
+        habitat_types=(HabitatType.native, HabitatType.workspace, HabitatType.hosted),
     ),
 }

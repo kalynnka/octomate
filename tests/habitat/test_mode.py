@@ -178,18 +178,23 @@ async def test_agents_share_selected_pool_per_user_and_shutdown_all_pools(
     )
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex", "deepseek"])
+@pytest.mark.parametrize("agent", ["claude", "codex", "deepseek", "inkling"])
 def test_srt_accepts_supported_agents(agent: str) -> None:
     config = OctomateConfig.model_validate(
         {
             "habitats": {"native": {"provider": "srt"}},
-            "tentacles": {agent: {"type": agent}},
+            "tentacles": {
+                agent: {
+                    "type": agent,
+                    **({"models": [{"name": "test"}]} if agent == "inkling" else {}),
+                }
+            },
         }
     )
     assert config.tentacles[agent].enabled
 
 
-@pytest.mark.parametrize("agent", ["acp_agent", "inkling"])
+@pytest.mark.parametrize("agent", ["acp_agent"])
 @pytest.mark.parametrize("enabled", [False, True])
 def test_srt_rejects_enabled_unsupported_agents(agent: str, enabled: bool) -> None:
     config = {
@@ -199,7 +204,6 @@ def test_srt_rejects_enabled_unsupported_agents(agent: str, enabled: bool) -> No
                 "type": agent,
                 "enabled": enabled,
                 **({"provider": {"command": "unused"}} if agent == "acp_agent" else {}),
-                **({"models": [{"name": "test"}]} if agent == "inkling" else {}),
             }
         },
     }

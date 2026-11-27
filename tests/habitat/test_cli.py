@@ -215,7 +215,7 @@ def test_sbx_selection_accepts_supported_agents(agent: str) -> None:
     ) == ({agent: HabitatProvider.sbx}, image)
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex", "deepseek"])
+@pytest.mark.parametrize("agent", ["claude", "codex", "deepseek", "inkling"])
 def test_srt_selection_accepts_supported_agents(agent: str) -> None:
     assert habitat_step(
         [agent],
@@ -226,7 +226,7 @@ def test_srt_selection_accepts_supported_agents(agent: str) -> None:
     ) == ({agent: HabitatProvider.srt}, None)
 
 
-@pytest.mark.parametrize("agent", ["acp", "inkling"])
+@pytest.mark.parametrize("agent", ["acp"])
 def test_srt_selection_rejects_unsupported_agents(agent: str) -> None:
     with pytest.raises(typer.BadParameter, match="does not support workspace habitats"):
         habitat_step(
