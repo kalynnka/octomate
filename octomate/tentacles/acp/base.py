@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import (
     AsyncExitStack,
@@ -18,6 +19,7 @@ from acp import schema
 from acp.connection import StreamDirection, StreamEvent
 from acp.utils import notify_model, request_model
 from anyio import CancelScope
+from octomate_protocol.config import HabitatType
 from pydantic import UUID7, JsonValue
 from pydantic_ai import (
     AgentCapability,
@@ -50,7 +52,7 @@ from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
 )
-from octomate.habitat import Habitat, ManagedHabitat
+from octomate.habitat import Habitat, HostedHabitat
 from octomate.managers.habitat import Interruption, Invocation
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
@@ -64,6 +66,7 @@ from octomate.tentacles.acp.client import NativeAcpClient, NativeAcpSession
 from octomate.tentacles.acp.elicitation import AcpForm, AcpFormValidationError
 from octomate.tentacles.acp.history import AcpHistory
 from octomate.tentacles.acp.ink import AcpInk
+from octomate.tentacles.acp.workspace import workspace
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.deferred import DeferredSuspender
 from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
@@ -73,6 +76,9 @@ if TYPE_CHECKING:
     from octomate.base import Octomate
     from octomate.managers.auth import AuthManager
     from octomate.managers.habitat import HabitatManager
+
+
+logger = logging.getLogger(__name__)
 
 
 class AcpAgentTentacle(AgentTentacle[str, None]):
@@ -124,6 +130,14 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
 
     async def __aenter__(self) -> Self:
         """Discover a harness catalog without prompting or creating Octomate history."""
+        if self.habitats.config.type == HabitatType.workspace:
+            logger.warning(
+                "ACP agent %s uses a workspace habitat: only filesystem and terminal "
+                "operations delegated to the client are confined. The provider and "
+                "its direct tools remain on the host. ACP cannot verify delegation; "
+                "confirm provider support or choose a native or hosted habitat.",
+                self.id,
+            )
 
         async def handle(
             method: str, params: JsonValue | None, notification: bool
@@ -353,7 +367,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         ] = asyncio.Queue()
         session_id: str | None = None
         env = invocation.environment
-        if isinstance(invocation.habitat, ManagedHabitat):
+        if isinstance(invocation.habitat, HostedHabitat):
             config = invocation.workspace.volumes.get("config")
             if config is None:
                 raise ValueError("Managed ACP requires a configuration volume")
@@ -379,6 +393,8 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                         {"reason": "ACP forms require an object schema"}
                     )
             else:
+                if client_workspace is not None:
+                    return await client_workspace.handle(method, params)
                 raise acp.RequestError.method_not_found(method)
             if request.session_id != session_id:
                 raise acp.RequestError.invalid_params({"reason": "Unknown session"})
@@ -392,6 +408,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             )
 
         async with (
+            workspace(invocation.habitat, str(invocation.cwd)) as client_workspace,
             AsyncExitStack() as credentials,
             NativeAcpClient.connect(
                 provider,
@@ -399,6 +416,12 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                 schema.InitializeRequest(
                     protocol_version=acp.PROTOCOL_VERSION,
                     client_capabilities=schema.ClientCapabilities(
+                        fs=schema.FileSystemCapabilities(
+                            read_text_file=True, write_text_file=True
+                        )
+                        if client_workspace is not None
+                        else None,
+                        terminal=client_workspace is not None,
                         elicitation=schema.ElicitationCapabilities(
                             form=schema.ElicitationFormCapabilities()
                         )
@@ -411,6 +434,8 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                 env=env,
             ) as client,
         ):
+            if client_workspace is not None:
+                client_workspace.session_id = conversation.external_id
             mcp_servers = await credentials.enter_async_context(
                 self.mcp_servers(
                     client,
@@ -462,6 +487,8 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                 native = NativeAcpSession(
                     provider, str(invocation.cwd), session_id, response
                 )
+            if client_workspace is not None:
+                client_workspace.session_id = session_id
             selected_model = await native.select_model(client.connection, model)
             await native.select_effort(client.connection, effort)
             await native.select_mode(

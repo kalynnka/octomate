@@ -1,11 +1,14 @@
 """Claude's native control protocol over a process inside a habitat."""
 
 import logging
+import shutil
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 import anyio
+from anyio import to_thread
 from anyio.abc import ByteStream
 from anyio.streams.buffered import BufferedByteReceiveStream
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, Transport
@@ -16,11 +19,57 @@ from opentelemetry import propagate
 from pydantic import TypeAdapter, ValidationError
 
 from octomate.fibers import MAX_FRAME_BYTES, FiberError
-from octomate.habitat import ManagedHabitat
+from octomate.habitat import HabitatError, ManagedHabitat, WorkspaceHabitat
 from octomate.types.json import JsonObject
 
 message_adapter = TypeAdapter(JsonObject)
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def workspace(
+    owner: WorkspaceHabitat, options: ClaudeAgentOptions
+) -> AsyncGenerator[tuple[WorkspaceHabitat, ClaudeAgentOptions]]:
+    """Confine the whole CLI to its workspace while retaining Claude session state.
+
+    Native tool permissions remain Claude's responsibility. This outer policy
+    also confines its file tools and children without nesting its Bash sandbox.
+    """
+    if options.cwd is None:
+        raise ValueError("Workspace-scoped Claude runs require a workspace")
+    config = options.env.get("CLAUDE_CONFIG_DIR")
+    if not config:
+        raise HabitatError(
+            "Workspace-scoped Claude runs require an owner session directory"
+        )
+    state = Path(await anyio.Path(config).resolve())
+    if options.cli_path is None:
+        binary = await to_thread.run_sync(SubprocessCLITransport("", options)._find_cli)
+    else:
+        binary = await to_thread.run_sync(shutil.which, str(options.cli_path))
+        if binary is None:
+            raise HabitatError("Configured Claude executable was not found")
+    executable = Path(await anyio.Path(binary).resolve())
+    async with owner.scope(
+        Path(options.cwd), read_paths=(executable.parent,), state_paths=(state,)
+    ) as habitat:
+        runtime = habitat.environment()
+        cache = Path(runtime["HOME"]) / ".cache"
+        scoped = replace(
+            options,
+            cli_path=str(executable),
+            env={
+                **options.env,
+                "HOME": runtime["HOME"],
+                "TMPDIR": runtime["TMPDIR"],
+                "CLAUDE_CODE_TMPDIR": runtime["TMPDIR"],
+                "UV_CACHE_DIR": str(cache / "uv"),
+                "npm_config_cache": str(cache / "npm"),
+                "npm_config_store_dir": str(cache / "pnpm"),
+            },
+        )
+        await anyio.Path(state).mkdir(parents=True, exist_ok=True)
+        yield habitat, scoped
 
 
 @dataclass

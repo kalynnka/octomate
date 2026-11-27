@@ -21,8 +21,7 @@ from octomate.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
 )
-from octomate.habitat import Habitat, ManagedHabitat
-from octomate.habitat.sbx import SbxHabitat
+from octomate.habitat import Habitat, HostedHabitat, ManagedHabitat, WorkspaceHabitat
 from octomate.tentacles.agent import AgentInk
 from octomate.tentacles.deepseek.catalog import (
     DeepseekCommandDescriptor,
@@ -367,9 +366,7 @@ class DeepseekInk(AgentInk):
             if connection is None or not connection.running:
                 raise AgentRunError("DSH session has no active habitat connection")
             return connection
-        if isinstance(habitat, ManagedHabitat) and not isinstance(habitat, SbxHabitat):
-            raise ValueError("DSH currently supports native and sbx habitats only")
-        name = habitat.name if isinstance(habitat, SbxHabitat) else "core"
+        name = habitat.id if isinstance(habitat, ManagedHabitat) else "core"
         async with self.lock:
             connection = self.connections.get(name)
             if connection is None:
@@ -390,19 +387,21 @@ class DeepseekInk(AgentInk):
     async def open(
         self, name: str, habitat: Habitat | None, env: dict[str, str] | None
     ) -> DeepseekConnection:
-        if isinstance(habitat, SbxHabitat):
+        if isinstance(habitat, ManagedHabitat):
             if env is None:
                 raise ValueError("A DSH habitat connection requires its environment")
         process = DeepseekProcess(
             executable=self.config.executable,
-            port=self.config.port,
+            port=0 if isinstance(habitat, WorkspaceHabitat) else self.config.port,
             extra_args=list(self.config.extra_args),
             dsh_home=Path(env["DSH_HOME"])
-            if isinstance(habitat, SbxHabitat) and env is not None
+            if isinstance(habitat, ManagedHabitat) and env is not None
             else self.config.dsh_home,
             ready_timeout=self.config.ready_timeout,
             browser_url=self.config.browser_url,
-            habitat=habitat if isinstance(habitat, SbxHabitat) else None,
+            habitat=habitat
+            if isinstance(habitat, HostedHabitat | WorkspaceHabitat)
+            else None,
             env=env or {},
         )
         endpoint = await process.start()
@@ -436,6 +435,6 @@ class DeepseekInk(AgentInk):
             raise
         self.connections[name] = connection
         self.processes[name] = process
-        if isinstance(habitat, SbxHabitat):
+        if isinstance(habitat, ManagedHabitat):
             habitat.resources.push_async_callback(self.close, name)
         return connection

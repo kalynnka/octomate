@@ -217,7 +217,7 @@ async def test_sh_attachment_preserves_duplex_bytes_and_eof(
                 "--interactive",
                 "--workdir=/workspace",
                 "--env=INVOCATION=literal value",
-                sandbox.name,
+                sandbox.id,
                 "python",
                 "-c",
                 "literal spaces; $(false)",
@@ -421,6 +421,6 @@ async def test_published_service_uses_assigned_loopback_port_and_unpublishes(
     with pytest.raises(RuntimeError, match="consumer failed"):
         await consume()
     assert [call.args for call in command.await_args_list] == [
-        ("ports", habitat.name, "--publish", "41234/tcp4", "--json"),
-        ("ports", habitat.name, "--unpublish", "41234/tcp4"),
+        ("ports", habitat.id, "--publish", "41234/tcp4", "--json"),
+        ("ports", habitat.id, "--unpublish", "41234/tcp4"),
     ]

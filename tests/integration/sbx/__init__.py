@@ -13,8 +13,8 @@ from octomate.schemas.habitat import InvocationScope
 
 async def remove_sandbox(sandbox: SbxHabitat) -> None:
     names = (await sandbox.control("ls", quiet=True)).decode().splitlines()
-    if sandbox.name in names:
-        await sandbox.control("rm", "--force", sandbox.name)
+    if sandbox.id in names:
+        await sandbox.control("rm", "--force", sandbox.id)
 
 
 async def cli_pids(
@@ -22,7 +22,7 @@ async def cli_pids(
 ) -> list[int]:
     paths = await sandbox.control(
         "exec",
-        sandbox.name,
+        sandbox.id,
         "find",
         "/proc",
         "-maxdepth",
@@ -54,7 +54,10 @@ async def expire_idle(manager: HabitatManager, scope: InvocationScope) -> bytes:
         async with manager.nerve.subscribe(HabitatTopic(scope.user_id)) as events:
             async with manager.enter(scope, uuid7()):
                 boot = await sandbox.control(
-                    "exec", sandbox.name, "cat", "/proc/sys/kernel/random/boot_id"
+                    "exec",
+                    sandbox.id,
+                    "cat",
+                    "/proc/sys/kernel/random/boot_id",
                 )
             assert residence.idle is not None
             async with asyncio.timeout(60):

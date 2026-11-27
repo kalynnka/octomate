@@ -34,7 +34,7 @@ async def test_guest_cli_controls_and_process_cleanup(
     sandbox = state.habitat
     assert isinstance(sandbox, SbxHabitat)
     assert (
-        sandbox.name
+        sandbox.id
         not in (await sandbox.control("ls", quiet=True)).decode().splitlines()
     )
     options = ClaudeAgentOptions(
@@ -58,7 +58,7 @@ async def test_guest_cli_controls_and_process_cleanup(
     assert state.status.phase == "ready"
     await sandbox.control(
         "exec",
-        sandbox.name,
+        sandbox.id,
         "timeout",
         "5",
         "sh",

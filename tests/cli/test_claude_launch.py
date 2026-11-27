@@ -35,7 +35,9 @@ def recorder(tmp_path: Path) -> tuple[Path, Path]:
     """A stand-in octomate binary that records its argv and exits."""
     args_file = tmp_path / "args.txt"
     binary = tmp_path / "octomate"
-    binary.write_text(f'#!/bin/sh\necho "$@" > {args_file}\n')
+    binary.write_text(
+        f'#!/bin/sh\necho "$@" > "{args_file}.tmp"\nmv "{args_file}.tmp" "{args_file}"\n'
+    )
     binary.chmod(0o755)
     return binary, args_file
 

@@ -1,8 +1,9 @@
 """Configuration for serving ACP and connecting installed ACP harnesses."""
 
-from typing import Literal
+from typing import ClassVar, Literal
 
 from anyio import Path as AsyncPath
+from octomate_protocol.config import HabitatType
 from pydantic import BaseModel, Field, SecretStr
 
 from octomate.config.agents.common import AgentConfig
@@ -64,9 +65,17 @@ class AcpAgentConfig(AgentConfig):
     Each harness is an agent backend and mounts no routes, so several may coexist.
     Startup opens an unprompted provider session in a temporary directory to
     discover its model config options; the harness may retain that empty session.
+    Workspace habitats confine delegated ACP filesystem and terminal operations;
+    the provider process and any tools it executes directly remain on the host.
     """
 
     type: Literal["acp_agent"] = "acp_agent"
+    habitat_types: ClassVar[tuple[HabitatType, ...]] = (
+        HabitatType.native,
+        HabitatType.workspace,
+        HabitatType.hosted,
+    )
+
     gateway: bool = Field(
         default=True,
         description="Supply the active conversation's Octomate MCP to outbound runs. "

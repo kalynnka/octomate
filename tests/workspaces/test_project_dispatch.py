@@ -96,7 +96,7 @@ def a_claude(octomate: Octomate) -> ClaudeTentacle:
     return ClaudeTentacle(
         octomate,
         auth=octomate.auth,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=ClaudeCodeConfig(),
         commands=octomate.commands,
         projects=octomate.projects,
@@ -133,7 +133,7 @@ async def codex_run(octomate: Octomate, thread: Thread) -> str | None:
     """Drive one Codex run and answer with the cwd its thread was started in."""
     tentacle = CodexTentacle(
         octomate,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         config=CodexConfig(permission_mode="auto_review"),
         commands=octomate.commands,
         projects=octomate.projects,

@@ -45,11 +45,11 @@ async def test_a_driven_turn_writes_into_the_owners_tree_and_resumes(
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
     host = Octomate(config=OctomateConfig(auth=auth_config()))
-    host.habitats.config = SbxHabitatConfig(image=image)
+    host.habitats["native"].config = SbxHabitatConfig(image=image)
     tentacle = ClaudeTentacle(
         host,
         auth=host.auth,
-        habitats=host.habitats,
+        habitats=host.habitats["native"],
         # Edits inside the working directory need no approval, so no user is asked.
         config=ClaudeCodeConfig(permission_mode="acceptEdits", max_turns=4),
         commands=host.commands,
@@ -110,9 +110,11 @@ async def test_a_driven_turn_writes_into_the_owners_tree_and_resumes(
                 assert written.strip() == proof
         return str(results[-1].result.output)
 
-    sandbox = host.habitats.residence(
-        InvocationScope(user_id=owner.id, conversation_id=uuid7())
-    ).habitat
+    sandbox = (
+        host.habitats["native"]
+        .residence(InvocationScope(user_id=owner.id, conversation_id=uuid7()))
+        .habitat
+    )
     try:
         async with served(host) as base:
             sandbox.config = sandbox.config.model_copy(
@@ -150,9 +152,9 @@ async def test_a_driven_turn_writes_into_the_owners_tree_and_resumes(
             assert message.message_text == summary["message"]["content"]
             assert message.run_id is None
     finally:
-        for state in host.habitats.residences.values():
+        for state in host.habitats["native"].residences.values():
             backend = state.habitat
             if isinstance(backend, SbxHabitat) and backend.managed:
                 sbx_cleanup.push_async_callback(remove_sandbox, backend)
-        sbx_cleanup.push_async_callback(host.habitats.close)
+        sbx_cleanup.push_async_callback(host.habitats["native"].close)
         sbx_cleanup.push_async_callback(tentacle.revoke_runtime_keys)

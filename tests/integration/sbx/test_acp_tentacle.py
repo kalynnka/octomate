@@ -66,7 +66,7 @@ async def test_turns_stream_resume_and_use_guest_paths(
     if not image:
         pytest.fail("Set SBX_TEST_IMAGE to the immutable SDK image reference")
     host = Octomate(config=OctomateConfig(auth=auth_config()))
-    host.habitats.config = SbxHabitatConfig(
+    host.habitats["native"].config = SbxHabitatConfig(
         image=image, core_address=HttpUrl("https://core.example:9443")
     )
     agent = host.connect(
@@ -74,7 +74,7 @@ async def test_turns_stream_resume_and_use_guest_paths(
             "custom",
             host,
             auth=host.auth,
-            habitats=host.habitats,
+            habitats=host.habitats["native"],
             config=AcpAgentConfig(provider=provider),
         )
     )
@@ -90,12 +90,14 @@ async def test_turns_stream_resume_and_use_guest_paths(
             channel_thread_id=uuid7().hex,
         )
     )
-    sandbox = host.habitats.residence(
-        InvocationScope(user_id=owner.id, conversation_id=uuid7())
-    ).habitat
+    sandbox = (
+        host.habitats["native"]
+        .residence(InvocationScope(user_id=owner.id, conversation_id=uuid7()))
+        .habitat
+    )
     assert isinstance(sandbox, SbxHabitat)
     sbx_cleanup.push_async_callback(remove_sandbox, sandbox)
-    sbx_cleanup.push_async_callback(host.habitats.close)
+    sbx_cleanup.push_async_callback(host.habitats["native"].close)
     external_id = None
     await sbx_cleanup.enter_async_context(agent)
     assert set(agent.models) == {"fast", "careful"}
@@ -129,7 +131,7 @@ async def test_turns_stream_resume_and_use_guest_paths(
             assert config is not None
             home = sandbox.path(config)
             raw = await sandbox.control(
-                "exec", sandbox.name, "cat", str(home / "acp-requests.jsonl")
+                "exec", sandbox.id, "cat", str(home / "acp-requests.jsonl")
             )
             records = [json.loads(line) for line in raw.splitlines()]
             assert records[0]["cwd"] == str(invocation.cwd)
@@ -147,11 +149,11 @@ async def test_turns_stream_resume_and_use_guest_paths(
             reply = next(item for item in messages if item.get("id") == "permission")
             assert reply["result"]["outcome"] == {"outcome": "cancelled"}
             assert (
-                await sandbox.control("exec", sandbox.name, "uname", "-s") == b"Linux\n"
+                await sandbox.control("exec", sandbox.id, "uname", "-s") == b"Linux\n"
             )
             await sandbox.control(
                 "exec",
-                sandbox.name,
+                sandbox.id,
                 "timeout",
                 "5",
                 "sh",
@@ -222,7 +224,7 @@ async def test_permission_and_cancellation_cross_guest_stdio(
                 callbacks.answered.set()
             assert (await prompt).stop_reason == ("cancelled" if cancel else "end_turn")
     raw = await sandbox.control(
-        "exec", sandbox.name, "cat", "/home/agent/acp-requests.jsonl"
+        "exec", sandbox.id, "cat", "/home/agent/acp-requests.jsonl"
     )
     records = [json.loads(line) for line in raw.splitlines()]
     if not cancel:
@@ -237,7 +239,7 @@ async def test_permission_and_cancellation_cross_guest_stdio(
         }
     await sandbox.control(
         "exec",
-        sandbox.name,
+        sandbox.id,
         "timeout",
         "5",
         "sh",

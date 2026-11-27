@@ -52,7 +52,7 @@ async def app(
             "inkling",
             application,
             auth=application.auth,
-            habitats=application.habitats,
+            habitats=application.habitats["native"],
             agent=agent,
             models={"test": agent.model},
         )

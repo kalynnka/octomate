@@ -31,7 +31,10 @@ from tests.support.users import a_user
 def sandbox_tree(
     tmp_path: Path, request: pytest.FixtureRequest
 ) -> Iterator[SandboxTree]:
-    if not request.config.getoption("--native-sandbox"):
+    if not (
+        request.config.getoption("--native-sandbox")
+        or request.config.getoption("--srt")
+    ):
         pytest.skip("requires --native-sandbox")
     # /tmp is writable in several native presets; using it for user-data canaries
     # would measure temporary-storage exceptions instead of outside-path policy.

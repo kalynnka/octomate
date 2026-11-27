@@ -109,7 +109,7 @@ async def inkling_run(octomate: Octomate, thread: Thread, scripted: Scripted) ->
         "inkling",
         octomate,
         auth=octomate.auth,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         agent=scripted.agent(),
     )
     async with invocation_for(
@@ -196,7 +196,7 @@ async def test_project_file_calls_defer_for_user_approval(tmp_path: Path) -> Non
         "inkling",
         octomate,
         auth=octomate.auth,
-        habitats=octomate.habitats,
+        habitats=octomate.habitats["native"],
         agent=agent,
     )
 
@@ -237,7 +237,7 @@ def test_every_capability_is_rooted_at_the_workspace(tmp_path: Path) -> None:
         "inkling",
         host,
         auth=host.auth,
-        habitats=host.habitats,
+        habitats=host.habitats["native"],
         agent=Scripted().agent(),
     )
 

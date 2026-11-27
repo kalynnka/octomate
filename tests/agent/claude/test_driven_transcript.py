@@ -63,14 +63,16 @@ async def a_driven_turn(
 ) -> AsyncGenerator[tuple[httpx2.AsyncClient, Octomate, Conversation, User]]:
     """A served tentacle, with a turn of one conversation inside its owner's sandbox."""
     octomate = Octomate(
-        config=OctomateConfig(auth=auth_config(), habitat=SbxHabitatConfig(image=image))
+        config=OctomateConfig(
+            auth=auth_config(), habitats={"native": SbxHabitatConfig(image=image)}
+        )
     )
     tentacle: ClaudeTentacle | CodexTentacle | DeepseekTentacle | InklingTentacle
     if agent_id == "claude":
         tentacle = ClaudeTentacle(
             octomate,
             auth=octomate.auth,
-            habitats=octomate.habitats,
+            habitats=octomate.habitats["native"],
             config=ClaudeCodeConfig(),
             commands=octomate.commands,
             projects=octomate.projects,
@@ -87,7 +89,7 @@ async def a_driven_turn(
         tentacle = CodexTentacle(
             octomate,
             auth=octomate.auth,
-            habitats=octomate.habitats,
+            habitats=octomate.habitats["native"],
             config=CodexConfig(),
             commands=octomate.commands,
             projects=octomate.projects,
@@ -104,7 +106,7 @@ async def a_driven_turn(
         tentacle = DeepseekTentacle(
             octomate,
             auth=octomate.auth,
-            habitats=octomate.habitats,
+            habitats=octomate.habitats["native"],
             config=DeepseekConfig(),
         )
     else:
@@ -112,7 +114,7 @@ async def a_driven_turn(
             "inkling",
             octomate,
             auth=octomate.auth,
-            habitats=octomate.habitats,
+            habitats=octomate.habitats["native"],
             models={"test": TestModel()},
         )
     octomate.connect(tentacle)
@@ -122,7 +124,7 @@ async def a_driven_turn(
         await a_thread(), agent_tentacle_id=tentacle.id
     )
     scope = InvocationScope(user_id=user.id, conversation_id=conversation.id)
-    octomate.habitats.residence(scope).conversations[conversation.id] += 1
+    octomate.habitats["native"].residence(scope).conversations[conversation.id] += 1
     async with httpx2.AsyncClient(
         transport=httpx2.ASGITransport(app=octomate), base_url="http://core"
     ) as client:
@@ -369,7 +371,7 @@ async def test_only_the_owner_uploads_and_only_while_the_turn_runs(
         )
         assert foreign.status_code == 404
 
-        octomate.habitats.residences[user.id].conversations.clear()
+        octomate.habitats["native"].residences[user.id].conversations.clear()
         late = await client.post(url, params=params, content=FIRST, headers=AUTH)
         assert late.status_code == 404
         offsets = await client.post(f"{url}/offsets", json=[], headers=AUTH)
@@ -393,7 +395,7 @@ async def test_a_subagent_upload_cannot_target_another_parents_child() -> None:
             subagent_id="child",
             parent_conversation_id=other.id,
         )
-        octomate.habitats.residences[user.id].conversations[other.id] += 1
+        octomate.habitats["native"].residences[user.id].conversations[other.id] += 1
         accepted = await client.post(
             f"/hooks/claude/transcripts/{other.id}",
             params={"offset": 0, "transcript_id": str(child.id)},
@@ -478,7 +480,7 @@ async def test_download_serves_the_owners_transcript_after_the_turn() -> None:
             headers=AUTH,
         )
         assert posted.status_code == 200
-        core.habitats.residences.clear()
+        core.habitats["native"].residences.clear()
 
         for _ in range(2):
             response = await client.get(url, headers=AUTH)
@@ -529,7 +531,9 @@ async def test_upload_requires_hooks_scope(
 @pytest.mark.parametrize("agent_id", ["claude", "codex", "deepseek"])
 async def test_upload_route_requires_its_connected_harness(agent_id: str) -> None:
     octomate = Octomate(
-        config=OctomateConfig(auth=auth_config(), habitat=SbxHabitatConfig(image=IMAGE))
+        config=OctomateConfig(
+            auth=auth_config(), habitats={"native": SbxHabitatConfig(image=IMAGE)}
+        )
     )
     user = await a_user()
     await a_api_key(user, SECRET.get_secret_value())
@@ -537,7 +541,7 @@ async def test_upload_route_requires_its_connected_harness(agent_id: str) -> Non
         await a_thread(), agent_tentacle_id=agent_id
     )
     scope = InvocationScope(user_id=user.id, conversation_id=conversation.id)
-    octomate.habitats.residence(scope).conversations[conversation.id] += 1
+    octomate.habitats["native"].residence(scope).conversations[conversation.id] += 1
     async with httpx2.AsyncClient(
         transport=httpx2.ASGITransport(app=octomate), base_url="http://core"
     ) as client:
@@ -558,7 +562,7 @@ async def test_a_tentacle_refuses_another_harness_conversation() -> None:
             conversation.thread_id, agent_tentacle_id="codex"
         )
         scope = InvocationScope(user_id=user.id, conversation_id=other.id)
-        octomate.habitats.residence(scope).conversations[other.id] += 1
+        octomate.habitats["native"].residence(scope).conversations[other.id] += 1
         refused = await client.post(
             f"/hooks/claude/transcripts/{other.id}",
             params={"offset": 0, "transcript_id": str(conversation.id)},

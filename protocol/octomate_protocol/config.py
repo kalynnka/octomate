@@ -3,7 +3,17 @@
 from __future__ import annotations
 
 import os
+from enum import StrEnum
 from pathlib import Path
+
+
+class HabitatType(StrEnum):
+    """Execution contracts, independent of the configured backend provider."""
+
+    native = "native"
+    workspace = "workspace"
+    hosted = "hosted"
+
 
 OCTOMATE_HOME_ENV = "OCTOMATE_HOME"
 

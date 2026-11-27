@@ -139,7 +139,7 @@ class Octomate(FastAPI):
     gateway: GatewayManager = field(default_factory=GatewayManager)
     workspaces: WorkspaceManager = field(init=False)
     nerves: Nerves = field(default_factory=Nerves)
-    habitats: HabitatManager = field(init=False)
+    habitats: dict[str, HabitatManager] = field(init=False)
 
     # Every connected tentacle by id, in connection order — the one registry. A
     # tentacle composes its roles (a channel that is also an MCP tentacle), so
@@ -172,9 +172,10 @@ class Octomate(FastAPI):
             config=self.config.workspaces,
         )
         self.threads = ThreadManager(users=self.users, nerve=self.nerves.events)
-        self.habitats = HabitatManager(
-            self.config.habitat, self.nerves.events, self.workspaces
-        )
+        self.habitats = {
+            name: HabitatManager(config, self.nerves.events, self.workspaces, name=name)
+            for name, config in self.config.habitats.items()
+        }
         self.deferred_actions = DeferredActionManager(nerve=self.nerves.events)
         self.commands = CommandManager(
             tentacles=self.tentacles,
@@ -348,7 +349,13 @@ class Octomate(FastAPI):
                             await mirroring
                             await sweeping
                     finally:
-                        await self.habitats.close()
+                        results = await asyncio.gather(
+                            *(manager.close() for manager in self.habitats.values()),
+                            return_exceptions=True,
+                        )
+                        for result in results:
+                            if isinstance(result, BaseException):
+                                raise result
 
     @asynccontextmanager
     async def run_tentacles(self) -> AsyncGenerator[None]:

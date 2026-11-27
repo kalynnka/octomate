@@ -16,7 +16,7 @@ from pydantic_ai.workspaces import (
     WorkspaceRef,
 )
 
-from octomate.habitat import ManagedHabitat
+from octomate.habitat import ManagedHabitat, WorkspaceHabitat
 from octomate.habitat.executor import (
     DirectoryRequest,
     DirectoryResponse,
@@ -63,7 +63,11 @@ class HabitatWorkspaceBackend(
             raise ValueError("Use LocalWorkspaceBackend for native invocations")
         self.habitat = invocation.habitat
         self.cwd = str(invocation.cwd)
-        self.env = invocation.environment
+        self.env = (
+            self.habitat.environment()
+            if isinstance(self.habitat, WorkspaceHabitat)
+            else invocation.environment
+        )
         self.reference = WorkspaceRef(
             provider="octomate",
             id=f"{invocation.owner_id}/{invocation.volume.id}",

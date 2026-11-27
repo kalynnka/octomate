@@ -48,9 +48,14 @@ from octomate.config.channels import (
     TrunklineChannelConfig,
 )
 from octomate.config.database import database_settings
-from octomate.config.habitat import NativeHabitatConfig, SbxHabitatConfig
+from octomate.config.habitat import (
+    HabitatConfig,
+    NativeHabitatConfig,
+    SbxHabitatConfig,
+    SrtHabitatConfig,
+)
 from octomate.mcp.server import OCTOMATE_MCP_PATH
-from octomate_cli.habitat import SBX_AGENTS
+from octomate_cli.habitat import HabitatProvider, parse_agent_habitats
 from octomate_cli.installation import DeploymentTarget
 from octomate_cli.mcp import McpPreset
 
@@ -205,19 +210,31 @@ def prepare(
     acp_command: str | None = None,
     acp_args: list[str] | None = None,
     inkling_model: str | None = None,
+    habitat_assignments: list[str] | None = None,
 ) -> None:
-    if sandbox_image is not None and (
-        target == DeploymentTarget.docker
-        or any(name not in SBX_AGENTS for name in agents)
+    default = HabitatProvider.sbx if sandbox_image else HabitatProvider.native
+    explicit = parse_agent_habitats(agents, habitat_assignments or [])
+    selections = {name: explicit.get(name, default) for name in agents}
+    if target == DeploymentTarget.docker and any(
+        backend != HabitatProvider.native for backend in selections.values()
     ):
-        raise ValueError("sbx requires a host service with supported sandbox agents.")
-    habitat = (
-        SbxHabitatConfig(
-            image=sandbox_image, core_address=HttpUrl(f"http://127.0.0.1:{port}")
-        )
-        if sandbox_image is not None
-        else NativeHabitatConfig()
-    )
+        raise ValueError("Managed habitats require a host service.")
+    if sandbox_image is not None and HabitatProvider.sbx not in selections.values():
+        raise ValueError("--sandbox-image requires an agent selecting sbx.")
+    habitats: dict[str, HabitatConfig] = {}
+    for backend in dict.fromkeys(selections.values()):
+        if backend == HabitatProvider.sbx:
+            if sandbox_image is None:
+                raise ValueError("sbx requires an immutable sandbox image.")
+            habitats[backend] = SbxHabitatConfig(
+                image=sandbox_image, core_address=HttpUrl(f"http://127.0.0.1:{port}")
+            )
+        elif backend == HabitatProvider.srt:
+            habitats[backend] = SrtHabitatConfig(
+                core_address=HttpUrl(f"http://127.0.0.1:{port}")
+            )
+        else:
+            habitats[backend] = NativeHabitatConfig()
     if not agents or any(
         name not in {"claude", "codex", "deepseek", "acp", "inkling"} for name in agents
     ):
@@ -238,13 +255,18 @@ def prepare(
     configured_tentacles = tentacle_configs_adapter.validate_python(
         {
             name: {
+                "habitat": selections[name],
                 "type": "acp_agent",
                 "provider": {"command": acp_command, "args": acp_args or []},
             }
             if name == "acp"
-            else {"type": "inkling", "models": [{"name": inkling_model}]}
+            else {
+                "type": "inkling",
+                "models": [{"name": inkling_model}],
+                "habitat": selections[name],
+            }
             if name == "inkling"
-            else {"type": name}
+            else {"type": name, "habitat": selections[name]}
             for name in agents
         }
     )
@@ -325,7 +347,7 @@ def prepare(
     configured_tentacles.update(configured_channels)
     configured_tentacles.update(configured_mcps)
     config = OctomateConfig(
-        habitat=habitat,
+        habitats=habitats,
         host=IPv4Address(
             "0.0.0.0" if target == DeploymentTarget.docker else "127.0.0.1"
         ),
@@ -358,7 +380,7 @@ def prepare(
     for channel in channels:
         payload["tentacles"][channel].update(CHANNEL_PLACEHOLDERS[channel])
     sections = {
-        "octomate": ("host", "port", "mirrors", "workspaces", "habitat"),
+        "octomate": ("host", "port", "mirrors", "workspaces", "habitats"),
         "tentacles": ("tentacles",),
         "auth": ("auth",),
         "projects": ("projects",),
@@ -578,6 +600,7 @@ def main() -> None:
     )
     parser.add_argument("--port", type=int)
     parser.add_argument("--sandbox-image")
+    parser.add_argument("--agent-habitat", action="append")
     parser.add_argument(
         "--target", type=DeploymentTarget, choices=list(DeploymentTarget)
     )
@@ -622,6 +645,7 @@ def main() -> None:
             args.acp_command,
             args.acp_arg,
             args.inkling_model,
+            args.agent_habitat,
         )
         return
     if (
@@ -631,12 +655,13 @@ def main() -> None:
         or args.mcp_presets
         or args.target
         or args.sandbox_image
+        or args.agent_habitat
         or args.acp_command is not None
         or args.acp_arg is not None
         or args.inkling_model is not None
     ):
         parser.error(
-            "--port, --agent, --channel, --mcp-presets, --target, --sandbox-image, "
+            "--port, --agent, --channel, --mcp-presets, --target, --sandbox-image, --agent-habitat, "
             "--acp-command, --acp-arg and --inkling-model apply only to prepare"
         )
     config = OctomateConfig()

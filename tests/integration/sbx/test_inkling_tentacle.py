@@ -47,7 +47,7 @@ async def test_project_tools_approve_resume_and_reuse_the_habitat(
     source.mkdir()
     (source / "AGENTS.md").write_text("INKLING HABITAT ACCEPTANCE INSTRUCTIONS")
     host = Octomate()
-    host.habitats.config = SbxHabitatConfig(image=image)
+    host.habitats["native"].config = SbxHabitatConfig(image=image)
     project = a_project(source)
     host.workspaces.projects = await a_registry(project)
     owner = await a_user("inkling-owner")
@@ -62,10 +62,10 @@ async def test_project_tools_approve_resume_and_reuse_the_habitat(
     )
     address = thread.key.address("inkling-owner")
     scope = InvocationScope(user_id=owner.id, conversation_id=uuid7())
-    sandbox = host.habitats.residence(scope).habitat
+    sandbox = host.habitats["native"].residence(scope).habitat
     assert isinstance(sandbox, SbxHabitat)
     sbx_cleanup.push_async_callback(remove_sandbox, sandbox)
-    sbx_cleanup.push_async_callback(host.habitats.close)
+    sbx_cleanup.push_async_callback(host.habitats["native"].close)
     requests = 0
     returned: list[ToolReturnPart] = []
 
@@ -113,7 +113,7 @@ async def test_project_tools_approve_resume_and_reuse_the_habitat(
         output_type=[str, DeferredToolRequests],
     )
     tentacle = InklingTentacle(
-        "inkling", host, auth=host.auth, habitats=host.habitats, agent=agent
+        "inkling", host, auth=host.auth, habitats=host.habitats["native"], agent=agent
     )
     reference = None
     boot = None
@@ -128,7 +128,10 @@ async def test_project_tools_approve_resume_and_reuse_the_habitat(
             if boot is not None:
                 assert (
                     await sandbox.control(
-                        "exec", sandbox.name, "cat", "/proc/sys/kernel/random/boot_id"
+                        "exec",
+                        sandbox.id,
+                        "cat",
+                        "/proc/sys/kernel/random/boot_id",
                     )
                     != boot
                 )
@@ -172,13 +175,13 @@ async def test_project_tools_approve_resume_and_reuse_the_habitat(
             assert "Linux" in shell.model_response_str()
             assert str(invocation.cwd) in shell.model_response_str()
         if turn == 0:
-            boot = await expire_idle(host.habitats, scope)
+            boot = await expire_idle(host.habitats["native"], scope)
     read = next(part for part in returned if part.tool_call_id == "read")
     assert "habitat-proof" in read.model_response_str()
     assert not (source / "proof.txt").exists()
 
     peer = InklingTentacle(
-        "peer", host, auth=host.auth, habitats=host.habitats, agent=agent
+        "peer", host, auth=host.auth, habitats=host.habitats["native"], agent=agent
     )
     async with invocation_for(
         peer, conversation_address=address, thread_id=thread.id, owner_id=owner.id
@@ -203,7 +206,7 @@ async def test_project_tools_approve_resume_and_reuse_the_habitat(
                 "exec",
                 "--workdir",
                 str(invocation.cwd),
-                sandbox.name,
+                sandbox.id,
                 "timeout",
                 "15",
                 "sh",

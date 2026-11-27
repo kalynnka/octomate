@@ -39,6 +39,7 @@ class ScriptedProvider:
     arguments: JsonObject = field(default_factory=dict)
     outcome: ToolOutcome | None = None
     call_id: str = "call_audit"
+    custom_input: str | None = None  # Raw input for a Responses custom tool.
 
     def events(self, request: ProviderRequest) -> list[JsonObject]:
         items = request.input + [
@@ -50,7 +51,8 @@ class ScriptedProvider:
         results = [
             item
             for item in items
-            if item.type in {"function_call_output", "tool_result"}
+            if item.type
+            in {"function_call_output", "custom_tool_call_output", "tool_result"}
             and (item.call_id if self.api == "responses" else item.tool_use_id)
             == self.call_id
         ]
@@ -79,6 +81,15 @@ class ScriptedProvider:
                 "status": "completed",
             }
         )
+        if self.custom_input is not None and self.outcome is None:
+            item = {
+                "id": "custom_audit",
+                "type": "custom_tool_call",
+                "name": self.tool,
+                "call_id": self.call_id,
+                "input": self.custom_input,
+                "status": "completed",
+            }
         response: JsonObject = {
             "id": "resp_audit",
             "object": "response",

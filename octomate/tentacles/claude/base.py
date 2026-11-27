@@ -1394,8 +1394,8 @@ class ClaudeTentacle(AgentTentacle[str, None]):
             run_name=run_name or self.id,
             conversation_address=str(conversation_address),
             **agent_input_message_attributes(user_prompt),
-            habitat=invocation.habitat.name,
-            habitat_mode=self.habitats.config.mode,
+            habitat=invocation.habitat.id,
+            habitat_provider=self.habitats.config.provider,
             habitat_managed=managed,
         ):
             # The SDK injects the active W3C context when connecting. Starting a

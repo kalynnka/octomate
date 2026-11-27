@@ -69,7 +69,7 @@ def inkling() -> InklingTentacle:
         host,
         registry=ProviderRegistry(ProvidersConfig()),
         auth=host.auth,
-        habitats=host.habitats,
+        habitats=host.habitats["native"],
     )
 
 

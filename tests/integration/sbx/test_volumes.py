@@ -58,7 +58,7 @@ async def test_guest_writes_land_in_the_owners_volumes_and_nowhere_else(
                 "exec",
                 "--workdir",
                 str(sandbox.path(workspace.volume)),
-                sandbox.name,
+                sandbox.id,
                 "sh",
                 "-c",
                 f"printf tree > written.txt && "
@@ -73,14 +73,14 @@ async def test_guest_writes_land_in_the_owners_volumes_and_nowhere_else(
                 (later.path / "host.txt").write_text("later")
                 seen = await sandbox.control(
                     "exec",
-                    sandbox.name,
+                    sandbox.id,
                     "cat",
                     str(sandbox.path(later.volume) / "host.txt"),
                 )
                 assert seen == b"later"
             hidden = await sandbox.control(
                 "exec",
-                sandbox.name,
+                sandbox.id,
                 "sh",
                 "-c",
                 f"test -e {quote(str(mirror.path))} || "

@@ -53,7 +53,7 @@ async def guest(
     sandbox = manager.residence(scope).habitat
     assert isinstance(sandbox, SbxHabitat)
     assert (
-        sandbox.name
+        sandbox.id
         not in (await sandbox.control("ls", quiet=True)).decode().splitlines()
     )
     try:
@@ -143,7 +143,7 @@ async def test_model_tools_resume_interrupt_and_cancel(
                 await asked.wait()
             await sandbox.control(
                 "exec",
-                sandbox.name,
+                sandbox.id,
                 "test",
                 "!",
                 "-e",
@@ -157,7 +157,7 @@ async def test_model_tools_resume_interrupt_and_cancel(
         assert (
             await sandbox.control(
                 "exec",
-                sandbox.name,
+                sandbox.id,
                 "cat",
                 "/home/agent/workspace/transport-proof.txt",
             )

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, ClassVar
 
+from octomate_protocol.config import HabitatType
 from pydantic import BaseModel, Field, model_validator
+
+from octomate.config.habitat import HabitatName
 
 type AgentRouteModelName = Annotated[str, Field(min_length=1)]
 
@@ -32,7 +35,16 @@ class AgentConfig(BaseModel):
     drives: the agent reads the same way everywhere — declared and enabled, or
     absent — and carries its own half of the gateway switch."""
 
+    habitat_types: ClassVar[tuple[HabitatType, ...]] = (
+        HabitatType.native,
+        HabitatType.hosted,
+    )
+
     type: str
+    habitat: HabitatName = Field(
+        default="native",
+        description="Name of the configured habitat used for driven runs. Agents selecting the same name share one runtime per user.",
+    )
     icon_url: str | None = Field(
         default=None,
         description="Browser-loadable icon URL or absolute URL path. Null uses the "
@@ -55,7 +67,7 @@ class AgentConfig(BaseModel):
     def reject_agent_sandbox[T](cls, value: T) -> T:
         if isinstance(value, dict) and "sandbox" in value:
             raise ValueError(
-                "Agents no longer choose a sandbox; remove sandbox and set the "
-                "service's habitat.mode (Codex's own sandbox is its permission_mode)"
+                "Remove sandbox and select a named habitat with habitat "
+                "(Codex's own sandbox is its permission_mode)"
             )
         return value

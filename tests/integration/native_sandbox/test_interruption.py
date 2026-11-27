@@ -104,7 +104,7 @@ async def test_interrupt_then_resume_preserves_files_and_history(
             )
             agent = CodexTentacle(
                 host,
-                habitats=host.habitats,
+                habitats=host.habitats["native"],
                 config=CodexConfig(runtime=runtime, permission_mode="full_access"),
                 commands=host.commands,
                 projects=host.projects,
@@ -141,7 +141,7 @@ async def test_interrupt_then_resume_preserves_files_and_history(
                 "codex-acp",
                 host,
                 auth=host.auth,
-                habitats=host.habitats,
+                habitats=host.habitats["native"],
                 config=AcpAgentConfig(
                     gateway=False,
                     provider=AcpProvider(
@@ -207,7 +207,7 @@ async def test_interrupt_then_resume_preserves_files_and_history(
             agent = DeepseekTentacle(
                 host,
                 auth=host.auth,
-                habitats=host.habitats,
+                habitats=host.habitats["native"],
                 config=DeepseekConfig(
                     executable=executable,
                     port=port,
@@ -240,7 +240,7 @@ async def test_interrupt_then_resume_preserves_files_and_history(
                 "inkling",
                 host,
                 auth=host.auth,
-                habitats=host.habitats,
+                habitats=host.habitats["native"],
                 models={"test": FunctionModel(stream_function=respond)},
                 permission_mode="bypassPermissions",
             )

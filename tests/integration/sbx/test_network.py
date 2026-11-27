@@ -19,9 +19,12 @@ from tests.support.managers import a_workspace_manager
 
 
 @pytest.mark.timeout(300)
-@pytest.mark.parametrize("internet_access", [True, False])
+@pytest.mark.parametrize(
+    ("internet_access", "denied_domains"),
+    [(True, []), (False, []), (True, ["example.com:443"])],
+)
 async def test_internet_access_is_applied_at_creation(
-    internet_access: bool, sbx_cleanup: AsyncExitStack
+    internet_access: bool, denied_domains: list[str], sbx_cleanup: AsyncExitStack
 ) -> None:
     image = os.environ.get("SBX_TEST_IMAGE")
     if not image:
@@ -32,6 +35,7 @@ async def test_internet_access_is_applied_at_creation(
             cpus=1,
             memory_mib=1024,
             internet_access=internet_access,
+            denied_domains=denied_domains,
         ),
         Nerve(),
         a_workspace_manager(),
@@ -40,14 +44,14 @@ async def test_internet_access_is_applied_at_creation(
     sandbox = manager.residence(scope).habitat
     assert isinstance(sandbox, SbxHabitat)
     assert (
-        sandbox.name
+        sandbox.id
         not in (await sandbox.control("ls", quiet=True)).decode().splitlines()
     )
     try:
         async with manager.enter(scope, uuid7()):
             await sandbox.control(
                 "exec",
-                sandbox.name,
+                sandbox.id,
                 "python",
                 "-c",
                 "import os; from pathlib import Path; "
@@ -65,19 +69,21 @@ async def test_internet_access_is_applied_at_creation(
                         "network",
                         "--json",
                         "--sandbox",
-                        sandbox.name,
+                        sandbox.id,
                         host,
                     ) as process,
                 ):
                     stdout, stderr = await process.communicate()
                 assert process.returncode in (0, 1), stderr.decode()
                 policy = TypeAdapter(JsonObject).validate_json(stdout)
-                assert policy["allowed"] is internet_access
-                if not internet_access:
+                assert policy["allowed"] is (
+                    internet_access and host not in denied_domains
+                )
+                if not internet_access or host in denied_domains:
                     assert policy["deny_kind"] == "explicit"
             status = await sandbox.control(
                 "exec",
-                sandbox.name,
+                sandbox.id,
                 "python",
                 "-c",
                 "import urllib.error, urllib.request\n"
@@ -90,7 +96,9 @@ async def test_internet_access_is_applied_at_creation(
                 "    assert str(error.reason) == 'Tunnel connection failed: 403 Forbidden', str(error.reason)\n"
                 "    print(403)\n",
             )
-            assert status.strip() == (b"200" if internet_access else b"403")
+            assert status.strip() == (
+                b"200" if internet_access and not denied_domains else b"403"
+            )
     finally:
         for state in manager.residences.values():
             backend = state.habitat

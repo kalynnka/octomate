@@ -53,7 +53,7 @@ from octomate.config.channels import (
     LarkChannelConfig,
     SlackChannelConfig,
 )
-from octomate.config.habitat import HabitatConfig, NativeHabitatConfig
+from octomate.config.habitat import HabitatConfig, HabitatName, NativeHabitatConfig
 from octomate.config.mcp import DiscoveredOAuthMcpConfig, OAuthMcpConfig
 from octomate.config.mcp.base import AuthorizationCodeFlowConfig
 from octomate.config.mcp.pool import McpPoolConfig
@@ -135,10 +135,37 @@ class OctomateConfig(BaseSettings):
         default_factory=WorkspacesConfig,
         description="When a thread's workspace is reclaimed.",
     )
-    habitat: HabitatConfig = Field(
-        default_factory=NativeHabitatConfig,
-        description="How every agent of this service runs, chosen by `mode`.",
+    habitats: dict[HabitatName, HabitatConfig] = Field(
+        default_factory=lambda: {"native": NativeHabitatConfig()},
+        description="Named execution habitats selected by agent tentacles. Each name owns a separate pool of user runtimes; agents selecting the same name share that pool.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_service_habitat[T](cls, value: T) -> T:
+        if isinstance(value, dict) and "habitat" in value:
+            raise ValueError(
+                "Replace service-wide habitat with named habitats and select "
+                "a habitat on each agent tentacle"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def validate_agent_habitats(self) -> Self:
+        for name, agent in self.tentacles.items():
+            if not isinstance(agent, AgentConfig) or not agent.enabled:
+                continue
+            if agent.habitat not in self.habitats:
+                raise ValueError(
+                    f"Agent {name!r} selects unknown habitat {agent.habitat!r}"
+                )
+            habitat = self.habitats[agent.habitat]
+            if habitat.type not in agent.habitat_types:
+                raise ValueError(
+                    f"Agent {name!r} does not support {habitat.type} habitats; "
+                    f"supported types: {', '.join(agent.habitat_types)}"
+                )
+        return self
 
     @field_validator("projects", mode="wrap")
     @classmethod

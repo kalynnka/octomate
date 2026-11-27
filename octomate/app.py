@@ -158,7 +158,7 @@ def create_app() -> Octomate:
                 tentacle = AcpAgentTentacle(
                     id=id,
                     auth=octomate.auth,
-                    habitats=octomate.habitats,
+                    habitats=octomate.habitats[tentacle_config.habitat],
                     octomate=octomate,
                     config=tentacle_config,
                 )
@@ -168,14 +168,14 @@ def create_app() -> Octomate:
                     tentacle_config,
                     octomate,
                     auth=octomate.auth,
-                    habitats=octomate.habitats,
+                    habitats=octomate.habitats[tentacle_config.habitat],
                     registry=registry,
                 )
             case ClaudeCodeConfig():
                 tentacle = ClaudeTentacle(
                     octomate,
                     auth=octomate.auth,
-                    habitats=octomate.habitats,
+                    habitats=octomate.habitats[tentacle_config.habitat],
                     config=tentacle_config,
                     commands=octomate.commands,
                     projects=octomate.projects,
@@ -191,7 +191,7 @@ def create_app() -> Octomate:
             case CodexConfig():
                 tentacle = CodexTentacle(
                     octomate,
-                    habitats=octomate.habitats,
+                    habitats=octomate.habitats[tentacle_config.habitat],
                     config=tentacle_config,
                     commands=octomate.commands,
                     projects=octomate.projects,
@@ -209,7 +209,7 @@ def create_app() -> Octomate:
                 tentacle = DeepseekTentacle(
                     octomate,
                     auth=octomate.auth,
-                    habitats=octomate.habitats,
+                    habitats=octomate.habitats[tentacle_config.habitat],
                     config=tentacle_config,
                 )
             case (

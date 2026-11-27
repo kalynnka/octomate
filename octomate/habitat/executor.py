@@ -1,12 +1,16 @@
-"""Execute one workspace operation in the guest, cancelling it on supervisor EOF."""
+"""Serve concurrent workspace operations, cancelling children on supervisor EOF."""
 
 import asyncio
 import os
+import signal
 import sys
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from typing import Annotated, Literal
 
 import anyio
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from anyio.abc import ByteReceiveStream, Process
+from pydantic import UUID7, BaseModel, ConfigDict, Field, TypeAdapter
 from pydantic_ai.workspaces import (
     CommandResult,
     FileEntry,
@@ -14,6 +18,22 @@ from pydantic_ai.workspaces import (
     WorkspaceOutputLimitError,
     WorkspaceTimeoutError,
     WorkspaceUnavailableError,
+)
+from pydantic_ai.workspaces.local import _OUTPUT_DRAIN_GRACE
+
+EXECUTE_ENV: tuple[str, ...] = (
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "PYTHONDONTWRITEBYTECODE",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
 )
 
 
@@ -44,6 +64,21 @@ class WriteRequest(BaseModel):
 class CommandResponse(BaseModel):
     kind: Literal["command"] = "command"
     result: CommandResult
+    termination_signal: int | None = None
+
+
+class CommandStarted(BaseModel):
+    kind: Literal["started"] = "started"
+
+
+class CommandOutput(BaseModel):
+    model_config = ConfigDict(ser_json_bytes="base64", val_json_bytes="base64")
+    kind: Literal["output"] = "output"
+    stream: Literal["stdout", "stderr"]
+    data: bytes
+
+
+type CommandEvent = CommandStarted | CommandOutput
 
 
 class DirectoryResponse(BaseModel):
@@ -122,8 +157,33 @@ type Response = Annotated[
     Field(discriminator="kind"),
 ]
 
-request_adapter = TypeAdapter(Request)
-response_adapter = TypeAdapter(Response)
+
+class ExecuteRequest(BaseModel):
+    kind: Literal["execute"] = "execute"
+    id: UUID7
+    workdir: str
+    request: Request
+    stream_output: bool = False
+
+
+class CancelRequest(BaseModel):
+    kind: Literal["cancel"] = "cancel"
+    id: UUID7
+
+
+class CancelledResponse(BaseModel):
+    kind: Literal["cancelled"] = "cancelled"
+
+
+class ExecutionResponse(BaseModel):
+    id: UUID7
+    response: Response | CancelledResponse | CommandEvent
+
+
+type ExecutionRequest = Annotated[
+    ExecuteRequest | CancelRequest, Field(discriminator="kind")
+]
+execution_request_adapter = TypeAdapter(ExecutionRequest)
 file_errors: dict[str, type[OSError]] = {
     cls.__name__: cls
     for cls in (
@@ -137,8 +197,72 @@ file_errors: dict[str, type[OSError]] = {
 }
 
 
-async def execute(request: Request) -> Response:
-    backend = LocalWorkspaceBackend(".")
+class CommandWorkspace(LocalWorkspaceBackend):
+    """Commands finish with their process group; residents have a separate lifetime."""
+
+    on_event: Callable[[CommandEvent], Awaitable[None]] | None = None
+    termination_signal: int | None = None
+
+    async def _wait_and_collect_output(
+        self,
+        process: Process,
+        stdout_buffer: bytearray,
+        stderr_buffer: bytearray,
+        absolute_deadline: float | None,
+    ) -> int:
+        if self.on_event is None:
+            return await super()._wait_and_collect_output(
+                process, stdout_buffer, stderr_buffer, absolute_deadline
+            )
+        # Keep upstream's spawn, timeout and termination lifecycle. Streaming
+        # callers retain their own output instead of collecting it twice here.
+        emit = self.on_event
+        if process.stdout is None or process.stderr is None:
+            raise RuntimeError("Command output pipes are unavailable")
+
+        async def collect(
+            pipe: ByteReceiveStream, name: Literal["stdout", "stderr"]
+        ) -> None:
+            async for chunk in pipe:
+                await emit(CommandOutput(stream=name, data=chunk))
+
+        remaining = (
+            None
+            if absolute_deadline is None
+            else absolute_deadline - anyio.current_time()
+        )
+        with anyio.fail_after(remaining):
+            await emit(CommandStarted())
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(collect, process.stdout, "stdout")
+                tasks.start_soon(collect, process.stderr, "stderr")
+                exit_code = await self._wait_for_exit(process)
+                tasks.cancel_scope.deadline = anyio.current_time() + _OUTPUT_DRAIN_GRACE
+        return exit_code
+
+    async def _wait_for_exit(self, process: Process) -> int:
+        # Upstream leaves background children alive on successful completion.
+        # Keep its cancellation cleanup; reap remaining children on ordinary exit.
+        exit_code = await super()._wait_for_exit(process)
+        if process.returncode is not None and process.returncode < 0:
+            self.termination_signal = -process.returncode
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        return exit_code
+
+
+async def execute(
+    request: Request,
+    workdir: str = ".",
+    on_event: Callable[[CommandEvent], Awaitable[None]] | None = None,
+) -> Response:
+    # Upstream inherits PATH/HOME, but commands also need the habitat's temp and
+    # proxy settings. These come from the guest environment, never core's env.
+    backend = CommandWorkspace(
+        workdir,
+        env={name: os.environ[name] for name in EXECUTE_ENV if name in os.environ},
+    )
+    backend.on_event = on_event
     try:
         match request:
             case DirectoryRequest():
@@ -150,7 +274,8 @@ async def execute(request: Request) -> Response:
                         shell=request.shell,
                         env=request.env,
                         timeout=request.timeout,
-                    )
+                    ),
+                    termination_signal=backend.termination_signal,
                 )
             case WriteRequest():
                 await backend.write_bytes(request.path, request.data)
@@ -201,9 +326,9 @@ async def execute(request: Request) -> Response:
         return ValueErrorResponse(message=str(error))
 
 
-async def send_response(response: Response) -> None:
+async def send_response(response: ExecutionResponse) -> None:
     """Drain a complete response even when stdin and stdout share a nonblocking socket."""
-    payload = response_adapter.dump_json(response)
+    payload = response.model_dump_json().encode()
     pending = memoryview(str(len(payload)).encode() + b"\n" + payload)
     while pending:
         await anyio.wait_writable(sys.stdout.fileno())
@@ -215,21 +340,66 @@ async def run() -> None:
     transport, _ = await asyncio.get_running_loop().connect_read_pipe(
         lambda: asyncio.StreamReaderProtocol(reader), sys.stdin.buffer
     )
-    try:
-        size = int(await reader.readline())
-        request = request_adapter.validate_json(await reader.readexactly(size))
-        operation = asyncio.create_task(execute(request))
-        disconnected = asyncio.create_task(reader.read())
+    pending: dict[UUID7, asyncio.Task[Response]] = {}
+    writing = asyncio.Lock()
+    closing = False
+
+    async def emit(
+        key: UUID7, response: Response | CancelledResponse | CommandEvent
+    ) -> None:
+        if not closing:
+            async with writing:
+                # A cancelled command must not leave a partial frame on the
+                # connection used by other operations.
+                sending = asyncio.create_task(
+                    send_response(ExecutionResponse(id=key, response=response))
+                )
+                try:
+                    await asyncio.shield(sending)
+                except asyncio.CancelledError:
+                    with anyio.CancelScope(shield=True):
+                        await sending
+                    raise
+
+    async def serve(message: ExecuteRequest, operation: asyncio.Task[Response]) -> None:
         try:
-            await asyncio.wait(
-                (operation, disconnected), return_when=asyncio.FIRST_COMPLETED
+            response: Response | CancelledResponse = await operation
+        except asyncio.CancelledError:
+            response = CancelledResponse()
+        await emit(message.id, response)
+
+    async def dispatch(tasks: asyncio.TaskGroup) -> None:
+        while size := await reader.readline():
+            message = execution_request_adapter.validate_json(
+                await reader.readexactly(int(size))
             )
-            if operation.done():
-                await send_response(operation.result())
-        finally:
-            operation.cancel()
-            disconnected.cancel()
-            await asyncio.gather(operation, disconnected, return_exceptions=True)
+            if isinstance(message, CancelRequest):
+                if task := pending.get(message.id):
+                    task.cancel()
+                continue
+            if message.id in pending:
+                raise ValueError("Duplicate executor request ID")
+            pending[message.id] = tasks.create_task(
+                execute(
+                    message.request,
+                    message.workdir,
+                    (lambda event, key=message.id: emit(key, event))
+                    if message.stream_output
+                    else None,
+                )
+            )
+            reply = tasks.create_task(serve(message, pending[message.id]))
+            reply.add_done_callback(lambda _, key=message.id: pending.pop(key, None))
+
+    try:
+        print("ready", flush=True)
+        async with asyncio.TaskGroup() as tasks:
+            try:
+                await dispatch(tasks)
+            finally:
+                closing = True
+                for task in pending.values():
+                    task.cancel()
     finally:
         transport.close()
 
