@@ -28,14 +28,11 @@ from pydantic import (
 from typing_extensions import TypedDict
 
 from octomate.auth import browser_request, current_user
-from octomate.database import async_session
 from octomate.dependencies import auth_manager
 from octomate.managers.auth import AuthManager, InvalidCredentials, InvalidOAuthScopes
 from octomate.schemas.authorization import (
     OAuthAuthorization,
     OAuthClient,
-    OAuthGrant,
-    OAuthToken,
 )
 from octomate.schemas.user import User
 from octomate.types.auth import ApiKeyScope
@@ -221,7 +218,9 @@ async def resource_metadata(
 
 
 @router.post("/register")
-async def register(request: Request) -> Response:
+async def register(
+    request: Request, manager: Annotated[AuthManager, Depends(auth_manager)]
+) -> Response:
     try:
         body = Registration.model_validate_json(await request.body())
         scopes = SCOPES.validate_python(body.scope.split(" "))
@@ -241,9 +240,7 @@ async def register(request: Request) -> Response:
         redirect_uris=body.redirect_uris,
         scopes=sorted(set(scopes)),
     )
-    async with async_session() as session:
-        session.add(client)
-        await session.commit()
+    await manager.register_oauth_client(client)
     return JSONResponse(
         {
             "client_id": str(client.id),
@@ -273,8 +270,7 @@ async def authorize(
         body = AuthorizationRequest.model_validate(dict(params))
     except ValidationError:
         return oauth_error("invalid_request")
-    async with async_session() as session:
-        client = await session.get(OAuthClient, body.client_id)
+    client = await manager.get_oauth_client(body.client_id)
     if client is None:
         return oauth_error("unauthorized_client")
     redirect = body.redirect_uri
@@ -318,9 +314,7 @@ async def authorize(
         state=body.state,
         expires_at=datetime.now(UTC) + manager.config.oauth_authorization_lifetime,
     )
-    async with async_session() as session:
-        session.add(pending)
-        await session.commit()
+    await manager.create_oauth_authorization(pending)
     return RedirectResponse(
         f"{origin}/oauth/consent#ticket={ticket.get_secret_value()}",
         status_code=302,
@@ -350,8 +344,7 @@ async def inspect_consent(
         pending = await manager.get_oauth_authorization(body["ticket"])
     except InvalidCredentials:
         return oauth_error("invalid_request")
-    async with async_session() as session:
-        client = await session.get(OAuthClient, pending.client_id)
+    client = await manager.get_oauth_client(pending.client_id)
     if client is None:
         return oauth_error("invalid_request")
     return JSONResponse(
@@ -419,12 +412,7 @@ async def token(
         return oauth_error("invalid_target")
     try:
         if isinstance(body, CodeRequest):
-            code_hash = manager.hash_token(body.code, manager.config.access_token_salt)
-            async with async_session() as session:
-                pending = await session.one_or_none(
-                    OAuthAuthorization,
-                    expressions=[OAuthAuthorization["code_hash"] == code_hash],
-                )
+            pending = await manager.get_oauth_code(body.code)
             verifier = body.code_verifier.get_secret_value()
             challenge = (
                 base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
@@ -498,23 +486,5 @@ async def revoke(
         body = RevocationRequest.model_validate(dict(form))
     except ValidationError:
         return oauth_error("invalid_request")
-    async with async_session() as session:
-        token = await session.one_or_none(
-            OAuthToken,
-            expressions=[
-                (
-                    OAuthToken["access_token_hash"]
-                    == manager.hash_token(body.token, manager.config.access_token_salt)
-                )
-                | (
-                    OAuthToken["refresh_token_hash"]
-                    == manager.hash_token(body.token, manager.config.refresh_token_salt)
-                )
-            ],
-        )
-        grant = (
-            await session.get(OAuthGrant, token.grant_id) if token is not None else None
-        )
-    if grant is not None and grant.client_id == body.client_id:
-        await manager.revoke_oauth_grant(grant.user_id, grant.id)
+    await manager.revoke_oauth_token(body.client_id, body.token)
     return Response(headers=NO_STORE)

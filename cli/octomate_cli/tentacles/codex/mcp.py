@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from typing import Annotated
 
@@ -17,6 +18,7 @@ from octomate_cli.config import CLISettings
 from octomate_cli.tentacles.mcp import (
     CLIENT_HEADER,
     OCTOMATE_SERVER_KEY,
+    OAuthOption,
     octomate_secret,
     octomate_url,
 )
@@ -56,18 +58,21 @@ def mcp_install(
         ),
     ] = None,
     config_file: McpConfigOption = None,
+    oauth: OAuthOption = None,
 ) -> None:
-    """Point native Codex sessions at the served MCP server.
+    """Install native codex MCP access, preserving other entries.
 
-    Writes the `mcp_servers.octomate` table — the server's URL, the bearer,
-    the agent attribution header, and teleport's approval requirement — preserving
-    the operator's comments and every other table. The credential is embedded;
-    rotating means re-running install. Driven sessions disable inherited MCP servers
-    and supply their caller's connection separately.
+    mcp_auth in cli.toml selects native OAuth login or an embedded API key.
+    --oauth/--api-key overrides it for this installation.
     """
     target = octomate_url(url)
-    secret = octomate_secret()
+    secret = octomate_secret(oauth)
     path = mcp_config_file(config_file)
+    if secret is None and path.resolve() != mcp_config_file(None).resolve():
+        raise typer.BadParameter(
+            "Codex OAuth login reads its native configuration. "
+            "Install without a custom --config-file."
+        )
     document = load_toml(path)
     servers = document.get("mcp_servers")
     if servers is None:
@@ -78,7 +83,10 @@ def mcp_install(
     entry = tomlkit.table()
     entry["url"] = target
     headers = tomlkit.inline_table()
-    headers["Authorization"] = f"Bearer {secret}"
+    if secret is None:
+        entry["scopes"] = ["mcp"]
+    else:
+        headers["Authorization"] = f"Bearer {secret}"
     headers[CLIENT_HEADER] = "codex"
     entry["http_headers"] = headers
     entry["tools"] = {gateway_tool(GatewayTool.TELEPORT): {"approval_mode": "prompt"}}
@@ -88,10 +96,23 @@ def mcp_install(
     typer.echo(f"Installed the Octomate MCP entry → {target}")
     typer.echo(f"  file:   {path}")
     typer.echo("  client: codex")
-    typer.echo(
-        "  auth:   embedded — the file holds the literal credential; rotation "
-        "means re-running install"
-    )
+    if secret is None:
+        typer.echo("  auth:   OAuth — credentials managed by codex")
+        try:
+            result = subprocess.run(
+                ["codex", "mcp", "login", OCTOMATE_SERVER_KEY], check=False
+            )
+        except OSError as error:
+            raise typer.BadParameter(
+                f"Entry installed, but Codex login could not start: {error}"
+            ) from None
+        if result.returncode:
+            raise typer.Exit(result.returncode)
+    else:
+        typer.echo(
+            "  auth:   embedded — the file holds the literal credential; rotation "
+            "means re-running install"
+        )
 
 
 @mcp_typer.command("uninstall")
@@ -125,4 +146,7 @@ def mcp_show(config_file: McpConfigOption = None) -> None:
     typer.echo(f"Octomate MCP entry in {path}:")
     typer.echo(f"  url:    {entry.get('url')}")
     typer.echo(f"  client: {client}")
-    typer.echo("  auth:   Bearer ***")
+    embedded = isinstance(headers, dict) and "Authorization" in headers
+    typer.echo(
+        "  auth:   Bearer ***" if embedded else "  auth:   OAuth (harness-managed)"
+    )

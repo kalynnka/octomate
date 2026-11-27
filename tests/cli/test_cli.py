@@ -741,6 +741,8 @@ def gateway_ready(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OCTOMATE_CLI_URL", "http://127.0.0.1:9999")
     monkeypatch.setenv("OCTOMATE_CLI_TOKEN", "the-token")
 
+    monkeypatch.setenv("OCTOMATE_CLI_MCP_AUTH", "apikey")
+
 
 @pytest.mark.parametrize("runtime", ["claude", "codex", "deepseek"])
 def test_mcp_install_refuses_agent_id_overrides(runtime: str) -> None:
@@ -963,6 +965,7 @@ def test_mcp_install_refuses_without_the_credential_it_would_embed(
     would only 401, so the install refuses instead."""
     monkeypatch.setenv("OCTOMATE_CLI_URL", "http://127.0.0.1:9999")
     monkeypatch.delenv("OCTOMATE_CLI_TOKEN", raising=False)
+    monkeypatch.setenv("OCTOMATE_CLI_MCP_AUTH", "apikey")
     invocations = [
         (claude_typer, ["mcp", "install", "--file", str(tmp_path / "c.json")]),
         (codex_typer, ["mcp", "install", "--config-file", str(tmp_path / "c.toml")]),

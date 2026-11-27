@@ -495,6 +495,54 @@ class AuthManager(Manager, Locks[str]):
             key.revoked_at = datetime.now(UTC)
             await session.commit()
 
+    async def register_oauth_client(self, client: OAuthClient) -> None:
+        async with async_session() as session:
+            session.add(client)
+            await session.commit()
+
+    async def get_oauth_client(self, client_id: UUID7) -> OAuthClient | None:
+        async with async_session() as session:
+            return await session.get(OAuthClient, client_id)
+
+    async def create_oauth_authorization(self, pending: OAuthAuthorization) -> None:
+        async with async_session() as session:
+            session.add(pending)
+            await session.commit()
+
+    async def get_oauth_code(self, code: SecretStr) -> OAuthAuthorization | None:
+        async with async_session() as session:
+            return await session.one_or_none(
+                OAuthAuthorization,
+                expressions=[
+                    OAuthAuthorization["code_hash"]
+                    == self.hash_token(code, self.config.access_token_salt)
+                ],
+            )
+
+    async def revoke_oauth_token(self, client_id: UUID7, bearer: SecretStr) -> None:
+        """Revoke only a token belonging to the requesting public client."""
+        async with async_session() as session:
+            token = await session.one_or_none(
+                OAuthToken,
+                expressions=[
+                    (
+                        OAuthToken["access_token_hash"]
+                        == self.hash_token(bearer, self.config.access_token_salt)
+                    )
+                    | (
+                        OAuthToken["refresh_token_hash"]
+                        == self.hash_token(bearer, self.config.refresh_token_salt)
+                    )
+                ],
+            )
+            grant = (
+                await session.get(OAuthGrant, token.grant_id)
+                if token is not None
+                else None
+            )
+        if grant is not None and grant.client_id == client_id:
+            await self.revoke_oauth_grant(grant.user_id, grant.id)
+
     async def get_oauth_authorization(self, ticket: SecretStr) -> OAuthAuthorization:
         """Inspect live, undecided consent without issuing credentials."""
         async with async_session() as session:
@@ -595,11 +643,7 @@ class AuthManager(Manager, Locks[str]):
         so expiry, replay, and revocation remain authoritative at issuance.
         """
         code_hash = self.hash_token(code, self.config.access_token_salt)
-        async with async_session() as session:
-            authorization = await session.one_or_none(
-                OAuthAuthorization,
-                expressions=[OAuthAuthorization["code_hash"] == code_hash],
-            )
+        authorization = await self.get_oauth_code(code)
         if authorization is None or authorization.grant_id is None:
             raise InvalidCredentials
         async with (

@@ -21,7 +21,7 @@ import tomllib
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import tomlkit
 import typer
@@ -116,6 +116,10 @@ class CLISettings(BaseSettings):
             "A server-issued API token with hooks and/or mcp scope, obtained through "
             "the authenticated account API."
         ),
+    )
+    mcp_auth: Literal["apikey", "oauth"] = Field(
+        default="oauth",
+        description="Native MCP installation authentication. OAuth installs invoke the harness's own login flow; API-key installs embed the configured token.",
     )
     deepseek: DeepseekSettings = Field(
         default_factory=DeepseekSettings,

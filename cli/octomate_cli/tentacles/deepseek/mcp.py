@@ -18,6 +18,7 @@ from octomate_cli.tentacles.deepseek.config import (
 from octomate_cli.tentacles.mcp import (
     CLIENT_HEADER,
     OCTOMATE_SERVER_KEY,
+    OAuthOption,
     octomate_secret,
     octomate_url,
 )
@@ -80,6 +81,7 @@ def mcp_install(
         ),
     ] = None,
     home: DshHomeOption = None,
+    oauth: OAuthOption = None,
 ) -> None:
     """Point native dsh sessions at the served MCP server.
 
@@ -90,7 +92,13 @@ def mcp_install(
     replaces the row in place; restart dsh processes for the change to take.
     """
     target = octomate_url(url)
-    secret = octomate_secret()
+    secret = octomate_secret(oauth)
+    if secret is None:
+        raise typer.BadParameter(
+            "DSH OAuth requires an MCP-manager-owned entry and host authorization. "
+            "This installer mounts a standalone client; use API-key mode until "
+            "the DSH connector integration is available."
+        )
     patch = patch_file(dsh_home(home))
     text = patch.read_text() if patch.exists() else "[]\n"
     text = patch_text_without_block(text, LEGACY_MCP_MARK_BEGIN, LEGACY_MCP_MARK_END)
