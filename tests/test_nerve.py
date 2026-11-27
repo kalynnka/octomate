@@ -12,27 +12,59 @@ from pydantic_ai.messages import PartDeltaEvent, TextPartDelta
 from uuid_utils.compat import uuid7
 
 from octomate.events import HabitatFailedEvent, HabitatProgressEvent, MessageSentEvent
-from octomate.fibers import MemoryFiber
+from octomate.fibers import FiberError, MemoryFiber
 from octomate.nerve import (
     ChannelTopic,
     HabitatTopic,
     Impulse,
+    InvocationTopic,
     Nerve,
-    Stimulus,
     ThreadTopic,
     UserTopic,
 )
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
-from octomate.signals import InterruptRunSignal
+from octomate.signals import AsleepSignal, Signal
 from tests.support.nerve import held
 
 HERE = ChannelAddress("web", "thread", "lu", "lu", channel_thread_id="t1")
 THERE = ChannelAddress("web", "thread", "lu", "lu", channel_thread_id="t2")
 FAR = ChannelAddress("slack", "dm", "D1", "U1")
 EVENT = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="hi"))
-SIGNAL = InterruptRunSignal(invocation_id=uuid7())
+INVOCATION_ID = uuid7()
+SIGNAL = AsleepSignal(invocation_id=INVOCATION_ID)
 LATER = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="there"))
+
+
+async def test_directed_delivery_requires_one_ready_receiver() -> None:
+    nerve = Nerve[Signal]()
+    topic = InvocationTopic(INVOCATION_ID)
+    with pytest.raises(FiberError, match="exactly one"):
+        nerve.dispatch(topic, SIGNAL)
+    async with MemoryFiber[Signal]() as first, MemoryFiber[Signal]() as second:
+        with nerve.accept(topic, first):
+            nerve.dispatch(topic, SIGNAL)
+            assert held(first) == [SIGNAL]
+            with (
+                nerve.accept(topic, second),
+                pytest.raises(FiberError, match="exactly one"),
+            ):
+                nerve.dispatch(topic, SIGNAL)
+            assert held(first) == []
+            assert held(second) == []
+            first.close()
+            with pytest.raises(FiberError, match="exactly one"):
+                nerve.dispatch(topic, SIGNAL)
+
+
+async def test_directed_delivery_reports_a_full_receiver() -> None:
+    nerve = Nerve[Signal]()
+    topic = InvocationTopic(INVOCATION_ID)
+    async with nerve.subscribe(topic, backlog=1) as receiver:
+        nerve.dispatch(topic, SIGNAL)
+        with pytest.raises(anyio.WouldBlock):
+            nerve.dispatch(topic, SIGNAL)
+        assert await receiver.receive() == SIGNAL
 
 
 @pytest.mark.parametrize("supplied", [False, True])
@@ -59,8 +91,8 @@ async def test_an_impulse_reaches_its_channel_and_its_thread() -> None:
     nerve = Nerve()
     async with (
         nerve.subscribe(ChannelTopic("web")) as channel,
-        nerve.subscribe(ThreadTopic(ThreadKey.from_address(HERE))) as here,
-        nerve.subscribe(ThreadTopic(ThreadKey.from_address(THERE))) as there,
+        nerve.subscribe(ThreadTopic(ThreadKey.model_validate(HERE))) as here,
+        nerve.subscribe(ThreadTopic(ThreadKey.model_validate(THERE))) as there,
     ):
         async with nerve.publish(None) as impulses:
             await impulses.send(Impulse(EVENT, HERE))
@@ -73,7 +105,7 @@ async def test_an_impulse_reaches_its_channel_and_its_thread() -> None:
 
 async def test_an_impulse_on_the_asking_thread_is_heard_there_once() -> None:
     nerve = Nerve()
-    asked = ThreadKey.from_address(HERE)
+    asked = ThreadKey.model_validate(HERE)
     async with nerve.subscribe(ThreadTopic(asked)) as here:
         async with nerve.publish(HERE) as impulses:
             await impulses.send(Impulse(EVENT, HERE))
@@ -83,7 +115,7 @@ async def test_an_impulse_on_the_asking_thread_is_heard_there_once() -> None:
 
 async def test_the_asking_thread_hears_a_kick_wherever_it_goes() -> None:
     nerve = Nerve()
-    asked = ThreadKey.from_address(HERE)
+    asked = ThreadKey.model_validate(HERE)
     async with (
         nerve.subscribe(ThreadTopic(asked)) as asking,
         nerve.subscribe(ChannelTopic("slack")) as far,
@@ -102,8 +134,8 @@ async def test_a_private_impulse_is_heard_only_where_it_lands() -> None:
     nerve = Nerve()
     sent = Impulse(MessageSentEvent(segments=[]), FAR, private=True)
     async with (
-        nerve.subscribe(ThreadTopic(ThreadKey.from_address(HERE))) as asking,
-        nerve.subscribe(ThreadTopic(ThreadKey.from_address(FAR))) as dm,
+        nerve.subscribe(ThreadTopic(ThreadKey.model_validate(HERE))) as asking,
+        nerve.subscribe(ThreadTopic(ThreadKey.model_validate(FAR))) as dm,
     ):
         async with nerve.publish(HERE) as impulses:
             await impulses.send(sent)
@@ -115,11 +147,12 @@ async def test_a_private_impulse_is_heard_only_where_it_lands() -> None:
 async def test_a_reader_past_its_backlog_reads_what_was_held_and_ends() -> None:
     nerve = Nerve()
     async with nerve.subscribe(
-        ThreadTopic(ThreadKey.from_address(HERE)), backlog=2
+        ThreadTopic(ThreadKey.model_validate(HERE)), backlog=2
     ) as behind:
         for _ in range(3):
             nerve.deliver(
-                ThreadTopic(ThreadKey.from_address(HERE)), Impulse(EVENT, HERE)
+                ThreadTopic(ThreadKey.model_validate(HERE)),
+                Impulse(EVENT, HERE),
             )
 
         assert [impulse async for impulse in behind] == [Impulse(EVENT, HERE)] * 2
@@ -133,7 +166,7 @@ async def test_a_replaying_thread_reader_starts_with_what_a_retaining_publisher_
     None
 ):
     nerve = Nerve()
-    thread = ThreadTopic(ThreadKey.from_address(HERE))
+    thread = ThreadTopic(ThreadKey.model_validate(HERE))
     async with (
         nerve.subscribe(ChannelTopic("web")) as routed,
         nerve.publish(HERE, retain=True) as impulses,
@@ -153,7 +186,7 @@ async def test_a_replaying_thread_reader_starts_with_what_a_retaining_publisher_
 
 async def test_a_replaying_reader_starts_past_the_offset_it_names() -> None:
     nerve = Nerve()
-    thread = ThreadTopic(ThreadKey.from_address(HERE))
+    thread = ThreadTopic(ThreadKey.model_validate(HERE))
     async with (
         nerve.subscribe(ChannelTopic("web")) as routed,
         nerve.publish(HERE, retain=True) as impulses,
@@ -175,7 +208,7 @@ async def test_a_replaying_reader_starts_past_the_offset_it_names() -> None:
 
 async def test_a_replay_is_read_one_impulse_at_a_time() -> None:
     nerve = Nerve()
-    thread = ThreadTopic(ThreadKey.from_address(HERE))
+    thread = ThreadTopic(ThreadKey.model_validate(HERE))
     async with (
         nerve.subscribe(ChannelTopic("web")) as routed,
         nerve.publish(HERE, retain=True) as impulses,
@@ -207,16 +240,16 @@ async def test_only_what_reaches_the_asking_thread_is_kept_for_it() -> None:
 
         assert [
             impulse.event
-            for impulse in nerve.retained[ThreadTopic(ThreadKey.from_address(HERE))]
+            for impulse in nerve.retained[ThreadTopic(ThreadKey.model_validate(HERE))]
         ] == [LATER]
-        assert ThreadTopic(ThreadKey.from_address(THERE)) not in nerve.retained
+        assert ThreadTopic(ThreadKey.model_validate(THERE)) not in nerve.retained
 
 
 async def test_a_supplied_fiber_cannot_replay() -> None:
     nerve = Nerve()
     with pytest.raises(ValueError, match="cannot replay"):
         async with nerve.subscribe(
-            ThreadTopic(ThreadKey.from_address(HERE)),
+            ThreadTopic(ThreadKey.model_validate(HERE)),
             fiber=MemoryFiber[Impulse](),
             replay=0,
         ):
@@ -225,7 +258,7 @@ async def test_a_supplied_fiber_cannot_replay() -> None:
 
 async def test_a_retaining_publisher_keeps_nothing_past_its_block() -> None:
     nerve = Nerve()
-    thread = ThreadTopic(ThreadKey.from_address(HERE))
+    thread = ThreadTopic(ThreadKey.model_validate(HERE))
     async with nerve.publish(HERE, retain=True) as impulses:
         await impulses.send(Impulse(EVENT, HERE))
 
@@ -243,7 +276,7 @@ async def test_a_publisher_that_does_not_retain_is_not_replayed() -> None:
         await impulses.send(Impulse(EVENT, HERE))
         await routed.receive()
         async with nerve.subscribe(
-            ThreadTopic(ThreadKey.from_address(HERE)), replay=0
+            ThreadTopic(ThreadKey.model_validate(HERE)), replay=0
         ) as late:
             assert held(late) == []
 
@@ -252,7 +285,7 @@ async def test_retaining_publishers_on_one_thread_keep_in_one_stream_until_the_l
     None
 ):
     nerve = Nerve()
-    thread = ThreadTopic(ThreadKey.from_address(HERE))
+    thread = ThreadTopic(ThreadKey.model_validate(HERE))
     async with nerve.subscribe(ChannelTopic("web")) as routed:
         ending = nerve.publish(HERE, retain=True)
         first = await ending.__aenter__()
@@ -285,7 +318,7 @@ async def test_the_replay_does_not_count_against_the_backlog() -> None:
             await impulses.send(Impulse(EVENT, HERE))
             await routed.receive()
         async with nerve.subscribe(
-            ThreadTopic(ThreadKey.from_address(HERE)), backlog=1, replay=0
+            ThreadTopic(ThreadKey.model_validate(HERE)), backlog=1, replay=0
         ) as late:
             await impulses.send(Impulse(LATER, HERE))
             await routed.receive()
@@ -304,7 +337,7 @@ async def test_multiple_publications_notify_only_the_chosen_user_topics() -> Non
         nerve.subscribe(UserTopic(bob)) as other,
         nerve.subscribe(UserTopic(carol)) as another_recipient,
         nerve.subscribe(ChannelTopic(alice.hex)) as channel,
-        nerve.subscribe(ThreadTopic(ThreadKey.from_address(HERE))) as asking,
+        nerve.subscribe(ThreadTopic(ThreadKey.model_validate(HERE))) as asking,
     ):
         nerve.deliver(UserTopic(alice), notification)
         nerve.deliver(UserTopic(carol), notification)
@@ -322,12 +355,12 @@ async def test_multiple_publications_notify_only_the_chosen_user_topics() -> Non
 async def test_publication_uses_only_the_topic_regardless_of_routing_metadata() -> None:
     nerve = Nerve()
     user_id = uuid7()
-    asked = ThreadKey.from_address(HERE)
+    asked = ThreadKey.model_validate(HERE)
     impulse = Impulse(EVENT, FAR, private=True, origin=asked)
     async with (
         nerve.subscribe(UserTopic(user_id)) as user,
         nerve.subscribe(ThreadTopic(asked)) as asking,
-        nerve.subscribe(ThreadTopic(ThreadKey.from_address(FAR))) as destination,
+        nerve.subscribe(ThreadTopic(ThreadKey.model_validate(FAR))) as destination,
         nerve.subscribe(ChannelTopic(FAR.channel_tentacle_id)) as channel,
     ):
         nerve.deliver(UserTopic(user_id), impulse)
@@ -372,7 +405,7 @@ async def test_publisher_buffers_1024_and_drains_without_waiting_for_readers() -
         for index in range(1025)
     ]
     async with (
-        nerve.subscribe(ThreadTopic(ThreadKey.from_address(HERE))) as here,
+        nerve.subscribe(ThreadTopic(ThreadKey.model_validate(HERE))) as here,
         nerve.subscribe(ChannelTopic("web"), backlog=2) as behind,
     ):
         async with nerve.publish(None) as impulses:
@@ -396,7 +429,7 @@ async def test_topic_publisher_preserves_impulses_and_drains_on_exit() -> None:
         EVENT,
         HERE,
         private=True,
-        origin=ThreadKey.from_address(THERE),
+        origin=ThreadKey.model_validate(THERE),
     )
     async with (
         nerve.subscribe(topic) as events,
@@ -469,7 +502,7 @@ async def test_supplied_memory_fibers_use_the_same_api_and_remain_caller_owned(
     subscriber = MemoryFiber[Impulse]()
     sent = Impulse(EVENT, HERE, private=True)
     expected = (
-        Impulse(EVENT, HERE, private=True, origin=ThreadKey.from_address(HERE))
+        Impulse(EVENT, HERE, private=True, origin=ThreadKey.model_validate(HERE))
         if routed
         else sent
     )
@@ -492,18 +525,18 @@ async def test_supplied_memory_fibers_use_the_same_api_and_remain_caller_owned(
         subscriber.close()
 
 
-async def test_a_stimulus_reaches_the_subscribers_of_its_topic() -> None:
-    signals = Nerve[Stimulus]()
-    topic = ThreadTopic(ThreadKey.from_address(HERE))
-    first, second, other = (MemoryFiber[Stimulus]() for _ in range(3))
+async def test_a_signal_reaches_the_subscribers_of_its_topic() -> None:
+    signals = Nerve[Signal]()
+    topic = ThreadTopic(ThreadKey.model_validate(HERE))
+    first, second, other = (MemoryFiber[Signal]() for _ in range(3))
     with (
         signals.accept(topic, first),
         signals.accept(topic, second),
-        signals.accept(ThreadTopic(ThreadKey.from_address(THERE)), other),
+        signals.accept(ThreadTopic(ThreadKey.model_validate(THERE)), other),
     ):
-        signals.deliver(topic, Stimulus(SIGNAL))
-        assert held(first) == [Stimulus(SIGNAL)]
-        assert held(second) == [Stimulus(SIGNAL)]
+        signals.deliver(topic, SIGNAL)
+        assert held(first) == [SIGNAL]
+        assert held(second) == [SIGNAL]
         assert held(other) == []
     assert not signals.subscribers
     # Leaving keeps each fiber open for its owner.

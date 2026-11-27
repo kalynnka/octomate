@@ -101,12 +101,12 @@ async def test_status_pipeline_renders_activity_wait_and_terminal_cleanup(
     async with drawing(channel):
         topic = ChannelTopic(channel.id)
         for event, expected in events:
-            channel.octomate.nerve.deliver(topic, Impulse(event, address))
+            channel.octomate.nerves.events.deliver(topic, Impulse(event, address))
             assert await asyncio.wait_for(presented.get(), 1) == expected
-        channel.octomate.nerve.deliver(
+        channel.octomate.nerves.events.deliver(
             topic, Impulse(RunResultEvent(output="answer", usage=RunUsage()), address)
         )
-        channel.octomate.nerve.deliver(topic, Impulse(RunEndedEvent(), address))
+        channel.octomate.nerves.events.deliver(topic, Impulse(RunEndedEvent(), address))
         assert await asyncio.wait_for(presented.get(), 1) == ""
     assert not status.queues
     if surface == "discord":
@@ -207,7 +207,7 @@ async def test_plain_status_coalesces_changes_without_repeating_or_claiming_comp
     monkeypatch.setattr(feeler, "present", observe)
     address = ChannelAddress("qq", "group", "123", "456")
     feeler.feed(address, RunActivityChangedEvent(activity="thinking"))
-    key = ThreadKey.from_address(address)
+    key = ThreadKey.model_validate(address)
     try:
         assert await asyncio.wait_for(presented.get(), 1) == "Thinking…"
         feeler.feed(address, RunActivityChangedEvent(activity="using_tools"))

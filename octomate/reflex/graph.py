@@ -18,6 +18,7 @@ from octomate.events import (
     ReflexAwakeEvent,
     ReflexPhaseChangedEvent,
 )
+from octomate.managers.habitat import RunInterrupted
 from octomate.nerve import Impulse
 from octomate.reflex.nodes import (
     Awake,
@@ -38,10 +39,16 @@ from octomate.reflex.state import (
     ReflexState,
     ResponseTarget,
 )
-from octomate.schemas.awakes import AwakeSignal
-from octomate.schemas.commands import CommandError
+from octomate.schemas.commands import (
+    CommandError,
+    CommandOutcome,
+    CommandOutcomeEvent,
+    CommandResult,
+)
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
+from octomate.signals import AwakeSignal, CommandSignal, SummonSignal
 from octomate.types.threads import KickOutcome
 
 __all__ = [
@@ -113,23 +120,48 @@ async def run_reflex(
     """Wake the reflex with `signal`, and say so on the nerve before anything
     else. A failure is reported where the kick came from, and the reflex falls
     asleep last whatever happened."""
-    woke_at = now_utc()
-    await deps.impulses.send(Impulse(ReflexAwakeEvent(), origin))
+    continuation = isinstance(signal, SummonSignal) and signal.thread_id is not None
+    woke_at = (
+        signal.woke_at
+        if isinstance(signal, SummonSignal) and signal.woke_at is not None
+        else now_utc()
+    )
+    if isinstance(signal, CommandSignal):
+        state.command_request_id = signal.request_id
     outcome: KickOutcome = "failed"
+    command_outcome: CommandOutcome | None = None
     try:
-        await deps.impulses.send(
-            Impulse(ReflexPhaseChangedEvent(phase="preparing"), origin)
-        )
+        if not continuation:
+            await deps.impulses.send(
+                Impulse(ReflexAwakeEvent(request_id=state.command_request_id), origin)
+            )
+            await deps.impulses.send(
+                Impulse(ReflexPhaseChangedEvent(phase="preparing"), origin)
+            )
+        state.interruption.check()
         result = await reflex_graph.run(
             inputs=Awake(signal=signal), state=state, deps=deps
         )
+        state.interruption.check()
         if isinstance(result, DeferredResult):
             outcome = "deferred"
         elif isinstance(result, ReflexResult):
             outcome = result.outcome
         elif not isinstance(result, CommandError):
             outcome = "completed"
+        if not state.dispatched and state.command_request_id is not None:
+            command_outcome = (
+                result
+                if isinstance(result, CommandError | CommandResult)
+                else CommandResult()
+            )
         return result
+    except RunInterrupted:
+        outcome = "cancelled"
+        interrupted = CommandError(status="failed", message="Run interrupted.")
+        if state.command_request_id is not None:
+            command_outcome = interrupted
+        return interrupted
     except asyncio.CancelledError:
         outcome = "cancelled"
         raise
@@ -137,19 +169,36 @@ async def run_reflex(
         await deps.report(state, error)
         raise
     finally:
-        try:
-            # Filed before the reflex is heard asleep, so whoever reads the thread
-            # again on that word finds how long the kick took.
-            if state.thread is not None:
-                await deps.thread_manager.record_kick(
-                    state.thread, woke_at=woke_at, outcome=outcome
+        if not state.dispatched:
+            try:
+                # Filed before the reflex is heard asleep, so whoever reads the thread
+                # again on that word finds how long the kick took.
+                if state.thread is not None:
+                    await deps.thread_manager.record_kick(
+                        state.thread, woke_at=woke_at, outcome=outcome
+                    )
+                if command_outcome is not None:
+                    await deps.impulses.send(
+                        Impulse(
+                            CommandOutcomeEvent(
+                                outcome=command_outcome,
+                                request_id=state.command_request_id,
+                            ),
+                            origin,
+                        )
+                    )
+            finally:
+                if deps.executor is not None:
+                    deps.agent(deps.executor).octomate.awake_since.pop(
+                        ThreadKey.model_validate(origin), None
+                    )
+                await deps.impulses.send(
+                    Impulse(
+                        ReflexAsleepEvent(
+                            outcome=outcome, request_id=state.command_request_id
+                        ),
+                        state.target.address
+                        if state.target and state.target.address
+                        else origin,
+                    )
                 )
-        finally:
-            await deps.impulses.send(
-                Impulse(
-                    ReflexAsleepEvent(outcome=outcome),
-                    state.target.address
-                    if state.target and state.target.address
-                    else origin,
-                )
-            )

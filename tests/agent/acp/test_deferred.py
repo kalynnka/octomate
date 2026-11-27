@@ -15,16 +15,17 @@ from octomate.events import (
 )
 from octomate.nerve import ChannelTopic
 from octomate.reflex.suspender import ReflexSuspender
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.deferred import QuestionRequest
 from octomate.schemas.thread import Thread
 from octomate.schemas.user import UserProfile
+from octomate.signals import DeferredActionBatchResponse
 from octomate.tentacles.acp.base import AcpAgentTentacle
 from octomate.tentacles.acp.elicitation import AcpForm, FormProperty
 from octomate.types.json import JsonObject
 from tests.agent.acp.test_client import adapter_environment as adapter_environment
 from tests.agent.acp.test_tentacle import agent as agent
 from tests.support.invocations import invocation_for
+from tests.support.nerve import kick_and_wait
 
 
 def test_form_presentation_state_is_not_advertised_to_question_tools() -> None:
@@ -79,12 +80,13 @@ async def test_form_can_correct_invalid_answers_and_revise_drafts_before_submit(
         assert count.batch_id is not None
         manager = tentacle.octomate.deferred_actions
         topic = ChannelTopic(suspender.target_address.channel_tentacle_id)
-        async with tentacle.octomate.nerve.subscribe(topic) as changes:
-            await tentacle.octomate.kick(
+        async with tentacle.octomate.nerves.events.subscribe(topic) as changes:
+            await kick_and_wait(
+                tentacle.octomate,
                 DeferredActionBatchResponse(
                     batch_id=count.batch_id,
                     answers={count.id: "0", note.id: "keep this", control.id: "Submit"},
-                )
+                ),
             )
             update = (await changes.receive()).event
             assert isinstance(update, ActionBatchUpdatedEvent)
@@ -94,10 +96,11 @@ async def test_form_can_correct_invalid_answers_and_revise_drafts_before_submit(
             assert not task.done()
 
             # A corrected field alone does not implicitly resubmit the form.
-            await tentacle.octomate.kick(
+            await kick_and_wait(
+                tentacle.octomate,
                 DeferredActionBatchResponse(
                     batch_id=count.batch_id, answers={count.id: "2"}
-                )
+                ),
             )
             update = (await changes.receive()).event
             assert isinstance(update, ActionBatchUpdatedEvent)
@@ -108,11 +111,12 @@ async def test_form_can_correct_invalid_answers_and_revise_drafts_before_submit(
             assert "error" not in saved.questions[0].args
             assert not task.done()
 
-            await tentacle.octomate.kick(
+            await kick_and_wait(
+                tentacle.octomate,
                 DeferredActionBatchResponse(
                     batch_id=count.batch_id,
                     answers={count.id: "3", control.id: "Submit"},
-                )
+                ),
             )
             response = await task
             assert isinstance(response, schema.AcceptElicitationResponse)
@@ -191,7 +195,8 @@ async def test_form_roundtrip_preserves_typed_answers(
                 continue
             assert batch is not None
             assert batch.questions[0].batch_id is not None
-            await tentacle.octomate.kick(
+            await kick_and_wait(
+                tentacle.octomate,
                 DeferredActionBatchResponse(
                     batch_id=batch.questions[0].batch_id,
                     answers={
@@ -200,7 +205,7 @@ async def test_form_roundtrip_preserves_typed_answers(
                             batch.questions, answers, strict=True
                         )
                     },
-                )
+                ),
             )
     assert answered == 0
     assert not tentacle.pendings
@@ -266,11 +271,12 @@ async def test_permission_returns_exact_selected_option(
             [question] = event.questions
             assert question.batch_id is not None
             chosen = next(option for option in options if option["optionId"] == kind)
-            await tentacle.octomate.kick(
+            await kick_and_wait(
+                tentacle.octomate,
                 DeferredActionBatchResponse(
                     batch_id=question.batch_id,
                     answers={question.id: chosen["name"]},
-                )
+                ),
             )
     messages = [
         json.loads(line)["message"]
@@ -340,7 +346,9 @@ async def test_unanswered_callback_expires_and_removes_waiter(
         await tentacle.octomate.deferred_actions.get_batch(batch_id)
     ).status == "expired"
     with pytest.raises(RuntimeError, match="no longer awaiting"):
-        await tentacle.octomate.kick(DeferredActionBatchResponse(batch_id=batch_id))
+        await kick_and_wait(
+            tentacle.octomate, DeferredActionBatchResponse(batch_id=batch_id)
+        )
 
 
 async def test_modes_reach_new_and_loaded_provider_sessions(
@@ -439,10 +447,11 @@ async def test_form_can_close_without_answering_required_fields(
     assert isinstance(event, ActionBatchEvent)
     control = event.questions[-1]
     assert control.batch_id is not None
-    await tentacle.octomate.kick(
+    await kick_and_wait(
+        tentacle.octomate,
         DeferredActionBatchResponse(
             batch_id=control.batch_id, answers={control.id: decision}
-        )
+        ),
     )
     response = await task
     assert response.action == action

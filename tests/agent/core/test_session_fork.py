@@ -33,7 +33,12 @@ async def test_shared_fork_can_share_history_without_an_external_session(
     )
     owner = await a_user()
     sender = UserProfile(channel_user_id="owner", user_id=owner.id)
-    key = ThreadKey("trunkline", "thread", "owner", "source")
+    key = ThreadKey(
+        channel_tentacle_id="trunkline",
+        chat_type="thread",
+        chat_id="owner",
+        channel_thread_id="source",
+    )
     source_thread = await app.threads.ensure(key)
     await app.threads.record_inbound(
         MessageEvent(
@@ -61,7 +66,12 @@ async def test_shared_fork_can_share_history_without_an_external_session(
         with pytest.raises(ValueError, match="cannot have an external session id"):
             await agent.fork(
                 source,
-                ThreadKey("trunkline", "thread", "owner", "destination"),
+                ThreadKey(
+                    channel_tentacle_id="trunkline",
+                    chat_type="thread",
+                    chat_id="owner",
+                    channel_thread_id="destination",
+                ),
                 sender=sender,
                 model="test",
             )
@@ -69,7 +79,12 @@ async def test_shared_fork_can_share_history_without_an_external_session(
 
     target_thread = await agent.fork(
         source,
-        ThreadKey("trunkline", "thread", "owner", "destination"),
+        ThreadKey(
+            channel_tentacle_id="trunkline",
+            chat_type="thread",
+            chat_id="owner",
+            channel_thread_id="destination",
+        ),
         sender=sender,
         model="test",
     )

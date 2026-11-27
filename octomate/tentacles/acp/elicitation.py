@@ -11,9 +11,9 @@ from pydantic import UUID7, Field, JsonValue, TypeAdapter, ValidationError
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
     DeferredActionBatch,
-    QuestionAnswer,
     QuestionRequest,
 )
+from octomate.signals import QuestionAnswer
 from octomate.types.json import JsonObject
 
 type FormProperty = (

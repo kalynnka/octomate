@@ -3,7 +3,13 @@
 A message arrives, an answer goes out, and between the two something decides which
 agent runs, where, with what context, and what happens when the agent stops to ask.
 That something is the reflex graph, a [pydantic-graph](https://ai.pydantic.dev/graph/)
-in `octomate/reflex/`.
+in `octomate/reflex/`. The receiving agent tentacle owns its execution.
+
+Producers publish signals through injected nerves. The agent's sensing loop
+receives them, starts reflexes, and delivers controls and live human answers to
+runs already in progress. Results travel on the separate outbound event nerve.
+The current deployment shares managers and registries in one process; this
+boundary alone does not support independent nodes or replica-safe admission.
 
 ## Declared, not dispatched
 
@@ -14,8 +20,11 @@ validates that every node is reachable from the entry.
 
 ```mermaid
 flowchart TD
-  START([kick]) -->|message, command, gateway or resume batch| Awake
-  START -->|live batch| Live[Deliver to the owning request]
+  START([Signal producer]) --> Signals[Signal nerve]
+  Signals --> Sensing[Agent tentacle: sensing]
+  Sensing -->|message, command, gateway or resume batch| Awake
+  Sensing -->|live batch| Live[Deliver to the owning request]
+  Sensing -->|asleep| Interrupt[Request cooperative harness stop]
   Awake -->|user message, including ACP| Route
   Awake -->|explicit command| Command
   Awake -->|resolved batch| ResumeDeferred
@@ -24,6 +33,8 @@ flowchart TD
   Awake -->|independent summon| React
   Awake -->|thread teleport API| Teleport
   Route --> React
+  React -->|another agent selected| Handoff[Publish continuation to signal nerve]
+  Handoff --> Signals
   React -->|summon| Summon
   React -->|scheme| Scheme
   React -->|teleport| Teleport
@@ -66,12 +77,14 @@ thread; otherwise the channel's default agent, in the same conversation, with no
 handoff recorded, because a group's main surface is never pinned. There is no
 separate triage pass: the entry agent self-routes with the gateway if it wants to.
 
-**React** starts ordinary agent runs. It resolves the selected agent and checks
+**React** starts ordinary agent runs. If another agent is selected, it publishes
+a continuation and ends this executor's graph; the receiving tentacle runs its own
+graph with the carried context. On the owning tentacle, React resolves the agent and checks
 the channel's routes when there is a channel, records any pending handoff, asks
 the agent to resolve its conversation, and mounts the
 gateway and the user's capabilities, registers the session at the gateway so a
 second concurrent turn is refused, then runs the agent. The run always streams,
-whatever the channel: what it does goes out on the nerve as it happens, and the
+whatever the channel: what it does goes out on the event nerve as it happens, and the
 channel decides whether to draw it live or only its reply. After the run it reads what the
 gateway recorded: a summon becomes `Summon`, a scheme becomes `Scheme`, a teleport
 deferral becomes `Teleport`, any other deferral ends the graph suspended, and a
@@ -147,13 +160,14 @@ batch's answers as tool results and no new prompt.
 
 ## Publishing, not presenting
 
-The graph draws nothing. A kick opens a stream on the nerve, asked on the thread
-the signal came from, and everything the graph does goes out on it as it happens:
+The graph draws nothing. The owning tentacle opens an outbound event stream for
+the original surface, and everything the graph does goes out on it as it happens:
 
 - The reflex wakes before anything else and falls asleep last, whatever happened:
   `reflex_awake` and `reflex_asleep` bracket the whole kick. A thread or chat
   room holds one reflex at a time: a kick asked on one whose reflex is still
-  awake is refused before it wakes.
+  awake does not start another graph. Commands receive a busy result; ordinary
+  message input stays in its ledger.
 - Each agent run is bracketed by `run_started`, which names the thread the run
   reports into, and `run_ended`. One kick can hold several runs: a summon runs the
   new agent after the first, and a teleport can resume where it landed.
@@ -184,8 +198,9 @@ the run's stream as one event, and the channel presents its cards wherever it
 draws the run.
 
 The batch is a row. When the cards are answered, possibly after a restart, the
-channel kicks the graph with the batch id, `ResumeDeferred` rebuilds the state from
-the row, and `React` resumes the agent's conversation. Inkling resumes through the
+channel publishes the batch response to the owning agent through the signal nerve.
+For a resume-mode batch, `ResumeDeferred` rebuilds the state from the row, and
+`React` resumes the agent's conversation. Inkling resumes through the
 graph with the answers as tool results; a harness that takes no tool result back
 is given the answers as its next prompt. An agent that parks a live process
 instead, as the harness bridges do, pauses on the suspender rather than ending.
@@ -196,6 +211,20 @@ batch's cards are shown, so an immediate response reaches it. Once a batch is
 answered, the answer goes out as well, from the live run that takes it or from
 `ResumeDeferred`, so a console still showing the cards marks them answered.
 
+## Interrupting a run
+
+An asleep signal asks the owning agent to stop an active thread or invocation.
+Sensing delivers the request to its interruption control while the reflex is
+running; interruption is not a graph node. The control is shared with the
+invocation and retains a stop requested before the harness is ready.
+
+Each harness uses its native interruption operation or cooperative cancellation
+token, then settles its stream and persistence before the reflex finishes as
+cancelled. A later message can continue the saved conversation. This differs from
+a suspended approval batch, which resumes with the human's answers. Checks at
+preparation and transition boundaries prevent a requested stop from starting more
+work. Tentacle shutdown has separate cancellation and cleanup behavior.
+
 ## The inner graph
 
 Inkling has a second, smaller graph per turn: start or resume, run the agent,
@@ -205,8 +234,8 @@ reaches the suspender. That is why an Inkling run can keep going through an
 approval that the posture already granted, and why a whole batch goes to the human
 when any part of it needs one.
 
-The graph runs inside a single `kick`, under one Arcanus materia context, with
-Logfire spans per node, and publishes on the stream that kick opened. The state
+Each reflex runs in a task owned by its agent tentacle, with Logfire spans per
+node, and publishes on the outbound stream that tentacle opened. The state
 object carries the resolved source, the target, the pending handoff, the user
 profile and the prompt; nodes read it and carry only transition discriminators of
 their own.

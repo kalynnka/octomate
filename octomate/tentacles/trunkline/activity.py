@@ -102,9 +102,8 @@ async def watch_activity(
         identity: str, key: ThreadKey, ready: asyncio.Event
     ) -> None:
         async with nerve.subscribe(ThreadTopic(key), backlog=4096) as impulses:
-            task = octomate.awakes.get(key)
             agent = octomate.agents.get(key.channel_tentacle_id)
-            running = (task is not None and not task.done()) or (
+            running = key in octomate.awake_since or (
                 agent is not None and key in agent.native_running_threads
             )
             narrator = StatusNarrator()
@@ -159,7 +158,10 @@ async def watch_activity(
         for key in request.thread_keys:
             if f"key:{key}" not in watching:
                 additions[f"key:{key}"] = ThreadKey(
-                    channel_id, "thread", str(user_id), key or None
+                    channel_tentacle_id=channel_id,
+                    chat_type="thread",
+                    chat_id=str(user_id),
+                    channel_thread_id=key or None,
                 )
         removed = [watching.pop(key) for key in list(watching) if key not in wanted]
         for task in removed:

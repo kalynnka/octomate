@@ -139,7 +139,13 @@ async def test_native_fork_sends_the_completed_turn_into_the_guest(
     monkeypatch.setattr(SbxHabitat, "path", guest_path)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "core-claude"))
     thread = await core.threads.ensure(
-        ThreadKey("claude", "thread", "lu", "source"), native=True
+        ThreadKey(
+            channel_tentacle_id="claude",
+            chat_type="thread",
+            chat_id="lu",
+            channel_thread_id="source",
+        ),
+        native=True,
     )
     await core.threads.record_inbound(
         MessageEvent(
@@ -184,7 +190,14 @@ async def test_native_fork_sends_the_completed_turn_into_the_guest(
     )
     try:
         landed = await agent.fork(
-            source, ThreadKey("trunkline", "thread", "lu", "landing"), sender=sender
+            source,
+            ThreadKey(
+                channel_tentacle_id="trunkline",
+                chat_type="thread",
+                chat_id="lu",
+                channel_thread_id="landing",
+            ),
+            sender=sender,
         )
     finally:
         await core.habitats.close()
@@ -277,7 +290,7 @@ async def test_driven_teleport_forks_the_guest_session(
         agent.id,
     )
     try:
-        async with core.nerve.publish(address) as impulses:
+        async with core.nerves.events.publish(address) as impulses:
             deps = ReflexDeps(
                 channels=core.channels,
                 agents=core.agents,

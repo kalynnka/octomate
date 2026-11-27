@@ -14,7 +14,7 @@ from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.todos import TodoManager
 from octomate.mcp.todos import update_events
-from octomate.nerve import ChannelTopic, Nerve
+from octomate.nerve import ChannelTopic, Nerves
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.todos import Todo
 from tests.support.managers import FakeThreadManager, a_thread, a_workspace_manager
@@ -32,7 +32,7 @@ async def a_session() -> OctomateSession:
         current_agent_id="agent",
         conversation_id=conversation.id,
         conversation_address=ChannelAddress("im", "dm", "alice", "alice"),
-        nerve=Nerve(),
+        nerves=Nerves(),
         users=threads.users,
         threads=threads,
         workspaces=a_workspace_manager(),
@@ -43,10 +43,9 @@ async def test_add_todo_emits_created_event_and_persists(
     in_memory_engine: AsyncEngine,
 ) -> None:
     session = await a_session()
-    assert session.nerve is not None
     assert session.conversation_id is not None
     async with (
-        session.nerve.subscribe(ChannelTopic("im")) as events,
+        session.nerves.events.subscribe(ChannelTopic("im")) as events,
         Client(core_tool_server(session)) as client,
     ):
         result = await client.call_tool(
@@ -85,13 +84,12 @@ async def test_status_change_publishes_update_status_and_completion_once(
     in_memory_engine: AsyncEngine,
 ) -> None:
     session = await a_session()
-    assert session.nerve is not None
     assert session.conversation_id is not None
     todo = await TodoManager().add_todo(
         session.conversation_id, content="test", active_form="testing"
     )
     async with (
-        session.nerve.subscribe(ChannelTopic("im")) as events,
+        session.nerves.events.subscribe(ChannelTopic("im")) as events,
         Client(core_tool_server(session)) as client,
     ):
         await client.call_tool(
@@ -113,14 +111,13 @@ async def test_status_change_publishes_update_status_and_completion_once(
 
 async def test_write_todos_emits_diff_events(in_memory_engine: AsyncEngine) -> None:
     session = await a_session()
-    assert session.nerve is not None
     assert session.conversation_id is not None
     manager = TodoManager()
     old = await manager.add_todo(
         session.conversation_id, content="old", active_form="olding"
     )
     async with (
-        session.nerve.subscribe(ChannelTopic("im")) as events,
+        session.nerves.events.subscribe(ChannelTopic("im")) as events,
         Client(core_tool_server(session)) as client,
     ):
         await client.call_tool(

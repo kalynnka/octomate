@@ -32,7 +32,7 @@ from octomate.fibers import MemoryFiber
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.todos import TodoManager
 from octomate.mcp.gateway import CONVERSATION_HEADER
-from octomate.nerve import ThreadTopic
+from octomate.nerve import Nerves, ThreadTopic
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.segments import MessageSegment
@@ -68,7 +68,7 @@ async def a_turn(*, authenticated: bool = True) -> tuple[Octomate, OctomateSessi
         thread_id=thread.id,
         conversation_address=address,
         user_profile=await host.users.profile("im", "alice"),
-        nerve=host.nerve,
+        nerves=host.nerves,
         threads=host.threads,
         workspaces=host.workspaces,
         users=host.users,
@@ -115,12 +115,12 @@ async def test_inkling_calls_todos_through_authenticated_mcp_and_publishes_once(
     )
     assert scope.thread_id is not None
     assert scope.conversation_address is not None
-    topic = ThreadTopic(ThreadKey.from_address(scope.conversation_address))
+    topic = ThreadTopic(ThreadKey.model_validate(scope.conversation_address))
     async with (
         served_inkling_mcp(host, monkeypatch),
         inkling,
         host.gateway.driving(scope),
-        host.nerve.subscribe(topic) as events,
+        host.nerves.events.subscribe(topic) as events,
     ):
         async with invocation_for(
             inkling,
@@ -167,12 +167,12 @@ async def test_todo_mcp_rejects_another_users_conversation_and_has_no_owner_argu
     assert scope.conversation_id is not None
     assert scope.thread_id is not None
     assert scope.conversation_address is not None
-    topic = ThreadTopic(ThreadKey.from_address(scope.conversation_address))
+    topic = ThreadTopic(ThreadKey.model_validate(scope.conversation_address))
 
     async with (
         served(host),
         host.gateway.driving(scope),
-        host.nerve.subscribe(topic) as events,
+        host.nerves.events.subscribe(topic) as events,
     ):
         async with over(
             host,
@@ -232,6 +232,7 @@ async def test_anonymous_inkling_run_does_not_mount_core_mcp_tools() -> None:
         "inkling", host, auth=host.auth, habitats=host.habitats, agent=agent
     )
     scope = OctomateSession(
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id="inkling",
         users=host.users,

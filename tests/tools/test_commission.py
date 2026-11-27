@@ -36,6 +36,7 @@ from octomate.managers.gateway import (
     GatewayRefusal,
     OctomateSession,
 )
+from octomate.nerve import Nerves
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import (
@@ -106,6 +107,7 @@ async def _gate(
     for agent in agents.values():
         agent.conversations = conversations
     gate = OctomateSession(
+        nerves=Nerves(),
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id="inkling",
         agents=agents,
@@ -443,7 +445,13 @@ async def test_commission_inherits_the_parent_owner_in_a_project(
     app.workspaces.projects = await a_registry(project)
     owner = await a_user("alice", profiles={"im": "alice"})
     thread = await app.threads.ensure(
-        ThreadKey("im", "thread", "shared", "turn"), project=project
+        ThreadKey(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id="shared",
+            channel_thread_id="turn",
+        ),
+        project=project,
     )
     gate, agents, conversations, ctx = await _gate(
         agents={

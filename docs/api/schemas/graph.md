@@ -1,6 +1,6 @@
 # The graph’s vocabulary
 
-::: octomate.schemas.awakes
+::: octomate.signals
 
 ::: octomate.schemas.triage
 

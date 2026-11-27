@@ -106,7 +106,12 @@ async def a_bound_thread(manager: WorkspaceManager) -> Thread:
     """A thread of the one kind that carries a project, filed under the registered
     one. `save` finds the mirror to push to through this."""
     return await ThreadManager(nerve=Nerve(), users=UserManager()).ensure(
-        ThreadKey("test", "thread", "chat", str(uuid7())),
+        ThreadKey(
+            channel_tentacle_id="test",
+            chat_type="thread",
+            chat_id="chat",
+            channel_thread_id=str(uuid7()),
+        ),
         project=manager.projects.get("inky"),
     )
 
@@ -114,7 +119,12 @@ async def a_bound_thread(manager: WorkspaceManager) -> Thread:
 async def a_chat_thread() -> Thread:
     """A thread in no project."""
     return await ThreadManager(nerve=Nerve(), users=UserManager()).ensure(
-        ThreadKey("test", "thread", "chat", str(uuid7()))
+        ThreadKey(
+            channel_tentacle_id="test",
+            chat_type="thread",
+            chat_id="chat",
+            channel_thread_id=str(uuid7()),
+        )
     )
 
 

@@ -61,6 +61,7 @@ class NapcatTentacle(ChannelTentacle[str | bytes, NapcatOutboundMessage]):
         super().__init__(
             id=id,
             octomate=octomate,
+            nerves=octomate.nerves,
             ink=ink,
             chromo=chromo,
             config=config,

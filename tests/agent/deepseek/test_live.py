@@ -244,7 +244,11 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
             home / "session.jsonl",
             str(tmp_path),
             UserProfile(channel_user_id="smoke", name="Smoke"),
-            address=ThreadKey("deepseek", "thread", first_session).address("smoke"),
+            address=ThreadKey(
+                channel_tentacle_id="deepseek",
+                chat_type="thread",
+                chat_id=first_session,
+            ).address("smoke"),
             impulses=tail_impulses,
         )
         for record in records:

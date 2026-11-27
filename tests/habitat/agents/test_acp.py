@@ -163,7 +163,12 @@ async def test_turns_use_guest_paths_home_mcp_and_resume(
     assert sender is not None
     sender = await app.users.ensure_profile(agent.id, sender)
     thread = await app.threads.ensure(
-        ThreadKey(agent.id, "thread", str(user.id), uuid7().hex)
+        ThreadKey(
+            channel_tentacle_id=agent.id,
+            chat_type="thread",
+            chat_id=str(user.id),
+            channel_thread_id=uuid7().hex,
+        )
     )
     try:
         async with agent:

@@ -45,6 +45,7 @@ from octomate import Octomate
 from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.events import SubagentSettledEvent, SubagentStartedEvent
 from octomate.managers.gateway import OctomateSession
+from octomate.nerve import Nerves
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision, TeleportDecision
 from octomate.schemas.volumes.storage import HostDirectory
@@ -116,6 +117,9 @@ class FakeClaudeClient:
 
     async def query(self, prompt: str) -> None:
         FakeClaudeClient.last_prompt = prompt
+
+    async def interrupt(self) -> None:
+        raise AssertionError("Unexpected interruption of the scripted client")
 
     async def receive_response(self) -> AsyncIterator[Message]:
         yield AssistantMessage(
@@ -1178,6 +1182,7 @@ async def test_a_registered_gateway_mounts_the_in_process_server(
         _THREAD, conversation_address=KEY
     )
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id="claude",
         conversation_id=conversation.id,
@@ -1309,6 +1314,7 @@ async def test_a_teleport_mid_run_interrupts_the_turn_and_ends_it_as_a_deferral(
         _THREAD, conversation_address=KEY
     )
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id="claude",
         conversation_id=conversation.id,

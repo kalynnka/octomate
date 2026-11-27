@@ -16,12 +16,12 @@ from pydantic import (
     UUID7,
     AfterValidator,
     AwareDatetime,
+    BaseModel,
     ConfigDict,
     Field,
     computed_field,
     model_validator,
 )
-from pydantic.dataclasses import dataclass
 from uuid_utils.compat import uuid7
 
 from octomate.config.agents import AgentRouteModelName
@@ -61,28 +61,19 @@ ChannelThreadId = Annotated[
 ]
 
 
-@dataclass(frozen=True)
-class ThreadKey:
+class ThreadKey(BaseModel, frozen=True):
     """The channel's identity for a thread: channel, chat type, chat id, and the
     platform's thread id."""
+
+    model_config = ConfigDict(from_attributes=True)
 
     channel_tentacle_id: str
     chat_type: ChatType
     chat_id: str
     channel_thread_id: ChannelThreadId = None
 
-    @classmethod
-    def from_address(cls, address: ChannelAddress) -> ThreadKey:
-        """The address with the person and the visibility stripped off."""
-        return cls(
-            channel_tentacle_id=address.channel_tentacle_id,
-            chat_type=address.chat_type,
-            chat_id=address.chat_id,
-            channel_thread_id=address.channel_thread_id,
-        )
-
     def address(self, user_id: str) -> ChannelAddress:
-        """The surface this key names, spoken to `user_id` — `from_address` back."""
+        """The surface this key names, spoken to `user_id`."""
         return ChannelAddress(
             channel_tentacle_id=self.channel_tentacle_id,
             chat_type=self.chat_type,

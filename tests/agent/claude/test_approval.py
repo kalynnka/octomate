@@ -37,7 +37,6 @@ from octomate import Octomate
 from octomate.config.agents import ClaudeCodeConfig
 from octomate.events import ActionBatchEvent
 from octomate.managers.deferred import DeferredActionManager
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
@@ -45,6 +44,7 @@ from octomate.schemas.deferred import (
     DeferredApproval,
     DeferredQuestion,
 )
+from octomate.signals import DeferredActionBatchResponse
 from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.stream import ReactStreamEvent
@@ -55,6 +55,7 @@ from tests.support.managers import (
     FakePresentedBatch,
     RecordingSuspender,
 )
+from tests.support.nerve import kick_and_wait
 
 KEY = ChannelAddress(
     channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
@@ -112,6 +113,9 @@ class ScriptedClaudeClient:
 
     async def query(self, prompt: str) -> None:
         return None
+
+    async def interrupt(self) -> None:
+        raise AssertionError("Unexpected interruption of the approval client")
 
     async def receive_response(self) -> AsyncIterator[Message]:
         assert self.options is not None
@@ -252,8 +256,9 @@ async def test_approval_allow_lets_the_tool_run(
 
     task = asyncio.ensure_future(_drain(tentacle, suspender))
     batch_id = await _wait_for_pending(tentacle, suspender)
-    await tentacle.octomate.kick(
-        DeferredActionBatchResponse(batch_id=batch_id, approvals={approval.id: True})
+    await kick_and_wait(
+        tentacle.octomate,
+        DeferredActionBatchResponse(batch_id=batch_id, approvals={approval.id: True}),
     )
     events = await task
 
@@ -278,8 +283,9 @@ async def test_approval_deny_feeds_reason_back(
 
     task = asyncio.ensure_future(_drain(tentacle, suspender))
     batch_id = await _wait_for_pending(tentacle, suspender)
-    await tentacle.octomate.kick(
-        DeferredActionBatchResponse(batch_id=batch_id, approvals={approval.id: False})
+    await kick_and_wait(
+        tentacle.octomate,
+        DeferredActionBatchResponse(batch_id=batch_id, approvals={approval.id: False}),
     )
     await task
 
@@ -300,10 +306,11 @@ async def test_allow_session_suppresses_repeat_prompts(
 
     task = asyncio.ensure_future(_drain(tentacle, suspender))
     batch_id = await _wait_for_pending(tentacle, suspender)
-    await tentacle.octomate.kick(
+    await kick_and_wait(
+        tentacle.octomate,
         DeferredActionBatchResponse(
             batch_id=batch_id, approvals={approval.id: True}, allow_session=True
-        )
+        ),
     )
     await task
 
@@ -355,8 +362,9 @@ async def test_permission_mode_drives_the_sdk(
 
     task = asyncio.ensure_future(_drain(tentacle, suspender))
     batch_id = await _wait_for_pending(tentacle, suspender)
-    await tentacle.octomate.kick(
-        DeferredActionBatchResponse(batch_id=batch_id, answers={question.id: "A"})
+    await kick_and_wait(
+        tentacle.octomate,
+        DeferredActionBatchResponse(batch_id=batch_id, answers={question.id: "A"}),
     )
     await task
 
@@ -467,8 +475,9 @@ async def test_ask_user_question_hook_feeds_answer_back(
 
     task = asyncio.ensure_future(_drain(tentacle, suspender))
     batch_id = await _wait_for_pending(tentacle, suspender)
-    await tentacle.octomate.kick(
-        DeferredActionBatchResponse(batch_id=batch_id, answers={question.id: "A"})
+    await kick_and_wait(
+        tentacle.octomate,
+        DeferredActionBatchResponse(batch_id=batch_id, answers={question.id: "A"}),
     )
     await task
 
@@ -501,8 +510,9 @@ async def test_ask_user_question_keeps_every_option_under_the_cap(
 
     task = asyncio.ensure_future(_drain(tentacle, suspender))
     batch_id = await _wait_for_pending(tentacle, suspender)
-    await tentacle.octomate.kick(
-        DeferredActionBatchResponse(batch_id=batch_id, answers={question.id: "A"})
+    await kick_and_wait(
+        tentacle.octomate,
+        DeferredActionBatchResponse(batch_id=batch_id, answers={question.id: "A"}),
     )
     await task
 
@@ -529,10 +539,11 @@ async def test_ask_user_question_keeps_a_multi_select(
 
     task = asyncio.ensure_future(_drain(tentacle, suspender))
     batch_id = await _wait_for_pending(tentacle, suspender)
-    await tentacle.octomate.kick(
+    await kick_and_wait(
+        tentacle.octomate,
         DeferredActionBatchResponse(
             batch_id=batch_id, answers={question.id: ["A", "B"]}
-        )
+        ),
     )
     await task
 
@@ -557,7 +568,7 @@ async def test_kick_routes_response_to_live_waiter() -> None:
     tentacle.pendings[batch_id] = future
 
     response = DeferredActionBatchResponse(batch_id=batch_id, approvals={})
-    await tentacle.octomate.kick(response)
+    await kick_and_wait(tentacle.octomate, response)
 
     assert future.done()
     assert future.result() is response

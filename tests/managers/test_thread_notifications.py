@@ -31,7 +31,12 @@ from tests.support.managers import a_project, a_registry
 from tests.support.nerve import held
 from tests.support.users import a_user
 
-KEY = ThreadKey("im", "thread", "room", "one")
+KEY = ThreadKey(
+    channel_tentacle_id="im",
+    chat_type="thread",
+    chat_id="room",
+    channel_thread_id="one",
+)
 
 
 @pytest.fixture
@@ -53,7 +58,12 @@ def prompt(account: str, message_id: str, *, key: ThreadKey = KEY) -> MessageEve
 
 
 @pytest.mark.parametrize(
-    "key", [KEY, ThreadKey("im", "group", "room"), ThreadKey("im", "dm", "room")]
+    "key",
+    [
+        KEY,
+        ThreadKey(channel_tentacle_id="im", chat_type="group", chat_id="room"),
+        ThreadKey(channel_tentacle_id="im", chat_type="dm", chat_id="room"),
+    ],
 )
 async def test_first_participation_notifies_each_user_once_and_only_on_user_topics(
     app: Octomate,
@@ -66,11 +76,11 @@ async def test_first_participation_notifies_each_user_once_and_only_on_user_topi
         "im", UserProfile(channel_user_id="alice-alias", user_id=alice.id)
     )
     async with (
-        app.nerve.subscribe(UserTopic(alice.id)) as first,
-        app.nerve.subscribe(UserTopic(bob.id)) as second,
-        app.nerve.subscribe(UserTopic(carol.id)) as other,
-        app.nerve.subscribe(ChannelTopic("im")) as channel,
-        app.nerve.subscribe(ThreadTopic(key)) as thread_stream,
+        app.nerves.events.subscribe(UserTopic(alice.id)) as first,
+        app.nerves.events.subscribe(UserTopic(bob.id)) as second,
+        app.nerves.events.subscribe(UserTopic(carol.id)) as other,
+        app.nerves.events.subscribe(ChannelTopic("im")) as channel,
+        app.nerves.events.subscribe(ThreadTopic(key)) as thread_stream,
     ):
         thread = await app.threads.ensure(key, title="Empty")
         assert held(first) == held(second) == held(other) == []
@@ -130,7 +140,7 @@ async def test_first_message_publishes_its_committed_title_and_timestamp(
     app: Octomate,
 ) -> None:
     alice = await a_user("alice", profiles={"im": "alice"})
-    async with app.nerve.subscribe(UserTopic(alice.id)) as live:
+    async with app.nerves.events.subscribe(UserTopic(alice.id)) as live:
         message = await app.threads.record_inbound(prompt("alice", "Opening title"))
         stored = await app.threads.get(message.thread_id, with_messages=False)
         assert stored is not None
@@ -166,7 +176,7 @@ async def test_committed_listing_changes_notify_participants(
     alice = await a_user("alice", profiles={"im": "alice"})
     message = await app.threads.record_inbound(prompt("alice", "opening"))
     thread = await app.threads.ensure(KEY)
-    async with app.nerve.subscribe(UserTopic(alice.id)) as live:
+    async with app.nerves.events.subscribe(UserTopic(alice.id)) as live:
         match change:
             case "rename":
                 await app.threads.rename(thread, "Renamed")
@@ -260,15 +270,22 @@ async def test_inherited_history_and_unlinked_profiles_do_not_receive_changes(
     source = await app.conversations.ensure(
         opening.thread_id, agent_tentacle_id="agent"
     )
-    target = await app.threads.ensure(ThreadKey("im", "thread", "room", "fork"))
+    target = await app.threads.ensure(
+        ThreadKey(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id="room",
+            channel_thread_id="fork",
+        )
+    )
     async with async_session() as session:
         session.add(ThreadLedger(thread_id=target.id, ledger_id=opening.thread_id))
         await session.commit()
     sender = await app.users.profile("im", "bob")
     assert sender is not None
     async with (
-        app.nerve.subscribe(UserTopic(alice.id)) as inherited,
-        app.nerve.subscribe(UserTopic(bob.id)) as own,
+        app.nerves.events.subscribe(UserTopic(alice.id)) as inherited,
+        app.nerves.events.subscribe(UserTopic(bob.id)) as own,
     ):
         await app.threads.rename(target, "Inherited")
         assert held(inherited) == held(own) == []
@@ -295,8 +312,10 @@ async def test_inherited_history_and_unlinked_profiles_do_not_receive_changes(
 async def test_subthreads_do_not_publish_listing_changes(app: Octomate) -> None:
     alice = await a_user("alice", profiles={"im": "alice"})
     opening = await app.threads.record_inbound(prompt("alice", "opening"))
-    parent = await app.threads.ensure(ThreadKey("im", "group", "group"))
-    async with app.nerve.subscribe(UserTopic(alice.id)) as live:
+    parent = await app.threads.ensure(
+        ThreadKey(channel_tentacle_id="im", chat_type="group", chat_id="group")
+    )
+    async with app.nerves.events.subscribe(UserTopic(alice.id)) as live:
         child = await app.threads.open_sub_thread(parent)
         await app.threads.store_message(
             ThreadMessage(
@@ -322,7 +341,7 @@ async def test_failed_commits_publish_nothing(
     alice = await a_user("alice", profiles={"im": "alice"})
     opening = await app.threads.record_inbound(prompt("alice", "opening"))
     thread = await app.threads.ensure(KEY)
-    async with app.nerve.subscribe(UserTopic(alice.id)) as live:
+    async with app.nerves.events.subscribe(UserTopic(alice.id)) as live:
         with monkeypatch.context() as patch:
             patch.setattr(
                 AsyncSession,
@@ -356,8 +375,8 @@ async def test_token_events_do_not_query_visibility(
 ) -> None:
     lookup = AsyncMock(side_effect=AssertionError("token stream queried the database"))
     monkeypatch.setattr(AsyncSession, "scalars", lookup)
-    async with app.nerve.subscribe(ThreadTopic(KEY)) as live:
-        async with app.nerve.publish(KEY.address("alice")) as stream:
+    async with app.nerves.events.subscribe(ThreadTopic(KEY)) as live:
+        async with app.nerves.events.publish(KEY.address("alice")) as stream:
             for _ in range(3):
                 await stream.send(
                     Impulse(

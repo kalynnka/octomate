@@ -37,15 +37,16 @@ from octomate.events import (
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager, OctomateSession
+from octomate.managers.habitat import Interruption, RunInterrupted
 from octomate.managers.thread import ThreadManager
 from octomate.managers.workspaces import WorkspaceManager
-from octomate.nerve import Impulse
+from octomate.nerve import AgentTopic, Impulse
 from octomate.prompts import tagged
 from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.commands import CommandError, CommandOutcome
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MarkdownSegment, MessageSegment, TextSegment
-from octomate.schemas.thread import Thread, ThreadMessage
+from octomate.schemas.thread import Thread, ThreadKey, ThreadMessage
 from octomate.schemas.triage import (
     AgentRoute,
     AgentRouteKey,
@@ -55,6 +56,7 @@ from octomate.schemas.triage import (
     SummonDecision,
 )
 from octomate.schemas.user import UserProfile
+from octomate.signals import SummonSignal
 from octomate.telemetry import reflex_logfire
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.channel import (
@@ -211,6 +213,11 @@ class ReflexState:
     handoff: PendingHandoff | None = None
     user_prompt: str | Sequence[UserContent] | None = None
     user_profile: UserProfile | None = None
+    command_request_id: UUID7 | None = (
+        None  # Command whose completion this reflex owes.
+    )
+    dispatched: bool = False  # A receiving agent now owns the rest of this reflex.
+    interruption: Interruption = field(default_factory=Interruption)
 
 
 @dataclass
@@ -231,6 +238,12 @@ class ReflexDeps:
     # The graph's end of the nerve: what the kick does, sent as impulses.
     impulses: ObjectSendStream[Impulse]
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
+    executor: str | None = (
+        None  # Owning tentacle; None when exercising graph nodes directly.
+    )
+    origin: ChannelAddress | None = (
+        None  # Surface whose kick owns this reflex's lifetime.
+    )
 
     @cached_property
     def runtime(self) -> ReflexRuntime:
@@ -255,6 +268,62 @@ class ReflexDeps:
         if agent is None:
             raise ValueError(f"unknown agent {agent_id!r}")
         return agent
+
+    async def handoff(
+        self,
+        state: ReflexState,
+        *,
+        resume_batch_id: UUID7 | None,
+        tool_results: dict[str, str] | None,
+    ) -> ReflexGraphResult:
+        """Continue this reflex on its selected agent through the signal nerve."""
+        state.interruption.check()
+        target = state.target
+        source = state.source_target
+        decision = state.decision
+        if (
+            self.origin is None
+            or self.executor is None
+            or state.thread is None
+            or target is None
+            or target.address is None
+            or source is None
+            or source.address is None
+            or decision is None
+        ):
+            raise ValueError(
+                "A handoff requires an owned reflex with resolved addresses and thread"
+            )
+        agent = self.agent(decision.agent_id)
+        claim = state.handoff
+        signal = SummonSignal(
+            decision=decision,
+            destination=target.address,
+            agent_id=claim.source_agent_tentacle_id or self.executor
+            if claim
+            else self.executor,
+            user_profile=state.user_profile,
+            source_conversation_id=claim.source_conversation_id if claim else None,
+            source_run_id=claim.source_run_id if claim else None,
+            source_model_message_id=claim.source_model_message_id if claim else None,
+            thread_id=state.thread.id,
+            origin=self.origin,
+            woke_at=agent.octomate.awake_since[ThreadKey.model_validate(self.origin)],
+            source_address=source.address,
+            target_mode=target.mode,
+            run_name=state.run_name,
+            user_prompt=decision.brief or str(state.user_prompt or ""),
+            source_thread_address=state.source_thread_address,
+            source_thread_message_ids=state.source_thread_message_ids,
+            record_handoff=claim is not None,
+            resume_batch_id=resume_batch_id,
+            tool_results=tool_results,
+            command_request_id=state.command_request_id,
+        )
+
+        agent.nerves.signals.dispatch(AgentTopic(agent.id), signal)
+        state.dispatched = True
+        return ReflexResult(decision=decision, target=target, outcome="handed_off")
 
     @cached_property
     def gateway_agents(self) -> frozenset[str]:
@@ -295,6 +364,7 @@ class ReflexDeps:
             threads=self.thread_manager,
             workspaces=self.workspaces,
             impulses=self.impulses,
+            nerves=agent.nerves,
         )
         if conversation_id is not None:
             session.conversation_id = conversation_id
@@ -671,6 +741,7 @@ class ReflexRuntime:
                 raise RuntimeError(
                     f"react stream for {address} completed without a result"
                 )
+            ctx.state.interruption.check()
             reply = await self.record_reply(ctx, suspender, results[-1])
             ended.thread_message_id = reply.id if reply is not None else None
             ended.outcome = (
@@ -679,7 +750,7 @@ class ReflexRuntime:
                 else "completed"
             )
             return results[-1]
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, RunInterrupted):
             ended.outcome = "cancelled"
             raise
         finally:

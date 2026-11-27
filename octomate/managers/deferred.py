@@ -16,7 +16,6 @@ from octomate.database import async_session
 from octomate.events import ActionBatchUpdatedEvent
 from octomate.managers.base import Manager
 from octomate.nerve import Impulse, Nerve
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     DeferredAction,
@@ -26,6 +25,7 @@ from octomate.schemas.deferred import (
     DeferredQuestion,
 )
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
+from octomate.signals import DeferredActionBatchResponse
 from octomate.telemetry import deferred_logfire
 from octomate.types.deferred import DeferredBatchStatus, DeferredResponseMode
 

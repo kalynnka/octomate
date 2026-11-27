@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Literal
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx2
 import pytest
@@ -37,6 +37,7 @@ from octomate.commands import command_context, discover_commands
 from octomate.config.auth import AuthConfig
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import async_session
+from octomate.dependencies import nerves as nervous_system
 from octomate.dependencies import workspace_manager
 from octomate.events import (
     ActionBatchEvent,
@@ -50,8 +51,9 @@ from octomate.events import (
     RunStartedEvent,
     WireEvent,
 )
+from octomate.fibers import MemoryFiber
 from octomate.managers.auth import AuthManager
-from octomate.nerve import Impulse, ThreadTopic
+from octomate.nerve import AgentTopic, Impulse, Nerves, ThreadTopic
 from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.commands import (
     CommandCatalog,
@@ -68,6 +70,7 @@ from octomate.schemas.segments import MessageSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadCommand, ThreadKey
 from octomate.schemas.user import User, UserProfile
 from octomate.schemas.volumes import GitVolume
+from octomate.signals import CommandSignal, Signal
 from octomate.tentacles.channel import ChannelOutput
 from octomate.tentacles.stream import ReactStreamEvent
 from octomate.tentacles.trunkline import TrunklineTentacle
@@ -76,7 +79,7 @@ from tests.agent.core.test_command_execution import ExecutingAgent
 from tests.agent.core.test_command_manager import DiscoveringAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import a_project, a_registry, a_workspace_manager
-from tests.support.nerve import drawing, held
+from tests.support.nerve import drawing, held, listening
 from tests.support.users import a_user
 
 
@@ -89,7 +92,14 @@ def command_outcome(response: httpx2.Response) -> CommandOutcomeEvent:
 
 def published(live: ObjectReceiveStream[Impulse]) -> list[WireEvent]:
     """What the thread's live subscribers have been sent so far."""
-    return [impulse.event for impulse in held(live)]
+    return [
+        impulse.event.model_copy(update={"request_id": None})
+        if isinstance(
+            impulse.event, CommandOutcomeEvent | ReflexAwakeEvent | ReflexAsleepEvent
+        )
+        else impulse.event
+        for impulse in held(live)
+    ]
 
 
 async def discover(
@@ -149,7 +159,9 @@ def agent() -> ExecutingAgent:
 
 
 @pytest.fixture
-async def app(user: User, agent: DiscoveringAgent, address: ChannelAddress) -> Octomate:
+async def app(
+    user: User, agent: DiscoveringAgent, address: ChannelAddress
+) -> AsyncGenerator[Octomate]:
     app = Octomate()
     agent.commands = app.commands
     app.connect(agent)
@@ -162,7 +174,8 @@ async def app(user: User, agent: DiscoveringAgent, address: ChannelAddress) -> O
         )
         trunkline.self_profile = await trunkline.ink.inspect()
     app.dependency_overrides[current_user] = lambda: user
-    return app
+    async with listening(app):
+        yield app
 
 
 @pytest.fixture
@@ -241,8 +254,8 @@ async def test_http_direct_command_before_conversation_creates_no_runtime_record
         )
     async with async_session() as session:
         profiles_before = await session.count(UserProfile)
-    async with app.nerve.subscribe(
-        ThreadTopic(ThreadKey.from_address(address))
+    async with app.nerves.events.subscribe(
+        ThreadTopic(ThreadKey.model_validate(address))
     ) as live:
         async with httpx2.AsyncClient(
             transport=httpx2.ASGITransport(app=app), base_url="http://test"
@@ -858,8 +871,8 @@ async def test_http_execution_preserves_arguments_and_replays_saved_outcome(
     command_body: dict[str, JsonValue],
     address: ChannelAddress,
 ) -> None:
-    async with app.nerve.subscribe(
-        ThreadTopic(ThreadKey.from_address(address))
+    async with app.nerves.events.subscribe(
+        ThreadTopic(ThreadKey.model_validate(address))
     ) as live:
         async with (
             drawing(*app.channels.values()),
@@ -889,6 +902,7 @@ async def test_http_execution_preserves_arguments_and_replays_saved_outcome(
             ReflexPhaseChangedEvent(phase="preparing"),
             MessageSentEvent(segments=segments),
             ReflexPhaseChangedEvent(phase="finalizing"),
+            outcome,
             ReflexAsleepEvent(outcome="completed"),
         ]
         * 2
@@ -957,8 +971,8 @@ async def test_http_execution_uses_manager_refusals(
         command_body.pop("conversation_id")
     else:
         app.dependency_overrides[current_user] = lambda: User(username="other")
-    async with app.nerve.subscribe(
-        ThreadTopic(ThreadKey.from_address(address))
+    async with app.nerves.events.subscribe(
+        ThreadTopic(ThreadKey.model_validate(address))
     ) as live:
         async with httpx2.AsyncClient(
             transport=httpx2.ASGITransport(app=app), base_url="http://test"
@@ -982,6 +996,7 @@ async def test_http_execution_uses_manager_refusals(
             segments=[TextSegment(data={"text": outcome.outcome.message})]
         ),
         ReflexPhaseChangedEvent(phase="finalizing"),
+        outcome,
         ReflexAsleepEvent(outcome="failed"),
     ]
     assert not agent.intents
@@ -1019,8 +1034,8 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
     monkeypatch.setattr(agent, "events", events)
     user_capabilities = AsyncMock(return_value=[])
     monkeypatch.setattr(agent, "user_capabilities", user_capabilities)
-    async with app.nerve.subscribe(
-        ThreadTopic(ThreadKey.from_address(address))
+    async with app.nerves.events.subscribe(
+        ThreadTopic(ThreadKey.model_validate(address))
     ) as live:
         async with (
             drawing(*app.channels.values()),
@@ -1061,10 +1076,12 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
     assert ended.outcome == "completed"
     assert rest == [
         ReflexPhaseChangedEvent(phase="finalizing"),
+        outcome,
         ReflexAsleepEvent(outcome="completed"),
         ReflexAwakeEvent(),
         ReflexPhaseChangedEvent(phase="preparing"),
         ReflexPhaseChangedEvent(phase="finalizing"),
+        outcome,
         ReflexAsleepEvent(outcome="completed"),
     ]
     if address.channel_tentacle_id == "im":
@@ -1119,8 +1136,8 @@ async def test_command_presents_a_persisted_reflex_approval(
 
     agent.behavior = "stream_complete"
     monkeypatch.setattr(agent, "events", events)
-    async with app.nerve.subscribe(
-        ThreadTopic(ThreadKey.from_address(address))
+    async with app.nerves.events.subscribe(
+        ThreadTopic(ThreadKey.model_validate(address))
     ) as live:
         async with (
             drawing(*app.channels.values()),
@@ -1173,12 +1190,12 @@ async def test_http_stream_failure_does_not_report_completion(
     async with httpx2.AsyncClient(
         transport=httpx2.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        with pytest.raises(RuntimeError):
-            await client.post(
-                "/api/commands/execute",
-                headers={"X-Octomate-Request": "1"},
-                json=command_body,
-            )
+        response = await client.post(
+            "/api/commands/execute",
+            headers={"X-Octomate-Request": "1"},
+            json=command_body,
+        )
+        assert response.status_code == 500
     assert agent.stream_closed
     assert not app.gateway.sessions
     receipt = await app.threads.find_message(
@@ -1263,8 +1280,8 @@ async def test_foreign_agent_conversation_is_rejected_before_discovery_or_execut
     other.commands = app.commands
     app.connect(other)
     app.channels[address.channel_tentacle_id].config.agents.append(other.id)
-    kick = AsyncMock()
-    monkeypatch.setattr(app, "kick", kick)
+    kick = Mock()
+    monkeypatch.setattr(app.nerves.signals, "dispatch", kick)
     async with httpx2.AsyncClient(
         transport=httpx2.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -1277,7 +1294,7 @@ async def test_foreign_agent_conversation_is_rejected_before_discovery_or_execut
     assert response.json() == {
         "detail": "Command conversation belongs to another agent"
     }
-    kick.assert_not_awaited()
+    kick.assert_not_called()
     assert not other.calls
     assert not agent.calls
     assert not other.intents
@@ -1286,3 +1303,112 @@ async def test_foreign_agent_conversation_is_rejected_before_discovery_or_execut
     async with async_session() as session:
         assert await session.count(GitVolume) == 0
         assert await session.count(ThreadCommand) == 0
+
+
+async def test_command_completion_waits_for_ledger_commit(
+    app: Octomate,
+    conversation: Conversation,
+    command_body: dict[str, JsonValue],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        app.threads,
+        "record_kick",
+        AsyncMock(side_effect=RuntimeError("ledger unavailable")),
+    )
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/commands/execute",
+            headers={"X-Octomate-Request": "1"},
+            json=command_body,
+        )
+    assert response.status_code == 500
+    assert not app.awake_since
+
+
+async def test_execution_uses_injected_nerves(
+    app: Octomate,
+    agent: ExecutingAgent,
+    conversation: Conversation,
+    command_body: dict[str, JsonValue],
+) -> None:
+    supplied = Nerves()
+    app.dependency_overrides[nervous_system] = lambda: supplied
+    receiver = MemoryFiber[Signal]()
+
+    async def refuse() -> CommandSignal:
+        signal = await receiver.receive()
+        assert isinstance(signal, CommandSignal)
+        async with supplied.events.publish(signal.context.address) as events:
+            await events.send(
+                Impulse(
+                    CommandOutcomeEvent(
+                        request_id=signal.request_id,
+                        outcome=CommandError(status="busy", message="Receiver is busy"),
+                    ),
+                    signal.context.address,
+                )
+            )
+        return signal
+
+    with supplied.signals.accept(AgentTopic(agent.id), receiver):
+        async with asyncio.TaskGroup() as tasks:
+            received = tasks.create_task(refuse())
+            async with httpx2.AsyncClient(
+                transport=httpx2.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.post(
+                    "/api/commands/execute",
+                    headers={"X-Octomate-Request": "1"},
+                    json=command_body,
+                )
+    assert response.status_code == 409
+    assert response.json() == {"detail": "Receiver is busy"}
+    assert received.result().context.agent_id == agent.id
+    assert received.result().delivery_id == command_body["delivery_id"]
+    assert not agent.intents
+
+
+async def test_concurrent_commands_keep_their_own_outcomes(
+    app: Octomate,
+    agent: ExecutingAgent,
+    conversation: Conversation,
+    command_body: dict[str, JsonValue],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+    agent.behavior = "stream_complete"
+
+    async def waiting() -> AsyncGenerator[ReactStreamEvent[ChannelOutput]]:
+        entered.set()
+        await release.wait()
+        yield AgentRunResultEvent(AgentRunResult("Completed"))
+
+    monkeypatch.setattr(agent, "events", waiting)
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        async with asyncio.TaskGroup() as tasks:
+            first = tasks.create_task(
+                client.post(
+                    "/api/commands/execute",
+                    headers={"X-Octomate-Request": "1"},
+                    json=command_body,
+                )
+            )
+            await entered.wait()
+            try:
+                second = await client.post(
+                    "/api/commands/execute",
+                    headers={"X-Octomate-Request": "1"},
+                    json=command_body,
+                )
+                assert second.status_code == 409
+                assert not first.done()
+            finally:
+                release.set()
+    assert command_outcome(first.result()).outcome == CommandResult()
+    assert len(agent.intents) == 1
+    assert not app.awake_since

@@ -37,7 +37,7 @@ class DiscordStatusFeeler(StatusFeeler):
             await super().render(key, address, queue)
 
     async def present(self, address: ChannelAddress, text: str) -> None:
-        key = ThreadKey.from_address(address)
+        key = ThreadKey.model_validate(address)
         chat_id = address.chat_id or address.user_id
         destination = (
             address.channel_thread_id if address.chat_type == "thread" else chat_id

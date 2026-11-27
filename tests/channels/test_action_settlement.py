@@ -25,9 +25,9 @@ from octomate.events import (
 )
 from octomate.managers.conversation import ConversationManager
 from octomate.nerve import ChannelTopic, Impulse
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredActionBatch
+from octomate.signals import DeferredActionBatchResponse
 from octomate.tentacles.discord.feelers.actions import DiscordComponentRouter
 from octomate.tentacles.discord.feelers.approvals import DiscordApprovalFeeler
 from octomate.tentacles.discord.feelers.questions import DiscordAskQuestionFeeler
@@ -145,12 +145,14 @@ async def publish(
     topic = ChannelTopic(channel.id)
     async with drawing(channel):
         if mode != "outside":
-            channel.octomate.nerve.deliver(
+            channel.octomate.nerves.events.deliver(
                 topic, Impulse(RunStartedEvent(address=address), address)
             )
-        channel.octomate.nerve.deliver(topic, Impulse(event, address))
+        channel.octomate.nerves.events.deliver(topic, Impulse(event, address))
         if mode != "outside":
-            channel.octomate.nerve.deliver(topic, Impulse(RunEndedEvent(), address))
+            channel.octomate.nerves.events.deliver(
+                topic, Impulse(RunEndedEvent(), address)
+            )
 
 
 def rendered(channel: FakeChannelTentacle, edits: AsyncMock) -> list[str]:
@@ -270,7 +272,7 @@ async def test_closure_settles_every_card_and_preserves_accepted_decisions(
     topic = ChannelTopic(channel.id)
     async with drawing(channel):
         if mode != "outside":
-            channel.octomate.nerve.deliver(
+            channel.octomate.nerves.events.deliver(
                 topic,
                 Impulse(
                     RunStartedEvent(address=batch.target_address), batch.target_address
@@ -278,7 +280,7 @@ async def test_closure_settles_every_card_and_preserves_accepted_decisions(
             )
         await manager.mark_batch(batch.id, status)
         if mode != "outside":
-            channel.octomate.nerve.deliver(
+            channel.octomate.nerves.events.deliver(
                 topic, Impulse(RunEndedEvent(), batch.target_address)
             )
     stored = await manager.get_batch(batch.id)
@@ -371,9 +373,9 @@ async def test_invalid_drafts_stay_editable_with_values_and_feedback(
         assert '"selected_values":["eu"]' in text
     else:
         assert '"default": true' in text
-        _, answers = await DiscordComponentRouter(channel.octomate).load_questions(
-            batch.id
-        )
+        _, answers = await DiscordComponentRouter(
+            channel.octomate, nerves=channel.nerves
+        ).load_questions(batch.id)
         assert answers == {region.id: ["eu"]}
 
 
@@ -478,9 +480,9 @@ async def test_partial_answers_keep_the_remaining_controls(
     elif channel.id == "discord":
         assert "Question 1 of 2" in payloads[1]
         assert region.id.hex in payloads[1]
-        actions, _ = await DiscordComponentRouter(channel.octomate).load_questions(
-            batch.id
-        )
+        actions, _ = await DiscordComponentRouter(
+            channel.octomate, nerves=channel.nerves
+        ).load_questions(batch.id)
         assert [action.id for action in actions] == [region.id, other.id]
     else:
         assert "Anything else?" in payloads[1]

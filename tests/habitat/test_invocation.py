@@ -241,7 +241,14 @@ async def test_core_prepares_and_releases_native_chat(
 ) -> None:
     app = Octomate()
     owner_id = (await a_user()).id if registered else None
-    thread = await app.threads.ensure(ThreadKey("im", "thread", "room", "turn"))
+    thread = await app.threads.ensure(
+        ThreadKey(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id="room",
+            channel_thread_id="turn",
+        )
+    )
     conversation = Conversation(thread_id=thread.id, agent_tentacle_id="inkling")
     async with app.habitats.invoke(
         thread=thread,
@@ -276,7 +283,13 @@ async def test_core_uses_the_workspace_volume_lifecycle(
         project = a_project(root)
         app.workspaces.projects = await a_registry(project)
     thread = await app.threads.ensure(
-        ThreadKey("im", "thread", "room", "turn"), project=project
+        ThreadKey(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id="room",
+            channel_thread_id="turn",
+        ),
+        project=project,
     )
     async with app.habitats.invoke(
         thread=thread,
@@ -308,7 +321,9 @@ async def test_core_stops_native_habitat_when_volume_preparation_fails(
 ) -> None:
     app = Octomate()
     owner = await a_user()
-    thread = await app.threads.ensure(ThreadKey("im", "dm", "alice"))
+    thread = await app.threads.ensure(
+        ThreadKey(channel_tentacle_id="im", chat_type="dm", chat_id="alice")
+    )
     stop = AsyncMock()
     monkeypatch.setattr(NativeHabitat, "stop", stop)
     monkeypatch.setattr(
@@ -335,7 +350,14 @@ async def test_core_and_workspace_contexts_share_the_same_storage(
 ) -> None:
     app = Octomate()
     owner = await a_user()
-    thread = await app.threads.ensure(ThreadKey("im", "thread", "room", "turn"))
+    thread = await app.threads.ensure(
+        ThreadKey(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id="room",
+            channel_thread_id="turn",
+        )
+    )
     async with app.habitats.invoke(
         thread=thread,
         conversation=Conversation(thread_id=thread.id, agent_tentacle_id="inkling"),
@@ -360,7 +382,14 @@ async def test_core_isolates_two_owners_in_a_shared_thread(
 ) -> None:
     app = Octomate()
     alice, bob = await a_user("alice"), await a_user("bob")
-    thread = await app.threads.ensure(ThreadKey("im", "thread", "room", "turn"))
+    thread = await app.threads.ensure(
+        ThreadKey(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id="room",
+            channel_thread_id="turn",
+        )
+    )
     conversation = Conversation(thread_id=thread.id, agent_tentacle_id="inkling")
     async with (
         app.habitats.invoke(
@@ -387,7 +416,9 @@ async def test_core_releases_chat_on_failure_and_cancellation(
     in_memory_engine: AsyncEngine, error: type[BaseException]
 ) -> None:
     app = Octomate()
-    thread = await app.threads.ensure(ThreadKey("im", "dm", "alice"))
+    thread = await app.threads.ensure(
+        ThreadKey(channel_tentacle_id="im", chat_type="dm", chat_id="alice")
+    )
     with pytest.raises(error):
         async with app.habitats.invoke(
             thread=thread,
@@ -408,7 +439,12 @@ async def test_core_refuses_an_anonymous_project(
     app = Octomate()
     app.workspaces.projects = await a_registry(project)
     thread = await app.threads.ensure(
-        ThreadKey("im", "thread", "room", "turn"),
+        ThreadKey(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id="room",
+            channel_thread_id="turn",
+        ),
         project=project,
     )
     with pytest.raises(UnregisteredProjectError):
@@ -428,7 +464,14 @@ async def test_sandbox_dispatch_refuses_before_preparing_anything(
     app.habitats.config = SbxHabitatConfig(image="sandbox@sha256:" + "a" * 64)
     prepare = AsyncMock()
     monkeypatch.setattr(SbxHabitat, "prepare", prepare)
-    thread = await app.threads.ensure(ThreadKey("im", "thread", "room", "turn"))
+    thread = await app.threads.ensure(
+        ThreadKey(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id="room",
+            channel_thread_id="turn",
+        )
+    )
     agent = FakeAgent()
     agent.habitats = app.habitats
     with pytest.raises(HabitatError, match="registered user"):
@@ -455,7 +498,14 @@ async def test_a_capable_agent_leases_the_owners_sandbox(
     monkeypatch.setattr(SbxHabitat, "prepare", AsyncMock())
     monkeypatch.setattr(SbxHabitat, "stop", AsyncMock())
     owner = await a_user()
-    thread = await app.threads.ensure(ThreadKey("im", "thread", "room", "turn"))
+    thread = await app.threads.ensure(
+        ThreadKey(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id="room",
+            channel_thread_id="turn",
+        )
+    )
     agent: AgentTentacle
     if kind == "acp":
         agent = AcpAgentTentacle(
@@ -509,7 +559,12 @@ async def test_core_checkpoints_an_empty_project_without_a_git_index(
     app = Octomate()
     app.workspaces.projects = await a_registry(project)
     thread = await app.threads.ensure(
-        ThreadKey("im", "thread", "room", "turn"),
+        ThreadKey(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id="room",
+            channel_thread_id="turn",
+        ),
         project=project,
     )
     async with app.habitats.invoke(

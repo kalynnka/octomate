@@ -1,11 +1,10 @@
 """Teleporting native Codex history through the authenticated console API: the
 import into a thread a driven agent carries on in."""
 
-import asyncio
 from collections.abc import AsyncGenerator
 from io import BytesIO
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx2
 import pytest
@@ -17,20 +16,20 @@ from octomate.auth import current_user
 from octomate.config.channels import ChannelConfig, TrunklineChannelConfig
 from octomate.database import async_session
 from octomate.nerve import ThreadTopic
-from octomate.schemas.awakes import NativeGatewaySignal
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import User, UserProfile
+from octomate.signals import NativeGatewaySignal
 from octomate.tentacles.trunkline import TrunklineTentacle
 from tests.agent.codex.test_transcript_fork import ForkCase
 from tests.agent.codex.test_transcript_fork import case as case
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import a_project
-from tests.support.nerve import kick_and_wait, settled
+from tests.support.nerve import kick_and_wait, listening, settled
 from tests.support.users import a_user
 
 
@@ -58,11 +57,14 @@ async def client(case: ForkCase) -> AsyncGenerator[httpx2.AsyncClient]:
             channel_user_id=owner.username, user_id=owner.id, name=owner.name
         ),
     )
-    async with httpx2.AsyncClient(
-        transport=httpx2.ASGITransport(app=app),
-        base_url="http://test",
-        headers={"X-Octomate-Request": "1"},
-    ) as client:
+    async with (
+        listening(app),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app),
+            base_url="http://test",
+            headers={"X-Octomate-Request": "1"},
+        ) as client,
+    ):
         yield client
 
 
@@ -84,7 +86,7 @@ async def teleport_to_trunkline(case: ForkCase, client: httpx2.AsyncClient) -> T
         for one in options["teleport"]["destinations"]
         if one["channel_tentacle_id"] == "trunkline"
     ]
-    async with app.nerve.subscribe(ThreadTopic(await source_key(case))) as live:
+    async with app.nerves.events.subscribe(ThreadTopic(await source_key(case))) as live:
         response = await client.post(
             f"{path}/teleport", json={"destination": address, "hint": "Continue here"}
         )
@@ -117,8 +119,8 @@ async def test_native_session_rejects_direct_operations(
     clear: bool,
 ) -> None:
     app = case.tentacle.octomate
-    kick = AsyncMock()
-    monkeypatch.setattr(app, "kick", kick)
+    kick = Mock()
+    monkeypatch.setattr(app.nerves.signals, "dispatch", kick)
     await app.conversations.set_permission_mode(case.source, "auto_review")
     await app.conversations.set_effort(case.source, "high")
     if operation in {"catalog", "execute"}:
@@ -154,7 +156,7 @@ async def test_native_session_rejects_direct_operations(
         )
         is None
     )
-    kick.assert_not_awaited()
+    kick.assert_not_called()
     case.fork.assert_not_awaited()
 
 
@@ -162,8 +164,8 @@ async def test_native_session_cannot_resolve_a_deferred_batch(
     case: ForkCase, client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = case.tentacle.octomate
-    kick = AsyncMock()
-    monkeypatch.setattr(app, "kick", kick)
+    kick = Mock()
+    monkeypatch.setattr(app.nerves.signals, "dispatch", kick)
     thread = await app.threads.get(case.source.thread_id)
     assert thread is not None
     address = thread.key.address(str(case.owner_id))
@@ -187,7 +189,7 @@ async def test_native_session_cannot_resolve_a_deferred_batch(
     assert response.status_code == 409
     assert response.json()["detail"] == "Synced native sessions are read-only."
     assert (await app.deferred_actions.get_batch(batch.id)).status == "pending"
-    kick.assert_not_awaited()
+    kick.assert_not_called()
 
 
 async def test_a_native_session_lands_in_an_owned_thread_its_agent_carries_on(
@@ -221,15 +223,14 @@ async def test_a_native_session_lands_in_an_owned_thread_its_agent_carries_on(
     )
     assert [message.id for message in pending] == [notice.id]
 
-    kick = AsyncMock()
-    monkeypatch.setattr(app, "kick", kick)
+    kick = Mock()
+    monkeypatch.setattr(app.nerves.signals, "dispatch", kick)
     sent = await client.post(
         f"/api/trunkline/threads/{stored.channel_thread_id}/messages",
         json={"text": "continue the work"},
     )
     assert sent.status_code == 202
-    await asyncio.gather(*app.awakes.values())
-    kick.assert_awaited_once()
+    kick.assert_called_once()
     after = await app.threads.get(stored.id)
     assert after is not None
     assert after.handoffs == []
@@ -244,7 +245,7 @@ async def test_a_native_session_lands_in_an_owned_thread_its_agent_carries_on(
         json={"text": "switch agent", "model": "another-agent:"},
     )
     assert refused.status_code == 409
-    assert kick.await_count == 1
+    assert kick.call_count == 1
 
     other = await a_user("other-reader")
     app.dependency_overrides[current_user] = lambda: other
@@ -307,7 +308,7 @@ async def test_thread_access_does_not_grant_transcript_ownership(
     app.dependency_overrides[current_user] = lambda: other
     visible = await client.get(f"/api/trunkline/threads/{case.source.thread_id}")
     assert visible.status_code == 200
-    async with app.nerve.subscribe(ThreadTopic(await source_key(case))) as live:
+    async with app.nerves.events.subscribe(ThreadTopic(await source_key(case))) as live:
         response = await client.post(
             f"/api/trunkline/threads/{case.source.thread_id}/teleport",
             json={
@@ -364,7 +365,9 @@ async def test_native_teleport_imports_completed_history_before_resuming(
         if one["channel_tentacle_id"] == destination
     ]
     if asked_by == "console":
-        async with app.nerve.subscribe(ThreadTopic(await source_key(case))) as live:
+        async with app.nerves.events.subscribe(
+            ThreadTopic(await source_key(case))
+        ) as live:
             response = await client.post(
                 f"{path}/teleport",
                 json={"destination": address, "hint": "Continue here"},
@@ -479,7 +482,7 @@ async def test_a_native_session_with_a_prompt_answers_it_where_it_lands(
         if one["channel_tentacle_id"] == "trunkline"
     ]
 
-    async with case.tentacle.octomate.nerve.subscribe(
+    async with case.tentacle.octomate.nerves.events.subscribe(
         ThreadTopic(await source_key(case))
     ) as live:
         response = await client.post(
@@ -562,7 +565,7 @@ async def test_native_teleport_validates_history_before_opening_destination(
             files=app.files,
             owner_id=case.owner_id,
         )
-    async with app.nerve.subscribe(ThreadTopic(await source_key(case))) as live:
+    async with app.nerves.events.subscribe(ThreadTopic(await source_key(case))) as live:
         response = await client.post(
             f"/api/trunkline/threads/{case.source.thread_id}/teleport",
             json={

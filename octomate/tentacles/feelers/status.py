@@ -404,7 +404,7 @@ class StatusFeeler(ABC):
 
     def feed(self, address: ChannelAddress, event: WireEvent) -> None:
         """Queue a presentation hint without waiting for platform I/O."""
-        key = ThreadKey.from_address(address)
+        key = ThreadKey.model_validate(address)
         narrator = self.narrators.get(key) or StatusNarrator()
         text = narrator.narrate(event)
         if text is None and not isinstance(

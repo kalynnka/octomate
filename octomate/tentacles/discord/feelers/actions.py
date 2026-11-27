@@ -15,12 +15,9 @@ from weakref import WeakKeyDictionary, WeakValueDictionary
 import discord
 from pydantic import UUID7
 
-from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.deferred import (
-    DeferredApproval,
-    DeferredQuestion,
-    QuestionAnswer,
-)
+from octomate.nerve import AgentTopic, Nerves
+from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
+from octomate.signals import DeferredActionBatchResponse, QuestionAnswer
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -52,8 +49,9 @@ class DiscordComponentRouter:
         WeakKeyDictionary()
     )
 
-    def __init__(self, octomate: Octomate) -> None:
+    def __init__(self, octomate: Octomate, *, nerves: Nerves) -> None:
         self.octomate = octomate
+        self.nerves = nerves
         self.callback_locks: WeakValueDictionary[UUID7, asyncio.Lock] = (
             WeakValueDictionary()
         )
@@ -110,7 +108,7 @@ class DiscordComponentRouter:
             )
         await settle_message(action)
         if dispatch is not None:
-            await self.octomate.kick(dispatch)
+            self.nerves.signals.dispatch(AgentTopic(batch.agent_tentacle_id), dispatch)
         return action
 
     async def load_questions(
@@ -190,7 +188,8 @@ class DiscordComponentRouter:
             )
             self.question_answers.pop(batch_id, None)
         if dispatch is not None:
-            await self.octomate.kick(dispatch)
+            batch = await self.octomate.deferred_actions.get_batch(batch_id)
+            self.nerves.signals.dispatch(AgentTopic(batch.agent_tentacle_id), dispatch)
         return actions
 
     async def resolve(

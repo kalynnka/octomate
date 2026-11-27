@@ -49,13 +49,15 @@ from octomate.mcp.server import (
     history_tool,
     octomate_instructions,
 )
-from octomate.schemas.awakes import NativeGatewaySignal, SummonSignal
+from octomate.nerve import Nerves
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.triage import SchemeDecision
+from octomate.signals import NativeGatewaySignal, SummonSignal
 from octomate.tentacles.mcp import OAuthMcpTentacle
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle, FakeOctomate
+from tests.support.nerve import finished
 from tests.support.users import a_api_key, a_user, auth_config
 
 LIST_TOOLS = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
@@ -174,6 +176,7 @@ async def a_driven_turn(octomate: Octomate) -> OctomateSession:
     """A turn at the gateway, as React registers one: the session a served call
     naming its conversation runs against, kicked by `lu`'s linked account."""
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes={"im": []},
         current_agent_id="codex",
         channels={"im": FakeChannelTentacle(octomate=octomate)},
@@ -485,7 +488,9 @@ async def test_a_native_scheme_kicks_exactly_one_handoff() -> None:
                     "destination": {"kind": "dm", "channel": "im"},
                 },
             )
-        await asyncio.gather(*octomate.awakes.values())
+        await asyncio.gather(
+            *(finished(octomate, key) for key in list(octomate.awake_since))
+        )
 
     assert result.data.startswith("Taking this to")
     assert isinstance(octomate, FakeOctomate)
@@ -537,8 +542,9 @@ async def test_native_summon_resolves_the_session_once_on_the_http_call(
     [signal] = octomate.kicks
     assert isinstance(signal, SummonSignal)
     assert signal.destination == opened
+    assert signal.user_profile is not None
     assert signal.user_profile.channel_tentacle_id == "im"
     assert signal.user_profile.channel_user_id == "alice"
-    thread = await octomate.threads.get(ThreadKey.from_address(opened))
+    thread = await octomate.threads.get(ThreadKey.model_validate(opened))
     assert thread is None
     assert signal.source_conversation_id is None

@@ -1,5 +1,5 @@
 """The Trunkline web channel: the console drives Octomate through
-`octomate.kick` and reads the run stream back natively.
+the signal nerve and reads the run stream back natively.
 
 Unlike the Vercel dev-UI channel it replaces, nothing is transcoded to a
 third-party UI protocol: the run's own event union (the harness `WireEvent`)
@@ -38,8 +38,7 @@ from octomate.events import (
     WireEvent,
     wire_event_adapter,
 )
-from octomate.nerve import EventTopic
-from octomate.schemas.awakes import StillAwake, UserMessageSignal
+from octomate.nerve import AgentTopic, EventTopic
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.project import Project
@@ -49,6 +48,7 @@ from octomate.schemas.segments import (
 )
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import User, UserProfile
+from octomate.signals import StillAwake, UserMessageSignal
 from octomate.tentacles.channel import (
     ChannelInk,
     ChannelTentacle,
@@ -259,7 +259,7 @@ class ConsoleFiles(StaticFiles):
 
 
 class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
-    """Channel that serves the Trunkline web console over `octomate.kick`."""
+    """Channel that serves the Trunkline web console over the signal nerve."""
 
     type: ClassVar[str] = "trunkline"
     brand_color: ClassVar[Style | None] = Style(color="#D4621A", bold=True)
@@ -275,6 +275,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
         super().__init__(
             id=id,
             octomate=octomate,
+            nerves=octomate.nerves,
             ink=TrunklineInk(),
             chromo=TrunklineChromo(),
             config=config,
@@ -448,8 +449,8 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             shared=event.shared,
         )
         # Refused before anything is written, so the next turn has no row of it to
-        # answer. A directive racing past this is refused by the kick itself.
-        if ThreadKey.from_address(address) in self.octomate.awakes:
+        # answer. The receiving agent enforces admission for concurrent publications.
+        if ThreadKey.model_validate(address) in self.octomate.awake_since:
             raise StillAwake()
         thread = await self.octomate.threads.ensure(
             address, project=self.chosen_project(directive.project)
@@ -469,6 +470,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             )
             await self.octomate.conversations.set_effort(conversation, effort)
         thread_message = await self.octomate.threads.record_inbound(event)
-        await self.octomate.kick(
-            UserMessageSignal([event], trigger_thread_message_id=thread_message.id)
+        self.nerves.signals.dispatch(
+            AgentTopic(thread.active_agent_tentacle_id or self.agent_ids[0]),
+            UserMessageSignal([event], trigger_thread_message_id=thread_message.id),
         )

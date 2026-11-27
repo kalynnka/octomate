@@ -62,11 +62,11 @@ async def test_artifact_card_is_delivered_in_its_thread(
     )
     async with drawing(channel):
         if mode != "outside":
-            host.nerve.deliver(
+            host.nerves.events.deliver(
                 ChannelTopic(channel.id),
                 Impulse(RunStartedEvent(address=address), address),
             )
-        host.nerve.deliver(
+        host.nerves.events.deliver(
             ChannelTopic(channel.id),
             Impulse(
                 ArtifactAvailableEvent(
@@ -76,11 +76,11 @@ async def test_artifact_card_is_delivered_in_its_thread(
             ),
         )
         if mode != "outside":
-            host.nerve.deliver(
+            host.nerves.events.deliver(
                 ChannelTopic(channel.id),
                 Impulse(RunResultEvent(output="done", usage=RunUsage()), address),
             )
-            host.nerve.deliver(
+            host.nerves.events.deliver(
                 ChannelTopic(channel.id),
                 Impulse(RunEndedEvent(thread_message_id=reply.id), address),
             )
