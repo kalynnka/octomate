@@ -79,13 +79,32 @@ defaults.
 
 By default, the harness receives Octomate's MCP with the calling user's identity.
 This requires HTTP MCP support. Set `gateway: false` on this tentacle to omit
-Octomate tools when the harness cannot accept them. Client file and terminal
-callbacks are not offered; the harness must operate on the server itself.
+Octomate tools when the harness cannot accept them.
 
 Some harnesses require an ACP authentication method even after local login.
 Configure that method and any required environment overrides in
 [the provider settings](../../api/config/agents.md#octomate.config.acp.AcpProvider).
 Interactive login is not relayed.
+
+### Choose a habitat for the harness
+
+Set the `acp_agent` tentacle's `habitat` to a configured habitat name. Octomate's
+ACP integration with a workspace habitat such as SRT relies on the provider
+delegating its file operations and terminal commands to the client. Octomate runs
+those delegated operations inside the habitat; the provider itself stays on the
+host.
+
+ACP compatibility alone does not guarantee this delegation. A provider may use
+its own tools instead, bypassing the workspace habitat. ACP does not let Octomate
+verify that every operation is delegated, so Octomate logs a warning at startup
+and respects your selection. Confirm the provider's client-side filesystem and
+terminal support before relying on SRT for isolation.
+
+If the provider does not support this, choose a native habitat to use its own
+execution and sandbox controls, or a hosted habitat such as sbx to run the
+provider and its tools inside the sandbox. Native execution does not add habitat
+isolation. See [configuration](../../installation/configuration.md) for where
+to declare habitats and tentacles.
 
 ## Session settings
 

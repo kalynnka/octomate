@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import (
     AsyncExitStack,
@@ -19,6 +20,7 @@ from acp import schema
 from acp.connection import StreamDirection, StreamEvent
 from acp.utils import notify_model, request_model
 from anyio import CancelScope
+from octomate_protocol.config import HabitatType
 from pydantic import UUID7, JsonValue
 from pydantic_ai import (
     AgentCapability,
@@ -77,6 +79,9 @@ if TYPE_CHECKING:
     from octomate.managers.habitat import HabitatManager
 
 
+logger = logging.getLogger(__name__)
+
+
 class AcpAgentTentacle(AgentTentacle[str, None]):
     """Execute turns through an installed ACP harness.
 
@@ -125,6 +130,14 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
 
     async def __aenter__(self) -> Self:
         """Discover a harness catalog without prompting or creating Octomate history."""
+        if self.habitats.config.type == HabitatType.workspace:
+            logger.warning(
+                "ACP agent %s uses a workspace habitat: only filesystem and terminal "
+                "operations delegated to the client are confined. The provider and "
+                "its direct tools remain on the host. ACP cannot verify delegation; "
+                "confirm provider support or choose a native or hosted habitat.",
+                self.id,
+            )
 
         async def handle(
             method: str, params: JsonValue | None, notification: bool

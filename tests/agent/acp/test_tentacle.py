@@ -63,11 +63,14 @@ def custom_provider(tmp_path: Path) -> AcpProvider:
 
 
 @pytest.mark.parametrize("supports_close", [False, True])
+@pytest.mark.parametrize("habitat", ["native", "srt"])
 async def test_catalog_discovery_closes_its_temporary_session_when_supported(
     custom_provider: AcpProvider,
     in_memory_engine: AsyncEngine,
     tmp_path: Path,
     supports_close: bool,
+    habitat: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     provider = AcpProvider.model_validate(
         {
@@ -78,15 +81,20 @@ async def test_catalog_discovery_closes_its_temporary_session_when_supported(
             },
         }
     )
-    host = Octomate()
+    host = Octomate(
+        config=OctomateConfig.model_validate(
+            {"habitats": {"selected": {"provider": habitat}}}
+        )
+    )
     agent = AcpAgentTentacle(
         "custom",
         host,
         auth=host.auth,
-        habitats=host.habitats["native"],
+        habitats=host.habitats["selected"],
         config=AcpAgentConfig(provider=provider),
     )
     async with agent:
+        assert ("ACP cannot verify delegation" in caplog.text) == (habitat == "srt")
         assert set(agent.models) == {"fast", "careful"}
         messages = [
             json.loads(line)["message"]
