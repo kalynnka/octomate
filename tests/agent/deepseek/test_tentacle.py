@@ -68,6 +68,7 @@ from tests.support.managers import (
     FakePresentedBatch,
     RecordingSuspender,
 )
+from tests.support.nerve import kick_and_wait
 from tests.support.users import a_user
 
 KEY = ChannelAddress(
@@ -1212,10 +1213,11 @@ async def test_an_approval_mid_run_bridges_to_a_card_and_back(
     async with tentacle:
         run = asyncio.ensure_future(drain())
         batch_id = await wait_for_pending(tentacle, suspender)
-        await octomate.kick(
+        await kick_and_wait(
+            octomate,
             DeferredActionBatchResponse(
                 batch_id=batch_id, approvals={approval.id: True}
-            )
+            ),
         )
         events = await run
 
@@ -1264,8 +1266,9 @@ async def test_a_declined_approval_answers_rejected() -> None:
         )
     )
     batch_id = await wait_for_pending(tentacle, suspender)
-    await octomate.kick(
-        DeferredActionBatchResponse(batch_id=batch_id, approvals={approval.id: False})
+    await kick_and_wait(
+        octomate,
+        DeferredActionBatchResponse(batch_id=batch_id, approvals={approval.id: False}),
     )
     await task
 
@@ -1346,10 +1349,11 @@ async def test_allow_session_short_circuits_the_next_approval() -> None:
         )
     )
     batch_id = await wait_for_pending(tentacle, suspender)
-    await octomate.kick(
+    await kick_and_wait(
+        octomate,
         DeferredActionBatchResponse(
             batch_id=batch_id, approvals={approval.id: True}, allow_session=True
-        )
+        ),
     )
     await task
     second = ApprovalRequestedFrame(
@@ -1474,11 +1478,12 @@ async def test_questions_map_labels_to_selected_and_text_to_custom() -> None:
         )
     )
     batch_id = await wait_for_pending(tentacle, suspender)
-    await octomate.kick(
+    await kick_and_wait(
+        octomate,
         DeferredActionBatchResponse(
             batch_id=batch_id,
             answers={first.id: "main", second.id: "ship it"},
-        )
+        ),
     )
     await task
 
@@ -1540,10 +1545,11 @@ async def test_a_multi_select_answer_comes_back_as_its_picks() -> None:
         )
     )
     batch_id = await wait_for_pending(tentacle, suspender)
-    await octomate.kick(
+    await kick_and_wait(
+        octomate,
         DeferredActionBatchResponse(
             batch_id=batch_id, answers={question.id: ["lint", "tests"]}
-        )
+        ),
     )
     await task
 

@@ -27,6 +27,7 @@ from octomate.mcp.server import (
     octomate_instructions,
     octomate_mcp,
 )
+from octomate.nerve import Nerves
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
     AgentRoute,
@@ -67,6 +68,7 @@ def a_turn(*, in_thread: bool = False) -> OctomateSession:
     take over."""
     threads = FakeThreadManager()
     return OctomateSession(
+        nerves=Nerves(),
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id="inkling",
         channels={"im": FakeChannelTentacle()},
@@ -90,6 +92,7 @@ async def spells(
     server = octomate_mcp(
         fixed_session(session),
         FakeThreadManager(),
+        nerves=session.nerves,
         manager=Octomate().mcp,
         conversations=FakeConversationManager(),
     )
@@ -247,6 +250,7 @@ async def test_sdk_discovers_and_calls_provider_tools_through_fixed_helpers(
         server = octomate_mcp(
             fixed_session(session),
             FakeThreadManager(),
+            nerves=session.nerves,
             manager=tentacle.octomate.mcp,
             conversations=tentacle.octomate.conversations,
         )

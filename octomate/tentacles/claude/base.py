@@ -220,7 +220,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
     model_aliases: dict[str, str] = field(init=False)
 
     # A Claude run stays live in-process; `pending` (from `AgentTentacle`) parks a
-    # waiter per gated tool / question until `Octomate.kick` delivers the response.
+    # waiter per gated tool / question until the signal receiver delivers the response.
     in_process: ClassVar[bool] = True
 
     permission_modes: tuple[PermissionMode, ...] = tuple(
@@ -270,6 +270,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         super().__init__(
             id=self.id,
             octomate=octomate,
+            nerves=octomate.nerves,
             commands=commands,
             projects=projects,
             threads=threads,
@@ -799,7 +800,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         """Pause the run on a human through the graph's suspender, putting the
         batch on this run's stream. The reply waiter
         is registered before the cards go up, so a quick answer arriving through
-        `Octomate.kick` cannot miss it. The Claude session stays open in-process
+        the signal receiver cannot miss it. The Claude session stays open in-process
         while this awaits, so the answer is not durable across an Octomate restart.
 
         Returns `(batch, None)` if the wait exceeds `config.approval_timeout`; the
@@ -1038,16 +1039,18 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         """Cancel any approvals/questions still awaiting a human so their parked
         runs unblock instead of hanging shutdown. The pending tools are denied as
         the cancellation unwinds; the live sessions are not durable across this."""
-        self.server_info = None
-        self.commands.invalidate(agent_id=self.id)
-        await super().__aexit__(exc_type, exc_value, traceback)
-        for future in list(self.pendings.values()):
-            if not future.done():
-                future.cancel()
-        self.pendings.clear()
-        await self.ink.close()
-        # Cancel any live transcript follow loops.
-        await self.session_tailer.shutdown()
+        try:
+            await super().__aexit__(exc_type, exc_value, traceback)
+        finally:
+            self.server_info = None
+            self.commands.invalidate(agent_id=self.id)
+            for future in list(self.pendings.values()):
+                if not future.done():
+                    future.cancel()
+            self.pendings.clear()
+            await self.ink.close()
+            # Cancel any live transcript follow loops.
+            await self.session_tailer.shutdown()
 
     async def _iter_events(
         self,

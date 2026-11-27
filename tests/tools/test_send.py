@@ -17,7 +17,7 @@ from octomate.config import ChannelConfig
 from octomate.events import MessageSentEvent
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.user import UserManager
-from octomate.nerve import ChannelTopic, Nerve
+from octomate.nerve import ChannelTopic, Nerves
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.triage import DIRECT_TARGET, DirectTarget
@@ -51,7 +51,7 @@ def _gate(
     is private — an assistant pane is a thread only one person can read."""
     threads = FakeThreadManager()
     return OctomateSession(
-        nerve=Nerve(),
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id="inkling",
         channels={"im": FakeChannelTentacle() if direct_messages else _NoDmChannel()},
@@ -71,9 +71,8 @@ def _gate(
 async def test_send_returns_sent_and_announces_event() -> None:
     session = _gate()
     threads = FakeThreadManager()
-    assert session.nerve is not None
     async with (
-        session.nerve.subscribe(ChannelTopic("im")) as events,
+        session.nerves.events.subscribe(ChannelTopic("im")) as events,
         Client(core_tool_server(session, threads=threads)) as client,
     ):
         result = await client.call_tool(
@@ -110,9 +109,8 @@ async def test_send_tool_exposes_no_channel_fields() -> None:
 
 async def test_send_carries_the_named_destination() -> None:
     session = _gate()
-    assert session.nerve is not None
     async with (
-        session.nerve.subscribe(ChannelTopic("im")) as events,
+        session.nerves.events.subscribe(ChannelTopic("im")) as events,
         Client(core_tool_server(session)) as client,
     ):
         await client.call_tool(
@@ -131,7 +129,6 @@ async def test_send_carries_the_named_destination() -> None:
 
 async def test_inkling_agent_send_tool_publishes_once_end_to_end() -> None:
     session = _gate()
-    assert session.nerve is not None
     agent = Agent(
         TestModel(), deps_type=type(None), capabilities=core_tool_capabilities(session)
     )
@@ -145,7 +142,7 @@ async def test_inkling_agent_send_tool_publishes_once_end_to_end() -> None:
             "done",
         ]
     )
-    async with session.nerve.subscribe(ChannelTopic("im")) as events:
+    async with session.nerves.events.subscribe(ChannelTopic("im")) as events:
         result = await agent.run(
             "send something",
             conversation_id=str(uuid7()),
@@ -174,9 +171,8 @@ async def test_send_to_dm_from_a_private_surface_stays_here(
     session = _gate(already_private=True, chat_type=chat_type)
     assert session.private_blocked_by == "already_private"
     assert await session.resolve_send(DIRECT_TARGET) is None
-    assert session.nerve is not None
     async with (
-        session.nerve.subscribe(ChannelTopic("im")) as events,
+        session.nerves.events.subscribe(ChannelTopic("im")) as events,
         Client(core_tool_server(session)) as client,
     ):
         await client.call_tool(
@@ -204,9 +200,8 @@ async def test_send_reaches_another_channel_the_asker_is_registered_on(
     assert await session.resolve_send(DirectTarget(channel="lark")) == ChannelAddress(
         "lark", "dm", "", "ou_alice"
     )
-    assert session.nerve is not None
     async with (
-        session.nerve.subscribe(ChannelTopic("lark")) as events,
+        session.nerves.events.subscribe(ChannelTopic("lark")) as events,
         Client(core_tool_server(session)) as client,
     ):
         await client.call_tool(

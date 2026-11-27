@@ -129,8 +129,15 @@ class InvocationTopic:
     invocation_id: UUID7
 
 
+@dataclass(frozen=True)
+class AgentTopic:
+    """One agent's long-lived signal receiver."""
+
+    agent_id: str
+
+
 type EventTopic = ChannelTopic | ThreadTopic | UserTopic
-type Topic = EventTopic | HabitatTopic | InvocationTopic
+type Topic = EventTopic | HabitatTopic | InvocationTopic | AgentTopic
 
 
 SentT = TypeVar("SentT", default=Impulse[WireEvent])
@@ -280,7 +287,12 @@ class Nerve(Generic[SentT]):
             origin
             if isinstance(
                 origin,
-                ChannelTopic | ThreadTopic | UserTopic | HabitatTopic | InvocationTopic,
+                ChannelTopic
+                | ThreadTopic
+                | UserTopic
+                | HabitatTopic
+                | InvocationTopic
+                | AgentTopic,
             )
             else None
         )

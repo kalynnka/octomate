@@ -13,7 +13,6 @@ Inkling, so every runtime corrects from one wording.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -34,6 +33,7 @@ from octomate.events import MessageSentEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.managers.thread import ThreadManager
+from octomate.nerve import AgentTopic, Nerves
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
@@ -43,14 +43,12 @@ from octomate.schemas.triage import (
     SchemeTarget,
     SendTarget,
 )
-from octomate.signals import NativeGatewaySignal
 from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
     # Runtime dependency runs the other way (the host builds and mounts this
     # module's servers); the resolver only needs the host's type here.
     from octomate.base import Octomate
-    from octomate.reflex import ReflexGraphResult
 
 # What a runtime a tool result cannot suspend is told: the decision is recorded, its
 # turn is interrupted on it, and the graph performs the move and resumes it there.
@@ -371,7 +369,7 @@ async def native_session(
         native=True,
         threads=octomate.threads,
         workspaces=octomate.workspaces,
-        nerve=octomate.nerves.events,
+        nerves=octomate.nerves,
     )
 
 
@@ -388,10 +386,7 @@ def mount_gateway(
     mcp: FastMCP,
     octomate_session: OctomateSession,
     thread_manager: ThreadManager,
-    kick: Callable[
-        [NativeGatewaySignal], Awaitable[asyncio.Task[ReflexGraphResult] | None]
-    ]
-    | None = None,
+    nerves: Nerves,
     *,
     conversations: ConversationManager,
 ) -> None:
@@ -400,9 +395,8 @@ def mount_gateway(
     `octomate_session` is the FastMCP dependency each call resolves its session
     through — `Depends(...)` of a fixed session for a server mounted in-process for
     one turn, of a per-request lookup for a server that answers over HTTP.
-    `thread_manager` is the ledger a delivering spell writes through. `kick` is how
-    a native session's teleport or scheme becomes its own turn at once, so only the
-    served mount — the one place a native session can arrive — needs one.
+    `thread_manager` is the ledger a delivering spell writes through. `nerves` is how
+    a native session's teleport or scheme becomes its own turn at once.
     """
 
     @mcp.tool(
@@ -576,11 +570,8 @@ def mount_gateway(
             return decision.metadata()
         if not session.native:
             return TELEPORT_RECORDED
-        if kick is None:
-            raise RuntimeError(
-                "a native session reached a gateway mounted without a kick"
-            )
-        await kick(session.native_handoff())
+        signal = session.native_handoff()
+        nerves.signals.dispatch(AgentTopic(signal.agent_id), signal)
         return NATIVE_TELEPORT_STARTED
 
     @mcp.tool(name=GatewayTool.SCHEME)
@@ -617,11 +608,8 @@ def mount_gateway(
         """
         sentence = await session.scheme(hint=hint, brief=brief, destination=destination)
         if session.native:
-            if kick is None:
-                raise RuntimeError(
-                    "a native session reached a gateway mounted without a kick"
-                )
-            await kick(session.native_handoff())
+            signal = session.native_handoff()
+            nerves.signals.dispatch(AgentTopic(signal.agent_id), signal)
         return sentence
 
     @mcp.tool(name=GatewayTool.SEND)

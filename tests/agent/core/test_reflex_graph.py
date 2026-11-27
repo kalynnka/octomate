@@ -21,6 +21,7 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
+from octomate import Octomate
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.config.mirrors import MirrorsConfig
 from octomate.events import (
@@ -367,7 +368,9 @@ async def test_agent_lifecycle_clears_routes_on_exit_and_prepares_them_on_entry(
     None
 ):
     claim = Claim("Test agent", efforts=("high",))
-    agent = FakeAgent(models={"test": "fake-model"}, claims={"test": claim})
+    agent = FakeAgent(
+        models={"test": "fake-model"}, claims={"test": claim}, octomate=Octomate()
+    )
     assert agent.routes[0].claim is claim
 
     with pytest.raises(RuntimeError, match="failed turn"):

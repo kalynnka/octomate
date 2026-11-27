@@ -102,9 +102,8 @@ async def watch_activity(
         identity: str, key: ThreadKey, ready: asyncio.Event
     ) -> None:
         async with nerve.subscribe(ThreadTopic(key), backlog=4096) as impulses:
-            task = octomate.awakes.get(key)
             agent = octomate.agents.get(key.channel_tentacle_id)
-            running = (task is not None and not task.done()) or (
+            running = key in octomate.awake_since or (
                 agent is not None and key in agent.native_running_threads
             )
             narrator = StatusNarrator()

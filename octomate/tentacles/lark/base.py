@@ -24,6 +24,7 @@ from pydantic import AnyHttpUrl, TypeAdapter, ValidationError
 from rich.style import Style
 
 from octomate.config import LarkChannelConfig
+from octomate.nerve import AgentTopic
 from octomate.oauth.flows import AuthorizationCodeFlow, OAuthTokenExchange
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
@@ -124,6 +125,7 @@ class LarkTentacle(
         super().__init__(
             id=id,
             octomate=octomate,
+            nerves=octomate.nerves,
             ink=LarkInk(config.app_id, config.app_secret),
             chromo=LarkChromo(),
             config=config,
@@ -298,6 +300,11 @@ class LarkTentacle(
             responder_id = (
                 data.event.operator.open_id or data.event.operator.user_id or ""
             )
+
+        async def publish_response(response: DeferredActionBatchResponse) -> None:
+            batch = await self.octomate.deferred_actions.get_batch(response.batch_id)
+            self.nerves.signals.dispatch(AgentTopic(batch.agent_tentacle_id), response)
+
         if action in {
             LarkCardAction.APPROVAL_APPROVE,
             LarkCardAction.APPROVAL_DENY,
@@ -308,7 +315,7 @@ class LarkTentacle(
                 return P2CardActionTriggerResponse({})
             approved = action == LarkCardAction.APPROVAL_APPROVE
             task = asyncio.create_task(
-                self.octomate.kick(
+                publish_response(
                     DeferredActionBatchResponse(
                         batch_id=action_value["batch_id"],
                         responder_id=responder_id,
@@ -332,7 +339,7 @@ class LarkTentacle(
             question_actions = action_value["questions"]
             answers = collect_answers(question_actions, form_value)
             task = asyncio.create_task(
-                self.octomate.kick(
+                publish_response(
                     DeferredActionBatchResponse(
                         batch_id=action_value["batch_id"],
                         responder_id=responder_id,

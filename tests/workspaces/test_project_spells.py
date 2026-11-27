@@ -33,7 +33,7 @@ from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.managers.mcp import McpManager
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.mcp.server import octomate_mcp
-from octomate.nerve import Nerve
+from octomate.nerve import Nerve, Nerves
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import ProjectSummary, TeleportDecision
@@ -100,6 +100,7 @@ async def a_harness(
     threads = ThreadManager(nerve=Nerve(), users=users)
     thread = await threads.ensure(key)
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id="inkling",
         users=users,
@@ -302,6 +303,7 @@ async def test_a_gateway_without_a_thread_can_list_projects_but_not_move_or_dism
     users, profile = await a_registered_profile()
     threads = FakeThreadManager(users=users)
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id="inkling",
         users=users,
@@ -373,6 +375,7 @@ async def test_an_mcp_runtime_reads_the_list_and_hears_a_refusal_as_a_tool_error
     server = octomate_mcp(
         fixed_session(harness.session),
         FakeThreadManager(),
+        nerves=harness.session.nerves,
         manager=McpManager(users=harness.threads.users, cipher=None),
         conversations=FakeConversationManager(),
     )

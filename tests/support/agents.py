@@ -15,6 +15,7 @@ from collections.abc import (
     AsyncIterator,
     Sequence,
 )
+from contextlib import AsyncExitStack
 from dataclasses import asdict, dataclass, field
 from typing import ClassVar, cast
 
@@ -54,6 +55,7 @@ from octomate.managers.gateway import OctomateSession
 from octomate.managers.habitat import HabitatManager, Invocation
 from octomate.managers.project import ProjectManager
 from octomate.managers.workspaces import WorkspaceManager
+from octomate.nerve import Nerves
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
     DIRECT_TARGET,
@@ -172,6 +174,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     id: str = "inkling"
     description: str = "fake agent"
     octomate: Octomate | None = None
+    nerves: Nerves = field(default_factory=Nerves)
     conversations: ConversationManager = field(default_factory=ConversationManager)
     projects: ProjectManager = field(default_factory=ProjectManager)
     workspaces: WorkspaceManager = field(default_factory=a_workspace_manager)
@@ -229,6 +232,10 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     turns: list[RecordedRun] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        self.resources = AsyncExitStack()
+        self.reflexes = {}
+        if self.octomate is not None:
+            self.nerves = self.octomate.nerves
         self.habitats = a_habitat_manager(self.workspaces)
 
     def adopt(self, workspaces: WorkspaceManager) -> None:

@@ -73,7 +73,11 @@ async def octomate_mcp_server(
         return session
 
     server = octomate_mcp(
-        fixed, thread_manager, manager=manager, conversations=conversations
+        fixed,
+        thread_manager,
+        session.nerves,
+        manager=manager,
+        conversations=conversations,
     )
     return create_sdk_mcp_server(
         OCTOMATE_SERVER_NAME,

@@ -26,7 +26,7 @@ from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.mcp.gateway import HANDOFF_INSTRUCTION, gateway_instructions
 from octomate.mcp.server import octomate_mcp
-from octomate.nerve import Nerve
+from octomate.nerve import Nerve, Nerves
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadKey
@@ -94,6 +94,7 @@ def _capability(
     threads = FakeThreadManager()
     chat_type, shared, thread_id = SHAPES[shape]
     capability = OctomateSession(
+        nerves=Nerves(),
         channel_routes={"im": [CLAUDE_ROUTE, INKLING_ROUTE]},
         current_agent_id="inkling",
         channels={"im": channel or FakeChannelTentacle()},
@@ -214,6 +215,7 @@ async def test_destination_discovery_is_cached(monkeypatch: pytest.MonkeyPatch) 
     users = UserManager()
     threads = FakeThreadManager(users=users)
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id="inkling",
         users=users,
@@ -240,6 +242,7 @@ async def test_a_native_session_cannot_be_summoned() -> None:
     threads = FakeThreadManager()
     route = AgentRoute(agent_id="claude", model="test", claim=CLAUDE_CLAIM)
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes={"far": [route]},
         current_agent_id="codex",
         native=True,
@@ -347,6 +350,7 @@ async def test_a_threads_privacy_is_read_from_its_surface_not_its_type(
     it is already in, under whatever agent owns that."""
     threads = FakeThreadManager()
     capability = OctomateSession(
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id="inkling",
         channels={"im": FakeChannelTentacle()},
@@ -868,6 +872,7 @@ async def test_scheme_records_a_decision_that_names_no_agent() -> None:
 def _registered_session() -> OctomateSession:
     threads = FakeThreadManager()
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id="inkling",
         users=threads.users,
@@ -894,6 +899,7 @@ def test_a_session_without_a_conversation_cannot_be_registered() -> None:
     with pytest.raises(ValueError, match="conversation id"):
         GatewayManager().register(
             OctomateSession(
+                nerves=Nerves(),
                 channel_routes={},
                 current_agent_id="inkling",
                 users=threads.users,
@@ -911,6 +917,7 @@ def test_a_second_turn_on_a_live_conversation_is_refused_not_queued() -> None:
     manager = GatewayManager()
     first = _registered_session()
     second = OctomateSession(
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id="inkling",
         users=threads.users,
@@ -952,6 +959,7 @@ async def test_driving_tolerates_a_gateway_that_was_never_built() -> None:
         assert manager.sessions == {}
     async with manager.driving(
         OctomateSession(
+            nerves=Nerves(),
             channel_routes={},
             current_agent_id="i",
             users=threads.users,
@@ -1007,6 +1015,7 @@ async def test_summon_refuses_a_brief_over_the_cap() -> None:
     server = octomate_mcp(
         fixed_session(capability),
         FakeThreadManager(),
+        nerves=capability.nerves,
         manager=McpManager(users=UserManager(), cipher=None),
         conversations=FakeConversationManager(),
     )
@@ -1046,6 +1055,7 @@ async def test_scheme_refuses_a_brief_over_the_cap() -> None:
     server = octomate_mcp(
         fixed_session(capability),
         FakeThreadManager(),
+        nerves=capability.nerves,
         manager=McpManager(users=UserManager(), cipher=None),
         conversations=FakeConversationManager(),
     )
@@ -1246,6 +1256,7 @@ async def test_a_native_call_binds_only_a_session_its_caller_wrote(
         ),
     )
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id="claude",
         users=users,

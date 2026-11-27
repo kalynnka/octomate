@@ -338,6 +338,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         super().__init__(
             id=self.id,
             octomate=octomate,
+            nerves=octomate.nerves,
             commands=commands,
             projects=projects,
             threads=threads,
@@ -1326,19 +1327,20 @@ class CodexTentacle(AgentTentacle[str, None]):
         exc_value: BaseException | None = None,
         traceback: TracebackType | None = None,
     ) -> None:
-        await super().__aexit__(exc_type, exc_value, traceback)
-        with anyio.CancelScope(shield=True):
-            cancelled = await drain_task(asyncio.gather(*self.run_tasks))
-            await self.session_tailer.shutdown()
-            await self.ink.close()
-            self.bridge_contexts.clear()
-            for future in list(self.pendings.values()):
-                if not future.done():
+        try:
+            await super().__aexit__(exc_type, exc_value, traceback)
+        finally:
+            with anyio.CancelScope(shield=True):
+                cancelled = await drain_task(asyncio.gather(*self.run_tasks))
+                await self.session_tailer.shutdown()
+                await self.ink.close()
+                self.bridge_contexts.clear()
+                for future in list(self.pendings.values()):
                     future.cancel()
-            self.pendings.clear()
-            await self.revoke_runtime_keys()
-        if cancelled:
-            raise asyncio.CancelledError
+                self.pendings.clear()
+                await self.revoke_runtime_keys()
+            if cancelled:
+                raise asyncio.CancelledError
 
     async def _await_human(
         self,

@@ -19,7 +19,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastmcp.server.http import StarletteWithLifespan
 from pydantic import AwareDatetime, SecretStr
-from pydantic_ai._utils import now_utc
 from rich.color import Color
 from rich.style import Style
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -45,29 +44,11 @@ from octomate.mcp.base import KnownBearers
 from octomate.mcp.gateway import served_session
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_mcp
 from octomate.nerve import Nerves
-from octomate.reflex import (
-    ReflexDeps,
-    ReflexGraphResult,
-    ReflexState,
-    run_reflex,
-)
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.mcp import OAuthMcp
 from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import ProfileInfo, User
-from octomate.signals import (
-    AwakeSignal,
-    CommandSignal,
-    DeferredActionBatchResponse,
-    DrivenGatewaySignal,
-    NativeGatewaySignal,
-    StillAwake,
-    SummonSignal,
-    UserMessageSignal,
-)
-from octomate.telemetry import octomate_logfire
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.channel import ChannelTentacle
@@ -165,13 +146,9 @@ class Octomate(FastAPI):
     # the typed views below are readings of this dict, taken fresh each time: a
     # router builder reads `channels` while `connect` is still mounting.
     tentacles: dict[str, Tentacle] = field(default_factory=dict)
-    # The task of the reflex awake on each thread, by the thread its kick was asked
-    # on: one at a time, so what a thread hears between waking and falling asleep
-    # is one reflex's.
-    awakes: dict[ThreadKey, asyncio.Task[ReflexGraphResult]] = field(
-        default_factory=dict, init=False
-    )
-    # When each of those reflexes woke, for a reader that opens mid-kick.
+    # Accepted reflexes by original surface: admission state and live activity time.
+    # TODO: Move admission locking to shared coordination before supporting core
+    # replicas; this in-memory map cannot enforce one reflex per thread across them.
     awake_since: dict[ThreadKey, AwareDatetime] = field(
         default_factory=dict, init=False
     )
@@ -304,6 +281,8 @@ class Octomate(FastAPI):
         if tentacle.id in self.tentacles:
             raise ValueError(f"tentacle {tentacle.id!r} already connected")
         tentacle.octomate = self
+        if isinstance(tentacle, AgentTentacle | ChannelTentacle):
+            tentacle.nerves = self.nerves
         tentacle.log_color = tentacle.brand_color or next(self.log_styles)
         self.tentacles[tentacle.id] = tentacle
         if isinstance(tentacle, McpTentacle):
@@ -327,109 +306,6 @@ class Octomate(FastAPI):
                 return tentacle.id, tentacle.log_color
         tag = short_log_name(logger_name)
         return tag, SHARED_LOG_STYLES.get(tag) or muted_log_style(tag)
-
-    async def kick(self, signal: AwakeSignal) -> asyncio.Task[ReflexGraphResult] | None:
-        """Wake the reflex on a user message turn or deferred response, unless the
-        response answers a live request, which goes to the run waiting on it and
-        wakes nothing. Returns once the reflex holds its thread, with the task it
-        runs in. What it does is published on the nerve as it goes, on a stream
-        opened on the thread it was asked on. A thread holds one reflex at a
-        time: a kick asked on one whose reflex is still awake is refused with
-        `StillAwake`, but for an answer to a suspended run, which waits for that
-        reflex to fall asleep."""
-        with octomate_logfire.span(
-            "kick {signal_type}", signal_type=type(signal).__name__
-        ) as span:
-            origin: ChannelAddress | None = None
-            match signal:
-                case UserMessageSignal() if signal:
-                    origin = signal.address
-                    span.set_attribute("channel_id", origin.channel_tentacle_id)
-                    span.set_attribute("conversation_address", str(origin))
-                case CommandSignal():
-                    origin = signal.context.address
-                case DrivenGatewaySignal():
-                    origin = signal.source
-                case SummonSignal():
-                    origin = signal.destination
-                case NativeGatewaySignal():
-                    origin = signal.source
-                    span.set_attribute("agent_id", signal.agent_id)
-                    span.set_attribute("action", signal.decision.action)
-                case DeferredActionBatchResponse():
-                    batch = await self.deferred_actions.get_batch(signal.batch_id)
-                    origin = batch.source_address
-                    span.set_attribute("batch_id", str(signal.batch_id))
-            if (
-                isinstance(signal, DeferredActionBatchResponse)
-                and (agent_id := await self.deliver_live_response(signal)) is not None
-            ):
-                span.set_attribute("resolved_live", agent_id)
-                return None
-            if origin is None:
-                raise ValueError("A kick names no thread to wake on.")
-            thread = ThreadKey.from_address(origin)
-            # TODO: hand the answer to the reflex awake there, not wait it out. Lark
-            # and Discord settle a card before its answer is kicked, so a refused
-            # answer would be lost.
-            while (
-                isinstance(signal, DeferredActionBatchResponse)
-                and thread in self.awakes
-            ):
-                await asyncio.wait({self.awakes[thread]})
-            if thread in self.awakes:
-                raise StillAwake()
-
-            async def reflex() -> ReflexGraphResult:
-                async with self.nerves.events.publish(origin, retain=True) as impulses:
-                    deps = ReflexDeps(
-                        workspaces=self.workspaces,
-                        agents=self.agents,
-                        channels=self.channels,
-                        conversation_manager=self.conversations,
-                        thread_manager=self.threads,
-                        action_manager=self.deferred_actions,
-                        gateway=self.gateway,
-                        impulses=impulses,
-                    )
-                    try:
-                        return await run_reflex(
-                            signal, origin=origin, state=ReflexState(), deps=deps
-                        )
-                    finally:
-                        # Nothing sent on the stream is heard before this task next
-                        # yields: the thread is let go before the reflex is heard
-                        # falling asleep, so whoever hears it can kick there again.
-                        del self.awakes[thread]
-                        del self.awake_since[thread]
-
-            def release(task: asyncio.Task[ReflexGraphResult]) -> None:
-                # Cancellation before the coroutine starts never enters its finally.
-                if self.awakes.get(thread) is task:
-                    del self.awakes[thread]
-                    del self.awake_since[thread]
-
-            self.awakes[thread] = asyncio.create_task(reflex())
-            self.awake_since[thread] = now_utc()
-            self.awakes[thread].add_done_callback(release)
-            return self.awakes[thread]
-
-    async def deliver_live_response(
-        self, response: DeferredActionBatchResponse
-    ) -> str | None:
-        """Return the live recipient's id; only an explicit resume batch returns None."""
-        batch = await self.deferred_actions.get_batch(response.batch_id)
-        if batch.response_mode == "resume":
-            return None
-        agent = self.agents.get(batch.agent_tentacle_id)
-        if agent is None or not agent.in_process:
-            raise RuntimeError("The agent for this live request is unavailable")
-        future = agent.pendings.get(response.batch_id)
-        if future is None:
-            raise RuntimeError("This live request is no longer awaiting a response")
-        if not future.done():
-            future.set_result(response)
-        return agent.id
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI) -> AsyncGenerator[dict[str, Octomate]]:
@@ -525,7 +401,7 @@ class Octomate(FastAPI):
         octoate_mcp = octomate_mcp(
             served_session(self),
             self.threads,
-            kick=self.kick,
+            nerves=self.nerves,
             bearers=self.bearers,
             manager=self.mcp,
             conversations=self.conversations,

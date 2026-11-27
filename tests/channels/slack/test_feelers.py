@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from pydantic import UUID7, JsonValue, TypeAdapter
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
+from octomate.nerve import Nerves
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
@@ -19,7 +20,7 @@ from octomate.schemas.deferred import (
     DeferredQuestion,
     QuestionRequest,
 )
-from octomate.signals import DeferredActionBatchResponse
+from octomate.signals import DeferredActionBatchResponse, Signal
 from octomate.tentacles.slack.base import SlackTentacle
 from octomate.tentacles.slack.feelers.actions import SlackBlockAction
 from octomate.tentacles.slack.feelers.approvals import (
@@ -48,6 +49,7 @@ from octomate.tentacles.slack.schema import (
 )
 from octomate.types.json import JsonObject
 from tests.channels.slack.fakes import FakeSlackBlocksInk
+from tests.support.channels import CallbackActions, RecordingSignals
 
 JsonObjectAdapter = TypeAdapter(JsonObject)
 
@@ -130,13 +132,13 @@ def _loaded_json_object(value: str) -> JsonObject:
 
 @dataclass
 class FakeOctomate:
-    kicks: list[DeferredActionBatchResponse] = field(default_factory=list)
-    events: list[str] | None = None
+    kicks: list[Signal] = field(default_factory=list)
+    events: list[str] = field(default_factory=list)
+    deferred_actions: CallbackActions = field(default_factory=CallbackActions)
+    nerves: Nerves = field(init=False)
 
-    async def kick(self, signal: DeferredActionBatchResponse) -> None:
-        self.kicks.append(signal)
-        if self.events is not None:
-            self.events.append("kick")
+    def __post_init__(self) -> None:
+        self.nerves = Nerves(signals=RecordingSignals(self.kicks, self.events))
 
 
 async def _ack() -> None:
@@ -307,14 +309,15 @@ def test_slack_question_card_holds_every_question_and_one_submit() -> None:
 
 async def test_slack_callbacks_leave_card_updates_to_persisted_events() -> None:
     ink = FakeSlackBlocksInk()
-    octomate = FakeOctomate()
     events: list[str] = []
+    octomate = FakeOctomate(events=events)
     ink.events = events
     octomate.events = events
     channel = object.__new__(SlackTentacle)
     channel.id = "slack"
     channel.ink = cast(SlackInk, ink)
     channel.octomate = cast(Octomate, octomate)
+    channel.nerves = octomate.nerves
     approval = _approval()
     questions = [_question(batch_id=_batch_id(approval), question="Ship it?")]
     approval_buttons = _json_objects(approval_blocks([approval])[-1]["elements"])
@@ -377,12 +380,13 @@ async def test_rejected_slack_response_leaves_card_unchanged(
 ) -> None:
     ink = FakeSlackBlocksInk()
     octomate = FakeOctomate()
-    kick = AsyncMock(side_effect=error)
-    monkeypatch.setattr(octomate, "kick", kick)
+    kick = Mock(side_effect=error)
+    monkeypatch.setattr(octomate.nerves.signals, "dispatch", kick)
     channel = object.__new__(SlackTentacle)
     channel.id = "slack"
     channel.ink = cast(SlackInk, ink)
     channel.octomate = cast(Octomate, octomate)
+    channel.nerves = octomate.nerves
     ack = AsyncMock()
 
     if approval:
@@ -408,7 +412,7 @@ async def test_rejected_slack_response_leaves_card_unchanged(
         await submit
 
     ack.assert_awaited_once()
-    kick.assert_awaited_once()
+    kick.assert_called_once()
     assert ink.updates == []
 
 
@@ -419,6 +423,7 @@ async def test_slack_approval_blocks_advance_through_multiple_approvals() -> Non
     channel.id = "slack"
     channel.ink = cast(SlackInk, ink)
     channel.octomate = cast(Octomate, octomate)
+    channel.nerves = octomate.nerves
     first = _approval()
     second = _approval(batch_id=_batch_id(first))
 
@@ -464,6 +469,7 @@ async def test_slack_radio_choice_submits_selected_answer() -> None:
     channel.id = "slack"
     channel.ink = cast(SlackInk, ink)
     channel.octomate = cast(Octomate, octomate)
+    channel.nerves = octomate.nerves
     question = _question(
         question="Ocean zone?",
         choices=["Coral Reef", "Kelp Forest"],
@@ -495,6 +501,7 @@ async def test_slack_radio_choice_submits_selected_answer() -> None:
         answers={question.id: "Kelp Forest"},
     )
     assert ink.updates == []
+    assert isinstance(octomate.kicks[0], DeferredActionBatchResponse)
     blocks = submitted_blocks([question], octomate.kicks[0].answers)
     submitted_text = _json_object(blocks[0]["text"])["text"]
     assert isinstance(submitted_text, str)
@@ -509,6 +516,7 @@ async def test_slack_multi_select_question_submits_its_checked_boxes() -> None:
     channel.id = "slack"
     channel.ink = cast(SlackInk, ink)
     channel.octomate = cast(Octomate, octomate)
+    channel.nerves = octomate.nerves
     question = _question(
         question="Which zones?",
         choices=["Coral Reef", "Kelp Forest", "Open Ocean"],
@@ -547,6 +555,7 @@ async def test_slack_multi_select_question_submits_its_checked_boxes() -> None:
         answers={question.id: ["Coral Reef", "Open Ocean"]},
     )
     assert ink.updates == []
+    assert isinstance(octomate.kicks[0], DeferredActionBatchResponse)
     blocks = submitted_blocks([question], octomate.kicks[0].answers)
     submitted_text = _json_object(blocks[0]["text"])["text"]
     assert isinstance(submitted_text, str)
@@ -560,6 +569,7 @@ async def test_slack_submitted_question_summary_strips_stale_progress_suffix() -
     channel.id = "slack"
     channel.ink = cast(SlackInk, ink)
     channel.octomate = cast(Octomate, octomate)
+    channel.nerves = octomate.nerves
     question = _question(
         question=(
             "If you could have any animal as a sidekick, which one would it be? "
@@ -589,6 +599,7 @@ async def test_slack_submitted_question_summary_strips_stale_progress_suffix() -
     )
 
     assert ink.updates == []
+    assert isinstance(octomate.kicks[0], DeferredActionBatchResponse)
     blocks = submitted_blocks([question], octomate.kicks[0].answers)
     submitted_text = _json_object(blocks[0]["text"])["text"]
     assert isinstance(submitted_text, str)
@@ -604,6 +615,7 @@ async def test_slack_submit_reads_every_question_at_once() -> None:
     channel.id = "slack"
     channel.ink = cast(SlackInk, ink)
     channel.octomate = cast(Octomate, octomate)
+    channel.nerves = octomate.nerves
     first = _question(
         question="Ocean zone?",
         choices=["Coral Reef", "Kelp Forest"],
@@ -647,6 +659,7 @@ async def test_slack_submit_reads_every_question_at_once() -> None:
         )
     ]
     assert ink.updates == []
+    assert isinstance(octomate.kicks[0], DeferredActionBatchResponse)
     blocks = submitted_blocks([first, second], octomate.kicks[0].answers)
     submitted_text = _json_object(blocks[0]["text"])["text"]
     assert isinstance(submitted_text, str)
@@ -663,6 +676,7 @@ async def test_slack_question_submit_ignores_invalid_batch_id() -> None:
     channel.id = "slack"
     channel.ink = cast(SlackInk, ink)
     channel.octomate = cast(Octomate, octomate)
+    channel.nerves = octomate.nerves
     question = _question(question="Ship it?")
     submit_buttons = _json_objects(ask_question_blocks([question])[-1]["elements"])
     submit_state = _loaded_json_object(_json_string(submit_buttons[0]["value"]))

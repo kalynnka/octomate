@@ -36,6 +36,7 @@ from octomate import Octomate
 from octomate.config.base import OctomateConfig
 from octomate.events import ActionBatchEvent
 from octomate.managers.gateway import OctomateSession
+from octomate.nerve import Nerves
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     DeferredActionCollection,
@@ -91,6 +92,7 @@ def _inkling_agent() -> Agent[None, InklingOutput]:
             AskCapability(),
             *core_tool_capabilities(
                 OctomateSession(
+                    nerves=Nerves(),
                     channel_routes={},
                     current_agent_id="inkling",
                     users=threads.users,
@@ -518,6 +520,7 @@ async def test_a_teleport_follows_the_approval_posture(
     )
     suspender = StubSuspender()
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id="inkling",
         conversation_id=conversations.store[(_THREAD, "inkling", "")].id,
@@ -623,6 +626,7 @@ async def test_a_question_batched_with_a_teleport_suspends_whole() -> None:
             AskCapability(),
             *core_tool_capabilities(
                 OctomateSession(
+                    nerves=Nerves(),
                     channel_routes={},
                     current_agent_id="inkling",
                     channels={"im": FakeChannelTentacle()},

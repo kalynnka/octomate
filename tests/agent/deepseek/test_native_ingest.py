@@ -619,7 +619,7 @@ async def test_live_turn_restarts_then_settles_and_committed_replay_is_silent() 
             message for message in thread.messages if message.direction == "outbound"
         ]
         assert ended.thread_message_id == reply.id
-        assert not octomate.awakes
+        assert not octomate.awake_since
         await stream_events(tailer, octomate.nerves.events, records)
         assert held(live) == []
 

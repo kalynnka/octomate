@@ -73,6 +73,9 @@ from octomate.dependencies import (
     user_manager,
     workspace_manager,
 )
+from octomate.dependencies import (
+    nerves as nervous_system,
+)
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager, GatewayRefusal, OctomateSession
@@ -80,7 +83,7 @@ from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import WorkspaceManager
-from octomate.nerve import ThreadTopic, UserTopic
+from octomate.nerve import AgentTopic, Nerves, ThreadTopic, UserTopic
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import DeferredActionBatch
@@ -227,6 +230,7 @@ async def thread_gateway(
     users: Annotated[UserManager, Depends(user_manager)],
     threads: Annotated[ThreadManager, Depends(thread_manager)],
     workspaces: Annotated[WorkspaceManager, Depends(workspace_manager)],
+    nerves: Annotated[Nerves, Depends(nervous_system)],
 ) -> OctomateSession:
     agent_id = thread.active_agent_tentacle_id
     if agent_id is None:
@@ -257,6 +261,7 @@ async def thread_gateway(
     address = thread.key.address(profile.channel_user_id)
     return OctomateSession(
         channel_routes=gateway.available_routes(app.channels, app.agents),
+        nerves=nerves,
         current_agent_id=agent_id,
         channels=app.channels,
         agents=app.agents,
@@ -318,6 +323,7 @@ def build_trunkline_router(
     async def teleport_thread(
         body: TeleportBody,
         session: Annotated[OctomateSession, Depends(thread_gateway)],
+        nerves: Annotated[Nerves, Depends(nervous_system)],
     ) -> None:
         prompt = body.get("prompt")
         # Only a thread here takes a message from this console.
@@ -332,7 +338,8 @@ def build_trunkline_router(
                 hint=body["hint"],
                 prompt=prompt,
             )
-            await octomate.kick(session.thread_operation())
+            signal = session.thread_operation()
+            nerves.signals.dispatch(AgentTopic(signal.agent_id), signal)
         except (GatewayRefusal, StillAwake) as exc:
             raise HTTPException(409, str(exc)) from exc
 
@@ -340,6 +347,7 @@ def build_trunkline_router(
     async def summon_thread(
         body: SummonBody,
         session: Annotated[OctomateSession, Depends(thread_gateway)],
+        nerves: Annotated[Nerves, Depends(nervous_system)],
     ) -> None:
         try:
             await session.summon(
@@ -350,7 +358,8 @@ def build_trunkline_router(
                 brief=body["brief"],
                 effort=body.get("effort"),
             )
-            await octomate.kick(session.thread_operation())
+            signal = session.thread_operation()
+            nerves.signals.dispatch(AgentTopic(signal.agent_id), signal)
         except (GatewayRefusal, StillAwake) as exc:
             raise HTTPException(409, str(exc)) from exc
 
@@ -707,6 +716,7 @@ def build_trunkline_router(
     )
     async def resolve_batch(
         batch_id: UUID7,
+        nerves: Annotated[Nerves, Depends(nervous_system)],
         user: Annotated[User, Depends(current_user)],
         threads: Annotated[ThreadManager, Depends(thread_manager)],
         conversations: Annotated[ConversationManager, Depends(conversation_manager)],
@@ -741,19 +751,20 @@ def build_trunkline_router(
             raise HTTPException(status_code=409, detail=f"batch already {batch.status}")
         if (
             batch.response_mode == "resume"
-            and ThreadKey.from_address(batch.source_address) in octomate.awakes
+            and ThreadKey.from_address(batch.source_address) in octomate.awake_since
         ):
             # The kick would wait out the turn running there, holding this
             # request open for as long.
             raise HTTPException(status_code=409, detail=str(StillAwake()))
-        await octomate.kick(
+        nerves.signals.dispatch(
+            AgentTopic(batch.agent_tentacle_id),
             DeferredActionBatchResponse(
                 batch_id=batch_id,
                 responder_id=str(user.id),
                 answers=answers,
                 approvals=approvals,
                 allow_session=allow_session,
-            )
+            ),
         )
 
     return router

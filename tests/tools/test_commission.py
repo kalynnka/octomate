@@ -36,6 +36,7 @@ from octomate.managers.gateway import (
     GatewayRefusal,
     OctomateSession,
 )
+from octomate.nerve import Nerves
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import (
@@ -106,6 +107,7 @@ async def _gate(
     for agent in agents.values():
         agent.conversations = conversations
     gate = OctomateSession(
+        nerves=Nerves(),
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id="inkling",
         agents=agents,

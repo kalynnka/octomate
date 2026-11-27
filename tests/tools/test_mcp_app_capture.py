@@ -91,7 +91,7 @@ async def app_turn(in_memory_engine: AsyncEngine) -> AppTurn:
         thread_id=thread.id,
         conversation_address=thread.key.address("alice"),
         threads=host.threads,
-        nerve=host.nerves.events,
+        nerves=host.nerves,
         users=host.users,
         workspaces=host.workspaces,
     )

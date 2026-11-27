@@ -35,7 +35,7 @@ from octomate.tentacles.lark.feelers.questions import (
 from octomate.tentacles.lark.ink import LarkInk
 from octomate.types.json import JsonObject
 from tests.channels.lark.fakes import FakeLarkCardsInk
-from tests.support.channels import FakeOctomate
+from tests.support.channels import CallbackActions, FakeOctomate
 
 JsonObjectAdapter = TypeAdapter(JsonObject)
 
@@ -244,6 +244,8 @@ async def test_lark_card_callbacks_emit_deferred_responses() -> None:
     channel = object.__new__(LarkTentacle)
     channel.id = "lark"
     channel.octomate = octomate
+    channel.nerves = octomate.nerves
+    octomate.deferred_actions = CallbackActions()
     approval = _approval()
     question = _question(batch_id=_batch_id(approval), question="Proceed?")
 
@@ -332,6 +334,8 @@ async def test_lark_submit_sends_every_question_in_one_response() -> None:
     channel = object.__new__(LarkTentacle)
     channel.id = "lark"
     channel.octomate = octomate
+    channel.nerves = octomate.nerves
+    octomate.deferred_actions = CallbackActions()
     first = _question(question="Q1", choices=["a", "b"])
     second = _question(batch_id=_batch_id(first), question="Q2", position=1)
 

@@ -26,13 +26,14 @@ from pydantic import UUID7, JsonValue, TypeAdapter
 from uuid_utils.compat import uuid7
 
 from octomate.events import ActionBatchEvent, ReflexAsleepEvent
-from octomate.nerve import Impulse, ThreadTopic
+from octomate.nerve import AgentTopic, Impulse, Nerves, ThreadTopic
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import AgentRouteKey
 from octomate.schemas.user import UserProfile
 from octomate.signals import (
+    AsleepSignal,
     DeferredActionBatchResponse,
     QuestionAnswer,
     StillAwake,
@@ -47,7 +48,6 @@ from octomate.tentacles.acp.adapter import (
 from octomate.tentacles.acp.client import AcpProvider
 
 if TYPE_CHECKING:
-    from octomate.reflex.state import ReflexGraphResult
     from octomate.tentacles.acp.channel import AcpChannelTentacle
 
 
@@ -58,7 +58,7 @@ class AcpSession:
     thread: Thread
     settings_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     prompt_scope: CancelScope | None = None
-    turn_task: asyncio.Task[ReflexGraphResult] | None = None
+    running: bool = False  # A dispatched prompt has not emitted its asleep event.
 
     @property
     def selection(self) -> AgentRouteKey:
@@ -82,6 +82,7 @@ class AcpBroker:
     tentacle: AcpChannelTentacle
     sender: UserProfile
     connection: Connection
+    nerves: Nerves
     initialized: bool = False
     capabilities: schema.ClientCapabilities = field(
         default_factory=lambda: schema.ClientCapabilities()
@@ -466,7 +467,7 @@ class AcpBroker:
     async def prompt(self, request: schema.PromptRequest) -> schema.PromptResponse:
         app = self.tentacle.octomate
         session = self.session(request.session_id)
-        if session.prompt_scope is not None or session.thread.key in app.awakes:
+        if session.prompt_scope is not None or session.thread.key in app.awake_since:
             raise StillAwake()
         segments = prompt_segments(request)
         if session.selection not in self.routes.values():
@@ -482,12 +483,24 @@ class AcpBroker:
         )
 
     async def settle(self, session: AcpSession) -> None:
-        """Await this connection's graph task even when its caller was cancelled."""
+        """Interrupt via the signal nerve and observe cleanup before detaching."""
+        if not session.running:
+            return
+        app = self.tentacle.octomate
         with CancelScope(shield=True):
-            if session.turn_task is not None:
-                session.turn_task.cancel()
-                await asyncio.gather(session.turn_task, return_exceptions=True)
-                session.turn_task = None
+            async with self.nerves.events.subscribe(
+                ThreadTopic(session.thread.key), replay=0
+            ) as events:
+                if session.thread.key in app.awake_since:
+                    for agent_id in app.agents:
+                        self.nerves.signals.deliver(
+                            AgentTopic(agent_id),
+                            AsleepSignal(thread=session.thread.key),
+                        )
+                    async for impulse in events:
+                        if isinstance(impulse.event, ReflexAsleepEvent):
+                            break
+                session.running = False
 
     async def run_prompt(
         self, session: AcpSession, segments: list[MessageSegment]
@@ -524,16 +537,19 @@ class AcpBroker:
         signal: UserMessageSignal | DeferredActionBatchResponse,
         translator: AcpTranslator,
     ) -> DeferredActionBatchResponse | None:
-        async with self.tentacle.nerve.subscribe(
+        async with self.nerves.events.subscribe(
             ThreadTopic(session.thread.key)
         ) as stream:
-            task = await self.tentacle.octomate.kick(signal)
-            if task is None:
-                raise RuntimeError("Expected a new reflex turn")
-            session.turn_task = task
+            recipient = session.selection.agent_id
+            if isinstance(signal, DeferredActionBatchResponse):
+                batch = await self.tentacle.octomate.deferred_actions.get_batch(
+                    signal.batch_id
+                )
+                recipient = batch.agent_tentacle_id
+            self.nerves.signals.dispatch(AgentTopic(recipient), signal)
+            session.running = True
             response = await self.read_events(session, stream, translator)
-            await task
-            session.turn_task = None
+            session.running = False
         return response
 
     async def read_events(
@@ -553,7 +569,9 @@ class AcpBroker:
                 answer = await self.answer(str(session.thread.id), event)
                 batch = await app.deferred_actions.get_batch(answer.batch_id)
                 if batch.response_mode == "live":
-                    await app.kick(answer)
+                    self.nerves.signals.dispatch(
+                        AgentTopic(batch.agent_tentacle_id), answer
+                    )
                 else:
                     response = answer
             for update in translator.translate(event):

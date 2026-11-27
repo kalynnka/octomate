@@ -15,7 +15,7 @@ from fastmcp import Client
 
 from octomate.events import MessageSentEvent
 from octomate.managers.gateway import OctomateSession
-from octomate.nerve import ChannelTopic, Nerve
+from octomate.nerve import ChannelTopic, Nerves
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
     AtData,
@@ -68,7 +68,7 @@ async def test_send_tool_accepts_reply_and_mention() -> None:
         current_agent_id="inkling",
         channels={"im": FakeChannelTentacle()},
         conversation_address=_key(),
-        nerve=Nerve(),
+        nerves=Nerves(),
         users=threads.users,
         threads=threads,
         workspaces=a_workspace_manager(),
@@ -79,9 +79,8 @@ async def test_send_tool_accepts_reply_and_mention() -> None:
         MarkdownSegment(data={"text": "over to you"}),
     ]
 
-    assert session.nerve is not None
     async with (
-        session.nerve.subscribe(ChannelTopic("im")) as events,
+        session.nerves.events.subscribe(ChannelTopic("im")) as events,
         Client(core_tool_server(session)) as client,
     ):
         await client.call_tool(

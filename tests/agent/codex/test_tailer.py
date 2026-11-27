@@ -641,7 +641,7 @@ async def test_live_turn_restarts_then_settles_and_committed_replay_is_silent(
                 assert all(event.event.event_kind != "run_ended" for event in events)
         else:
             pytest.fail("a committed replay published events")
-    assert not octomate.awakes
+    assert not octomate.awake_since
 
 
 @pytest.mark.usefixtures("db")

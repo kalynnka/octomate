@@ -57,6 +57,7 @@ from octomate.mcp.server import (
     tentacles_mcp,
 )
 from octomate.mcp.transport import mcp_http_client
+from octomate.nerve import Nerves
 from octomate.oauth.flows import DeviceAuthorizationFlow, OAuthTokenExchange
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.oauth import (
@@ -183,6 +184,7 @@ def a_turn(profile: UserProfile | None = None) -> OctomateSession:
     resolves to."""
     threads = FakeThreadManager()
     return OctomateSession(
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id="inkling",
         user_profile=profile,

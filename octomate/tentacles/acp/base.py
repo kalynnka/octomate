@@ -107,6 +107,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         super().__init__(
             id=id,
             octomate=octomate,
+            nerves=octomate.nerves,
             commands=octomate.commands,
             projects=octomate.projects,
             threads=octomate.threads,

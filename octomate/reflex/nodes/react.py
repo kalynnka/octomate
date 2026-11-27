@@ -37,7 +37,20 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
     ) -> React | Summon | Scheme | Teleport | End[ReflexGraphResult]:
-        """Run with the core's shared finalization."""
+        """Dispatch to the owning tentacle, then finalize only the run executed here."""
+        decision = ctx.state.decision
+        if (
+            ctx.deps.executor is not None
+            and decision is not None
+            and ctx.deps.executor != decision.agent_id
+        ):
+            return End(
+                await ctx.deps.handoff(
+                    ctx.state,
+                    resume_batch_id=self.resume_batch_id,
+                    tool_results=self.tool_results,
+                )
+            )
         async with ctx.deps.runtime.finalizing(ctx):
             return await self.react(ctx)
 

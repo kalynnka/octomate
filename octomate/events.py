@@ -69,7 +69,7 @@ from pydantic_ai.usage import RunUsage
 
 from octomate.schemas.annotations import MessageAgent
 from octomate.schemas.auth import LinkProfileAuthorization
-from octomate.schemas.commands import CommandOutcome
+from octomate.schemas.commands import CommandOutcome, CommandOutcomeEvent
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredActionBatch,
@@ -137,6 +137,10 @@ class SystemMessageEvent(BaseModel):
 class ReflexAwakeEvent(BaseModel):
     """A kick's first word: the reflex woken, before anything it does."""
 
+    request_id: UUID7 | None = Field(
+        default=None,
+        description="Command signal publication starting this reflex, when applicable.",
+    )
     event_kind: Literal["reflex_awake"] = "reflex_awake"
 
 
@@ -145,6 +149,10 @@ class ReflexAsleepEvent(BaseModel):
     asleep again, every run and move of the kick over, finished or failed. What
     a console waits for before it reads the thread again."""
 
+    request_id: UUID7 | None = Field(
+        default=None,
+        description="Command signal publication completed by this reflex, when applicable.",
+    )
     event_kind: Literal["reflex_asleep"] = "reflex_asleep"
     outcome: KickOutcome | None = Field(
         default=None,
@@ -656,6 +664,7 @@ type WireEvent = (
     | ReflexAsleepEvent
     | ReflexPhaseChangedEvent
     | ThreadEvent
+    | CommandOutcomeEvent
     | RunStartedEvent
     | HabitatPreparationEvent
     | RunActivityChangedEvent

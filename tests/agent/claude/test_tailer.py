@@ -418,7 +418,7 @@ async def test_streams_live_events_to_a_consumer() -> None:
             if message.direction == "inbound"
         )
         assert ended.thread_message_id in [message.id for message in thread.messages]
-        assert not octomate.awakes
+        assert not octomate.awake_since
         await stream_in(tailer, octomate.nerves.events, TURN_ONE)
         assert held(live) == []
 

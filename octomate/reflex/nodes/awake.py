@@ -4,7 +4,7 @@ transition."""
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from pydantic_graph import BaseNode, End, GraphRunContext
 
@@ -73,17 +73,57 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             target = ResponseTarget(
                 channel_id=destination.channel_tentacle_id,
                 address=destination,
-                mode="sub",
+                mode=signal.target_mode,
             )
             ctx.state.source_target = target
             ctx.state.target = target
             ctx.state.user_profile = signal.user_profile
             ctx.state.decision = signal.decision
-            ctx.state.run_name = "summon"
+            ctx.state.run_name = signal.run_name
+            ctx.state.command_request_id = signal.command_request_id
             ctx.state.handoff = PendingHandoff(
                 source_agent_tentacle_id=signal.agent_id,
                 source_conversation_id=signal.source_conversation_id,
+                source_run_id=signal.source_run_id,
+                source_model_message_id=signal.source_model_message_id,
             )
+            if signal.thread_id is not None:
+                if signal.source_address is None:
+                    raise ValueError("A continuing summon requires its source address")
+                thread = await ctx.deps.thread_manager.get(
+                    signal.thread_id, with_messages=False
+                )
+                if thread is None:
+                    raise ValueError("The continuing summon's thread no longer exists")
+                source_channel = ctx.deps.channels.get(
+                    signal.source_address.channel_tentacle_id
+                )
+                target_channel = ctx.deps.channels.get(destination.channel_tentacle_id)
+                ctx.state.thread = thread
+                ctx.state.source_target = ResponseTarget(
+                    channel_id=signal.source_address.channel_tentacle_id,
+                    address=signal.source_address,
+                    thread_strategy=source_channel.thread_strategy
+                    if source_channel
+                    else "main_only",
+                )
+                ctx.state.target = replace(
+                    target,
+                    thread_strategy=target_channel.thread_strategy
+                    if target_channel
+                    else "main_only",
+                )
+                ctx.state.user_prompt = signal.user_prompt
+                ctx.state.source_thread_address = signal.source_thread_address
+                ctx.state.source_thread_message_ids = signal.source_thread_message_ids
+                if not signal.record_handoff:
+                    ctx.state.handoff = None
+                return React(
+                    resume_batch_id=signal.resume_batch_id,
+                    tool_results=signal.tool_results,
+                )
+            if signal.user_profile is None:
+                raise ValueError("An independent summon requires its requesting user")
             ctx.state.thread = await ctx.deps.thread_manager.ensure(destination)
             await ctx.deps.thread_manager.record_outbound(
                 ctx.state.thread,

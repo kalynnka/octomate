@@ -159,7 +159,7 @@ def test_interrupt_remains_a_control_not_a_second_run_request() -> None:
     assert isinstance(signal, BaseSignal)
     assert not isinstance(signal, AwakeSignal)
     assert signal_adapter.validate_json(signal_adapter.dump_json(signal)) == signal
-    with pytest.raises(ValidationError, match="invocation_id"):
+    with pytest.raises(ValidationError, match="exactly one invocation or thread"):
         signal_adapter.validate_python({"event_kind": "asleep_signal"})
 
 

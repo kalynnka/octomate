@@ -10,6 +10,7 @@ from collections import Counter
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import (
     AbstractAsyncContextManager,
+    AsyncExitStack,
     aclosing,
     asynccontextmanager,
     nullcontext,
@@ -25,6 +26,7 @@ import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from octomate_protocol.stream import TranscriptKept, TranscriptOffsets
+from opentelemetry import trace
 from pydantic import UUID7
 from pydantic_ai import (
     AgentCapability,
@@ -35,6 +37,7 @@ from pydantic_ai import (
     ToolDenied,
     UsageLimits,
 )
+from pydantic_ai._utils import now_utc
 from pydantic_ai.agent.abstract import (
     AgentInstructions,
     AgentMetadata,
@@ -49,10 +52,13 @@ from pydantic_ai.toolsets import AbstractToolset
 from starlette.datastructures import Headers
 
 from octomate.config.agents import AgentConfig, AgentRouteModelName
+from octomate.events import RunErrorEvent
+from octomate.fibers import MemoryFiber
 from octomate.habitat import Habitat
 from octomate.managers.conversation import ConversationNotFound
 from octomate.managers.files import FileOffsetConflict
 from octomate.managers.habitat import Invocation
+from octomate.nerve import AgentTopic, ChannelTopic, Impulse, Nerves, ThreadTopic
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.auth import IssuedApiKey, UserApiKey
 from octomate.schemas.commands import (
@@ -62,6 +68,7 @@ from octomate.schemas.commands import (
     CommandError,
     CommandIntent,
     CommandOutcome,
+    CommandOutcomeEvent,
 )
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.project import Project
@@ -69,7 +76,18 @@ from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import AgentRoute, Claim
 from octomate.schemas.user import UserProfile
-from octomate.signals import DeferredActionBatchResponse
+from octomate.signals import (
+    AsleepSignal,
+    AwakeSignal,
+    CommandSignal,
+    DeferredActionBatchResponse,
+    DrivenGatewaySignal,
+    NativeGatewaySignal,
+    Signal,
+    StillAwake,
+    SummonSignal,
+    UserMessageSignal,
+)
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.stream import ReactEventStream, ReactStreamEvent
 from octomate.types.json import JsonObject
@@ -86,6 +104,7 @@ if TYPE_CHECKING:
     from octomate.managers.project import ProjectManager
     from octomate.managers.thread import ThreadManager
     from octomate.managers.workspaces import WorkspaceManager
+    from octomate.reflex.state import ReflexGraphResult
     from octomate.tentacles.deferred import DeferredSuspender
 
 # The tentacle's output type is whatever its builder's agent produces (a deferring
@@ -125,6 +144,14 @@ class AgentInk:
 class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     """Base class for Octomate agents wrapping pydantic-ai run entrypoints."""
 
+    resources: AsyncExitStack  # Closed after the receiver and active reflexes.
+    nerves: Nerves
+    signals: MemoryFiber[Signal] | None = None
+    sensing_task: asyncio.Task[None] | None = None
+    reflexes: dict[
+        ThreadKey, set[asyncio.Task[ReflexGraphResult | None]]
+    ]  # Owned execution tasks.
+
     ink: AgentInk  # Runtime operations, including a no-op adapter for Octomate history.
     commands: CommandManager
     projects: ProjectManager
@@ -144,6 +171,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         id: str,
         octomate: Octomate,
         *,
+        nerves: Nerves,
         commands: CommandManager,
         projects: ProjectManager,
         threads: ThreadManager,
@@ -152,6 +180,9 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         habitats: HabitatManager,
     ) -> None:
         super().__init__(id=id, octomate=octomate)
+        self.resources = AsyncExitStack()
+        self.nerves = nerves
+        self.reflexes = {}
         self.commands = commands
         self.projects = projects
         self.threads = threads
@@ -485,6 +516,29 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     async def __aenter__(self) -> Self:
         """Enter after the subclass has prepared its models and claims."""
         self.routes = self.build_routes()
+        signals = MemoryFiber[Signal]()
+        self.resources.enter_context(
+            self.nerves.signals.accept(AgentTopic(self.id), signals)
+        )
+
+        async def cancel_reflexes() -> None:
+            tasks = [task for running in self.reflexes.values() for task in running]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        self.resources.push_async_callback(cancel_reflexes)
+        self.signals = signals
+        self.sensing_task = asyncio.create_task(self.sensing(signals))
+
+        def sensed(task: asyncio.Task[None]) -> None:
+            signals.close()
+            if not task.cancelled() and (error := task.exception()) is not None:
+                logging.getLogger(type(self).__module__).error(
+                    "Agent %s signal receiver failed", self.id, exc_info=error
+                )
+
+        self.sensing_task.add_done_callback(sensed)
         return self
 
     async def __aexit__(
@@ -493,7 +547,16 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         exc_value: BaseException | None = None,
         traceback: TracebackType | None = None,
     ) -> None:
-        self.routes = []
+        try:
+            if self.signals is not None:
+                self.signals.close_send()
+            if self.sensing_task is not None:
+                await self.sensing_task
+        finally:
+            self.signals = None
+            self.sensing_task = None
+            self.routes = []
+            await self.resources.__aexit__(exc_type, exc_value, traceback)
 
     @cached_property
     def default_model(self) -> str | None:
@@ -707,6 +770,131 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             thread=thread, conversation=conversation, owner_id=owner_id
         )
 
+    async def sensing(self, signals: MemoryFiber[Signal]) -> None:
+        """Receive signals, apply controls and live answers, and start reflexes."""
+        async for signal in signals:
+            if isinstance(signal, AsleepSignal):
+                if signal.thread is None:
+                    raise NotImplementedError(
+                        "Invocation-addressed interruption is not wired yet"
+                    )
+                for task in self.reflexes.get(signal.thread, set()):
+                    task.cancel()
+                continue
+            batch = (
+                await self.octomate.deferred_actions.get_batch(signal.batch_id)
+                if isinstance(signal, DeferredActionBatchResponse)
+                else None
+            )
+            if (
+                isinstance(signal, DeferredActionBatchResponse)
+                and batch is not None
+                and batch.response_mode != "resume"
+            ):
+                pending = self.pendings.get(batch.id)
+                if pending is not None and not pending.done():
+                    pending.set_result(signal)
+                if pending is not None:
+                    continue
+                origin = ThreadKey.from_address(batch.source_address)
+                impulse = Impulse(
+                    RunErrorEvent(
+                        message="This live request is no longer awaiting a response",
+                        trace_id=format(
+                            trace.get_current_span().get_span_context().trace_id,
+                            "032x",
+                        ),
+                    ),
+                    batch.source_address,
+                    origin=origin,
+                )
+                self.nerves.events.deliver(
+                    ChannelTopic(batch.source_address.channel_tentacle_id), impulse
+                )
+                self.nerves.events.deliver(ThreadTopic(origin), impulse)
+                continue
+            if batch is not None:
+                origin = batch.source_address
+            elif isinstance(signal, UserMessageSignal):
+                origin = signal.address
+            elif isinstance(signal, CommandSignal):
+                origin = signal.context.address
+            elif isinstance(signal, SummonSignal):
+                origin = signal.origin or signal.destination
+            elif isinstance(signal, NativeGatewaySignal | DrivenGatewaySignal):
+                origin = signal.source
+            else:
+                raise ValueError("Unsupported awake signal")
+            if origin is None:
+                raise ValueError("A reflex requires its original surface")
+            thread = ThreadKey.from_address(origin)
+            task = asyncio.create_task(self.reflex(signal, origin=origin))
+            self.reflexes.setdefault(thread, set()).add(task)
+            task.add_done_callback(self.relax)
+
+    async def reflex(
+        self, signal: AwakeSignal, *, origin: ChannelAddress
+    ) -> ReflexGraphResult | None:
+        """Execute a received awake signal with this agent's graph and resources."""
+        # Graph nodes depend on AgentTentacle; load them after this class exists.
+        from octomate.reflex.graph import run_reflex
+        from octomate.reflex.state import ReflexDeps, ReflexState
+
+        host = self.octomate
+        thread = ThreadKey.from_address(origin)
+        if isinstance(signal, DeferredActionBatchResponse):
+            async with self.nerves.events.subscribe(ThreadTopic(thread)) as events:
+                while thread in host.awake_since:
+                    await events.receive()
+        continuation = isinstance(signal, SummonSignal) and signal.thread_id is not None
+        if not continuation and thread in host.awake_since:
+            if isinstance(signal, CommandSignal):
+                refusal = CommandError(status="busy", message=str(StillAwake()))
+                async with self.nerves.events.publish(origin) as events:
+                    await events.send(
+                        Impulse(
+                            CommandOutcomeEvent(
+                                outcome=refusal, request_id=signal.request_id
+                            ),
+                            origin,
+                        )
+                    )
+                return refusal
+            logging.getLogger(type(self).__module__).info(
+                "Thread %s is already awake; leaving input in its ledger", thread
+            )
+            return None
+        if not continuation:
+            host.awake_since[thread] = now_utc()
+        async with self.nerves.events.publish(origin, retain=True) as impulses:
+            return await run_reflex(
+                signal,
+                origin=origin,
+                state=ReflexState(),
+                deps=ReflexDeps(
+                    workspaces=host.workspaces,
+                    agents=host.agents,
+                    channels=host.channels,
+                    conversation_manager=host.conversations,
+                    thread_manager=host.threads,
+                    action_manager=host.deferred_actions,
+                    gateway=host.gateway,
+                    impulses=impulses,
+                    executor=self.id,
+                    origin=origin,
+                ),
+            )
+
+    def relax(self, task: asyncio.Task[ReflexGraphResult | None]) -> None:
+        for thread, running in list(self.reflexes.items()):
+            running.discard(task)
+            if not running:
+                del self.reflexes[thread]
+        if not task.cancelled() and (error := task.exception()) is not None:
+            logging.getLogger(type(self).__module__).error(
+                "Agent %s reflex failed", self.id, exc_info=error
+            )
+
     def needs_invocation(self, descriptor: CommandDescriptor) -> bool:
         """Whether this command runs in a workspace and habitat.
 
@@ -722,7 +910,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         *,
         thread: Thread | None,
     ) -> AbstractAsyncContextManager[Invocation | None]:
-        """Select the resource context core enters for this command.
+        """Select the resource context the reflex enters for this command.
 
         Creating the context does not acquire resources. Core enters it with the
         validated thread and turn owner, then closes it after command consumption.

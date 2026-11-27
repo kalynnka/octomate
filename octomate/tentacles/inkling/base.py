@@ -354,6 +354,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         super().__init__(
             id=id,
             octomate=octomate,
+            nerves=octomate.nerves,
             commands=octomate.commands,
             projects=octomate.projects,
             threads=octomate.threads,
@@ -550,19 +551,21 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         exc_value: BaseException | None = None,
         traceback: TracebackType | None = None,
     ) -> None:
-        await super().__aexit__(exc_type, exc_value, traceback)
-        # Settle warming before the stack unwinds: an exit racing a half-opened
-        # toolset would close sessions the warm task is still entering.
-        if self.warm_task is not None:
-            self.warm_task.cancel()
-            try:
-                await self.warm_task
-            except asyncio.CancelledError:
-                pass
-            self.warm_task = None
-        await self._exit_stack.aclose()
-        with anyio.CancelScope(shield=True):
-            await self.revoke_runtime_keys()
+        try:
+            await super().__aexit__(exc_type, exc_value, traceback)
+        finally:
+            # Settle warming before the stack unwinds: an exit racing a half-opened
+            # toolset would close sessions the warm task is still entering.
+            if self.warm_task is not None:
+                self.warm_task.cancel()
+                try:
+                    await self.warm_task
+                except asyncio.CancelledError:
+                    pass
+                self.warm_task = None
+            await self._exit_stack.aclose()
+            with anyio.CancelScope(shield=True):
+                await self.revoke_runtime_keys()
 
     async def resolve_conversation(
         self,

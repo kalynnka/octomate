@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import Mock
 
 import discord
 import pytest
@@ -14,8 +14,10 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.events import OAuthDeviceAuthorizationEvent
+from octomate.fibers import MemoryFiber
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
+from octomate.nerve import AgentTopic, Nerves
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
@@ -25,7 +27,7 @@ from octomate.schemas.deferred import (
     QuestionRequest,
 )
 from octomate.schemas.triage import SummonDecision
-from octomate.signals import DeferredActionBatchResponse
+from octomate.signals import DeferredActionBatchResponse, Signal
 from octomate.tentacles.discord.feelers.actions import DiscordComponentRouter
 from octomate.tentacles.discord.feelers.approvals import (
     APPROVAL_CUSTOM_ID_TEMPLATE,
@@ -53,6 +55,7 @@ from octomate.tentacles.discord.ink import DiscordInk
 from octomate.tentacles.discord.schema import DiscordOutboundMessage
 from octomate.types.deferred import DeferredResponseMode
 from tests.channels.discord.fakes import a_user
+from tests.support.channels import RecordingSignals
 from tests.support.managers import a_thread
 
 
@@ -171,18 +174,14 @@ def layout_text(view: discord.ui.LayoutView) -> str:
 
 
 class ResolvingOctomate(Octomate):
-    kicks: list[DeferredActionBatchResponse]
+    kicks: list[Signal]
     events: list[str]
 
     def __init__(self, events: list[str]) -> None:
         super().__init__()
         self.kicks = []
         self.events = events
-
-    async def kick(self, signal: DeferredActionBatchResponse) -> None:
-        self.events.append("kick")
-        self.kicks.append(signal)
-        await self.deferred_actions.resolve_batch(signal)
+        self.nerves = Nerves(signals=RecordingSignals(self.kicks, events))
 
 
 def discord_address(*, shared: bool = False) -> ChannelAddress:
@@ -429,7 +428,7 @@ async def test_approval_callback_reloads_after_restart_and_resolves_once(
     events: list[str] = []
     octomate = ResolvingOctomate(events)
     client = discord.Client(intents=discord.Intents.none())
-    DiscordComponentRouter(octomate).bind(client)
+    DiscordComponentRouter(octomate, nerves=octomate.nerves).bind(client)
     interaction = FakeInteraction(client, events)
     custom_id = DiscordApprovalButton(
         batch.id,
@@ -485,7 +484,7 @@ async def test_approval_callback_persists_before_settling_the_message(
     events: list[str] = []
     octomate = ResolvingOctomate(events)
     client = discord.Client(intents=discord.Intents.none())
-    DiscordComponentRouter(octomate).bind(client)
+    DiscordComponentRouter(octomate, nerves=octomate.nerves).bind(client)
     interaction = FakeInteraction(client, events)
 
     async def fail_resolution(
@@ -514,40 +513,44 @@ async def test_unrelated_batches_do_not_wait_for_an_agent_run(
     [first_action] = first_batch.approvals
     [second_action] = second_batch.approvals
     events: list[str] = []
-    first_kick_started = asyncio.Event()
-    release_first_kick = asyncio.Event()
+    received: list[Signal] = []
+    entered, release = asyncio.Event(), asyncio.Event()
+    octomate = Octomate()
+    signals = MemoryFiber[Signal]()
 
-    class SlowFirstKickOctomate(ResolvingOctomate):
-        async def kick(self, signal: DeferredActionBatchResponse) -> None:
-            self.events.append(f"kick:{signal.batch_id}")
-            self.kicks.append(signal)
-            if signal.batch_id == first_batch.id:
-                first_kick_started.set()
-                await release_first_kick.wait()
+    async def consume() -> None:
+        received.append(await signals.receive())
+        entered.set()
+        await release.wait()
+        received.append(await signals.receive())
 
-    octomate = SlowFirstKickOctomate(events)
     client = discord.Client(intents=discord.Intents.none())
-    DiscordComponentRouter(octomate).bind(client)
+    DiscordComponentRouter(octomate, nerves=octomate.nerves).bind(client)
     first_interaction = FakeInteraction(client, events)
     second_interaction = FakeInteraction(client, events)
-
-    first_callback = asyncio.create_task(
-        DiscordApprovalButton(first_batch.id, first_action.id, True).callback(
-            cast("discord.Interaction[discord.Client]", first_interaction)
-        )
-    )
-    await first_kick_started.wait()
-    await asyncio.wait_for(
-        DiscordApprovalButton(second_batch.id, second_action.id, True).callback(
-            cast("discord.Interaction[discord.Client]", second_interaction)
-        ),
-        timeout=1,
-    )
-    release_first_kick.set()
-    await first_callback
-
-    assert len(second_interaction.edits) == 1
-    assert len(octomate.kicks) == 2
+    with octomate.nerves.signals.accept(
+        AgentTopic(first_batch.agent_tentacle_id), signals
+    ):
+        async with asyncio.TaskGroup() as tasks:
+            tasks.create_task(consume())
+            await DiscordApprovalButton(first_batch.id, first_action.id, True).callback(
+                cast("discord.Interaction[discord.Client]", first_interaction)
+            )
+            await entered.wait()
+            try:
+                await asyncio.wait_for(
+                    DiscordApprovalButton(
+                        second_batch.id, second_action.id, True
+                    ).callback(
+                        cast("discord.Interaction[discord.Client]", second_interaction)
+                    ),
+                    timeout=1,
+                )
+                assert len(second_interaction.edits) == 1
+                assert len(received) == 1
+            finally:
+                release.set()
+    assert len(received) == 2
     await client.close()
 
 
@@ -561,7 +564,7 @@ async def test_approval_callback_rejects_unknown_and_mismatched_actions(
     events: list[str] = []
     octomate = ResolvingOctomate(events)
     client = discord.Client(intents=discord.Intents.none())
-    DiscordComponentRouter(octomate).bind(client)
+    DiscordComponentRouter(octomate, nerves=octomate.nerves).bind(client)
 
     for batch_id, action_id, expected in [
         (uuid7(), first_action.id, "no longer available"),
@@ -586,18 +589,19 @@ async def test_live_question_submission_leaves_validation_to_the_owner(
         questions=[{"question": "Optional note?"}], response_mode="live"
     )
     octomate = Octomate()
-    kick = AsyncMock()
-    monkeypatch.setattr(octomate, "kick", kick)
-    router = DiscordComponentRouter(octomate)
+    kick = Mock()
+    monkeypatch.setattr(octomate.nerves.signals, "dispatch", kick)
+    router = DiscordComponentRouter(octomate, nerves=octomate.nerves)
 
     await router.submit_questions(batch_id=batch.id, responder_id="100")
 
-    kick.assert_awaited_once_with(
+    kick.assert_called_once_with(
+        AgentTopic(batch.agent_tentacle_id),
         DeferredActionBatchResponse(
             batch_id=batch.id,
             answers={batch.questions[0].id: ""},
             responder_id="100",
-        )
+        ),
     )
     saved = await octomate.deferred_actions.get_batch(batch.id)
     assert not saved.closed
@@ -620,7 +624,7 @@ async def test_question_navigator_preserves_drafts_and_submits_the_batch(
     events: list[str] = []
     octomate = ResolvingOctomate(events)
     client = discord.Client(intents=discord.Intents.none())
-    router = DiscordComponentRouter(octomate)
+    router = DiscordComponentRouter(octomate, nerves=octomate.nerves)
     router.bind(client)
 
     original_choice = DiscordQuestionChoiceButton(
@@ -756,7 +760,9 @@ async def test_question_navigator_preserves_drafts_and_submits_the_batch(
     )
 
     assert submit_interaction.edits == []
-    assert [kick.answers for kick in octomate.kicks] == [
+    [response] = octomate.kicks
+    assert isinstance(response, DeferredActionBatchResponse)
+    assert [response.answers] == [
         {first.id: exact_choice, second.id: exact_text},
     ]
     resolved = await octomate.deferred_actions.get_batch(batch.id)
@@ -808,7 +814,7 @@ async def test_multi_select_question_records_every_pick_and_submits_them(
     events: list[str] = []
     octomate = ResolvingOctomate(events)
     client = discord.Client(intents=discord.Intents.none())
-    router = DiscordComponentRouter(octomate)
+    router = DiscordComponentRouter(octomate, nerves=octomate.nerves)
     router.bind(client)
 
     picks = next(
@@ -862,7 +868,9 @@ async def test_multi_select_question_records_every_pick_and_submits_them(
         cast("discord.Interaction[discord.Client]", submit_interaction)
     )
 
-    assert [kick.answers for kick in octomate.kicks] == [{action.id: ["lint", "tests"]}]
+    [response] = octomate.kicks
+    assert isinstance(response, DeferredActionBatchResponse)
+    assert [response.answers] == [{action.id: ["lint", "tests"]}]
     [answered] = (await octomate.deferred_actions.get_batch(batch.id)).questions
     assert answered.result == ["lint", "tests"]
     await client.close()

@@ -6,23 +6,36 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 import anyio
 from anyio.abc import ObjectReceiveStream
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
+from pydantic_ai._utils import now_utc
 
 from octomate import Octomate
 from octomate.events import (
     ReflexAsleepEvent,
+    ReflexAwakeEvent,
+    RunErrorEvent,
     wire_event_adapter,
 )
-from octomate.fibers import Fiber, ReplayFiber
-from octomate.nerve import ChannelTopic, Impulse
+from octomate.fibers import Fiber, MemoryFiber, ReplayFiber
+from octomate.nerve import AgentTopic, ChannelTopic, Impulse, ThreadTopic
 from octomate.reflex.graph import ReflexGraphResult
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
-from octomate.signals import AwakeSignal
+from octomate.signals import (
+    AsleepSignal,
+    AwakeSignal,
+    CommandSignal,
+    DeferredActionBatchResponse,
+    DrivenGatewaySignal,
+    NativeGatewaySignal,
+    Signal,
+    SummonSignal,
+    UserMessageSignal,
+)
 from octomate.tentacles.channel import ChannelTentacle
 from octomate.types.json import JsonObject
 
@@ -52,23 +65,63 @@ def held[ItemT](live: ObjectReceiveStream[ItemT]) -> list[ItemT]:
 
 
 @asynccontextmanager
+async def listening(octomate: Octomate) -> AsyncGenerator[None]:
+    """Start only signal receivers for tests that do not boot provider clients."""
+    receivers: list[tuple[MemoryFiber[Signal], asyncio.Task[None]]] = []
+    agents = [
+        agent
+        for agent in octomate.agents.values()
+        if AgentTopic(agent.id) not in octomate.nerves.signals.subscribers
+    ]
+    async with AsyncExitStack() as stack:
+        for agent in agents:
+            signals = MemoryFiber[Signal]()
+            stack.enter_context(
+                octomate.nerves.signals.accept(AgentTopic(agent.id), signals)
+            )
+            receiver = asyncio.create_task(agent.sensing(signals))
+            receiver.add_done_callback(lambda task, signals=signals: signals.close())
+            receivers.append((signals, receiver))
+        try:
+            yield
+        finally:
+            for signals, _ in receivers:
+                signals.close_send()
+            try:
+                await asyncio.gather(*(receiver for _, receiver in receivers))
+            finally:
+                tasks = [
+                    task
+                    for agent in agents
+                    for running in agent.reflexes.values()
+                    for task in running
+                ]
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@asynccontextmanager
 async def drawing(*channels: ChannelTentacle) -> AsyncGenerator[None]:
     """The channels' siphons started, as entering a channel starts its own. Leaving
     ends each one's stream on its host's nerve, and returns once every siphon has
     drawn everything it heard — what a kick published is on the page by then."""
-    for channel in channels:
-        await channel.siphon.__aenter__()
-    try:
-        yield
-    finally:
+    async with AsyncExitStack() as stack:
         for channel in channels:
-            for fiber in channel.octomate.nerves.events.subscribers.get(
-                ChannelTopic(channel.id), set()
-            ):
-                fiber.close_send()
-            if channel.siphon.reading is not None:
-                await channel.siphon.reading
-            await channel.siphon.__aexit__(None, None, None)
+            await stack.enter_async_context(listening(channel.octomate))
+        for channel in channels:
+            await channel.siphon.__aenter__()
+        try:
+            yield
+        finally:
+            for channel in channels:
+                for fiber in channel.octomate.nerves.events.subscribers.get(
+                    ChannelTopic(channel.id), set()
+                ):
+                    fiber.close_send()
+                if channel.siphon.reading is not None:
+                    await channel.siphon.reading
+                await channel.siphon.__aexit__(None, None, None)
 
 
 async def drained(*channels: ChannelTentacle) -> None:
@@ -92,25 +145,106 @@ async def drained(*channels: ChannelTentacle) -> None:
 async def awake_on(octomate: Octomate, address: ChannelAddress) -> AsyncGenerator[None]:
     """A reflex awake on the thread at `address` for the block, doing nothing."""
 
-    async def asleep_never() -> ReflexGraphResult:
-        await asyncio.Event().wait()
-        raise AssertionError("a reflex that never wakes was woken")
-
     thread = ThreadKey.from_address(address)
-    octomate.awakes[thread] = asyncio.create_task(asleep_never())
+    octomate.awake_since[thread] = now_utc()
     try:
         yield
     finally:
-        octomate.awakes.pop(thread).cancel()
+        octomate.awake_since.pop(thread)
+        async with octomate.nerves.events.publish(address) as events:
+            await events.send(Impulse(ReflexAsleepEvent(outcome="completed"), address))
+
+
+async def publish_signal(octomate: Octomate, signal: Signal) -> None:
+    """Build a test recipient explicitly; production producers own this selection."""
+    match signal:
+        case AsleepSignal():
+            for agent_id in octomate.agents:
+                octomate.nerves.signals.deliver(AgentTopic(agent_id), signal)
+            return
+        case UserMessageSignal():
+            thread = await octomate.threads.get(
+                ThreadKey.from_address(signal.address), with_messages=False
+            )
+            agent_id = (
+                signal.agent_id
+                or (thread.active_agent_tentacle_id if thread is not None else None)
+                or octomate.channels[signal.address.channel_tentacle_id].agent_ids[0]
+            )
+        case CommandSignal():
+            agent_id = signal.context.agent_id
+        case DeferredActionBatchResponse():
+            batch = await octomate.deferred_actions.get_batch(signal.batch_id)
+            agent_id = batch.agent_tentacle_id
+        case SummonSignal():
+            agent_id = signal.decision.agent_id
+        case NativeGatewaySignal() | DrivenGatewaySignal():
+            agent_id = signal.agent_id
+        case _:
+            raise AssertionError("Unsupported signal")
+    octomate.nerves.signals.dispatch(AgentTopic(agent_id), signal)
 
 
 async def kick_and_wait(
     octomate: Octomate, signal: AwakeSignal
 ) -> ReflexGraphResult | None:
-    """`octomate.kick`, returning once the reflex it woke has fallen asleep, with
-    what it came to; None for an answer that went to a live run."""
-    reflex = await octomate.kick(signal)
-    return None if reflex is None else await reflex
+    """Observe completion; inspect receiver tasks only for graph result assertions."""
+    async with listening(octomate):
+        if isinstance(signal, DeferredActionBatchResponse):
+            batch = await octomate.deferred_actions.get_batch(signal.batch_id)
+            if batch.response_mode != "resume":
+                pending = octomate.agents[batch.agent_tentacle_id].pendings.get(
+                    signal.batch_id
+                )
+                async with octomate.nerves.events.subscribe(
+                    ThreadTopic(ThreadKey.from_address(batch.source_address))
+                ) as events:
+                    await publish_signal(octomate, signal)
+                    if pending is not None:
+                        await pending
+                        return None
+                    error = (await events.receive()).event
+                assert isinstance(error, RunErrorEvent)
+                raise RuntimeError(error.message)
+        match signal:
+            case UserMessageSignal():
+                origin = signal.address
+            case CommandSignal():
+                origin = signal.context.address
+            case SummonSignal():
+                origin = signal.origin or signal.destination
+            case NativeGatewaySignal() | DrivenGatewaySignal():
+                origin = signal.source
+            case DeferredActionBatchResponse():
+                origin = batch.source_address
+            case _:
+                raise AssertionError("Unsupported awake")
+        assert origin is not None
+        async with octomate.nerves.events.subscribe(
+            ThreadTopic(ThreadKey.from_address(origin))
+        ) as events:
+            await publish_signal(octomate, signal)
+            tasks: set[asyncio.Task[ReflexGraphResult | None]] = set()
+            started = False
+            async for impulse in events:
+                if isinstance(impulse.event, ReflexAwakeEvent):
+                    started = True
+                for agent in octomate.agents.values():
+                    tasks.update(
+                        task for running in agent.reflexes.values() for task in running
+                    )
+                if started and isinstance(impulse.event, ReflexAsleepEvent):
+                    results = await asyncio.gather(*tasks)
+                    return results[-1] if results else None
+        raise AssertionError("The reflex never fell asleep")
+
+
+async def finished(octomate: Octomate, thread: ThreadKey) -> None:
+    """Observe a dispatched turn finishing without reaching into its execution task."""
+    async with octomate.nerves.events.subscribe(
+        ThreadTopic(thread), replay=0
+    ) as events:
+        await settled(events)
 
 
 async def kicked(octomate: Octomate, signal: AwakeSignal) -> ReflexGraphResult | None:

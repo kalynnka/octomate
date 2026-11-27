@@ -21,6 +21,7 @@ from octomate.tentacles.codex.base import CodexBridgeContext
 from octomate.tentacles.deferred import Interjections
 from octomate.tentacles.trunkline import TrunklineTentacle
 from octomate.types.json import JsonObject
+from tests.support.nerve import kick_and_wait
 
 
 async def never() -> AsyncIterator[Notification]:
@@ -138,11 +139,12 @@ async def test_mcp_consent_rides_the_turn_and_returns_the_selected_answer(
                 assert all(action.status == "expired" for action in batch.questions)
                 assert tentacle.pendings == {}
                 return
-            await octomate.kick(
+            await kick_and_wait(
+                octomate,
                 DeferredActionBatchResponse(
                     batch_id=batch_id,
                     answers={follow_up.id: "Read the next reply", question.id: answer},
-                )
+                ),
             )
             assert await task == {
                 "answers": {

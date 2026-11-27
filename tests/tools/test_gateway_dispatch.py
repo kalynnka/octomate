@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from dataclasses import replace
 from pathlib import Path
 from typing import NotRequired, TypedDict
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastmcp import Client
@@ -31,7 +32,7 @@ from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import a_project, a_registry, fixed_session
 from tests.support.mcp import gateway_schemas
-from tests.support.nerve import awake_on, drawing, kick_and_wait
+from tests.support.nerve import awake_on, drawing, finished, kick_and_wait, listening
 from tests.support.users import a_user
 
 
@@ -59,7 +60,7 @@ ARGUMENTS: SummonArguments = {
 @pytest.fixture
 async def summon_session(
     in_memory_engine: AsyncEngine,
-) -> tuple[OctomateSession, FakeChannelTentacle, FakeAgent, FakeAgent]:
+) -> AsyncGenerator[tuple[OctomateSession, FakeChannelTentacle, FakeAgent, FakeAgent]]:
     host = Octomate()
     channel = host.connect(
         FakeChannelTentacle(
@@ -96,8 +97,10 @@ async def summon_session(
         conversation_address=address,
         threads=host.threads,
         workspaces=host.workspaces,
+        nerves=host.nerves,
     )
-    return session, channel, caller, receiver
+    async with listening(host):
+        yield session, channel, caller, receiver
 
 
 async def test_summon_kicks_a_peer_thread_and_keeps_the_source_running(
@@ -112,13 +115,11 @@ async def test_summon_kicks_a_peer_thread_and_keeps_the_source_running(
     async with drawing(channel), awake_on(host, source):
         opened = await session.summon(**ARGUMENTS, destination=source)
         assert isinstance(opened, ChannelAddress)
-        task = host.awakes[ThreadKey.from_address(opened)]
-        assert not task.done()
-        assert ThreadKey.from_address(source) in host.awakes
+        assert ThreadKey.from_address(source) in host.awake_since
         assert opened != source
         assert session.conversation_address == source
         assert session.decision is None
-        await task
+        await finished(host, ThreadKey.from_address(opened))
 
     thread = await host.threads.get(ThreadKey.from_address(opened))
     assert thread is not None
@@ -170,9 +171,9 @@ async def test_independent_summon_initializes_without_entering_the_handoff_node(
     session, channel, _caller, _receiver = summon_session
     host = channel.octomate
     threads = host.threads
-    kick = AsyncMock()
+    kick = Mock()
     with monkeypatch.context() as patch:
-        patch.setattr(host, "kick", kick)
+        patch.setattr(host.nerves.signals, "dispatch", kick)
         for name in ("threads", "conversations", "workspaces"):
             patch.delattr(host, name)
         opened = await session.summon(
@@ -180,8 +181,8 @@ async def test_independent_summon_initializes_without_entering_the_handoff_node(
         )
 
     assert isinstance(opened, ChannelAddress)
-    kick.assert_awaited_once()
-    signal = kick.call_args.args[0]
+    kick.assert_called_once()
+    signal = kick.call_args.args[1]
     assert isinstance(signal, SummonSignal)
     assert signal.destination == opened
     assert await threads.get(ThreadKey.from_address(opened)) is None
@@ -258,7 +259,7 @@ async def test_summon_reports_creation_failure_without_kicking_here(
     )
     with pytest.raises(GatewayRefusal, match="could not create a thread"):
         await session.summon(**ARGUMENTS, destination=session.conversation_address)
-    assert channel.octomate.awakes == {}
+    assert channel.octomate.awake_since == {}
 
 
 async def test_summon_validates_project_access_and_ref_before_binding(
@@ -299,7 +300,7 @@ async def test_summon_validates_project_access_and_ref_before_binding(
             **arguments, destination=session.conversation_address
         )
         assert isinstance(opened, ChannelAddress)
-        await host.awakes[ThreadKey.from_address(opened)]
+        await finished(host, ThreadKey.from_address(opened))
         thread = await host.threads.get(ThreadKey.from_address(opened))
         assert thread is not None
         assert thread.project_id is not None
@@ -329,6 +330,7 @@ async def test_summon_is_exposed_with_the_same_schema_and_result(
     server = octomate_mcp(
         resolve_session,
         host.threads,
+        nerves=host.nerves,
         manager=host.mcp,
         conversations=host.conversations,
     )
@@ -380,6 +382,7 @@ async def test_native_summon_starts_work_without_a_source_thread(
     server = octomate_mcp(
         fixed_session(session),
         host.threads,
+        nerves=session.nerves,
         manager=host.mcp,
         conversations=host.conversations,
     )
@@ -404,7 +407,7 @@ async def test_native_summon_starts_work_without_a_source_thread(
         assert structured is not None
         address = structured["result"]
         opened = TypeAdapter(ChannelAddress).validate_python(address)
-        await host.awakes[ThreadKey.from_address(opened)]
+        await finished(host, ThreadKey.from_address(opened))
     assert session.thread_id is None
     assert session.conversation_id is None
     assert session.conversation_address is None
@@ -457,7 +460,7 @@ async def test_native_summon_attributes_a_console_thread_to_its_owner(
         destination=ChannelAddress("web", "thread", str(user_id), str(user_id)),
     )
     assert isinstance(opened, ChannelAddress)
-    await host.awakes[ThreadKey.from_address(opened)]
+    await finished(host, ThreadKey.from_address(opened))
     thread = await host.threads.get(ThreadKey.from_address(opened), user_id=user_id)
     assert thread is not None
     profile = await host.users.profile("web", str(user_id))

@@ -173,7 +173,7 @@ def test_entries_flow_over_the_socket_and_the_next_connect_resumes() -> None:
         ] == ["run_started", "run_ended"]
         assert all(impulse.address == SESSION_ADDRESS for impulse in impulses)
         assert all(impulse.origin == key for impulse in impulses)
-        assert not tentacle.octomate.awakes
+        assert not tentacle.octomate.awake_since
         with client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())

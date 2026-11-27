@@ -154,7 +154,7 @@ async def a_slack_turn(
         channels={channel.id: channel, "im": FakeChannelTentacle(octomate=octomate)},
         conversation_id=uuid7(),
         conversation_address=address,
-        nerve=octomate.nerves.events,
+        nerves=octomate.nerves,
         users=octomate.users,
         user_profile=await octomate.users.profile(channel.id, "U1"),
         threads=octomate.threads,
@@ -269,6 +269,7 @@ async def in_memory(
     server = octomate_mcp(
         fixed_session(session),
         FakeThreadManager(),
+        nerves=session.nerves,
         manager=channel.octomate.mcp,
         conversations=channel.octomate.conversations,
     )

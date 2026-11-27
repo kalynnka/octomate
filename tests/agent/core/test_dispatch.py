@@ -46,7 +46,7 @@ from octomate.schemas.triage import (
     SummonDecision,
 )
 from octomate.schemas.user import UserProfile
-from octomate.signals import DeferredActionBatchResponse, StillAwake, UserMessageSignal
+from octomate.signals import DeferredActionBatchResponse, UserMessageSignal
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.agent import Agent
@@ -60,7 +60,14 @@ from tests.support.channels import (
     RecordingInk,
 )
 from tests.support.managers import a_loaded_thread, the_sub_thread
-from tests.support.nerve import awake_on, held, kicked
+from tests.support.nerve import (
+    awake_on,
+    held,
+    kicked,
+    listening,
+    publish_signal,
+    settled,
+)
 from tests.support.scenarios import mid_run_notice
 from tests.support.users import a_user
 
@@ -331,7 +338,7 @@ async def test_chained_summon_updates_thread_owner() -> None:
 async def test_a_second_kick_on_an_awake_thread_is_refused() -> None:
     """One reflex per thread at a time, so whatever the thread hears between a
     reflex waking and falling asleep is that reflex's. A second kick is refused
-    before it publishes anything, and the caller hears the refusal."""
+    by the receiver without starting another reflex."""
     octomate = Octomate()
     entry = FakeAgent(reception_output="answered")
     channel = FakeChannelTentacle(config=_entry_config(stream=False))
@@ -340,19 +347,19 @@ async def test_a_second_kick_on_an_awake_thread_is_refused() -> None:
     thread = ThreadKey.from_address(_key(thread_id="t1"))
     signal = UserMessageSignal([_event(text="hello", thread_id="t1")])
 
-    reflex = await octomate.kick(signal)
-    async with octomate.nerves.events.subscribe(ThreadTopic(thread)) as live:
-        with pytest.raises(StillAwake):
-            await octomate.kick(signal)
-        assert held(live) == []
-    assert reflex is not None
-    await reflex
+    async with (
+        listening(octomate),
+        octomate.nerves.events.subscribe(ThreadTopic(thread)) as live,
+    ):
+        assert await publish_signal(octomate, signal) is None
+        await publish_signal(octomate, signal)
+        await settled(live)
     assert len(entry.turns) == 1
 
     # Asleep again, the thread takes the next kick, and holds nothing after it.
     await kicked(octomate, signal)
     assert len(entry.turns) == 2
-    assert octomate.awakes == {}
+    assert octomate.awake_since == {}
 
 
 async def test_a_kick_retains_what_it_says_for_as_long_as_it_is_awake() -> None:
@@ -362,17 +369,19 @@ async def test_a_kick_retains_what_it_says_for_as_long_as_it_is_awake() -> None:
     address = _key(thread_id="t1")
     thread = ThreadTopic(ThreadKey.from_address(address))
 
-    async with octomate.nerves.events.subscribe(
-        ChannelTopic(address.channel_tentacle_id)
-    ) as routed:
-        reflex = await octomate.kick(
-            UserMessageSignal([_event(text="hello", thread_id="t1")])
+    async with (
+        listening(octomate),
+        octomate.nerves.events.subscribe(
+            ChannelTopic(address.channel_tentacle_id)
+        ) as routed,
+    ):
+        await publish_signal(
+            octomate, UserMessageSignal([_event(text="hello", thread_id="t1")])
         )
-        assert reflex is not None
         await routed.receive()
         async with octomate.nerves.events.subscribe(thread, replay=0) as late:
             assert isinstance(held(late)[0].event, ReflexAwakeEvent)
-        await reflex
+        await settled(routed)
 
     assert octomate.nerves.events.retained == {}
 
@@ -390,7 +399,7 @@ async def test_a_message_on_an_awake_thread_waits_in_the_ledger(
     thread = _key(thread_id="t1")
 
     with caplog.at_level("INFO"):
-        async with awake_on(octomate, thread):
+        async with awake_on(octomate, thread), listening(octomate):
             await channel.ingest(
                 {
                     "message_id": "m2",
@@ -407,7 +416,7 @@ async def test_a_message_on_an_awake_thread_waits_in_the_ledger(
     assert [message.message_text for message in loaded.messages] == [
         "and another thing"
     ]
-    assert "waits for the turn running" in caplog.text
+    assert "leaving input in its ledger" in caplog.text
     assert "error in ingest" not in caplog.text
 
 
@@ -989,4 +998,4 @@ async def test_status_outcomes_survive_failed_or_cancelled_lifecycle(
             "finalization": ["completed"],
         }[phase]
     )
-    assert not app.awakes
+    assert not app.awake_since

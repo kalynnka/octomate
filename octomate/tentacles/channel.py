@@ -36,11 +36,12 @@ from octomate.config.channels import (
     SlackChannelConfig,
     TrunklineChannelConfig,
 )
+from octomate.nerve import AgentTopic, Nerves
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment, MessageSegment
 from octomate.schemas.user import UserProfile
-from octomate.signals import StillAwake, UserMessageSignal
+from octomate.signals import UserMessageSignal
 from octomate.telemetry import channel_logfire
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.feelers.artifacts import PlainTextArtifactFeeler
@@ -249,6 +250,7 @@ class ChannelTentacle(
     siphon: Siphon
     ink: ChannelInk[MessageT]
     chromo: Chromo[RawT, MessageT]
+    nerves: Nerves
     config: ChannelConfig
 
     def __init__(
@@ -256,11 +258,13 @@ class ChannelTentacle(
         id: str,
         octomate: Octomate,
         *,
+        nerves: Nerves,
         ink: ChannelInk[MessageT],
         chromo: Chromo[RawT, MessageT],
         config: ChannelConfig,
     ) -> None:
         super().__init__(id=id, octomate=octomate)
+        self.nerves = nerves
         self.config = config
         self.ink = ink
         self.chromo = chromo
@@ -419,21 +423,10 @@ class ChannelTentacle(
                         address,
                     )
                     return
-            try:
-                await self.octomate.kick(
-                    UserMessageSignal(
-                        [event],
-                        trigger_thread_message_id=thread_message.id,
-                    )
-                )
-            except StillAwake:
-                # The message is in the ledger, and the next turn there answers it.
-                logger.info(
-                    "Channel %s: message %s waits for the turn running in %s",
-                    self.id,
-                    event.message_id,
-                    address,
-                )
+            self.nerves.signals.dispatch(
+                AgentTopic(thread.active_agent_tentacle_id or self.agent_ids[0]),
+                UserMessageSignal([event], trigger_thread_message_id=thread_message.id),
+            )
         except Exception:
             # The active `ingest` span carries the full error: one from before the turn
             # ran, which only this log reports.

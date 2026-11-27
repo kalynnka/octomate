@@ -18,7 +18,7 @@ from octomate.config import ChannelConfig, DiscordChannelConfig
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import OctomateSession
-from octomate.nerve import ThreadTopic
+from octomate.nerve import Nerves, ThreadTopic
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
@@ -31,7 +31,7 @@ from octomate.tentacles.trunkline import TrunklineTentacle
 from octomate.tentacles.trunkline.base import TrunklineDirective
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
-from tests.support.nerve import settled
+from tests.support.nerve import listening, settled
 from tests.support.users import a_user
 
 
@@ -83,11 +83,14 @@ async def case(in_memory_engine: AsyncEngine, tmp_path: Path) -> Case:
 
 @pytest.fixture
 async def client(case: Case) -> AsyncGenerator[httpx2.AsyncClient]:
-    async with httpx2.AsyncClient(
-        transport=httpx2.ASGITransport(app=case.app),
-        base_url="http://test",
-        headers={"X-Octomate-Request": "1"},
-    ) as client:
+    async with (
+        listening(case.app),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=case.app),
+            base_url="http://test",
+            headers={"X-Octomate-Request": "1"},
+        ) as client,
+    ):
         yield client
 
 
@@ -514,6 +517,7 @@ async def test_validation_precedes_side_effects(
 async def test_busy_thread_is_refused(case: Case, client: httpx2.AsyncClient) -> None:
     conversation = (await case.app.conversations.for_thread(case.thread.id))[0]
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id="first",
         conversation_id=conversation.id,
@@ -698,6 +702,7 @@ async def test_trunkline_offers_a_new_thread_without_a_dm(case: Case) -> None:
     profile = await case.app.users.profile("far", "alice")
     assert profile is not None
     gateway = OctomateSession(
+        nerves=Nerves(),
         channel_routes=case.app.gateway.available_routes(
             case.app.channels, case.app.agents
         ),
@@ -775,6 +780,7 @@ async def test_an_empty_offer_is_closed_only_by_what_rules_it_out(
     case: Case, shared: bool, agent_id: str, refusal: str | None
 ) -> None:
     gateway = OctomateSession(
+        nerves=Nerves(),
         channel_routes=case.app.gateway.available_routes(
             case.app.channels, case.app.agents
         ),
@@ -829,6 +835,7 @@ async def test_discord_dm_threads_are_not_offered(case: Case) -> None:
         "discord", UserProfile(channel_user_id="discord-user", user_id=case.owner.id)
     )
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes=case.app.gateway.available_routes(
             case.app.channels, case.app.agents
         ),

@@ -227,6 +227,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         super().__init__(
             id=self.id,
             octomate=octomate,
+            nerves=octomate.nerves,
             commands=octomate.commands,
             projects=octomate.projects,
             threads=octomate.threads,
@@ -772,20 +773,21 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         exc_value: BaseException | None = None,
         traceback: TracebackType | None = None,
     ) -> None:
-        await super().__aexit__(exc_type, exc_value, traceback)
-        self.commands.invalidate(agent_id=self.id)
-        with anyio.CancelScope(shield=True):
-            cancelled = await drain_task(asyncio.gather(*self.run_tasks))
-            self.session_ingest.shutdown()
-            await self.session_tailer.shutdown()
-            await self.ink.__aexit__(exc_type, exc_value, traceback)
-            for future in list(self.pendings.values()):
-                if not future.done():
+        try:
+            await super().__aexit__(exc_type, exc_value, traceback)
+        finally:
+            self.commands.invalidate(agent_id=self.id)
+            with anyio.CancelScope(shield=True):
+                cancelled = await drain_task(asyncio.gather(*self.run_tasks))
+                self.session_ingest.shutdown()
+                await self.session_tailer.shutdown()
+                await self.ink.__aexit__(exc_type, exc_value, traceback)
+                for future in list(self.pendings.values()):
                     future.cancel()
-            self.pendings.clear()
-            self.bridge_contexts.clear()
-        if cancelled:
-            raise asyncio.CancelledError
+                self.pendings.clear()
+                self.bridge_contexts.clear()
+            if cancelled:
+                raise asyncio.CancelledError
 
     async def answer_interaction(
         self, frame: ApprovalRequestedFrame | QuestionRequestedFrame

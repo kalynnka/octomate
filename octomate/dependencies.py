@@ -16,6 +16,7 @@ from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
+from octomate.nerve import Nerves
 
 
 def application(connection: HTTPConnection) -> Octomate:
@@ -82,3 +83,7 @@ def deferred_action_manager(
 
 def gateway_manager(app: Annotated[Octomate, Depends(application)]) -> GatewayManager:
     return app.gateway
+
+
+def nerves(app: Annotated[Octomate, Depends(application)]) -> Nerves:
+    return app.nerves

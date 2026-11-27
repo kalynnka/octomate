@@ -23,7 +23,9 @@ from pydantic_ai.messages import (
     OutputToolCallEvent,
     OutputToolResultEvent,
 )
+from pydantic_ai.tools import DeferredToolRequests
 from typing_extensions import TypedDict
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import ChannelConfig, ChannelStreamConfig
@@ -37,12 +39,17 @@ from octomate.events import (
     to_wire,
 )
 from octomate.managers.deferred import DeferredActionManager
+from octomate.nerve import Nerve, Topic
 from octomate.schemas.conversation import ChannelAddress, ChatType
-from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
+from octomate.schemas.deferred import (
+    DeferredActionBatch,
+    DeferredApproval,
+    DeferredQuestion,
+)
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment, MessageSegment
 from octomate.schemas.user import UserProfile
-from octomate.signals import AwakeSignal
+from octomate.signals import Signal
 from octomate.tentacles.channel import (
     ChannelInk,
     ChannelOutput,
@@ -124,13 +131,39 @@ class RawMessage(TypedDict, total=False):
 
 @dataclass(eq=False)
 class FakeOctomate(Octomate):
-    kicks: list[AwakeSignal] = field(default_factory=list)
+    kicks: list[Signal] = field(default_factory=list)
 
-    async def kick(
-        self,
-        signal: AwakeSignal,
-    ) -> None:
-        self.kicks.append(signal)
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.nerves.signals = RecordingSignals(self.kicks)
+
+
+class RecordingSignals[SignalT](Nerve[SignalT]):
+    def __init__(self, sent: list[SignalT], events: list[str] | None = None) -> None:
+        super().__init__()
+        self.sent = sent
+        self.events = events
+
+    def dispatch(self, topic: Topic, sent: SignalT) -> None:
+        self.sent.append(sent)
+        if self.events is not None:
+            self.events.append("kick")
+
+
+class CallbackActions(DeferredActionManager):
+    """Persisted routing metadata for callback-only unit tests."""
+
+    async def get_batch(self, batch_id: UUID7) -> DeferredActionBatch:
+        address = ChannelAddress("im", "dm", "alice", "alice")
+        return DeferredActionBatch(
+            id=batch_id,
+            conversation_id=uuid7(),
+            agent_tentacle_id="inkling",
+            response_mode="live",
+            source_address=address,
+            target_address=address,
+            requests=DeferredToolRequests(),
+        )
 
 
 @dataclass
@@ -349,9 +382,11 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
         config: ChannelConfig | None = None,
     ) -> None:
         self.recording_ink = ink or RecordingInk()
+        host = octomate or FakeOctomate()
         super().__init__(
             id=id,
-            octomate=octomate or FakeOctomate(),
+            octomate=host,
+            nerves=host.nerves,
             ink=self.recording_ink,
             chromo=chromo or FakeChromo(),
             config=config
