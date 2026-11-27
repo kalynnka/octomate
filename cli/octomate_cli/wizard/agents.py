@@ -38,7 +38,8 @@ def acp(console: Console) -> str:
     console.print(
         "ACP connects an installed provider over stdio. Install it in the service "
         "environment and, for sbx, in the sandbox image too. Configure the provider's "
-        "authentication separately."
+        "authentication separately. Workspace habitats confine ACP filesystem and "
+        "terminal callbacks; tools the provider executes directly stay on the host."
     )
     return "acp"
 
@@ -121,7 +122,7 @@ AGENTS: dict[str, TentacleSetup[str]] = {
         label="ACP provider",
         capabilities=("Agent",),
         configure=acp,
-        habitat_types=(HabitatType.native, HabitatType.hosted),
+        habitat_types=(HabitatType.native, HabitatType.workspace, HabitatType.hosted),
     ),
     "inkling": TentacleSetup(
         label="Inkling",

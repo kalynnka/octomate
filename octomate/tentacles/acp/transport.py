@@ -17,7 +17,7 @@ from fastapi import WebSocket
 from pydantic import ValidationError
 from pydantic_core import to_json
 
-from octomate.habitat import Habitat, HostedHabitat, WorkspaceHabitat
+from octomate.habitat import Habitat, HostedHabitat
 from octomate.tentacles.acp.adapter import json_value_adapter
 
 if TYPE_CHECKING:
@@ -36,8 +36,6 @@ async def stdio_connection(
     env: dict[str, str] | None = None,
 ) -> AsyncGenerator[Connection]:
     """Own the provider process in its execution environment, preserving ACP bytes."""
-    if isinstance(habitat, WorkspaceHabitat):
-        raise ValueError("ACP does not support workspace habitats")
     if not isinstance(habitat, HostedHabitat):
         async with acp.spawn_stdio_connection(
             handler,

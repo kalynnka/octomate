@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -17,6 +18,9 @@ from uuid_utils.compat import uuid7
 from octomate.habitat.executor import (
     CancelledResponse,
     CancelRequest,
+    CommandEvent,
+    CommandOutput,
+    CommandStarted,
     ExecuteRequest,
     ExecutionRequest,
     ExecutionResponse,
@@ -33,6 +37,7 @@ class ExecutorClient:
     habitat: ManagedHabitat
     stream: ByteStream | None
     pending: dict[UUID7, asyncio.Future[Response | CancelledResponse]]
+    listeners: dict[UUID7, Callable[[CommandEvent], None]]
     ready: asyncio.Future[None]
     writing: asyncio.Lock
     task: asyncio.Task[None]
@@ -43,6 +48,7 @@ class ExecutorClient:
         self.habitat = habitat
         self.stream = None
         self.pending = {}
+        self.listeners = {}
         self.ready = asyncio.get_running_loop().create_future()
         self.writing = asyncio.Lock()
         self.failure = None
@@ -69,8 +75,10 @@ class ExecutorClient:
                     message = ExecutionResponse.model_validate_json(
                         await output.receive_exactly(size)
                     )
-                    future = self.pending[message.id]
-                    future.set_result(message.response)
+                    if isinstance(message.response, (CommandStarted, CommandOutput)):
+                        self.listeners[message.id](message.response)
+                    else:
+                        self.pending[message.id].set_result(message.response)
         except Exception as error:
             self.failure = error
         finally:
@@ -93,7 +101,12 @@ class ExecutorClient:
         async with self.writing:
             await self.stream.send(str(len(payload)).encode() + b"\n" + payload)
 
-    async def request(self, request: Request, workdir: str) -> Response:
+    async def request(
+        self,
+        request: Request,
+        workdir: str,
+        on_event: Callable[[CommandEvent], None] | None = None,
+    ) -> Response:
         await asyncio.shield(self.ready)
         if self.failure is not None or self.closed:
             raise WorkspaceUnavailableError(
@@ -104,8 +117,17 @@ class ExecutorClient:
             asyncio.get_running_loop().create_future()
         )
         self.pending[key] = future
+        if on_event is not None:
+            self.listeners[key] = on_event
         sending = asyncio.create_task(
-            self.send(ExecuteRequest(id=key, workdir=workdir, request=request))
+            self.send(
+                ExecuteRequest(
+                    id=key,
+                    workdir=workdir,
+                    request=request,
+                    stream_output=on_event is not None,
+                )
+            )
         )
         try:
             await asyncio.shield(sending)
@@ -122,6 +144,7 @@ class ExecutorClient:
             raise
         finally:
             self.pending.pop(key, None)
+            self.listeners.pop(key, None)
             if future.done() and not future.cancelled():
                 future.exception()
 

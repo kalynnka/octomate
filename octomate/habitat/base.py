@@ -24,6 +24,7 @@ from yarl import URL
 from octomate.config.habitat import BaseHabitatConfig
 from octomate.habitat.client import ExecutorClient
 from octomate.habitat.executor import (
+    CommandEvent,
     CommandRequest,
     CommandResponse,
     FileError,
@@ -164,14 +165,20 @@ class ManagedHabitat(Habitat):
         return response.result
 
     async def request[T: BaseModel](
-        self, request: Request, expected: type[T], *, workdir: str
+        self,
+        request: Request,
+        expected: type[T],
+        *,
+        workdir: str,
+        on_event: Callable[[CommandEvent], None] | None = None,
     ) -> T:
+        """Execute an operation; streamed commands deliver output only to on_event."""
         async with self.executor_lock:
             if self.executor is None or self.executor.closed:
                 self.executor = ExecutorClient(self)
                 self.resources.push_async_callback(self.executor.close)
             client = self.executor
-        response = await client.request(request, workdir)
+        response = await client.request(request, workdir, on_event)
         if isinstance(response, expected):
             return response
         match response:

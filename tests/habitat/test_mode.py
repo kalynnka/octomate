@@ -11,6 +11,7 @@ from pydantic_ai.models.test import TestModel
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
+from octomate.config.acp import AcpAgentConfig
 from octomate.config.base import OctomateConfig
 from octomate.config.habitat import (
     NativeHabitatConfig,
@@ -194,27 +195,22 @@ def test_srt_accepts_supported_agents(agent: str) -> None:
     assert config.tentacles[agent].enabled
 
 
-@pytest.mark.parametrize("agent", ["acp_agent"])
-@pytest.mark.parametrize("enabled", [False, True])
-def test_srt_rejects_enabled_unsupported_agents(agent: str, enabled: bool) -> None:
-    config = {
-        "habitats": {"native": {"provider": "srt"}},
-        "tentacles": {
-            agent: {
-                "type": agent,
-                "enabled": enabled,
-                **({"provider": {"command": "unused"}} if agent == "acp_agent" else {}),
-            }
-        },
-    }
-    if enabled:
-        with pytest.raises(
-            ValidationError,
-            match="does not support workspace habitats",
-        ):
-            OctomateConfig.model_validate(config)
-    else:
-        assert not OctomateConfig.model_validate(config).tentacles[agent].enabled
+def test_srt_accepts_an_independent_acp_provider() -> None:
+    config = OctomateConfig.model_validate(
+        {
+            "habitats": {"workspace": {"provider": "srt"}},
+            "tentacles": {
+                "custom": {
+                    "type": "acp_agent",
+                    "habitat": "workspace",
+                    "provider": {"command": "custom-acp"},
+                }
+            },
+        }
+    )
+    agent = config.tentacles["custom"]
+    assert isinstance(agent, AcpAgentConfig)
+    assert agent.habitat == "workspace"
 
 
 @pytest.mark.parametrize("field", ["os_sandbox", "builtin_sandbox"])

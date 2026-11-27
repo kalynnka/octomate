@@ -27,7 +27,7 @@ from pydantic import UUID7, BaseModel
 
 from octomate.config.habitat import SrtHabitatConfig
 from octomate.habitat.base import HabitatError, WorkspaceHabitat
-from octomate.habitat.executor import Request
+from octomate.habitat.executor import CommandEvent, Request
 from octomate.schemas.volumes import Volume
 
 logger = logging.getLogger(__name__)
@@ -142,14 +142,21 @@ class SrtHabitat(WorkspaceHabitat):
         }
 
     async def request[T: BaseModel](
-        self, request: Request, expected: type[T], *, workdir: str
+        self,
+        request: Request,
+        expected: type[T],
+        *,
+        workdir: str,
+        on_event: Callable[[CommandEvent], None] | None = None,
     ) -> T:
         cwd = Path(await anyio.Path(workdir).resolve())
         if not cwd.is_relative_to(self.root):
             raise HabitatError(
                 "SRT working directory must be inside the owner's storage"
             )
-        return await super().request(request, expected, workdir=str(cwd))
+        return await super().request(
+            request, expected, workdir=str(cwd), on_event=on_event
+        )
 
     async def prepare(self) -> None:
         if platform.system() != "Darwin":
