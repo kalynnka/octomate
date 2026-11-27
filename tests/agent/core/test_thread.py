@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 import pytest
 from arcanus import Relation
 from arcanus.materia.sqlalchemy import selectinload
+from pydantic import ValidationError
 from pydantic_ai.messages import ModelRequest as RawModelRequest
 from pydantic_ai.messages import UserPromptPart
 from sqlalchemy import inspect
@@ -29,15 +30,21 @@ from octomate.schemas.thread import (
     ThreadMessage,
 )
 from octomate.schemas.user import UserProfile
+from octomate.signals import AsleepSignal
 
 
 @pytest.mark.parametrize(
     "key",
     [
-        ThreadKey("slack", "dm", "alice"),
-        ThreadKey("slack", "group", "room"),
-        ThreadKey("slack", "thread", "room", "topic"),
-        ThreadKey("codex", "thread", "session"),
+        ThreadKey(channel_tentacle_id="slack", chat_type="dm", chat_id="alice"),
+        ThreadKey(channel_tentacle_id="slack", chat_type="group", chat_id="room"),
+        ThreadKey(
+            channel_tentacle_id="slack",
+            chat_type="thread",
+            chat_id="room",
+            channel_thread_id="topic",
+        ),
+        ThreadKey(channel_tentacle_id="codex", chat_type="thread", chat_id="session"),
     ],
 )
 async def test_active_agent_uses_latest_root_conversation_or_handoff(
@@ -163,9 +170,40 @@ def test_channel_handoff_sorts_by_uuid7_id() -> None:
 
 
 def test_thread_key_ignores_sender_user() -> None:
-    assert ThreadKey.from_address(_address(user_id="alice")) == (
-        ThreadKey.from_address(_address(user_id="bob"))
+    assert ThreadKey.model_validate(_address(user_id="alice")) == (
+        ThreadKey.model_validate(_address(user_id="bob"))
     )
+
+
+def test_thread_key_address_validation_normalizes_and_preserves_hashing() -> None:
+    address = ChannelAddress("slack", "dm", "alice", "alice", channel_thread_id="")
+    key = ThreadKey.model_validate(address)
+    expected = ThreadKey(channel_tentacle_id="slack", chat_type="dm", chat_id="alice")
+
+    assert key == expected
+    assert key.channel_thread_id is None
+    assert {key: "active"}[expected] == "active"
+    assert ThreadKey.model_validate(key) is key
+    with pytest.raises(ValidationError, match="frozen_instance"):
+        key.__setattr__("chat_id", "other")
+    assert {key: "active"}[expected] == "active"
+
+
+def test_thread_key_address_is_validated_inside_a_signal() -> None:
+    address = _address(user_id="alice")
+    signal = AsleepSignal.model_validate({"thread": address})
+
+    assert signal.thread == ThreadKey.model_validate(address)
+
+
+def test_thread_key_dictionary_validation_preserves_field_validation() -> None:
+    data = {"channel_tentacle_id": "slack", "chat_type": "dm", "chat_id": "alice"}
+    assert ThreadKey.model_validate(data) == ThreadKey(
+        channel_tentacle_id="slack", chat_type="dm", chat_id="alice"
+    )
+
+    with pytest.raises(ValidationError, match="chat_type"):
+        ThreadKey.model_validate({**data, "chat_type": "invalid"})
 
 
 async def test_thread_round_trips_with_messages_and_handoffs() -> None:
@@ -250,7 +288,7 @@ async def test_thread_round_trips_with_messages_and_handoffs() -> None:
         await reloaded.handoffs
 
     assert reloaded.status == "closed"
-    assert reloaded.key == ThreadKey.from_address(_address(user_id="alice"))
+    assert reloaded.key == ThreadKey.model_validate(_address(user_id="alice"))
     assert reloaded.messages[0].message_text == "handoff this"
     assert reloaded.active_agent_tentacle_id == "claude"
     assert reloaded.active_model == "sonnet"

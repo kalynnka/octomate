@@ -18,9 +18,10 @@ from octomate.events import LinkProfileAuthorizationEvent
 from octomate.managers.gateway import OctomateSession
 from octomate.mcp.oauth import LINK_PROFILE_TOOL
 from octomate.mcp.server import tentacles_mcp
+from octomate.nerve import Nerves
 from octomate.schemas.auth import LinkProfileSession
-from octomate.schemas.awakes import UserMessageSignal
 from octomate.schemas.segments import TextSegment
+from octomate.signals import UserMessageSignal
 from octomate.tentacles.discord.feelers.oauth import DiscordOAuthFeeler
 from octomate.tentacles.trunkline.base import TrunklineTentacle
 from tests.channels.discord.test_feelers import RecordingDiscordUIInk
@@ -59,6 +60,7 @@ async def link_profile_context(
     [signal] = app.kicks
     assert isinstance(signal, UserMessageSignal)
     scope = OctomateSession(
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id="inkling",
         channels={channel.id: channel},

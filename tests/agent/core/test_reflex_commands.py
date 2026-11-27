@@ -36,11 +36,11 @@ from octomate.reflex.graph import reflex_graph
 from octomate.reflex.nodes.awake import Awake
 from octomate.reflex.state import ReflexDeps, ReflexState
 from octomate.reflex.suspender import ReflexSuspender
-from octomate.schemas.awakes import CommandSignal, DeferredActionBatchResponse
 from octomate.schemas.commands import (
     CommandContext,
     CommandError,
     CommandIntent,
+    CommandOutcomeEvent,
     CommandResult,
 )
 from octomate.schemas.conversation import ChannelAddress
@@ -49,10 +49,10 @@ from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadCommand, ThreadKey
 from octomate.schemas.triage import (
     TELEPORT_DEFER_KIND,
-    AgentRouteKey,
     SummonDecision,
 )
 from octomate.schemas.user import UserProfile
+from octomate.signals import CommandSignal, DeferredActionBatchResponse
 from octomate.tentacles.channel import ChannelOutput
 from octomate.tentacles.stream import ReactStreamEvent
 from octomate.tentacles.trunkline.base import TrunklineTentacle
@@ -128,7 +128,7 @@ async def test_direct_command_delivers_feedback_without_model_history_and_replay
     state = ReflexState()
     async with (
         drawing(channel),
-        app.nerve.publish(signal.context.address) as impulses,
+        app.nerves.events.publish(signal.context.address) as impulses,
     ):
         await reflex_graph.run(
             inputs=Awake(signal),
@@ -339,7 +339,7 @@ async def test_command_teleport_before_first_event_continues_the_agent_run(
 
 
 @pytest.mark.parametrize("stream", [False, True])
-async def test_command_gateway_handoff_continues_in_the_same_reflex_graph(
+async def test_command_gateway_handoff_continues_on_the_receiving_agent(
     scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandSignal],
     stream: bool,
     monkeypatch: pytest.MonkeyPatch,
@@ -365,19 +365,17 @@ async def test_command_gateway_handoff_continues_in_the_same_reflex_graph(
 
     agent.behavior = "stream_complete"
     monkeypatch.setattr(agent, "events", events)
-    state = ReflexState()
-    async with app.nerve.publish(signal.context.address) as impulses:
-        deps = ReflexDeps(
-            workspaces=app.workspaces,
-            agents=app.agents,
-            channels=app.channels,
-            conversation_manager=app.conversations,
-            thread_manager=app.threads,
-            action_manager=app.deferred_actions,
-            gateway=app.gateway,
-            impulses=impulses,
-        )
-        await reflex_graph.run(inputs=Awake(signal), state=state, deps=deps)
+    async with app.nerves.events.subscribe(
+        ThreadTopic(ThreadKey.model_validate(signal.context.address))
+    ) as live:
+        await kicked(app, signal)
+        carried = [impulse.event for impulse in held(live)]
+    assert [event for event in carried if isinstance(event, CommandOutcomeEvent)] == [
+        CommandOutcomeEvent(outcome=CommandResult(), request_id=signal.request_id)
+    ]
+    assert carried[-1] == ReflexAsleepEvent(
+        outcome="completed", request_id=signal.request_id
+    )
     assert len(agent.intents) == 1
     assert not agent.turns
     runs = other.turns
@@ -392,8 +390,6 @@ async def test_command_gateway_handoff_continues_in_the_same_reflex_graph(
     assert command_gateway.conversation_id == conversation.id
     assert handoff_gateway.current_agent_id == other.id
     assert handoff_gateway.conversation_id != conversation.id
-    assert state.selection == AgentRouteKey(other.id, "opus")
-    assert state.conversation_id == handoff_gateway.conversation_id
     assert not app.gateway.sessions
 
 
@@ -538,8 +534,8 @@ async def test_a_commands_events_reach_its_trunkline_thread(
     if model_run:
         agent.behavior = "stream_complete"
         monkeypatch.setattr(agent, "events", events)
-    async with app.nerve.subscribe(
-        ThreadTopic(ThreadKey.from_address(address))
+    async with app.nerves.events.subscribe(
+        ThreadTopic(ThreadKey.model_validate(address))
     ) as live:
         await kicked(app, signal)
         received = [impulse.event for impulse in held(live)]
@@ -552,6 +548,7 @@ async def test_a_commands_events_reach_its_trunkline_thread(
             else [MessageSentEvent]
         ),
         ReflexPhaseChangedEvent,
+        CommandOutcomeEvent,
         ReflexAsleepEvent,
     ]
     assert len(agent.intents) == 1

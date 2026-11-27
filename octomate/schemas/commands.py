@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, Field, SerializeAsAny, model_validator
+from pydantic import UUID7, BaseModel, Field, SerializeAsAny, model_validator
 
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.segments import FileSegment, ImageSegment, MessageSegment
@@ -225,6 +225,9 @@ class CommandOutcomeEvent(BaseModel):
 
     event_kind: Literal["command_outcome"] = Field(
         default="command_outcome", description="Identifies a terminal command outcome."
+    )
+    request_id: UUID7 | None = Field(
+        default=None, description="Signal publication whose outcome this event carries."
     )
     outcome: CommandOutcome = Field(
         description="Direct or replayed outcome, or completion after stream cleanup and persistence."

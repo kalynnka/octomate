@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -39,6 +39,41 @@ from octomate.schemas.workspaces import Workspace
 from octomate.telemetry import habitat_logfire
 
 
+class RunInterrupted(Exception):
+    """A requested stop reached a boundary before starting or after settling a run."""
+
+
+@dataclass
+class Interruption:
+    """A run-owned stop request, retained until its harness is ready to handle it."""
+
+    requested: bool = False
+    handler: Callable[[], Awaitable[None]] | None = None
+
+    async def request(self) -> None:
+        if self.requested:
+            return
+        self.requested = True
+        if self.handler is not None:
+            await self.handler()
+
+    def check(self) -> None:
+        if self.requested:
+            raise RunInterrupted
+
+    @asynccontextmanager
+    async def handling(
+        self, handler: Callable[[], Awaitable[None]]
+    ) -> AsyncGenerator[None]:
+        self.handler = handler
+        try:
+            if self.requested:
+                await handler()
+            yield
+        finally:
+            self.handler = None
+
+
 @dataclass(frozen=True, kw_only=True)
 class Invocation:
     """Core-authorized resources, valid only inside the core's owning contexts.
@@ -52,6 +87,7 @@ class Invocation:
     conversation: Conversation  # Resolved by core; the run's history and settings.
     workspace: Workspace  # Prepared volume composition, owned by core for this call.
     habitat: Habitat  # Prepared environment, owned by core for this call.
+    interruption: Interruption = field(default_factory=Interruption)
 
     def __post_init__(self) -> None:
         if isinstance(self.habitat, ManagedHabitat):
@@ -139,6 +175,7 @@ class HabitatManager:
         thread: Thread,
         conversation: Conversation,
         owner_id: UUID7 | None,
+        interruption: Interruption | None = None,
     ) -> AsyncGenerator[Invocation]:
         """Own one call's resources for the full consumption of its events.
 
@@ -146,6 +183,7 @@ class HabitatManager:
         before anything is prepared.
         """
         invocation_id = uuid7()
+        control = interruption or Interruption()
         with habitat_logfire.span(
             "habitat.invoke",
             invocation_id=invocation_id,
@@ -169,6 +207,7 @@ class HabitatManager:
                             conversation=conversation,
                             workspace=workspace,
                             habitat=habitat,
+                            interruption=control,
                         )
                 finally:
                     await habitat.stop()
@@ -189,6 +228,7 @@ class HabitatManager:
                     conversation=conversation,
                     workspace=workspace,
                     habitat=residence.habitat,
+                    interruption=control,
                 )
 
     def residenced(self, user_id: UUID7, conversation_id: UUID7) -> bool:

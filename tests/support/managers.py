@@ -41,7 +41,6 @@ from octomate.managers.user import UserManager
 from octomate.managers.volumes import VolumeManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.nerve import Nerve
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
@@ -67,6 +66,7 @@ from octomate.schemas.thread import (
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.schemas.user import UserProfile
 from octomate.schemas.volumes import GitVolume, Volume
+from octomate.signals import DeferredActionBatchResponse
 from octomate.types.deferred import DeferredBatchStatus, DeferredResponseMode
 from octomate.types.permissions import AgentPermissionMode
 from octomate.types.volumes import VolumeUsage
@@ -478,7 +478,7 @@ class FakeThreadManager(ThreadManager):
         native: bool = False,
     ) -> Thread:
         key = (
-            ThreadKey.from_address(address_or_key)
+            ThreadKey.model_validate(address_or_key)
             if isinstance(address_or_key, ChannelAddress)
             else address_or_key
         )

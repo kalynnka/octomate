@@ -70,7 +70,6 @@ from octomate.events import (
 from octomate.managers.habitat import Invocation
 from octomate.nerve import Impulse
 from octomate.prompts import tagged
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
@@ -81,14 +80,12 @@ from octomate.schemas.commands import (
     CommandResult,
 )
 from octomate.schemas.conversation import ChannelAddress, Conversation
-from octomate.schemas.deferred import (
-    MAX_QUESTION_CHOICES,
-    QuestionRequest,
-)
+from octomate.schemas.deferred import MAX_QUESTION_CHOICES, QuestionRequest
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
+from octomate.signals import DeferredActionBatchResponse
 from octomate.telemetry import agent_input_message_attributes, deepseek_logfire
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.deepseek.adapter import (
@@ -230,6 +227,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         super().__init__(
             id=self.id,
             octomate=octomate,
+            nerves=octomate.nerves,
             commands=octomate.commands,
             projects=octomate.projects,
             threads=octomate.threads,
@@ -276,7 +274,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     @property
     def native_running_threads(self) -> set[ThreadKey]:
         return {
-            ThreadKey.from_address(state.address)
+            ThreadKey.model_validate(state.address)
             for state in self.session_tailer.sessions.values()
             if state.open_turn is not None and state.open_turn.native is not None
         }
@@ -775,20 +773,21 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         exc_value: BaseException | None = None,
         traceback: TracebackType | None = None,
     ) -> None:
-        await super().__aexit__(exc_type, exc_value, traceback)
-        self.commands.invalidate(agent_id=self.id)
-        with anyio.CancelScope(shield=True):
-            cancelled = await drain_task(asyncio.gather(*self.run_tasks))
-            self.session_ingest.shutdown()
-            await self.session_tailer.shutdown()
-            await self.ink.__aexit__(exc_type, exc_value, traceback)
-            for future in list(self.pendings.values()):
-                if not future.done():
+        try:
+            await super().__aexit__(exc_type, exc_value, traceback)
+        finally:
+            self.commands.invalidate(agent_id=self.id)
+            with anyio.CancelScope(shield=True):
+                cancelled = await drain_task(asyncio.gather(*self.run_tasks))
+                self.session_ingest.shutdown()
+                await self.session_tailer.shutdown()
+                await self.ink.__aexit__(exc_type, exc_value, traceback)
+                for future in list(self.pendings.values()):
                     future.cancel()
-            self.pendings.clear()
-            self.bridge_contexts.clear()
-        if cancelled:
-            raise asyncio.CancelledError
+                self.pendings.clear()
+                self.bridge_contexts.clear()
+            if cancelled:
+                raise asyncio.CancelledError
 
     async def answer_interaction(
         self, frame: ApprovalRequestedFrame | QuestionRequestedFrame
@@ -1054,7 +1053,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             conversation_address=str(conversation_address),
             **agent_input_message_attributes(user_prompt),
         ):
-            async with self.conversation_locks.hold(str(conversation.id)):
+            async with (
+                self.conversation_locks.hold(str(conversation.id)),
+                contextlib.AsyncExitStack() as resources,
+            ):
                 conversation = await self.conversations.get(
                     conversation.id, with_runs=False
                 )
@@ -1133,6 +1135,19 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                             )
                         )
                         prompted = True
+
+                        async def interrupt() -> None:
+                            self.unwrap(
+                                await client.remote(
+                                    "session/cancel",
+                                    {"request": {"sessionId": session_id}},
+                                ),
+                                "session/cancel",
+                            )
+
+                        await resources.enter_async_context(
+                            invocation.interruption.handling(interrupt)
+                        )
                         while not accumulator.turn_ended:
                             frame = await queue.get()
                             if isinstance(
@@ -1229,6 +1244,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 source_thread,
                 source_message_ids[-1],
             )
+        invocation.interruption.check()
         if accumulator.turn_error:
             raise AgentRunError(accumulator.turn_error)
         yield AgentRunResultEvent(

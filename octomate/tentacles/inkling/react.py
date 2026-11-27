@@ -17,6 +17,7 @@ from pydantic_ai import (
     AgentRunResult,
     AgentRunResultEvent,
     AgentSpec,
+    CancellationToken,
     UsageLimits,
 )
 from pydantic_ai.agent.abstract import AgentInstructions, AgentMetadata, AgentRetries
@@ -102,6 +103,7 @@ class ReactDeps[ReactOutputT, ReactDepsT]:
     builtin_tools: Sequence[AgentNativeTool[ReactDepsT]] | None = None
     capabilities: Sequence[AgentCapability[ReactDepsT]] | None = None
     spec: dict[str, Any] | AgentSpec | None = None
+    cancellation_token: CancellationToken | None = None
 
 
 @dataclass
@@ -251,6 +253,7 @@ class RunAgent[ReactOutputT, ReactDepsT](
                     toolsets=ctx.deps.toolsets,
                     capabilities=capabilities,
                     spec=ctx.deps.spec,
+                    cancellation_token=ctx.deps.cancellation_token,
                 )
                 return await self.next_node(ctx, result, span)
 
@@ -275,6 +278,7 @@ class RunAgent[ReactOutputT, ReactDepsT](
                 builtin_tools=ctx.deps.builtin_tools,
                 capabilities=capabilities,
                 spec=ctx.deps.spec,
+                cancellation_token=ctx.deps.cancellation_token,
             ):
                 if ctx.deps.event_send_stream is not None:
                     await ctx.deps.event_send_stream.send(event)

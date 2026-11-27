@@ -253,7 +253,14 @@ async def test_a_native_session_forks_into_a_session_this_tentacle_drives(
     await tentacle.validate_fork(source, sender=sender)
 
     landed = await tentacle.fork(
-        source, ThreadKey("trunkline", "thread", "lu", "landing"), sender=sender
+        source,
+        ThreadKey(
+            channel_tentacle_id="trunkline",
+            chat_type="thread",
+            chat_id="lu",
+            channel_thread_id="landing",
+        ),
+        sender=sender,
     )
 
     [(session_id, directory, staged)] = forked_from

@@ -94,7 +94,7 @@ class Siphon:
                 if impulse.address is None:
                     continue  # The nerve hands a channel only what has an address.
                 self.channel.feelers.status.feed(impulse.address, impulse.event)
-                key = ThreadKey.from_address(impulse.address)
+                key = ThreadKey.model_validate(impulse.address)
                 lane = self.lanes.get(key)
                 if lane is None:
                     lane, waiting = anyio.create_memory_object_stream[Impulse](math.inf)

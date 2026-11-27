@@ -23,12 +23,7 @@ from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.events import WireEvent
 from octomate.managers.base import Manager
-from octomate.nerve import ChannelTopic, Impulse, Nerve, ThreadTopic
-from octomate.schemas.awakes import (
-    DrivenGatewaySignal,
-    NativeGatewaySignal,
-    SummonSignal,
-)
+from octomate.nerve import AgentTopic, ChannelTopic, Impulse, Nerves, ThreadTopic
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.operations import (
     OperationAvailability,
@@ -51,6 +46,7 @@ from octomate.schemas.triage import (
 )
 from octomate.schemas.user import UserProfile
 from octomate.schemas.volumes.git import run_git
+from octomate.signals import DrivenGatewaySignal, NativeGatewaySignal, SummonSignal
 from octomate.tentacles.agent import AgentTentacle
 from octomate.types.threads import NATIVE_CHANNEL_USER_ID
 
@@ -108,6 +104,7 @@ class OctomateSession:
     users: UserManager
     threads: ThreadManager
     workspaces: WorkspaceManager
+    nerves: Nerves  # Inbound signals and outbound events.
     # Every connected channel, so `surfaces` can be read for any of them and not
     # just this run's own — what a cross-channel move needs.
     channels: dict[str, ChannelTentacle] = field(default_factory=dict)
@@ -132,9 +129,6 @@ class OctomateSession:
     # The kick's end of the nerve when a kick drives this turn, for a served spell
     # to publish on the turn's own stream; None for a call no kick drives.
     impulses: ObjectSendStream[Impulse] | None = None
-    # The host's nerve, which a spell no kick drives publishes on. None on a
-    # gateway built only to route, and on one a kick drives through `impulses`.
-    nerve: Nerve | None = None
     decision: GatewayDecision | None = field(default=None, init=False)
     # Whether `dismiss` was cast: the thread's workspace goes when the turn ends,
     # the graph's doing once the run is out of it.
@@ -258,10 +252,10 @@ class OctomateSession:
         if self.impulses is not None:
             await self.impulses.send(impulse)
             return
-        if self.nerve is None:
-            raise RuntimeError("a spell no kick drives publishes on the host's nerve")
-        self.nerve.deliver(ChannelTopic(address.channel_tentacle_id), impulse)
-        self.nerve.deliver(ThreadTopic(ThreadKey.from_address(address)), impulse)
+        self.nerves.events.deliver(ChannelTopic(address.channel_tentacle_id), impulse)
+        self.nerves.events.deliver(
+            ThreadTopic(ThreadKey.model_validate(address)), impulse
+        )
 
     @property
     def allow_here(self) -> bool:
@@ -632,7 +626,11 @@ class OctomateSession:
         if not self.native or profile is None:
             raise RuntimeError("only a native session with a sender binds a thread")
         thread = await self.threads.get(
-            ThreadKey(self.current_agent_id, "thread", session_id),
+            ThreadKey(
+                channel_tentacle_id=self.current_agent_id,
+                chat_type="thread",
+                chat_id=session_id,
+            ),
             with_messages=False,
             user_id=profile.user_id,
         )
@@ -841,7 +839,8 @@ class OctomateSession:
             opened = await channel.start_thread(destination, hint)
         except ValueError as error:
             raise GatewayRefusal(str(error)) from error
-        await channel.octomate.kick(
+        self.nerves.signals.dispatch(
+            AgentTopic(decision.agent_id),
             SummonSignal(
                 decision=decision,
                 destination=opened,
@@ -850,7 +849,7 @@ class OctomateSession:
                 source_conversation_id=self.conversation_id,
                 project=project,
                 ref=ref,
-            )
+            ),
         )
         return opened
 

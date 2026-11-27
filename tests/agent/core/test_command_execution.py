@@ -23,6 +23,7 @@ from octomate.events import MessageSentEvent
 from octomate.managers.commands import CommandManager, ValidatedCommand
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.habitat import Invocation
+from octomate.nerve import Nerves
 from octomate.schemas.commands import (
     CommandContext,
     CommandDescriptor,
@@ -448,6 +449,7 @@ async def test_active_chat_turn_prevents_command_execution(
 ) -> None:
     assert context.conversation is not None
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id=agent.id,
         conversation_id=context.conversation.id,
@@ -516,6 +518,7 @@ async def test_stream_owns_guard_until_cleanup_and_forwards_run_hooks(
     agent.behavior = "stream"
     assert context.conversation is not None
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id=agent.id,
         conversation_id=context.conversation.id,
@@ -550,6 +553,7 @@ async def test_stream_owns_guard_until_cleanup_and_forwards_run_hooks(
             assert not agent.stream_closed
             assert app.gateway.get(context.conversation.id) is session
             other = OctomateSession(
+                nerves=Nerves(),
                 channel_routes={},
                 current_agent_id=agent.id,
                 conversation_id=context.conversation.id,

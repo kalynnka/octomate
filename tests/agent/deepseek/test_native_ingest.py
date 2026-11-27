@@ -29,9 +29,9 @@ from tests.support.nerve import held
 SENDER = UserProfile(channel_user_id="lu", name="lu")
 
 SESSION_ID = "session-native-0001"
-SESSION_ADDRESS = ThreadKey("deepseek", "thread", SESSION_ID).address(
-    SENDER.channel_user_id
-)
+SESSION_ADDRESS = ThreadKey(
+    channel_tentacle_id="deepseek", chat_type="thread", chat_id=SESSION_ID
+).address(SENDER.channel_user_id)
 BASE_TIME_MS = 1_786_899_000_000
 
 # The log path in the *client's* namespace: a label the server records, never opens.
@@ -143,7 +143,10 @@ async def stream_events(
 
 async def native_conversation(octomate: Octomate):
     thread = await octomate.threads.ensure(
-        ThreadKey("deepseek", "thread", SESSION_ID), native=True
+        ThreadKey(
+            channel_tentacle_id="deepseek", chat_type="thread", chat_id=SESSION_ID
+        ),
+        native=True,
     )
     return await octomate.conversations.ensure(thread.id, agent_tentacle_id="deepseek")
 
@@ -157,16 +160,18 @@ async def test_reported_capacity_survives_native_reconnect_and_route_change() ->
     }
     await stream_events(
         tailer,
-        octomate.nerve,
+        octomate.nerves.events,
         [
             ev(1, "request/context", {**context, "contextWindow": 1000000}),
             *turn_events(1, 2, "first", "one"),
         ],
     )
-    await stream_events(tailer, octomate.nerve, turn_events(2, 6, "second", "two"))
+    await stream_events(
+        tailer, octomate.nerves.events, turn_events(2, 6, "second", "two")
+    )
     await stream_events(
         tailer,
-        octomate.nerve,
+        octomate.nerves.events,
         [ev(10, "request/context", context), *turn_events(3, 11, "third", "three")],
     )
     conversation = await native_conversation(octomate)
@@ -182,7 +187,7 @@ async def test_streamed_events_assemble_the_turn_and_its_ledger() -> None:
     _, tailer = wired(octomate)
 
     offsets = await stream_events(
-        tailer, octomate.nerve, turn_events(1, 0, "inspect it", "done")
+        tailer, octomate.nerves.events, turn_events(1, 0, "inspect it", "done")
     )
 
     conversation = await native_conversation(octomate)
@@ -196,7 +201,10 @@ async def test_streamed_events_assemble_the_turn_and_its_ledger() -> None:
     assert [message.message_text for message in run.messages] == ["inspect it", "done"]
 
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey("deepseek", "thread", SESSION_ID)
+        octomate.threads,
+        ThreadKey(
+            channel_tentacle_id="deepseek", chat_type="thread", chat_id=SESSION_ID
+        ),
     )
     directions = [
         (message.direction, message.message_text) for message in thread.messages
@@ -226,7 +234,7 @@ async def test_native_titles_are_persisted_and_revised_outside_turns(
     events.insert({"before": 0, "during": 2, "after": 4}[position], title)
     for seq, event in enumerate(events):
         event["seq"] = seq
-    await stream_events(tailer, octomate.nerve, events)
+    await stream_events(tailer, octomate.nerves.events, events)
     conversation = await native_conversation(octomate)
     assert conversation.name == "First name"
     assert len(conversation.runs) == 1
@@ -269,7 +277,7 @@ async def test_injected_user_messages_stay_out_of_the_prompt_row() -> None:
 
     await stream_events(
         tailer,
-        octomate.nerve,
+        octomate.nerves.events,
         [
             ev(0, "turn/start", {"turn": 1}),
             user_message(1, "hi", rpc_id="rpc-1"),
@@ -306,7 +314,10 @@ async def test_injected_user_messages_stay_out_of_the_prompt_row() -> None:
     assert part.content == "hi"
     assert run.source == "gateway"
     thread = await a_loaded_thread(
-        octomate.threads, ThreadKey("deepseek", "thread", SESSION_ID)
+        octomate.threads,
+        ThreadKey(
+            channel_tentacle_id="deepseek", chat_type="thread", chat_id=SESSION_ID
+        ),
     )
     inbound = [m.message_text for m in thread.messages if m.direction == "inbound"]
     assert inbound == ["hi", "also check the tests"]
@@ -322,7 +333,9 @@ async def test_a_reconnect_resumes_past_the_committed_floor(
 ) -> None:
     octomate = Octomate()
     _, tailer = wired(octomate)
-    await stream_events(tailer, octomate.nerve, turn_events(1, 0, "first", "one"))
+    await stream_events(
+        tailer, octomate.nerves.events, turn_events(1, 0, "first", "one")
+    )
 
     # The next connect is told to resume at the seq after the committed turn;
     # re-feeding the same turn regardless commits nothing new.
@@ -356,13 +369,15 @@ async def test_an_open_turn_never_commits_at_a_connection_boundary() -> None:
 
     # turn/end never arrives: the tail dropped mid-turn.
     await stream_events(
-        tailer, octomate.nerve, turn_events(1, 0, "hold", "partial")[:-1]
+        tailer, octomate.nerves.events, turn_events(1, 0, "hold", "partial")[:-1]
     )
     conversation = await native_conversation(octomate)
     assert conversation.runs == []
 
     # The next connect re-streams the turn whole and it lands.
-    await stream_events(tailer, octomate.nerve, turn_events(1, 0, "hold", "partial"))
+    await stream_events(
+        tailer, octomate.nerves.events, turn_events(1, 0, "hold", "partial")
+    )
     conversation = await native_conversation(octomate)
     [run] = conversation.runs
     assert run.id == f"{SESSION_ID}:1"
@@ -372,7 +387,9 @@ async def test_runs_are_dated_by_the_log_not_the_replay() -> None:
     octomate = Octomate()
     _, tailer = wired(octomate)
 
-    await stream_events(tailer, octomate.nerve, turn_events(1, 0, "when", "then"))
+    await stream_events(
+        tailer, octomate.nerves.events, turn_events(1, 0, "when", "then")
+    )
 
     conversation = await native_conversation(octomate)
     [run] = conversation.runs
@@ -392,7 +409,7 @@ async def test_a_gateway_prompt_marks_the_run_and_a_local_one_does_not() -> None
 
     await stream_events(
         tailer,
-        octomate.nerve,
+        octomate.nerves.events,
         [
             *turn_events(1, 0, "typed locally", "one"),
             *turn_events(2, 4, "sent via api", "two", rpc_id="rpc-1"),
@@ -413,7 +430,7 @@ async def test_the_observed_permission_preset_lands_on_the_conversation() -> Non
 
     await stream_events(
         tailer,
-        octomate.nerve,
+        octomate.nerves.events,
         [
             ev(0, "permission/preset", {"preset": "danger-full-access"}),
             *turn_events(1, 1, "go", "gone"),
@@ -436,7 +453,7 @@ async def test_a_custom_preset_is_observed_and_stored() -> None:
 
     await stream_events(
         tailer,
-        octomate.nerve,
+        octomate.nerves.events,
         [
             ev(0, "permission/preset", {"preset": "read-only-audit"}),
             *turn_events(1, 1, "go", "gone"),
@@ -454,7 +471,7 @@ async def test_a_preset_observed_inside_a_turn_is_recorded() -> None:
     events[0] = ev(0, "turn/start", {"turn": 1})
     events.insert(1, ev(1, "permission/preset", {"preset": "workspace-write"}))
 
-    await stream_events(tailer, octomate.nerve, events)
+    await stream_events(tailer, octomate.nerves.events, events)
 
     conversation = await native_conversation(octomate)
     assert conversation.permission_mode == "workspace-write"
@@ -482,7 +499,7 @@ async def test_hooks_and_stream_for_an_sdk_session_are_recorded_as_external() ->
         )
     )
     await stream_events(
-        tailer, octomate.nerve, turn_events(1, 0, "ingest this", "done")
+        tailer, octomate.nerves.events, turn_events(1, 0, "ingest this", "done")
     )
 
     external = await native_conversation(octomate)
@@ -519,7 +536,10 @@ async def test_a_prompt_hook_creates_the_session_skeleton() -> None:
     )
 
     thread = await octomate.threads.ensure(
-        ThreadKey("deepseek", "thread", SESSION_ID), native=True
+        ThreadKey(
+            channel_tentacle_id="deepseek", chat_type="thread", chat_id=SESSION_ID
+        ),
+        native=True,
     )
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id="deepseek"
@@ -578,16 +598,18 @@ async def test_a_stop_with_no_attached_stream_settles_nothing() -> None:
 async def test_live_turn_restarts_then_settles_and_committed_replay_is_silent() -> None:
     octomate = Octomate()
     _, tailer = wired(octomate)
-    key = ThreadKey("deepseek", "thread", SESSION_ID)
+    key = ThreadKey(
+        channel_tentacle_id="deepseek", chat_type="thread", chat_id=SESSION_ID
+    )
     records = turn_events(1, 0, "inspect it", "done")
-    async with octomate.nerve.subscribe(ThreadTopic(key)) as live:
-        await stream_events(tailer, octomate.nerve, records[:-1])
+    async with octomate.nerves.events.subscribe(ThreadTopic(key)) as live:
+        await stream_events(tailer, octomate.nerves.events, records[:-1])
         first = held(live)
         assert first[0].event.event_kind == "run_started"
         assert all(impulse.event.event_kind != "run_ended" for impulse in first)
         thread = await a_loaded_thread(octomate.threads, key)
         assert [message.message_text for message in thread.messages] == ["inspect it"]
-        await stream_events(tailer, octomate.nerve, records)
+        await stream_events(tailer, octomate.nerves.events, records)
         impulses = held(live)
         assert [impulse.event.event_kind for impulse in impulses] == [
             "run_started",
@@ -601,7 +623,7 @@ async def test_live_turn_restarts_then_settles_and_committed_replay_is_silent() 
             for impulse in impulses
         )
         assert all(
-            impulse.origin == ThreadKey.from_address(SESSION_ADDRESS)
+            impulse.origin == ThreadKey.model_validate(SESSION_ADDRESS)
             for impulse in impulses
         )
         ended = impulses[-1].event
@@ -611,8 +633,8 @@ async def test_live_turn_restarts_then_settles_and_committed_replay_is_silent() 
             message for message in thread.messages if message.direction == "outbound"
         ]
         assert ended.thread_message_id == reply.id
-        assert not octomate.awakes
-        await stream_events(tailer, octomate.nerve, records)
+        assert not octomate.awake_since
+        await stream_events(tailer, octomate.nerves.events, records)
         assert held(live) == []
 
 
@@ -632,7 +654,7 @@ async def test_steering_keeps_its_transcript_position_despite_its_clock(
             ev(5, "turn/end", {"turn": 1, "reason": {"kind": "completed"}}),
         ]
     )
-    await stream_events(tailer, octomate.nerve, records)
+    await stream_events(tailer, octomate.nerves.events, records)
     conversation = await native_conversation(octomate)
     assert [
         message.message_text
@@ -668,11 +690,15 @@ async def test_failed_commit_never_publishes_run_ended(
             "bind_native_run",
             AsyncMock(side_effect=RuntimeError("commit failed")),
         )
-    key = ThreadKey("deepseek", "thread", SESSION_ID)
-    async with octomate.nerve.subscribe(ThreadTopic(key)) as live:
+    key = ThreadKey(
+        channel_tentacle_id="deepseek", chat_type="thread", chat_id=SESSION_ID
+    )
+    async with octomate.nerves.events.subscribe(ThreadTopic(key)) as live:
         with pytest.raises(RuntimeError, match="commit failed"):
             await stream_events(
-                tailer, octomate.nerve, turn_events(1, 0, "inspect it", "done")
+                tailer,
+                octomate.nerves.events,
+                turn_events(1, 0, "inspect it", "done"),
             )
         events = held(live)
         assert events[0].event.event_kind == "run_started"

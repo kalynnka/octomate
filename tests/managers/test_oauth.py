@@ -40,7 +40,7 @@ from octomate.managers.user import UserManager
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
 from octomate.mcp.server import tentacles_mcp
 from octomate.mcp.transport import mcp_http_client
-from octomate.nerve import Nerve
+from octomate.nerve import Nerves
 from octomate.oauth.base import McpBearerAuth
 from octomate.oauth.flows import (
     AuthorizationCodeFlow,
@@ -902,12 +902,13 @@ def provider(manager: OAuthManager, connector_id: str) -> Provider:
     """The tentacle whose tokens live under `connector_id` on `manager`."""
     # This unit fixture binds the configured manager without bootstrapping it again.
     host = object.__new__(Octomate)
+    host.tentacles = {}
     host.users = manager.users
     host.oauth = manager
     host.mcp = McpManager(users=manager.users, cipher=manager.cipher, oauth=manager)
     host.deferred_actions = DeferredActionManager()
-    host.nerve = Nerve()
-    host.threads = ThreadManager(users=host.users, nerve=host.nerve)
+    host.nerves = Nerves()
+    host.threads = ThreadManager(users=host.users, nerve=host.nerves.events)
     host.files = FileManager()
     host.artifacts = ArtifactManager(
         config=ArtifactConfig(), mcp=host.mcp, threads=host.threads, files=host.files
@@ -934,7 +935,7 @@ def a_session(
         channel_routes={},
         current_agent_id="inkling",
         channels={"im": channel} if channel is not None else {},
-        nerve=channel.octomate.nerve if channel is not None else None,
+        nerves=channel.octomate.nerves if channel is not None else Nerves(),
         conversation_address=address,
         user_profile=profile,
         users=threads.users,

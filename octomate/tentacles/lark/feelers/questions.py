@@ -13,7 +13,8 @@ from octomate.events import (
     ActionBatchUpdatedEvent,
 )
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.deferred import DeferredQuestion, QuestionAnswer
+from octomate.schemas.deferred import DeferredQuestion
+from octomate.signals import QuestionAnswer
 from octomate.telemetry import lark_logfire
 from octomate.tentacles.feelers.deferred import (
     QuestionFeeler,

@@ -83,7 +83,12 @@ async def test_turns_stream_resume_and_use_guest_paths(
     assert sender is not None
     sender = await host.users.ensure_profile(agent.id, sender)
     thread = await host.threads.ensure(
-        ThreadKey(agent.id, "thread", str(owner.id), uuid7().hex)
+        ThreadKey(
+            channel_tentacle_id=agent.id,
+            chat_type="thread",
+            chat_id=str(owner.id),
+            channel_thread_id=uuid7().hex,
+        )
     )
     sandbox = host.habitats.residence(
         InvocationScope(user_id=owner.id, conversation_id=uuid7())

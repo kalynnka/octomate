@@ -27,7 +27,7 @@ from octomate.tentacles.trunkline import TrunklineTentacle
 from octomate.types.auth import ApiKeyScope
 from tests.support.agents import build_scripted_agent
 from tests.support.mcp import served_inkling_mcp
-from tests.support.nerve import settled
+from tests.support.nerve import listening, settled
 
 PASSWORD = "Correct horse battery staple1!"
 
@@ -65,7 +65,7 @@ async def app(
         )
     )
     await channel.probe()
-    async with served_inkling_mcp(application, monkeypatch):
+    async with served_inkling_mcp(application, monkeypatch), listening(application):
         yield application
 
 
@@ -601,8 +601,15 @@ async def test_private_threads_and_mutations_are_isolated(
 ) -> None:
     assert (await client.get("/api/trunkline/threads")).status_code == 401
     alice = (await enroll(client, auth)).json()
-    async with app.nerve.subscribe(
-        ThreadTopic(ThreadKey("trunkline", "thread", alice["id"], "shared-key"))
+    async with app.nerves.events.subscribe(
+        ThreadTopic(
+            ThreadKey(
+                channel_tentacle_id="trunkline",
+                chat_type="thread",
+                chat_id=alice["id"],
+                channel_thread_id="shared-key",
+            )
+        )
     ) as live:
         posted = await client.post(
             "/api/trunkline/threads/shared-key/messages",
@@ -657,8 +664,15 @@ async def test_private_threads_and_mutations_are_isolated(
         )
     ).status_code == 404
     assert (await app.deferred_actions.get_batch(batch.id)).status == "pending"
-    async with app.nerve.subscribe(
-        ThreadTopic(ThreadKey("trunkline", "thread", bob["id"], "shared-key"))
+    async with app.nerves.events.subscribe(
+        ThreadTopic(
+            ThreadKey(
+                channel_tentacle_id="trunkline",
+                chat_type="thread",
+                chat_id=bob["id"],
+                channel_thread_id="shared-key",
+            )
+        )
     ) as live:
         second = await client.post(
             "/api/trunkline/threads/shared-key/messages",

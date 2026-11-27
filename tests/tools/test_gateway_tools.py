@@ -40,8 +40,7 @@ from octomate.mcp.gateway import (
     gateway_instructions,
 )
 from octomate.mcp.server import octomate_mcp
-from octomate.nerve import Nerve, ThreadTopic
-from octomate.schemas.awakes import NativeGatewaySignal
+from octomate.nerve import Nerve, Nerves, ThreadTopic
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import MarkdownSegment, TextSegment
@@ -54,10 +53,11 @@ from octomate.schemas.triage import (
     TeleportDecision,
 )
 from octomate.schemas.user import UserProfile
+from octomate.signals import NativeGatewaySignal, Signal
 from octomate.tentacles.claude.mcp import sdk_tool
 from octomate.tentacles.trunkline import TrunklineTentacle
 from tests.support.agents import FakeAgent
-from tests.support.channels import FakeChannelTentacle
+from tests.support.channels import FakeChannelTentacle, RecordingSignals
 from tests.support.managers import (
     FakeConversationManager,
     FakeThreadManager,
@@ -95,7 +95,7 @@ def a_turn(
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id="inkling",
         channels={"im": channel},
-        nerve=channel.octomate.nerve,
+        nerves=channel.octomate.nerves,
         conversation_address=ChannelAddress(
             channel_tentacle_id="im",
             chat_type="thread" if in_thread else "group",
@@ -111,6 +111,7 @@ def a_turn(
     server = octomate_mcp(
         fixed_session(session),
         threads,
+        nerves=session.nerves,
         manager=McpManager(users=threads.users, cipher=None),
         conversations=FakeConversationManager(),
     )
@@ -124,13 +125,13 @@ async def a_native_call(
     OctomateSession,
     FakeChannelTentacle,
     FakeThreadManager,
-    list[NativeGatewaySignal],
+    list[Signal],
 ]:
     """The gateway as the served endpoint builds it for one native call: no
     thread, no address, the session speaking for the registered user the
     verified bearer named — `linked` is whether that user has a real account
     on `im` for a destination to light up."""
-    kicks: list[NativeGatewaySignal] = []
+    kicks: list[Signal] = []
     await a_user("luhui", profiles={"im": "alice"} if linked else {})
     users = UserManager()
     channel = FakeChannelTentacle()
@@ -139,7 +140,7 @@ async def a_native_call(
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id="coding",
         channels={"im": channel},
-        nerve=channel.octomate.nerve,
+        nerves=channel.octomate.nerves,
         users=users,
         user_profile=await users.native_profile("coding", "luhui"),
         native=True,
@@ -147,13 +148,10 @@ async def a_native_call(
         workspaces=a_workspace_manager(),
     )
 
-    async def kick(signal: NativeGatewaySignal) -> None:
-        kicks.append(signal)
-
     server = octomate_mcp(
         fixed_session(session),
         threads,
-        kick=kick,
+        nerves=Nerves(signals=RecordingSignals(kicks)),
         manager=McpManager(users=threads.users, cipher=None),
         conversations=FakeConversationManager(),
     )
@@ -477,7 +475,7 @@ async def test_send_here_reaches_the_console_watching_a_trunkline_thread() -> No
         channel_routes={"trunkline": []},
         current_agent_id="claude",
         channels={"trunkline": console},
-        nerve=octomate.nerve,
+        nerves=octomate.nerves,
         conversation_address=address,
         users=octomate.users,
         threads=octomate.threads,
@@ -486,11 +484,12 @@ async def test_send_here_reaches_the_console_watching_a_trunkline_thread() -> No
     server = octomate_mcp(
         fixed_session(session),
         threads,
+        nerves=session.nerves,
         manager=McpManager(users=threads.users, cipher=None),
         conversations=FakeConversationManager(),
     )
-    async with octomate.nerve.subscribe(
-        ThreadTopic(ThreadKey.from_address(address))
+    async with octomate.nerves.events.subscribe(
+        ThreadTopic(ThreadKey.model_validate(address))
     ) as live:
         async with Client(server) as client:
             result = await client.call_tool(
@@ -709,6 +708,7 @@ async def test_a_native_scheme_kicks_its_handoff_at_once(
 
     assert result.data.startswith("Taking this to")
     [signal] = kicks
+    assert isinstance(signal, NativeGatewaySignal)
     assert signal.agent_id == "coding"
     assert isinstance(signal.decision, SchemeDecision)
     assert signal.decision.brief == "The operator asked for a summary."
@@ -739,6 +739,7 @@ async def a_turn_of_alices(in_memory_engine: AsyncEngine) -> FastMCP:
     alice = await threads.users.profile("im", "alice")
     assert alice is not None
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes={"im": []},
         current_agent_id="claude",
         channels={"im": FakeChannelTentacle()},
@@ -753,6 +754,7 @@ async def a_turn_of_alices(in_memory_engine: AsyncEngine) -> FastMCP:
     return octomate_mcp(
         fixed_session(session),
         threads,
+        nerves=session.nerves,
         manager=McpManager(users=threads.users, cipher=None),
         conversations=FakeConversationManager(),
     )
@@ -807,6 +809,7 @@ async def test_a_native_session_reads_its_users_history(
         )
     )
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes={"im": []},
         current_agent_id="coding",
         channels={"im": FakeChannelTentacle()},
@@ -819,6 +822,7 @@ async def test_a_native_session_reads_its_users_history(
     server = octomate_mcp(
         fixed_session(session),
         threads,
+        nerves=session.nerves,
         manager=McpManager(users=threads.users, cipher=None),
         conversations=FakeConversationManager(),
     )

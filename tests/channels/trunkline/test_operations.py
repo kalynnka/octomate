@@ -18,7 +18,7 @@ from octomate.config import ChannelConfig, DiscordChannelConfig
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import OctomateSession
-from octomate.nerve import ThreadTopic
+from octomate.nerve import Nerves, ThreadTopic
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
@@ -31,7 +31,7 @@ from octomate.tentacles.trunkline import TrunklineTentacle
 from octomate.tentacles.trunkline.base import TrunklineDirective
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
-from tests.support.nerve import settled
+from tests.support.nerve import listening, settled
 from tests.support.users import a_user
 
 
@@ -69,7 +69,12 @@ async def case(in_memory_engine: AsyncEngine, tmp_path: Path) -> Case:
     await channel.probe()
     await far.probe()
     thread = await app.threads.ensure(
-        ThreadKey("trunkline", "thread", str(owner.id), uuid7().hex)
+        ThreadKey(
+            channel_tentacle_id="trunkline",
+            chat_type="thread",
+            chat_id=str(owner.id),
+            channel_thread_id=uuid7().hex,
+        )
     )
     await app.conversations.ensure(thread.id, agent_tentacle_id=agent.id)
     await app.threads.record_outbound(
@@ -83,11 +88,14 @@ async def case(in_memory_engine: AsyncEngine, tmp_path: Path) -> Case:
 
 @pytest.fixture
 async def client(case: Case) -> AsyncGenerator[httpx2.AsyncClient]:
-    async with httpx2.AsyncClient(
-        transport=httpx2.ASGITransport(app=case.app),
-        base_url="http://test",
-        headers={"X-Octomate-Request": "1"},
-    ) as client:
+    async with (
+        listening(case.app),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=case.app),
+            base_url="http://test",
+            headers={"X-Octomate-Request": "1"},
+        ) as client,
+    ):
         yield client
 
 
@@ -106,7 +114,7 @@ async def test_options_and_summon_here(case: Case, client: httpx2.AsyncClient) -
         for routes in data["summon"]["routes"].values()
         for route in routes
     )
-    async with case.app.nerve.subscribe(ThreadTopic(case.thread.key)) as live:
+    async with case.app.nerves.events.subscribe(ThreadTopic(case.thread.key)) as live:
         response = await client.post(
             f"{path}/summon",
             json={
@@ -147,7 +155,12 @@ async def test_inherited_chat_does_not_grant_access_to_a_private_fork(
     )
     source = (await case.app.conversations.for_thread(case.thread.id))[0]
     destination = await case.app.threads.ensure(
-        ThreadKey("trunkline", "thread", str(case.owner.id), uuid7().hex)
+        ThreadKey(
+            channel_tentacle_id="trunkline",
+            chat_type="thread",
+            chat_id=str(case.owner.id),
+            channel_thread_id=uuid7().hex,
+        )
     )
     target = await case.app.conversations.ensure(
         destination.id, agent_tentacle_id=case.agent.id
@@ -254,7 +267,7 @@ async def test_teleport_creates_independent_owned_destination(
         permission_mode="default",
     )
     await case.app.conversations.set_permission_mode(source, "default")
-    async with case.app.nerve.subscribe(ThreadTopic(case.thread.key)) as live:
+    async with case.app.nerves.events.subscribe(ThreadTopic(case.thread.key)) as live:
         response = await client.post(
             f"/api/trunkline/threads/{case.thread.id}/teleport",
             json={"destination": destination, "hint": "Work here"},
@@ -348,7 +361,7 @@ async def test_a_turn_the_agent_moved_ends_where_it_landed(
             "far", UserProfile(channel_user_id="ou_alice", user_id=case.owner.id)
         )
 
-    async with case.app.nerve.subscribe(ThreadTopic(case.thread.key)) as live:
+    async with case.app.nerves.events.subscribe(ThreadTopic(case.thread.key)) as live:
         response = await client.post(
             f"/api/trunkline/threads/{case.thread.channel_thread_id}/messages",
             json={"text": "take this elsewhere"},
@@ -381,7 +394,7 @@ async def test_a_teleport_with_a_prompt_sends_it_where_it_lands(
         if one["channel_tentacle_id"] == "trunkline"
     ]
 
-    async with case.app.nerve.subscribe(ThreadTopic(case.thread.key)) as live:
+    async with case.app.nerves.events.subscribe(ThreadTopic(case.thread.key)) as live:
         response = await client.post(
             f"{path}/teleport",
             json={
@@ -514,6 +527,7 @@ async def test_validation_precedes_side_effects(
 async def test_busy_thread_is_refused(case: Case, client: httpx2.AsyncClient) -> None:
     conversation = (await case.app.conversations.for_thread(case.thread.id))[0]
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes={},
         current_agent_id="first",
         conversation_id=conversation.id,
@@ -542,7 +556,7 @@ async def test_failed_open_reports_stream_error(
     case: Case, client: httpx2.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(case.far.ink, "open_dm", AsyncMock(return_value=None))
-    async with case.app.nerve.subscribe(ThreadTopic(case.thread.key)) as live:
+    async with case.app.nerves.events.subscribe(ThreadTopic(case.thread.key)) as live:
         response = await client.post(
             f"/api/trunkline/threads/{case.thread.id}/teleport",
             json={
@@ -614,7 +628,12 @@ async def test_external_thread_unknown_privacy_does_not_export_history(
     case: Case, client: httpx2.AsyncClient
 ) -> None:
     thread = await case.app.threads.ensure(
-        ThreadKey("far", "thread", "room", uuid7().hex)
+        ThreadKey(
+            channel_tentacle_id="far",
+            chat_type="thread",
+            chat_id="room",
+            channel_thread_id=uuid7().hex,
+        )
     )
     await case.app.conversations.ensure(thread.id, agent_tentacle_id="first")
     profile = await case.app.users.profile("far", "alice")
@@ -652,7 +671,12 @@ async def test_external_thread_its_channel_calls_private_exports_history(
 ) -> None:
     monkeypatch.setattr(case.far, "is_shared", lambda address: False)
     thread = await case.app.threads.ensure(
-        ThreadKey("far", "thread", "alice", uuid7().hex)
+        ThreadKey(
+            channel_tentacle_id="far",
+            chat_type="thread",
+            chat_id="alice",
+            channel_thread_id=uuid7().hex,
+        )
     )
     await case.app.conversations.ensure(thread.id, agent_tentacle_id="first")
     profile = await case.app.users.profile("far", "alice")
@@ -676,7 +700,7 @@ async def test_external_thread_its_channel_calls_private_exports_history(
         channel: {route["agent_id"] for route in routes}
         for channel, routes in options["teleport"]["routes"].items()
     } == {"trunkline": {"first"}, "far": {"first"}}
-    async with case.app.nerve.subscribe(ThreadTopic(thread.key)) as live:
+    async with case.app.nerves.events.subscribe(ThreadTopic(thread.key)) as live:
         response = await client.post(
             f"{path}/teleport",
             json={
@@ -698,6 +722,7 @@ async def test_trunkline_offers_a_new_thread_without_a_dm(case: Case) -> None:
     profile = await case.app.users.profile("far", "alice")
     assert profile is not None
     gateway = OctomateSession(
+        nerves=Nerves(),
         channel_routes=case.app.gateway.available_routes(
             case.app.channels, case.app.agents
         ),
@@ -730,7 +755,13 @@ async def test_native_teleport_requires_a_transcript_fork_agent(
     case: Case, client: httpx2.AsyncClient
 ) -> None:
     thread = await case.app.threads.ensure(
-        ThreadKey("codex", "thread", str(case.owner.id), uuid7().hex), native=True
+        ThreadKey(
+            channel_tentacle_id="codex",
+            chat_type="thread",
+            chat_id=str(case.owner.id),
+            channel_thread_id=uuid7().hex,
+        ),
+        native=True,
     )
     await case.app.conversations.ensure(
         thread.id, agent_tentacle_id="codex", native=True
@@ -775,6 +806,7 @@ async def test_an_empty_offer_is_closed_only_by_what_rules_it_out(
     case: Case, shared: bool, agent_id: str, refusal: str | None
 ) -> None:
     gateway = OctomateSession(
+        nerves=Nerves(),
         channel_routes=case.app.gateway.available_routes(
             case.app.channels, case.app.agents
         ),
@@ -829,6 +861,7 @@ async def test_discord_dm_threads_are_not_offered(case: Case) -> None:
         "discord", UserProfile(channel_user_id="discord-user", user_id=case.owner.id)
     )
     session = OctomateSession(
+        nerves=Nerves(),
         channel_routes=case.app.gateway.available_routes(
             case.app.channels, case.app.agents
         ),
@@ -888,7 +921,7 @@ async def test_new_trunkline_destination_is_owned_and_independent(
         },
         "hint": "New workspace",
     }
-    async with case.app.nerve.subscribe(ThreadTopic(case.thread.key)) as live:
+    async with case.app.nerves.events.subscribe(ThreadTopic(case.thread.key)) as live:
         response = await client.post(
             f"/api/trunkline/threads/{case.thread.id}/teleport", json=body
         )

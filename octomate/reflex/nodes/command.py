@@ -14,9 +14,9 @@ from octomate.reflex.state import (
     ReflexState,
     ResponseTarget,
 )
-from octomate.schemas.awakes import CommandSignal
 from octomate.schemas.commands import CommandError, CommandResult
 from octomate.schemas.triage import AgentRouteKey
+from octomate.signals import CommandSignal
 from octomate.telemetry import reflex_logfire
 
 
@@ -79,6 +79,7 @@ class Command(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         suspender=suspender,
                         capabilities=capabilities,
                     )
+                state.interruption.check()
                 output = await stack.enter_async_context(
                     agent.commands.execute(
                         agent,
@@ -86,6 +87,7 @@ class Command(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         self.signal.intent,
                         validated,
                         delivery_id=self.signal.delivery_id,
+                        interruption=state.interruption,
                         deferred_suspender=suspender,
                         capabilities=capabilities,
                     )

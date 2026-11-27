@@ -19,8 +19,8 @@ from octomate.reflex.state import (
     ReflexState,
     ResponseTarget,
 )
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.triage import SummonDecision
+from octomate.signals import DeferredActionBatchResponse
 from octomate.telemetry import reflex_logfire
 
 logger = logging.getLogger(__name__)

@@ -82,7 +82,12 @@ async def a_thread(octomate: Octomate, chat_id: str, project: str = "") -> Threa
     the project it references have to exist, since each is a real foreign key. A
     platform thread, since only work carries a project."""
     return await octomate.threads.ensure(
-        ThreadKey("im", "thread", chat_id, "t1"),
+        ThreadKey(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id=chat_id,
+            channel_thread_id="t1",
+        ),
         project=octomate.projects.get(project) if project else None,
     )
 

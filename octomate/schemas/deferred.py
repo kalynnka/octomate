@@ -37,6 +37,7 @@ from octomate.models import deferred as deferred_models
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
+from octomate.signals import QuestionAnswer
 from octomate.types.deferred import (
     DeferredActionStatus,
     DeferredBatchStatus,
@@ -50,10 +51,6 @@ from octomate.types.json import JsonObject
 # each choice as a button, five to a row; the user can always answer with free
 # text, so this is guidance, not a hard UI limit.
 MAX_QUESTION_CHOICES = 5
-
-# One question's answer: the text typed or the one choice picked, or the choices
-# picked on a multi-select question.
-type QuestionAnswer = str | list[str]
 
 
 class QuestionRequest(TypedDict):

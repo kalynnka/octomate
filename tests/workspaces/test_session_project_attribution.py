@@ -70,7 +70,9 @@ async def claude_session(octomate: Octomate, session_id: str, cwd: Path | str) -
             }
         ),
     )
-    thread = await octomate.threads.ensure(ThreadKey("claude", "thread", session_id))
+    thread = await octomate.threads.ensure(
+        ThreadKey(channel_tentacle_id="claude", chat_type="thread", chat_id=session_id)
+    )
     project = await thread.project
     return project.name if project is not None else ""
 
@@ -100,7 +102,9 @@ async def codex_session(octomate: Octomate, session_id: str, cwd: Path | str) ->
             }
         ),
     )
-    thread = await octomate.threads.ensure(ThreadKey("codex", "thread", session_id))
+    thread = await octomate.threads.ensure(
+        ThreadKey(channel_tentacle_id="codex", chat_type="thread", chat_id=session_id)
+    )
     project = await thread.project
     return project.name if project is not None else ""
 
@@ -183,7 +187,9 @@ async def test_both_runtimes_file_under_the_same_declared_project(
     assert first == "inky"
     assert second == "inky"
     reloaded = await octomate.threads.ensure(
-        ThreadKey("claude", "thread", "sess-claude")
+        ThreadKey(
+            channel_tentacle_id="claude", chat_type="thread", chat_id="sess-claude"
+        )
     )
     attributed = await reloaded.project
     assert attributed is not None
@@ -212,7 +218,12 @@ async def test_a_thread_cannot_be_re_attributed(tmp_path: Path) -> None:
     octomate = Octomate()
     octomate.workspaces.projects = await a_registry(a_project(inky), a_project(kraken))
     thread = await octomate.threads.ensure(
-        ThreadKey("im", "thread", "chat", "t1"),
+        ThreadKey(
+            channel_tentacle_id="im",
+            chat_type="thread",
+            chat_id="chat",
+            channel_thread_id="t1",
+        ),
         project=octomate.projects.get("inky"),
     )
     kraken_project = octomate.projects.get("kraken")
@@ -233,7 +244,13 @@ async def test_a_thread_cannot_name_a_project_that_is_not_there(
 
     with pytest.raises(IntegrityError):
         await octomate.threads.ensure(
-            ThreadKey("im", "thread", "chat", "t-ghost"), project=unregistered
+            ThreadKey(
+                channel_tentacle_id="im",
+                chat_type="thread",
+                chat_id="chat",
+                channel_thread_id="t-ghost",
+            ),
+            project=unregistered,
         )
 
 
@@ -245,9 +262,15 @@ async def test_attribution_does_not_touch_thread_identity(tmp_path: Path) -> Non
     octomate.workspaces.projects = await a_registry(a_project(inky))
 
     await claude_session(octomate, "sess-keyed", inky)
-    thread = await octomate.threads.ensure(ThreadKey("claude", "thread", "sess-keyed"))
+    thread = await octomate.threads.ensure(
+        ThreadKey(
+            channel_tentacle_id="claude", chat_type="thread", chat_id="sess-keyed"
+        )
+    )
 
-    assert thread.key == ThreadKey("claude", "thread", "sess-keyed")
+    assert thread.key == ThreadKey(
+        channel_tentacle_id="claude", chat_type="thread", chat_id="sess-keyed"
+    )
     attributed = await thread.project
     assert attributed is not None
     assert attributed.name == "inky"
@@ -280,7 +303,9 @@ async def end_session(octomate: Octomate, session_id: str, cwd: Path | str) -> N
 
 async def filed_under(octomate: Octomate, session_id: str) -> str:
     """The name of the project a Claude session's thread is filed under, or ""."""
-    thread = await octomate.threads.ensure(ThreadKey("claude", "thread", session_id))
+    thread = await octomate.threads.ensure(
+        ThreadKey(channel_tentacle_id="claude", chat_type="thread", chat_id=session_id)
+    )
     project = await thread.project
     return project.name if project is not None else ""
 

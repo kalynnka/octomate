@@ -169,6 +169,7 @@ def core_tool_server(
     return octomate_mcp(
         fixed_session(session),
         threads or FakeThreadManager(),
+        nerves=session.nerves,
         manager=McpManager(users=UserManager(), cipher=None),
         conversations=conversations or FakeConversationManager(),
     )

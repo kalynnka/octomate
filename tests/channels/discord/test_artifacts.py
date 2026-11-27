@@ -100,11 +100,11 @@ async def test_card_reaches_discord_with_its_own_ledger_id(
     )
     async with channel.ink, drawing(channel):
         if mode != "outside":
-            host.nerve.deliver(
+            host.nerves.events.deliver(
                 ChannelTopic(channel.id),
                 Impulse(RunStartedEvent(address=address), address),
             )
-        host.nerve.deliver(
+        host.nerves.events.deliver(
             ChannelTopic(channel.id),
             Impulse(
                 ArtifactAvailableEvent(
@@ -114,11 +114,11 @@ async def test_card_reaches_discord_with_its_own_ledger_id(
             ),
         )
         if mode != "outside":
-            host.nerve.deliver(
+            host.nerves.events.deliver(
                 ChannelTopic(channel.id),
                 Impulse(RunResultEvent(output="done", usage=RunUsage()), address),
             )
-            host.nerve.deliver(
+            host.nerves.events.deliver(
                 ChannelTopic(channel.id),
                 Impulse(RunEndedEvent(thread_message_id=reply.id), address),
             )

@@ -9,10 +9,10 @@ from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.events import ActionBatchEvent
-from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredActionBatch
 from octomate.schemas.thread import ThreadKey
+from octomate.signals import DeferredActionBatchResponse
 from octomate.tentacles.channel import ChannelTentacle
 from tests.support.nerve import drained, drawing
 
@@ -32,7 +32,7 @@ async def replay_card_updates[RawT, MessageT](
     use the enclosing test's timeout so real platform calls can finish.
     """
     manager = channel.octomate.deferred_actions
-    thread = await channel.octomate.threads.ensure(ThreadKey.from_address(address))
+    thread = await channel.octomate.threads.ensure(ThreadKey.model_validate(address))
     conversation = await channel.octomate.conversations.ensure(
         thread.id, agent_tentacle_id="trigger"
     )

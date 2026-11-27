@@ -23,12 +23,26 @@ from octomate.schemas.thread import (
 )
 from tests.support.managers import a_project, a_registry
 
-SLACK_DM = ThreadKey("slack", "dm", "D1")
-SLACK_CHANNEL = ThreadKey("slack", "group", "C1")
-SLACK_THREAD = ThreadKey("slack", "thread", "C1", "1710000000.000001")
-LARK_SUB_THREAD = ThreadKey("lark", "thread", "oc_1", "omt_sub_1")
-CLAUDE_SESSION = ThreadKey("claude", "thread", "sess-1")
-CODEX_SESSION = ThreadKey("codex", "thread", "sess-2")
+SLACK_DM = ThreadKey(channel_tentacle_id="slack", chat_type="dm", chat_id="D1")
+SLACK_CHANNEL = ThreadKey(channel_tentacle_id="slack", chat_type="group", chat_id="C1")
+SLACK_THREAD = ThreadKey(
+    channel_tentacle_id="slack",
+    chat_type="thread",
+    chat_id="C1",
+    channel_thread_id="1710000000.000001",
+)
+LARK_SUB_THREAD = ThreadKey(
+    channel_tentacle_id="lark",
+    chat_type="thread",
+    chat_id="oc_1",
+    channel_thread_id="omt_sub_1",
+)
+CLAUDE_SESSION = ThreadKey(
+    channel_tentacle_id="claude", chat_type="thread", chat_id="sess-1"
+)
+CODEX_SESSION = ThreadKey(
+    channel_tentacle_id="codex", chat_type="thread", chat_id="sess-2"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -83,18 +97,27 @@ async def test_the_kind_is_on_the_row_a_later_reader_loads() -> None:
 
 async def test_native_kind_is_explicit_and_survives_address_only_lookup() -> None:
     manager = ThreadManager(nerve=Nerve(), users=UserManager())
-    key = ThreadKey("coding", "thread", "uploaded-session")
+    key = ThreadKey(
+        channel_tentacle_id="coding", chat_type="thread", chat_id="uploaded-session"
+    )
     tailed = await manager.ensure(key, native=True)
     reloaded = await manager.ensure(key)
     assert reloaded.id == tailed.id
     assert reloaded.kind == "native_thread"
     assert reloaded.channel_tentacle_id == "coding"
-    ordinary = await manager.ensure(ThreadKey("codex", "thread", "ordinary-session"))
+    ordinary = await manager.ensure(
+        ThreadKey(
+            channel_tentacle_id="codex", chat_type="thread", chat_id="ordinary-session"
+        )
+    )
     assert ordinary.kind == "thread"
     with pytest.raises(ValueError, match="cannot claim an ordinary thread"):
         await manager.ensure(ordinary.key, native=True)
     with pytest.raises(ValueError, match="requires a thread address"):
-        await manager.ensure(ThreadKey("coding", "dm", "owner"), native=True)
+        await manager.ensure(
+            ThreadKey(channel_tentacle_id="coding", chat_type="dm", chat_id="owner"),
+            native=True,
+        )
 
 
 def test_a_row_that_contradicts_its_key_is_refused() -> None:

@@ -194,7 +194,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         configured agent's address, and refuses an existing ordinary thread.
         """
         if isinstance(address_or_key, ChannelAddress):
-            key = ThreadKey.from_address(address_or_key)
+            key = ThreadKey.model_validate(address_or_key)
         else:
             key = address_or_key
         if native and key.chat_type != "thread":
@@ -1024,7 +1024,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         session lock across this lookup and write; the row grants the stream's
         owner access to a new thread while its model history is still folding.
         """
-        thread = await self.ensure(ThreadKey.from_address(address), native=True)
+        thread = await self.ensure(ThreadKey.model_validate(address), native=True)
         inbound = await self.find_message(thread.id, message_id, "inbound")
         if inbound is not None:
             if inbound.happened_at != timestamp:
@@ -1081,7 +1081,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             )
         if not answer:
             return None
-        thread = await self.ensure(ThreadKey.from_address(address), native=True)
+        thread = await self.ensure(ThreadKey.model_validate(address), native=True)
         outbound = await self.find_message(thread.id, run.id, "outbound")
         answered = next(
             (

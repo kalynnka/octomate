@@ -131,7 +131,7 @@ async def test_concurrent_first_sightings_of_one_key_insert_once() -> None:
 
 async def test_ensure_locks_only_the_matching_thread() -> None:
     manager = ThreadManager(nerve=Nerve(), users=UserManager())
-    key = ThreadKey.from_address(address())
+    key = ThreadKey.model_validate(address())
     other_key = ThreadKey(
         channel_tentacle_id="slack",
         chat_type="thread",
@@ -658,7 +658,7 @@ async def test_history_written_late_still_sorts_where_it_happened() -> None:
         event("m-old", "alice", "this came first"), happened_at=earlier
     )
 
-    thread = await a_loaded_thread(manager, ThreadKey.from_address(address()))
+    thread = await a_loaded_thread(manager, ThreadKey.model_validate(address()))
     assert [m.message_text for m in thread.messages] == [
         "this came first",
         "and now this",
@@ -681,7 +681,7 @@ async def test_one_instant_keeps_the_order_it_was_written_in() -> None:
         event("m-2", "alice", "second"), happened_at=same
     )
 
-    thread = await a_loaded_thread(manager, ThreadKey.from_address(address()))
+    thread = await a_loaded_thread(manager, ThreadKey.model_validate(address()))
     assert [m.message_text for m in thread.messages] == ["first", "second"]
     assert first.id < second.id
 
@@ -781,7 +781,7 @@ async def test_a_row_is_never_undated() -> None:
         )
     )
     outbound = await manager.record_outbound(
-        ThreadKey.from_address(address()),
+        ThreadKey.model_validate(address()),
         agent_tentacle_id="a",
         segments=[TextSegment(data={"text": "hi"})],
         sender=UserProfile(channel_user_id="bot", name="Bot"),

@@ -82,7 +82,13 @@ async def case(
     tentacle.models = {"openai:gpt-6-luna": "gpt-6-luna"}
     owner = await a_user()
     source_thread = await octomate.threads.ensure(
-        ThreadKey("codex", "thread", str(owner.id), uuid7().hex), native=True
+        ThreadKey(
+            channel_tentacle_id="codex",
+            chat_type="thread",
+            chat_id=str(owner.id),
+            channel_thread_id=uuid7().hex,
+        ),
+        native=True,
     )
     source = await octomate.conversations.ensure(
         source_thread.id,

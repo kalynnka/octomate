@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import Annotated, Literal
 
 import httpx2
 from fastmcp import FastMCP
@@ -27,7 +26,7 @@ from octomate.mcp.gateway import gateway_instructions, mount_gateway
 from octomate.mcp.history import HISTORY_TOOL_NAMES, mount_history
 from octomate.mcp.oauth import OAUTH_NAMESPACE, mount_oauth
 from octomate.mcp.todos import mount_todos, todo_instructions
-from octomate.schemas.awakes import NativeGatewaySignal
+from octomate.nerve import Nerves
 from octomate.schemas.mcp import (
     McpInstallRequest,
     McpServerSummary,
@@ -38,10 +37,6 @@ from octomate.schemas.mcp import (
 )
 from octomate.schemas.user import User
 from octomate.types.oauth import HttpsUrl
-
-if TYPE_CHECKING:
-    # The reflex reaches this module at runtime, through the agent tentacles.
-    from octomate.reflex import ReflexGraphResult
 
 HISTORY_NAMESPACE = "history"
 TENTACLES_SERVER_NAME = "tentacles"
@@ -295,10 +290,7 @@ def tentacles_mcp(
 def octomate_mcp(
     resolve_session: Callable[[], Awaitable[OctomateSession]],
     thread_manager: ThreadManager,
-    kick: Callable[
-        [NativeGatewaySignal], Awaitable[asyncio.Task[ReflexGraphResult] | None]
-    ]
-    | None = None,
+    nerves: Nerves,
     *,
     bearers: KnownBearers | None = None,
     manager: McpManager,
@@ -323,7 +315,7 @@ def octomate_mcp(
         auth=auth,
     )
     gateway = FastMCP(GATEWAY_NAMESPACE)
-    mount_gateway(gateway, session, thread_manager, kick, conversations=conversations)
+    mount_gateway(gateway, session, thread_manager, nerves, conversations=conversations)
     mcp.mount(gateway, namespace=GATEWAY_NAMESPACE)
     history = FastMCP(HISTORY_NAMESPACE)
     mount_history(history, session, thread_manager)

@@ -18,11 +18,11 @@ from octomate.reflex.nodes.react import React
 from octomate.reflex.nodes.teleport import Teleport
 from octomate.reflex.state import ReflexDeps, ReflexResult, ReflexState, ResponseTarget
 from octomate.reflex.suspender import TeleportRequest
-from octomate.schemas.awakes import SummonSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import AgentRouteKey, SummonDecision
 from octomate.schemas.user import UserProfile
 from octomate.schemas.volumes import GitVolume, UnregisteredProjectError
+from octomate.signals import SummonSignal
 from octomate.tentacles.channel import ChannelOutput
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
@@ -56,7 +56,7 @@ async def context(
             agent_id="inkling", model="test", reason="Work", hint="", brief=""
         ),
     )
-    async with app.nerve.publish(address) as impulses:
+    async with app.nerves.events.publish(address) as impulses:
         yield GraphRunContext(
             state=state,
             deps=ReflexDeps(

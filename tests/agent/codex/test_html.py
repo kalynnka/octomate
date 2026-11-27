@@ -21,6 +21,7 @@ from octomate.config.agents import CodexConfig
 from octomate.database import async_session
 from octomate.events import ArtifactAvailableEvent
 from octomate.managers.gateway import OctomateSession
+from octomate.nerve import Nerves
 from octomate.schemas.artifacts import Artifact, HtmlArtifact, HtmlView
 from octomate.schemas.files import Html
 from octomate.schemas.messages import ModelResponse
@@ -147,6 +148,7 @@ async def test_driven_html_reaches_the_owned_viewer_and_channel_card(
     conversation = await host.conversations.ensure(thread.id, agent_tentacle_id="codex")
     host.gateway.register(
         OctomateSession(
+            nerves=Nerves(),
             channel_routes={},
             channels={"im": channel},
             current_agent_id="codex",

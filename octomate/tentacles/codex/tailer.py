@@ -440,7 +440,11 @@ class CodexTranscriptTailer:
 
     async def ensure_session(self, session_id: str) -> Conversation:
         thread = await self.thread_manager.ensure(
-            ThreadKey(self.agent_tentacle_id, "thread", session_id),
+            ThreadKey(
+                channel_tentacle_id=self.agent_tentacle_id,
+                chat_type="thread",
+                chat_id=session_id,
+            ),
             native=True,
         )
         return await self.conversation_manager.ensure(
