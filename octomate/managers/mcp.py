@@ -17,7 +17,7 @@ from fastmcp.apps.config import UI_EXTENSION_ID, UI_MIME_TYPE
 from fastmcp.client.transports import StreamableHttpTransport
 from mcp.client.extension import advertise
 from mcp.shared._httpx_utils import McpHttpClientFactory
-from mcp.types import CallToolResult, TextResourceContents
+from mcp.types import CallToolResult, TextResourceContents, Tool
 from pydantic import UUID7, JsonValue
 from sqlalchemy.exc import IntegrityError
 from uuid_utils.compat import uuid7
@@ -540,37 +540,26 @@ class McpManager(Manager, Locks[UUID7]):
             self.tool_catalogs[key] = catalog
             return catalog
 
-    async def call_tool(
+    async def capture_app(
         self,
         scope: OctomateSession,
-        namespace: str,
-        name: str,
+        user: User,
+        instance: Mcp,
+        tool: Tool,
+        ui: McpAppToolMeta,
         arguments: dict[str, JsonValue],
+        result: CallToolResult,
     ) -> CallToolResult:
-        """Execute one upstream call and retain its declared app before publishing.
-
-        This boundary sees each call independently, including calls a runtime
-        nests inside a code wrapper. Sessions without thread attribution return
-        the upstream result without producing an artifact or ledger reference.
-        App declarations reuse the connection's latest discovery, loading once
-        when absent. Explicit discovery refreshes them; client eviction clears them.
-        """
-        user, instance = await self.resolve(scope, namespace)
+        """Retain an attributed MCP App result before publishing its reference."""
         address = scope.conversation_address
         channel = scope.channels.get(address.channel_tentacle_id) if address else None
-        async with self.acquire(user, mcp_id=instance.id) as client:
-            if (
-                scope.native
-                or scope.thread_id is None
-                or channel is None
-                or address is None
-            ):
-                return await client.call_tool_mcp(name, arguments)
-            catalog = await self.catalog(user, mcp_id=instance.id)
-            tool = catalog.tools_by_name.get(name)
-            ui = McpAppToolMeta.model_validate(tool.meta or {}) if tool else None
-            result = await client.call_tool_mcp(name, arguments)
-        if tool is None or ui is None or ui.resource_uri is None:
+        if (
+            scope.native
+            or scope.thread_id is None
+            or channel is None
+            or address is None
+            or ui.resource_uri is None
+        ):
             return result
         message = await scope.threads.record_artifact(
             scope.thread_id,

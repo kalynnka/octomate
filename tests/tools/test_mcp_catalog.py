@@ -8,7 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.config.mcp import BareMcpConfig
 from octomate.managers.mcp import McpUnavailable
-from octomate.mcp.server import CALL_MCP_TOOL, LIST_MCPS, tentacles_mcp
+from octomate.mcp.proxy import installation_prefix
+from octomate.mcp.server import LIST_MCPS, tentacles_mcp
 from octomate.schemas.mcp import BearerMcp, McpInstallRequest, NoAuthMcp
 from octomate.tentacles.mcp import BareMcpTentacle, build_mcp
 from tests.support.managers import fixed_session
@@ -105,8 +106,8 @@ async def test_tentacle_requires_explicit_install_and_keeps_users_isolated(
             for tool in (await discover(servers[0], installed.namespace)).tools
         ] == ["answer"]
         await servers[0].call_tool(
-            CALL_MCP_TOOL,
-            {"namespace": installed.namespace, "name": "answer", "arguments": {}},
+            f"{installation_prefix(installed.namespace)}_answer",
+            {},
         )
         with pytest.raises(ToolError, match="unavailable"):
             await discover(servers[1], installed.namespace)
@@ -124,8 +125,8 @@ async def test_tentacle_requires_explicit_install_and_keeps_users_isolated(
         catalog = await discover(servers[0], installed.namespace)
         assert catalog.instructions == installed.instructions
         await servers[0].call_tool(
-            CALL_MCP_TOOL,
-            {"namespace": installed.namespace, "name": "answer", "arguments": {}},
+            f"{installation_prefix(installed.namespace)}_answer",
+            {},
         )
         host.mcp.tentacles[tentacle.id] = tentacle
         await host.mcp.uninstall(alice.id, installed.id)

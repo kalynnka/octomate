@@ -9,10 +9,12 @@ import httpx2
 from fastmcp import FastMCP
 from fastmcp.dependencies import Depends
 from fastmcp.exceptions import ToolError
-from fastmcp.tools import ToolResult
+from fastmcp.server.dependencies import get_context
 from mcp.shared.exceptions import MCPError
+from mcp.types import ToolListChangedNotification
+from mcp_types.version import HANDSHAKE_PROTOCOL_VERSIONS
 from octomate_protocol.gateway import GATEWAY_NAMESPACE, gateway_tool
-from pydantic import UUID7, Field, JsonValue, WithJsonSchema
+from pydantic import UUID7, WithJsonSchema
 
 from octomate.capabilities.history import history_instructions
 from octomate.managers.conversation import ConversationManager
@@ -23,6 +25,7 @@ from octomate.mcp.base import KnownBearers
 from octomate.mcp.gateway import gateway_instructions, mount_gateway
 from octomate.mcp.history import HISTORY_TOOL_NAMES, mount_history
 from octomate.mcp.oauth import OAUTH_NAMESPACE, mount_oauth
+from octomate.mcp.proxy import SEARCH_MCP_TOOLS, InstalledMcpProvider, ToolSearch
 from octomate.mcp.todos import mount_todos, todo_instructions
 from octomate.nerve import Nerves
 from octomate.schemas.mcp import (
@@ -45,7 +48,6 @@ OCTOMATE_MCP_PATH = f"/{OCTOMATE_SERVER_NAME}/mcp"
 HISTORY_NAMESPACE = "history"
 TENTACLES_SERVER_NAME = "tentacles"
 LIST_MCP_TOOLS = "mcp_list_tools"
-CALL_MCP_TOOL = "mcp_call_tool"
 LIST_MCPS = "mcp_list_servers"
 LIST_MCP_TENTACLES = "mcp_list_tentacles"
 INSTALL_MCP = "mcp_install"
@@ -59,13 +61,28 @@ def history_tool(name: str) -> str:
     return f"{HISTORY_NAMESPACE}_{HISTORY_TOOL_NAMES[name]}"
 
 
+async def notify_tools_changed() -> None:
+    """Notify the calling client when its protocol supports request-stream updates.
+
+    Newer protocol versions require subscriptions, which FastMCP does not serve.
+    The stateless endpoint always exposes current availability through tools/list.
+    """
+    context = get_context()
+    request = context.request_context
+    if request is not None and request.protocol_version in HANDSHAKE_PROTOCOL_VERSIONS:
+        await context.send_notification(ToolListChangedNotification())
+
+
 def tentacle_instructions() -> str:
     return (
         "When searching for tools, also check the MCP servers proxied by Octomate "
         "before concluding that a needed tool is unavailable. "
         f"Call `{LIST_MCPS}` to discover the current user's installed MCPs. "
-        f"Use `{LIST_MCP_TOOLS}` with an enabled namespace, then `{CALL_MCP_TOOL}` "
-        "with the exact discovered tool name and arguments. "
+        f"Use `{SEARCH_MCP_TOOLS}` to find matching tool definitions, or use the "
+        "MCP tools/list catalog. Call each discovered tool directly by its exact "
+        "name. Search does not change the catalog. "
+        f"Use `{LIST_MCP_TOOLS}` to read an installation's upstream instructions "
+        "and original tool definitions. "
         f"When the user asks to install an MCP, use `{LIST_MCP_TENTACLES}` to find "
         f"configured offerings, then `{INSTALL_MCP}`. Remote MCPs can also be "
         "installed by HTTPS URL with no authentication or dynamic OAuth. "
@@ -103,6 +120,8 @@ def tentacles_mcp(
         name=TENTACLES_SERVER_NAME,
         instructions=tentacle_instructions(),
     )
+    mcp.add_provider(InstalledMcpProvider(manager, resolve_session))
+    mcp.add_transform(ToolSearch())
     oauth = FastMCP(OAUTH_NAMESPACE)
     session = Depends(resolve_session)
     mount_oauth(oauth, session, manager=manager)
@@ -136,8 +155,7 @@ def tentacles_mcp(
         ),
         annotations={"readOnlyHint": True},
     )
-    async def list_servers() -> list[McpServerSummary]:
-        scope = await resolve_session()
+    async def list_servers(scope: OctomateSession = session) -> list[McpServerSummary]:
         if scope.user_profile is None:
             return []
         owner = await manager.users.owner(scope.user_profile)
@@ -187,6 +205,7 @@ def tentacles_mcp(
             )
         except (McpUnavailable, ValueError) as error:
             raise ToolError(str(error)) from error
+        await notify_tools_changed()
         return await manager.summary(user, instance)
 
     @mcp.tool(
@@ -203,6 +222,7 @@ def tentacles_mcp(
             instance = await manager.enable(user_id=user.id, mcp_id=mcp_id)
         except McpUnavailable as error:
             raise ToolError(str(error)) from error
+        await notify_tools_changed()
         return await manager.summary(user, instance)
 
     @mcp.tool(
@@ -221,6 +241,7 @@ def tentacles_mcp(
             instance = await manager.disable(user_id=user.id, mcp_id=mcp_id)
         except McpUnavailable as error:
             raise ToolError(str(error)) from error
+        await notify_tools_changed()
         return await manager.summary(user, instance)
 
     @mcp.tool(
@@ -240,6 +261,7 @@ def tentacles_mcp(
             await manager.uninstall(user_id=user.id, mcp_id=mcp_id)
         except McpUnavailable as error:
             raise ToolError(str(error)) from error
+        await notify_tools_changed()
         return "MCP uninstalled."
 
     @mcp.tool(
@@ -247,42 +269,11 @@ def tentacles_mcp(
         description="Load tool schemas for one of the current user's installed MCPs.",
         annotations={"readOnlyHint": True},
     )
-    async def list_tools(namespace: str) -> McpToolCatalog:
+    async def list_tools(
+        namespace: str, scope: OctomateSession = session
+    ) -> McpToolCatalog:
         try:
-            return await manager.catalog(
-                await resolve_session(), namespace, refresh=True
-            )
-        except McpUnavailable as error:
-            raise ToolError(str(error)) from error
-        except (httpx2.HTTPError, MCPError, TimeoutError) as error:
-            raise ToolError("MCP upstream request failed") from error
-
-    @mcp.tool(
-        name=CALL_MCP_TOOL,
-        description=(
-            f"Call a tool discovered with `{LIST_MCP_TOOLS}` as the current caller. "
-        ),
-    )
-    async def call_tool(
-        namespace: str,
-        name: Annotated[
-            str, Field(description="The exact tool name returned by discovery.")
-        ],
-        arguments: dict[str, JsonValue],
-    ) -> ToolResult:
-        try:
-            result = await manager.call_tool(
-                await resolve_session(),
-                namespace,
-                name,
-                arguments,
-            )
-            return ToolResult(
-                content=result.content,
-                structured_content=result.structured_content,
-                is_error=result.is_error,
-                meta=result.meta,
-            )
+            return await manager.catalog(scope, namespace, refresh=True)
         except McpUnavailable as error:
             raise ToolError(str(error)) from error
         except (httpx2.HTTPError, MCPError, TimeoutError) as error:
@@ -316,6 +307,6 @@ def octomate_mcp(
     todos = FastMCP("todos")
     mount_todos(todos, session)
     mcp.mount(todos)
-    # Discovery, call, and linking helpers already carry their served names.
+    # Installed tools and management helpers already carry their served names.
     mcp.mount(tentacles_mcp(resolve_session, manager=manager))
     return mcp

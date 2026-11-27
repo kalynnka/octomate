@@ -239,7 +239,7 @@ async def test_accomplices_run_and_resume_without_harness_specific_metadata(
                 result = await client.call_tool(name, arguments)
                 assert result.data == "Three findings"
             else:
-                response = await sdk_tool(tools[name]).handler(arguments)
+                response = await sdk_tool(tools[name], server).handler(arguments)
                 assert response == {
                     "content": [{"type": "text", "text": "Three findings"}]
                 }

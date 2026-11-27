@@ -26,7 +26,8 @@ from octomate.events import (
 )
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpClientKey, McpUnavailable
-from octomate.mcp.server import CALL_MCP_TOOL, tentacles_mcp
+from octomate.mcp.proxy import installation_prefix
+from octomate.mcp.server import tentacles_mcp
 from octomate.nerve import ThreadTopic
 from octomate.schemas.artifacts import InstalledMcpAppSource, McpAppArtifact
 from octomate.schemas.conversation import ChannelAddress
@@ -200,12 +201,8 @@ async def test_app_call_is_durable_before_publication(
             ThreadTopic(turn.thread.key)
         ) as live:
             result = await turn.server.call_tool(
-                CALL_MCP_TOOL,
-                {
-                    "namespace": turn.installation.namespace,
-                    "name": name,
-                    "arguments": {"xml": xml, "fail": fail},
-                },
+                f"{installation_prefix(turn.installation.namespace)}_{name}",
+                {"xml": xml, "fail": fail},
             )
             event = (await live.receive()).event
         assert isinstance(event, ArtifactAvailableEvent)
@@ -254,12 +251,8 @@ async def test_two_calls_inside_a_wrapper_remain_two_invocations(
         async def execute() -> str:
             for xml in ("<first />", "<second />"):
                 await turn.server.call_tool(
-                    CALL_MCP_TOOL,
-                    {
-                        "namespace": turn.installation.namespace,
-                        "name": "draw",
-                        "arguments": {"xml": xml},
-                    },
+                    f"{installation_prefix(turn.installation.namespace)}_draw",
+                    {"xml": xml},
                 )
             return "wrapper output has no app metadata"
 
@@ -328,8 +321,8 @@ async def test_capture_uses_refreshed_tool_declaration(
         async with turn.host.nerves.events.subscribe(
             ThreadTopic(turn.thread.key)
         ) as live:
-            await manager.call_tool(
-                turn.scope, turn.installation.namespace, "draw", {"xml": "<updated />"}
+            await turn.server.call_tool(
+                "personal-diagrams_draw", {"xml": "<updated />"}
             )
             event = (await live.receive()).event
         assert isinstance(event, ArtifactAvailableEvent)
@@ -378,12 +371,8 @@ async def test_capabilities_and_results_are_independent_of_rendering(
             ThreadTopic(turn.thread.key)
         ) as live:
             result = await turn.server.call_tool(
-                CALL_MCP_TOOL,
-                {
-                    "namespace": turn.installation.namespace,
-                    "name": name,
-                    "arguments": {"xml": "<diagram />"},
-                },
+                f"{installation_prefix(turn.installation.namespace)}_{name}",
+                {"xml": "<diagram />"},
             )
             if case in {
                 "unconfigured_sandbox",
@@ -464,10 +453,8 @@ async def test_storage_failure_does_not_publish_or_repeat_tool(
         async with turn.host.nerves.events.subscribe(
             ThreadTopic(turn.thread.key)
         ) as live:
-            with pytest.raises(RuntimeError, match="storage refused"):
-                await turn.host.mcp.call_tool(
-                    turn.scope, turn.installation.namespace, "draw", {"xml": "once"}
-                )
+            with pytest.raises(ToolError, match="storage refused"):
+                await turn.server.call_tool("personal-diagrams_draw", {"xml": "once"})
             with pytest.raises(TimeoutError):
                 await asyncio.wait_for(live.receive(), 0.01)
         assert turn.calls == ["once"]
@@ -480,12 +467,8 @@ async def test_invalid_ui_declaration_is_rejected_before_execution(
     async with connected(turn.host.mcp, turn.upstream):
         with pytest.raises(ToolError, match="URL scheme"):
             await turn.server.call_tool(
-                CALL_MCP_TOOL,
-                {
-                    "namespace": turn.installation.namespace,
-                    "name": "invalid",
-                    "arguments": {"xml": "never"},
-                },
+                f"{installation_prefix(turn.installation.namespace)}_invalid",
+                {"xml": "never"},
             )
         assert turn.calls == []
 
@@ -495,9 +478,7 @@ async def test_ledger_http_replay_exposes_only_references_without_tool_calls(
 ) -> None:
     turn = app_turn
     async with connected(turn.host.mcp, turn.upstream):
-        await turn.host.mcp.call_tool(
-            turn.scope, turn.installation.namespace, "draw", {"xml": "saved input"}
-        )
+        await turn.server.call_tool("personal-diagrams_draw", {"xml": "saved input"})
     turn.host.dependency_overrides[current_user] = lambda: turn.user
     async with httpx2.AsyncClient(
         transport=httpx2.ASGITransport(app=turn.host), base_url="http://localhost"

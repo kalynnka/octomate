@@ -338,20 +338,22 @@ async def test_summon_is_exposed_with_the_same_schema_and_result(
         tool for tool in await server.list_tools() if tool.name == "gateway_summon"
     )
     assert tool is not None
-    resolve_session.assert_not_awaited()
+    resolve_session.assert_awaited_once()
+    resolve_session.reset_mock()
     schema = (await gateway_schemas(session))["summon"]
     assert tool.parameters == schema
     if projection == "mcp":
         async with Client(server) as client:
             await client.list_tools()
-            resolve_session.assert_not_awaited()
+            resolve_session.assert_awaited_once()
+            resolve_session.reset_mock()
             result = await client.call_tool("gateway_summon", dict(ARGUMENTS))
         structured = result.structured_content
         assert structured is not None
         address = structured["result"]
         assert TypeAdapter(ChannelAddress).validate_python(address) == opened
     else:
-        sdk = sdk_tool(tool)
+        sdk = sdk_tool(tool, server)
         payload = TypeAdapter(dict[str, JsonValue]).validate_python(ARGUMENTS)
         sdk_result = await sdk.handler(payload)
         assert sdk_result.get("is_error") is not True

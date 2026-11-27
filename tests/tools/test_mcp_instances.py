@@ -15,7 +15,6 @@ from octomate.config import OctomateConfig
 from octomate.managers.mcp import McpClientKey
 from octomate.mcp.gateway import CLIENT_HEADER
 from octomate.mcp.server import (
-    CALL_MCP_TOOL,
     DISABLE_MCP,
     ENABLE_MCP,
     INSTALL_MCP,
@@ -92,14 +91,9 @@ async def test_served_endpoint_uses_authenticated_owner_and_sees_new_installs(
                     (await alice_client.call_tool(LIST_MCPS, {})).data
                 )
                 assert (await bob_client.call_tool(LIST_MCPS, {})).data == []
-                args = {
-                    "namespace": instance.namespace,
-                    "name": "answer",
-                    "arguments": {},
-                }
-                with pytest.raises(ToolError, match="unavailable"):
-                    await bob_client.call_tool(CALL_MCP_TOOL, args)
-                result = await alice_client.call_tool(CALL_MCP_TOOL, args)
+                with pytest.raises(ToolError, match="Unknown tool"):
+                    await bob_client.call_tool("personal-research_answer", {})
+                result = await alice_client.call_tool("personal-research_answer", {})
                 assert isinstance(result.content[0], TextContent)
                 assert result.content[0].text == "answered"
                 key = McpClientKey(user_id=alice.id, mcp_id=instance.id)
@@ -117,10 +111,10 @@ async def test_served_endpoint_uses_authenticated_owner_and_sees_new_installs(
                     listed.structured_content["result"]
                 )
                 assert disabled.enabled is False
-                with pytest.raises(ToolError, match="unavailable"):
-                    await alice_client.call_tool(CALL_MCP_TOOL, args)
+                with pytest.raises(ToolError, match="Unknown tool"):
+                    await alice_client.call_tool("personal-research_answer", {})
                 await alice_client.call_tool(ENABLE_MCP, {"mcp_id": str(instance.id)})
-                await alice_client.call_tool(CALL_MCP_TOOL, args)
+                await alice_client.call_tool("personal-research_answer", {})
                 cached = host.mcp.clients[key]
                 await alice_client.call_tool(
                     UNINSTALL_MCP, {"mcp_id": str(instance.id)}
@@ -157,23 +151,24 @@ async def test_upstream_tool_errors_are_retries_in_inkling(
     user = await a_user()
     host = Octomate()
     scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
-    instance = await host.mcp.install(user.id, install_request())
+    await host.mcp.install(user.id, install_request())
     server = tentacles_mcp(fixed_session(scope), manager=host.mcp)
     toolset = MCPToolset[None](server)
     context = RunContext(deps=None, model=TestModel(), usage=RunUsage())
-    tools = await toolset.get_tools(context)
     upstream, _ = an_upstream("answer")
+
+    @upstream.tool(description="Refuse this request.")
+    def refuse() -> str:
+        raise ToolError("Provider refused the request")
+
     async with upstream_of(upstream) as transport:
         host.mcp.httpx_client_factory = into(transport)
         async with host.mcp.lifespan():
-            with pytest.raises(ModelRetry, match="Unknown tool"):
+            tools = await toolset.get_tools(context)
+            with pytest.raises(ModelRetry, match="Provider refused"):
                 await toolset.call_tool(
-                    CALL_MCP_TOOL,
-                    {
-                        "namespace": instance.namespace,
-                        "name": "missing",
-                        "arguments": {},
-                    },
+                    "personal-research_refuse",
+                    {},
                     context,
-                    tools[CALL_MCP_TOOL],
+                    tools["personal-research_refuse"],
                 )

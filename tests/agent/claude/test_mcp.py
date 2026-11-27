@@ -9,6 +9,7 @@ wording verbatim, which is how Claude retries from it natively.
 
 from __future__ import annotations
 
+import pytest
 from claude_agent_sdk import SdkMcpTool
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -21,7 +22,6 @@ from octomate import Octomate
 from octomate.managers.gateway import OctomateSession
 from octomate.mcp.gateway import TELEPORT_RECORDED
 from octomate.mcp.server import (
-    CALL_MCP_TOOL,
     LIST_MCP_TOOLS,
     McpToolCatalog,
     octomate_instructions,
@@ -96,7 +96,7 @@ async def spells(
         manager=Octomate().mcp,
         conversations=FakeConversationManager(),
     )
-    return {tool.name: sdk_tool(tool) for tool in await server.list_tools()}
+    return {tool.name: sdk_tool(tool, server) for tool in await server.list_tools()}
 
 
 def the_text(result: dict[str, JsonValue]) -> str:
@@ -121,10 +121,13 @@ async def test_the_server_config_is_the_sdk_in_process_shape() -> None:
     assert config["name"] == "octomate"
 
 
-async def test_image_content_keeps_the_mcp_wire_field_names() -> None:
+@pytest.mark.parametrize("description", [None, "Return a picture."])
+async def test_image_content_keeps_the_mcp_wire_field_names(
+    description: str | None,
+) -> None:
     server = FastMCP("images")
 
-    @server.tool(description="Return a picture.")
+    @server.tool(description=description)
     def picture() -> ToolResult:
         return ToolResult(
             content=[ImageContent(type="image", data="aW1hZ2U=", mime_type="image/png")]
@@ -132,7 +135,8 @@ async def test_image_content_keeps_the_mcp_wire_field_names() -> None:
 
     picture_tool = await server.get_tool("picture")
     assert picture_tool is not None
-    tool = sdk_tool(picture_tool)
+    tool = sdk_tool(picture_tool, server)
+    assert tool.description == (description or "")
     result = await tool.handler({})
 
     assert result == {
@@ -254,7 +258,9 @@ async def test_sdk_discovers_and_calls_provider_tools_through_fixed_helpers(
             manager=tentacle.octomate.mcp,
             conversations=tentacle.octomate.conversations,
         )
-        tools = {tool.name: sdk_tool(tool) for tool in await server.list_tools()}
+        tools = {
+            tool.name: sdk_tool(tool, server) for tool in await server.list_tools()
+        }
         assert "answer" not in tools
         assert calls == []
         discovered = await tools[LIST_MCP_TOOLS].handler(
@@ -265,12 +271,8 @@ async def test_sdk_discovers_and_calls_provider_tools_through_fixed_helpers(
             "answer",
             "refuse",
         }
-        answered = await tools[CALL_MCP_TOOL].handler(
-            {"namespace": "personal/provider", "name": "answer", "arguments": {}}
-        )
-        refused = await tools[CALL_MCP_TOOL].handler(
-            {"namespace": "personal/provider", "name": "refuse", "arguments": {}}
-        )
+        answered = await tools["personal-provider_answer"].handler({})
+        refused = await tools["personal-provider_refuse"].handler({})
 
     assert the_text(answered) == "answered"
     assert calls == ["Bearer key"]
