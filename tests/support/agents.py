@@ -234,6 +234,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     def __post_init__(self) -> None:
         self.resources = AsyncExitStack()
         self.reflexes = {}
+        self.invocations = {}
         if self.octomate is not None:
             self.nerves = self.octomate.nerves
         self.habitats = a_habitat_manager(self.workspaces)

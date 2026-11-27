@@ -3,10 +3,11 @@ scripted FunctionModels (no real LLM call)."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 from pydantic import UUID7
@@ -33,7 +34,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
+from octomate.config import ChannelConfig
 from octomate.config.base import OctomateConfig
+from octomate.database import async_session
 from octomate.events import ActionBatchEvent
 from octomate.managers.gateway import OctomateSession
 from octomate.nerve import Nerves
@@ -42,8 +45,12 @@ from octomate.schemas.deferred import (
     DeferredActionCollection,
     DeferredApproval,
 )
-from octomate.schemas.segments import MessageSegment, Segment
+from octomate.schemas.events import MessageEvent
+from octomate.schemas.runs import AgentRun
+from octomate.schemas.segments import MessageSegment, Segment, TextSegment
 from octomate.schemas.triage import TELEPORT_DEFER_KIND
+from octomate.schemas.user import UserProfile
+from octomate.signals import UserMessageSignal
 from octomate.tentacles.inkling import (
     InklingTentacle,
 )
@@ -67,7 +74,7 @@ from tests.support.agents import (
     build_scripted_agent,
     emit_scripted_turn,
 )
-from tests.support.channels import FakeChannelTentacle
+from tests.support.channels import FakeChannelTentacle, MainOnlyChannelTentacle
 from tests.support.invocations import invocation_for
 from tests.support.managers import (
     FakeConversation,
@@ -76,6 +83,7 @@ from tests.support.managers import (
     a_workspace_manager,
 )
 from tests.support.mcp import core_tool_capabilities, served_inkling_mcp
+from tests.support.nerve import interrupt_and_wait
 from tests.support.users import a_user, auth_config
 
 type InklingTestEvent = ReactStreamEvent[ScriptedOutput]
@@ -1211,3 +1219,87 @@ async def test_inkling_loop_propagates_graph_error_collected_run() -> None:
 
     assert len(conversations.runs) == 1
     assert "hi octomate" in str(conversations.runs[0][2])
+
+
+@pytest.mark.parametrize("phase", ["model", "tool"])
+@pytest.mark.parametrize("target", ["thread", "invocation"])
+async def test_signal_interrupts_the_model_stream(
+    in_memory_engine: AsyncEngine,
+    target: Literal["thread", "invocation"],
+    phase: str,
+) -> None:
+    ready, closed = asyncio.Event(), asyncio.Event()
+
+    async def stream(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str | DeltaToolCalls]:
+        if phase == "tool" and not ready.is_set():
+            yield {
+                0: DeltaToolCall(name="work", json_args="{}", tool_call_id="work-stop")
+            }
+            return
+        try:
+            yield "Working"
+            if phase == "model" and not ready.is_set():
+                ready.set()
+                await asyncio.Event().wait()
+        finally:
+            if phase == "model":
+                closed.set()
+
+    async def work() -> str:
+        ready.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+        return "finished"
+
+    host = Octomate()
+    agent = host.connect(
+        InklingTentacle(
+            "inkling",
+            host,
+            auth=host.auth,
+            habitats=host.habitats,
+            models={"test": FunctionModel(stream_function=stream)},
+        )
+    )
+    agent.capabilities.append(Toolset(FunctionToolset([work])))
+    host.connect(
+        MainOnlyChannelTentacle(config=ChannelConfig(type="fake", agents=[agent.id]))
+    )
+    message = MessageEvent(
+        tentacle_id="im",
+        chat_type="dm",
+        chat_id="alice",
+        user_id="alice",
+        sender=UserProfile(channel_tentacle_id="im", channel_user_id="alice"),
+        segments=[TextSegment(data={"text": "Work"})],
+    )
+    await interrupt_and_wait(
+        agent, UserMessageSignal([message], agent_id=agent.id), ready, target=target
+    )
+    assert closed.is_set()
+    async with async_session() as session:
+        [run] = await session.list(AgentRun)
+    saved = await agent.conversations.get(run.conversation_id)
+    assert len(saved.runs) == 1
+    assert saved.runs[0].messages
+    address = UserMessageSignal([message]).address
+    async with invocation_for(
+        agent,
+        conversation_address=address,
+        thread_id=saved.thread_id,
+        conversation_id=saved.id,
+    ) as invocation:
+        result = await agent.run(
+            "Continue",
+            conversation_address=address,
+            invocation=invocation,
+            model=agent.models["test"],
+            output_type=str,
+        )
+    assert result.output == "Working"
+    resumed = await host.conversations.get(saved.id)
+    assert len(resumed.runs) == 2

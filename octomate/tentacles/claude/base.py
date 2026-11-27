@@ -1414,6 +1414,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                             and isinstance(octomate_session.decision, TeleportDecision)
                         ),
                         command=command,
+                        interruption=invocation.interruption,
                     )
                 ) as native_messages,
                 contextlib.aclosing(interjections.around(native_messages)) as merged,
@@ -1486,13 +1487,18 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                 await self.conversations.record_native_memberships(
                     conversation, accumulator.session_id
                 )
-            if command_result is not None and command_result.is_error:
+            if (
+                command_result is not None
+                and command_result.is_error
+                and not invocation.interruption.requested
+            ):
                 raise RuntimeError(
                     command_result.result
                     or "; ".join(command_result.errors or ())
                     or f"Claude command failed: {command_result.subtype}"
                 )
             if command is not None and recorded_run is None:
+                invocation.interruption.check()
                 yield CommandResult(
                     segments=[TextSegment(data={"text": accumulator.result_text})]
                     if accumulator.result_text
@@ -1530,6 +1536,7 @@ class ClaudeTentacle(AgentTentacle[str, None]):
                     source_thread,
                     source_message_ids[-1],
                 )
+            invocation.interruption.check()
             moving = octomate_session.decision if octomate_session is not None else None
             if isinstance(moving, TeleportDecision):
                 if deferred_suspender is None:

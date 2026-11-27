@@ -1053,7 +1053,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             conversation_address=str(conversation_address),
             **agent_input_message_attributes(user_prompt),
         ):
-            async with self.conversation_locks.hold(str(conversation.id)):
+            async with (
+                self.conversation_locks.hold(str(conversation.id)),
+                contextlib.AsyncExitStack() as resources,
+            ):
                 conversation = await self.conversations.get(
                     conversation.id, with_runs=False
                 )
@@ -1132,6 +1135,19 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                             )
                         )
                         prompted = True
+
+                        async def interrupt() -> None:
+                            self.unwrap(
+                                await client.remote(
+                                    "session/cancel",
+                                    {"request": {"sessionId": session_id}},
+                                ),
+                                "session/cancel",
+                            )
+
+                        await resources.enter_async_context(
+                            invocation.interruption.handling(interrupt)
+                        )
                         while not accumulator.turn_ended:
                             frame = await queue.get()
                             if isinstance(
@@ -1228,6 +1244,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 source_thread,
                 source_message_ids[-1],
             )
+        invocation.interruption.check()
         if accumulator.turn_error:
             raise AgentRunError(accumulator.turn_error)
         yield AgentRunResultEvent(

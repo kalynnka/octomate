@@ -15,6 +15,7 @@ from octomate.config.channels import TrunklineChannelConfig
 from octomate.managers.base import Manager
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import GatewayManager, OctomateSession
+from octomate.managers.habitat import Interruption
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import WorkspaceManager
@@ -382,6 +383,7 @@ class CommandManager(Manager):
         validated: ValidatedCommand,
         *,
         delivery_id: str,
+        interruption: Interruption | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         capabilities: list[AgentCapability[DepsT]] | None = None,
     ) -> AsyncGenerator[
@@ -437,6 +439,7 @@ class CommandManager(Manager):
                 intent,
                 validated,
                 receipt_id=receipt.id if receipt is not None else None,
+                interruption=interruption,
                 deferred_suspender=deferred_suspender,
                 capabilities=capabilities,
             ) as result:
@@ -456,6 +459,7 @@ class CommandManager(Manager):
         validated: ValidatedCommand,
         *,
         receipt_id: uuid.UUID | None,
+        interruption: Interruption | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         capabilities: list[AgentCapability[DepsT]] | None = None,
     ) -> AsyncGenerator[
@@ -490,6 +494,7 @@ class CommandManager(Manager):
                         context,
                         validated.descriptor,
                         thread=validated.surface,
+                        interruption=interruption,
                     )
                 )
                 stream = agent.execute_command(

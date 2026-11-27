@@ -57,7 +57,7 @@ from octomate.fibers import MemoryFiber
 from octomate.habitat import Habitat
 from octomate.managers.conversation import ConversationNotFound
 from octomate.managers.files import FileOffsetConflict
-from octomate.managers.habitat import Invocation
+from octomate.managers.habitat import Interruption, Invocation
 from octomate.nerve import AgentTopic, ChannelTopic, Impulse, Nerves, ThreadTopic
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.auth import IssuedApiKey, UserApiKey
@@ -149,8 +149,9 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     signals: MemoryFiber[Signal] | None = None
     sensing_task: asyncio.Task[None] | None = None
     reflexes: dict[
-        ThreadKey, set[asyncio.Task[ReflexGraphResult | None]]
-    ]  # Owned execution tasks.
+        ThreadKey, dict[asyncio.Task[ReflexGraphResult | None], Interruption]
+    ]  # Owned execution tasks and their stop controls.
+    invocations: dict[UUID7, Interruption]
 
     ink: AgentInk  # Runtime operations, including a no-op adapter for Octomate history.
     commands: CommandManager
@@ -183,6 +184,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         self.resources = AsyncExitStack()
         self.nerves = nerves
         self.reflexes = {}
+        self.invocations = {}
         self.commands = commands
         self.projects = projects
         self.threads = threads
@@ -758,28 +760,46 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             message=f"{self.id} does not expose command discovery.",
         )
 
-    def inhabit(
-        self, *, thread: Thread, conversation: Conversation, owner_id: UUID7 | None
-    ) -> AbstractAsyncContextManager[Invocation]:
-        """Prepare this agent's run in the service's habitat.
-
-        Creating the context acquires nothing; the caller enters it and closes
-        it after the run is consumed.
-        """
-        return self.habitats.invoke(
-            thread=thread, conversation=conversation, owner_id=owner_id
-        )
+    @asynccontextmanager
+    async def inhabit(
+        self,
+        *,
+        thread: Thread,
+        conversation: Conversation,
+        owner_id: UUID7 | None,
+        interruption: Interruption | None = None,
+    ) -> AsyncGenerator[Invocation]:
+        """Own invocation resources and expose its harness stop control while active."""
+        control = interruption or Interruption()
+        control.check()
+        async with self.habitats.invoke(
+            thread=thread,
+            conversation=conversation,
+            owner_id=owner_id,
+            interruption=control,
+        ) as invocation:
+            control.check()
+            self.invocations[invocation.id] = control
+            try:
+                yield invocation
+            finally:
+                self.invocations.pop(invocation.id, None)
 
     async def sensing(self, signals: MemoryFiber[Signal]) -> None:
         """Receive signals, apply controls and live answers, and start reflexes."""
         async for signal in signals:
             if isinstance(signal, AsleepSignal):
-                if signal.thread is None:
-                    raise NotImplementedError(
-                        "Invocation-addressed interruption is not wired yet"
-                    )
-                for task in self.reflexes.get(signal.thread, set()):
-                    task.cancel()
+                if signal.thread is not None:
+                    controls = list(self.reflexes.get(signal.thread, {}).values())
+                elif (
+                    signal.invocation_id is not None
+                    and signal.invocation_id in self.invocations
+                ):
+                    controls = [self.invocations[signal.invocation_id]]
+                else:
+                    controls = []
+                for control in controls:
+                    await control.request()
                 continue
             batch = (
                 await self.octomate.deferred_actions.get_batch(signal.batch_id)
@@ -828,12 +848,15 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             if origin is None:
                 raise ValueError("A reflex requires its original surface")
             thread = ThreadKey.model_validate(origin)
-            task = asyncio.create_task(self.reflex(signal, origin=origin))
-            self.reflexes.setdefault(thread, set()).add(task)
+            control = Interruption()
+            task = asyncio.create_task(
+                self.reflex(signal, origin=origin, interruption=control)
+            )
+            self.reflexes.setdefault(thread, {})[task] = control
             task.add_done_callback(self.relax)
 
     async def reflex(
-        self, signal: AwakeSignal, *, origin: ChannelAddress
+        self, signal: AwakeSignal, *, origin: ChannelAddress, interruption: Interruption
     ) -> ReflexGraphResult | None:
         """Execute a received awake signal with this agent's graph and resources."""
         # Graph nodes depend on AgentTentacle; load them after this class exists.
@@ -870,7 +893,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             return await run_reflex(
                 signal,
                 origin=origin,
-                state=ReflexState(),
+                state=ReflexState(interruption=interruption),
                 deps=ReflexDeps(
                     workspaces=host.workspaces,
                     agents=host.agents,
@@ -887,7 +910,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
 
     def relax(self, task: asyncio.Task[ReflexGraphResult | None]) -> None:
         for thread, running in list(self.reflexes.items()):
-            running.discard(task)
+            running.pop(task, None)
             if not running:
                 del self.reflexes[thread]
         if not task.cancelled() and (error := task.exception()) is not None:
@@ -909,6 +932,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         descriptor: CommandDescriptor,
         *,
         thread: Thread | None,
+        interruption: Interruption | None = None,
     ) -> AbstractAsyncContextManager[Invocation | None]:
         """Select the resource context the reflex enters for this command.
 
@@ -924,6 +948,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             thread=thread,
             conversation=context.conversation,
             owner_id=context.user_id,
+            interruption=interruption,
         )
 
     async def execute_command(

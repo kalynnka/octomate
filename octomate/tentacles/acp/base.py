@@ -52,7 +52,7 @@ from octomate.events import (
     ActionBatchEvent,
 )
 from octomate.habitat import Habitat, ManagedHabitat
-from octomate.managers.habitat import Invocation
+from octomate.managers.habitat import Interruption, Invocation
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -487,6 +487,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                         run_name,
                         updates,
                         selected_model,
+                        invocation.interruption,
                     )
                 ) as events,
             ):
@@ -764,11 +765,19 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             StreamEvent | ActionBatchEvent | ActionBatchAnsweredEvent | None
         ],
         model: str | None,
+        interruption: Interruption,
     ) -> AsyncGenerator[ReactStreamEvent[str]]:
+        interruption.check()
+        sent = asyncio.Event()
         history = AcpHistory(request)
         run_id = str(uuid7())
 
         def observe(event: StreamEvent) -> None:
+            if (
+                event.direction == StreamDirection.OUTGOING
+                and event.message.get("method") == "session/prompt"
+            ):
+                sent.set()
             params = event.message.get("params")
             if (
                 event.direction == StreamDirection.INCOMING
@@ -788,7 +797,18 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             )
         )
         prompt.add_done_callback(lambda task: updates.put_nowait(None))
+
+        async def interrupt() -> None:
+            await sent.wait()
+            await notify_model(
+                client.connection,
+                acp.AGENT_METHODS["session_cancel"],
+                schema.CancelNotification(session_id=request.session_id),
+            )
+
         failed = False
+        handling = interruption.handling(interrupt)
+        await handling.__aenter__()
         try:
             while (event := await updates.get()) is not None:
                 if isinstance(event, ActionBatchEvent | ActionBatchAnsweredEvent):
@@ -834,6 +854,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                 await prompt
             raise
         finally:
+            await handling.__aexit__(None, None, None)
             with CancelScope(shield=True):
                 await self.record(
                     conversation,
@@ -847,8 +868,9 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
                     run_name,
                     updates,
                     model,
-                    failed=failed,
+                    failed=failed or interruption.requested,
                 )
+        interruption.check()
         yield AgentRunResultEvent(
             AgentRunResult(
                 output=history.answer,

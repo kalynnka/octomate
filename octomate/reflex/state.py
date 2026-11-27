@@ -37,6 +37,7 @@ from octomate.events import (
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager, OctomateSession
+from octomate.managers.habitat import Interruption, RunInterrupted
 from octomate.managers.thread import ThreadManager
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.nerve import AgentTopic, Impulse
@@ -216,6 +217,7 @@ class ReflexState:
         None  # Command whose completion this reflex owes.
     )
     dispatched: bool = False  # A receiving agent now owns the rest of this reflex.
+    interruption: Interruption = field(default_factory=Interruption)
 
 
 @dataclass
@@ -275,6 +277,7 @@ class ReflexDeps:
         tool_results: dict[str, str] | None,
     ) -> ReflexGraphResult:
         """Continue this reflex on its selected agent through the signal nerve."""
+        state.interruption.check()
         target = state.target
         source = state.source_target
         decision = state.decision
@@ -738,6 +741,7 @@ class ReflexRuntime:
                 raise RuntimeError(
                     f"react stream for {address} completed without a result"
                 )
+            ctx.state.interruption.check()
             reply = await self.record_reply(ctx, suspender, results[-1])
             ended.thread_message_id = reply.id if reply is not None else None
             ended.outcome = (
@@ -746,7 +750,7 @@ class ReflexRuntime:
                 else "completed"
             )
             return results[-1]
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, RunInterrupted):
             ended.outcome = "cancelled"
             raise
         finally:

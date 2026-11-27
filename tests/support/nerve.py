@@ -7,6 +7,7 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, asynccontextmanager
+from typing import Literal
 
 import anyio
 from anyio.abc import ObjectReceiveStream
@@ -36,6 +37,7 @@ from octomate.signals import (
     SummonSignal,
     UserMessageSignal,
 )
+from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.channel import ChannelTentacle
 from octomate.types.json import JsonObject
 
@@ -183,6 +185,47 @@ async def publish_signal(octomate: Octomate, signal: Signal) -> None:
         case _:
             raise AssertionError("Unsupported signal")
     octomate.nerves.signals.dispatch(AgentTopic(agent_id), signal)
+
+
+async def interrupt_and_wait(
+    agent: AgentTentacle,
+    signal: UserMessageSignal | CommandSignal,
+    ready: asyncio.Event,
+    *,
+    target: Literal["thread", "invocation"],
+) -> None:
+    address = (
+        signal.address
+        if isinstance(signal, UserMessageSignal)
+        else signal.context.address
+    )
+    thread = ThreadKey.model_validate(address)
+    host = agent.octomate
+    async with (
+        listening(host),
+        host.nerves.events.subscribe(ThreadTopic(thread)) as events,
+        asyncio.timeout(5),
+    ):
+        await publish_signal(host, signal)
+        await ready.wait()
+        tasks = list(agent.reflexes[thread])
+        interruption = (
+            AsleepSignal(thread=thread)
+            if target == "thread"
+            else AsleepSignal(invocation_id=next(iter(agent.invocations)))
+        )
+        await publish_signal(host, interruption)
+        await publish_signal(host, interruption)
+        async for impulse in events:
+            if isinstance(impulse.event, ReflexAsleepEvent):
+                assert impulse.event.outcome == "cancelled"
+                break
+        await publish_signal(host, interruption)
+        await asyncio.gather(*tasks)
+        assert all(not task.cancelling() for task in tasks)
+    assert not agent.invocations
+    assert not agent.reflexes
+    assert thread not in host.awake_since
 
 
 async def kick_and_wait(

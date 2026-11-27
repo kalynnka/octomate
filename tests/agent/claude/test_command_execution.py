@@ -14,6 +14,7 @@ from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack
 from dataclasses import replace
 from pathlib import Path
+from typing import Literal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -49,6 +50,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadCommand
 from octomate.schemas.user import UserProfile
+from octomate.signals import CommandSignal
 from octomate.tentacles.claude import ClaudeTentacle
 from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
@@ -58,6 +60,7 @@ from tests.agent.claude.test_tailer import prompt_record
 from tests.agent.claude.test_tentacle import KEY
 from tests.support.channels import FakeChannelTentacle
 from tests.support.invocations import invocation_for
+from tests.support.nerve import interrupt_and_wait, kick_and_wait
 from tests.support.users import a_user
 
 
@@ -981,3 +984,50 @@ async def test_permission_selection_validates_owner_and_mode_before_runtime_acce
     client.set_permission_mode.assert_not_called()
     stored = await agent.conversations.get(conversation.id, with_runs=False)
     assert stored.permission_mode is None
+
+
+@pytest.mark.parametrize("target", ["thread", "invocation"])
+async def test_signal_interrupts_the_native_turn(
+    execution: tuple[
+        ClaudeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+    ],
+    streams: dict[str, list[JsonObject]],
+    target: Literal["thread", "invocation"],
+) -> None:
+    agent, context, client, _ = execution
+    ready, stopped = asyncio.Event(), asyncio.Event()
+    client.interrupt.side_effect = stopped.set
+
+    async def messages() -> AsyncGenerator[Message]:
+        async for message in native_messages(streams["skill"]):
+            if isinstance(message, ResultMessage):
+                ready.set()
+                await stopped.wait()
+            yield message
+
+    client.receive_response.side_effect = messages
+    await interrupt_and_wait(
+        agent,
+        CommandSignal(context, CommandIntent(command_id="fixture-review"), "interrupt"),
+        ready,
+        target=target,
+    )
+    client.interrupt.assert_awaited_once()
+    client.__aexit__.assert_awaited()
+    assert not agent.ink.live_clients
+    assert context.conversation is not None
+    saved = await agent.conversations.get(context.conversation.id)
+    assert len(saved.runs) == 1
+    assert saved.runs[0].messages
+    external_id = saved.external_id
+    await kick_and_wait(
+        agent.octomate,
+        CommandSignal(
+            replace(context, conversation=saved),
+            CommandIntent(command_id="fixture-review"),
+            "resume",
+        ),
+    )
+    resumed = await agent.conversations.get(saved.id)
+    assert len(resumed.runs) == 2
+    assert resumed.external_id == external_id

@@ -633,9 +633,11 @@ async def test_direct_runs_reopen_the_conversation_without_dispatch(
     assert messages[1]["params"]["sessionId"] == "native-1"
 
 
+@pytest.mark.parametrize("target", ["thread", "invocation"])
 async def test_cancel_settles_provider_and_keeps_partial_history(
     agent: tuple[AcpAgentTentacle, UserProfile, Thread],
     adapter_environment: dict[str, str],
+    target: str,
 ) -> None:
     tentacle, sender, thread = agent
     app = tentacle.octomate
@@ -660,7 +662,12 @@ async def test_cancel_settles_provider_and_keeps_partial_history(
         async for impulse in stream:
             if isinstance(impulse.event, ActionBatchEvent):
                 break
-        await publish_signal(app, AsleepSignal(thread=thread.key))
+        await publish_signal(
+            app,
+            AsleepSignal(thread=thread.key)
+            if target == "thread"
+            else AsleepSignal(invocation_id=next(iter(tentacle.invocations))),
+        )
         await settled(stream)
     assert not app.awake_since
     assert not tentacle.pendings
@@ -677,6 +684,44 @@ async def test_cancel_settles_provider_and_keeps_partial_history(
     log = await AsyncPath(adapter_environment["ACP_TEST_LOG"]).read_text()
     assert any(
         json.loads(line)["message"].get("method") == "session/cancel"
+        for line in log.splitlines()
+    )
+
+    continued = message.model_copy(
+        update={
+            "message_id": uuid7().hex,
+            "segments": [TextSegment(data={"text": "Continue"})],
+        }
+    )
+    inbound = await app.threads.record_inbound(continued)
+    async with app.nerves.events.subscribe(ThreadTopic(thread.key)) as stream:
+        await publish_signal(
+            app,
+            UserMessageSignal(
+                [continued], agent_id=tentacle.id, trigger_thread_message_id=inbound.id
+            ),
+        )
+        async for impulse in stream:
+            event = impulse.event
+            if isinstance(event, ActionBatchEvent):
+                await publish_signal(
+                    app,
+                    DeferredActionBatchResponse(
+                        batch_id=UUID(event.batch_id),
+                        responder_id=sender.channel_user_id,
+                        approvals={event.approvals[0].id: True},
+                    ),
+                )
+            if isinstance(event, ReflexAsleepEvent):
+                assert event.outcome == "completed"
+                break
+    async with async_session() as session:
+        [conversation] = await session.list(Conversation)
+        assert conversation.external_id == "native-1"
+        assert len(await session.list(AgentRun)) == 2
+    log = await AsyncPath(adapter_environment["ACP_TEST_LOG"]).read_text()
+    assert any(
+        json.loads(line)["message"].get("method") == "session/load"
         for line in log.splitlines()
     )
 

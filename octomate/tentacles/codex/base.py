@@ -1906,6 +1906,13 @@ class CodexTentacle(AgentTentacle[str, None]):
                 review=review,
             )
             resources.enter_context(self.track_turn(conversation.id, turn))
+
+            async def interrupt() -> None:
+                await turn.interrupt()
+
+            await resources.enter_async_context(
+                invocation.interruption.handling(interrupt)
+            )
             completed_items: list[ThreadItem] = []
             resources.push_async_callback(
                 self.capture_compactions,
@@ -2068,6 +2075,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 source_thread,
                 source_message_ids[-1],
             )
+        invocation.interruption.check()
         if accumulator.turn_status == TurnStatus.failed:
             raise AgentRunError(accumulator.turn_error or "Codex turn failed")
         moving = session.decision if session is not None else None

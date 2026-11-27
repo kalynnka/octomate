@@ -136,6 +136,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             async with (
                 agent.inhabit(
                     thread=state.thread,
+                    interruption=state.interruption,
                     conversation=conversation,
                     owner_id=state.user_profile.user_id if state.user_profile else None,
                 ) as invocation,

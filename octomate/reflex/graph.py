@@ -18,6 +18,7 @@ from octomate.events import (
     ReflexAwakeEvent,
     ReflexPhaseChangedEvent,
 )
+from octomate.managers.habitat import RunInterrupted
 from octomate.nerve import Impulse
 from octomate.reflex.nodes import (
     Awake,
@@ -137,9 +138,11 @@ async def run_reflex(
             await deps.impulses.send(
                 Impulse(ReflexPhaseChangedEvent(phase="preparing"), origin)
             )
+        state.interruption.check()
         result = await reflex_graph.run(
             inputs=Awake(signal=signal), state=state, deps=deps
         )
+        state.interruption.check()
         if isinstance(result, DeferredResult):
             outcome = "deferred"
         elif isinstance(result, ReflexResult):
@@ -153,6 +156,12 @@ async def run_reflex(
                 else CommandResult()
             )
         return result
+    except RunInterrupted:
+        outcome = "cancelled"
+        interrupted = CommandError(status="failed", message="Run interrupted.")
+        if state.command_request_id is not None:
+            command_outcome = interrupted
+        return interrupted
     except asyncio.CancelledError:
         outcome = "cancelled"
         raise

@@ -32,6 +32,7 @@ from pydantic_ai import (
     AgentNativeTool,
     AgentRunResultEvent,
     AgentSpec,
+    CancellationToken,
     Conversation,
     RunUsage,
     UsageLimits,
@@ -105,6 +106,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
         builtin_tools: Sequence[AgentNativeTool[AgentDepsT]] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: dict[str, Any] | AgentSpec | None = None,
+        cancellation_token: CancellationToken | None = None,
     ) -> AsyncGenerator[
         StreamEvents[OutputDataT] | AgentRunResultEvent[OutputDataT]
     ]: ...
@@ -132,6 +134,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
         builtin_tools: Sequence[AgentNativeTool[AgentDepsT]] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: dict[str, Any] | AgentSpec | None = None,
+        cancellation_token: CancellationToken | None = None,
     ) -> AsyncGenerator[
         StreamEvents[RunOutputDataT] | AgentRunResultEvent[RunOutputDataT]
     ]: ...
@@ -158,6 +161,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
         builtin_tools: Sequence[AgentNativeTool[AgentDepsT]] | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
         spec: dict[str, Any] | AgentSpec | None = None,
+        cancellation_token: CancellationToken | None = None,
     ) -> AsyncGenerator[StreamEvents[Any] | AgentRunResultEvent[Any]]:
         # builtin_tools and output_retries are deprecated run kwargs in pydantic-ai
         # 1.x: native tools register as NativeTool capabilities, and the output-retry
@@ -189,6 +193,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
             toolsets=toolsets,
             capabilities=capabilities,
             spec=spec,
+            cancellation_token=cancellation_token,
         ) as run:
             # Driven by hand rather than `async for node in run`: that path is the
             # graph's own iteration, which `AgentRun.__anext__` documents as calling

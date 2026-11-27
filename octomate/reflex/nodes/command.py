@@ -79,6 +79,7 @@ class Command(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         suspender=suspender,
                         capabilities=capabilities,
                     )
+                state.interruption.check()
                 output = await stack.enter_async_context(
                     agent.commands.execute(
                         agent,
@@ -86,6 +87,7 @@ class Command(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         self.signal.intent,
                         validated,
                         delivery_id=self.signal.delivery_id,
+                        interruption=state.interruption,
                         deferred_suspender=suspender,
                         capabilities=capabilities,
                     )

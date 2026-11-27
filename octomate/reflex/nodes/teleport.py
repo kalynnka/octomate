@@ -189,7 +189,10 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             )
         source_session_id = (source_conversation or conversation).external_id
         async with agent.inhabit(
-            thread=state.thread, conversation=conversation, owner_id=owner_id
+            thread=state.thread,
+            conversation=conversation,
+            owner_id=owner_id,
+            interruption=state.interruption,
         ) as invocation:
             external_id = await agent.ink.fork_session(
                 source_session_id,

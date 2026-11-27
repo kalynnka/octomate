@@ -19,7 +19,7 @@ from octomate.events import (
     ReflexAwakeEvent,
     RunStartedEvent,
 )
-from octomate.fibers import FiberError
+from octomate.fibers import FiberError, MemoryFiber
 from octomate.managers.gateway import OctomateSession
 from octomate.nerve import AgentTopic, ThreadTopic, Topic
 from octomate.schemas.conversation import ChannelAddress
@@ -69,7 +69,24 @@ class WaitingAgent(FakeAgent):
             if self.wait_on_resume and deferred_tool_results is not None:
                 self.release.clear()
                 self.resumed.set()
-            await self.release.wait()
+            control = self.turns[-1].invocation.interruption
+            stopped = asyncio.Event()
+
+            async def interrupt() -> None:
+                stopped.set()
+
+            async with control.handling(interrupt):
+                waiters = [
+                    asyncio.create_task(self.release.wait()),
+                    asyncio.create_task(stopped.wait()),
+                ]
+                try:
+                    await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    for waiter in waiters:
+                        waiter.cancel()
+                    await asyncio.gather(*waiters, return_exceptions=True)
+            control.check()
             if self.fail or (self.fail_on_resume and deferred_tool_results is not None):
                 raise RuntimeError("receiver failed")
             async for event in super().reception(
@@ -128,11 +145,13 @@ def signal() -> UserMessageSignal:
 
 
 @pytest.mark.parametrize("ending", ["completed", "failed", "cancelled"])
+@pytest.mark.parametrize("target", ["thread", "invocation"])
 async def test_receiver_owns_execution_and_handoff(
     host: Octomate,
     signal: UserMessageSignal,
     monkeypatch: pytest.MonkeyPatch,
     ending: Literal["completed", "failed", "cancelled"],
+    target: str,
 ) -> None:
     receiver = host.agents["second"]
     assert isinstance(receiver, WaitingAgent)
@@ -162,7 +181,10 @@ async def test_receiver_owns_execution_and_handoff(
         assert not host.agents["first"].reflexes
         if ending == "cancelled":
             await publish_signal(
-                host, AsleepSignal(thread=ThreadKey.model_validate(ADDRESS))
+                host,
+                AsleepSignal(thread=ThreadKey.model_validate(ADDRESS))
+                if target == "thread"
+                else AsleepSignal(invocation_id=next(iter(receiver.invocations))),
             )
         else:
             receiver.release.set()
@@ -174,6 +196,7 @@ async def test_receiver_owns_execution_and_handoff(
         assert not host.awake_since
     assert recipients == ["first", "second"]
     assert receiver.closed.is_set()
+    assert not receiver.invocations
     assert not host.nerves.signals.subscribers
     assert not host.nerves.events.retained
     assert sum(isinstance(event, ReflexAwakeEvent) for event in observed) == 1
@@ -339,10 +362,17 @@ async def test_agent_resources_unwind_after_cleanup_failure(host: Octomate) -> N
 
 async def test_sensing_failure_closes_delivery_and_releases_resources(
     host: Octomate,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent = host.agents["second"]
     closed: list[bool] = []
     agent.resources.callback(closed.append, True)
+
+    async def fail(signals: MemoryFiber[Signal]) -> None:
+        await signals.receive()
+        raise RuntimeError("receiver failed")
+
+    monkeypatch.setattr(agent, "sensing", fail)
 
     await agent.__aenter__()
     try:
@@ -357,10 +387,78 @@ async def test_sensing_failure_closes_delivery_and_releases_resources(
                 AgentTopic(agent.id), AsleepSignal(invocation_id=uuid7())
             )
     finally:
-        with pytest.raises(NotImplementedError, match="Invocation-addressed"):
+        with pytest.raises(RuntimeError, match="receiver failed"):
             await agent.__aexit__()
 
     assert closed == [True]
     assert agent.signals is None
     assert agent.sensing_task is None
     assert not host.nerves.signals.subscribers
+
+
+@pytest.mark.parametrize("target", ["thread", "invocation"])
+async def test_interrupt_is_scoped_and_receiver_accepts_the_next_run(
+    host: Octomate,
+    signal: UserMessageSignal,
+    target: str,
+) -> None:
+    agent = host.agents["second"]
+    assert isinstance(agent, WaitingAgent)
+    first = ThreadKey.model_validate(ADDRESS)
+    other = first.model_copy(update={"chat_id": "bob"})
+    async with (
+        agent,
+        asyncio.timeout(5),
+        host.nerves.events.subscribe(ThreadTopic(first)) as events,
+    ):
+        host.nerves.signals.dispatch(
+            AgentTopic(agent.id), AsleepSignal(invocation_id=uuid7())
+        )
+        host.nerves.signals.dispatch(
+            AgentTopic(agent.id),
+            UserMessageSignal(signal.messages, agent_id=agent.id),
+        )
+        await agent.entered.wait()
+        invocation_id = next(iter(agent.invocations))
+        [first_task] = agent.reflexes[first]
+        agent.entered.clear()
+        host.nerves.signals.dispatch(
+            AgentTopic(agent.id),
+            UserMessageSignal(
+                [signal.messages[0].model_copy(update={"chat_id": "bob"})],
+                agent_id=agent.id,
+            ),
+        )
+        await agent.entered.wait()
+        [other_task] = agent.reflexes[other]
+        interruption = (
+            AsleepSignal(thread=first)
+            if target == "thread"
+            else AsleepSignal(invocation_id=invocation_id)
+        )
+        host.nerves.signals.dispatch(AgentTopic(agent.id), interruption)
+        host.nerves.signals.dispatch(AgentTopic(agent.id), interruption)
+        async for impulse in events:
+            if isinstance(impulse.event, ReflexAsleepEvent):
+                assert impulse.event.outcome == "cancelled"
+                break
+        await asyncio.gather(first_task, return_exceptions=True)
+        assert not other_task.done()
+        assert not other_task.cancelling()
+        assert invocation_id not in agent.invocations
+        host.nerves.signals.dispatch(AgentTopic(agent.id), interruption)
+        agent.release.set()
+        await other_task
+        agent.entered.clear()
+        host.nerves.signals.dispatch(
+            AgentTopic(agent.id),
+            UserMessageSignal(signal.messages, agent_id=agent.id),
+        )
+        await agent.entered.wait()
+        async for impulse in events:
+            if isinstance(impulse.event, ReflexAsleepEvent):
+                assert impulse.event.outcome == "completed"
+                break
+        await asyncio.gather(*agent.reflexes.get(first, set()))
+    assert not agent.reflexes
+    assert not agent.invocations
