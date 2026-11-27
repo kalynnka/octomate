@@ -11,7 +11,7 @@ from pydantic import SecretStr
 
 from octomate.dependencies import auth_manager
 from octomate.managers.auth import AuthManager
-from octomate.schemas.auth import UserApiKey
+from octomate.schemas.auth import ApiKey
 
 if TYPE_CHECKING:
     from octomate.managers.user import UserManager
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 async def verify_hook_key(
     auth: Annotated[AuthManager, Depends(auth_manager)],
     authorization: Annotated[str | None, Header()] = None,
-) -> UserApiKey:
+) -> ApiKey:
     """Require a hooks-scoped API key before accessing the owner's resources."""
     key = (
         await auth.authenticate_api_key(

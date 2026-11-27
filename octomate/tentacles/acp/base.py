@@ -9,7 +9,6 @@ from contextlib import (
     aclosing,
     asynccontextmanager,
 )
-from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, ClassVar, Self
@@ -706,7 +705,7 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
         *,
         habitat: Habitat,
     ) -> AsyncGenerator[list[schema.HttpMcpServer]]:
-        """Supply the caller's remote Octomate MCP, revoking its key after the turn."""
+        """Supply remote Octomate MCP with the caller's shared runtime API key."""
         if not self.gateway:
             yield []
             return
@@ -722,33 +721,25 @@ class AcpAgentTentacle(AgentTentacle[str, None]):
             raise ValueError(
                 "ACP MCP access requires a registered user and authentication"
             )
-        with CancelScope(shield=True):
-            issued = await auth.create_api_key(
-                user_id,
-                name=f"ACP {self.id}",
-                scopes=["mcp"],
-                expires_at=datetime.now(UTC) + auth.config.runtime_api_key_lifetime,
+        issued = await auth.runtime_api_key(user_id, agent_id=self.id, scopes=["mcp"])
+        if issued.bearer is None:
+            raise RuntimeError("Issued runtime API key has no bearer")
+        yield [
+            schema.HttpMcpServer(
+                name=OCTOMATE_SERVER_NAME,
+                type="http",
+                url=f"{habitat.core_url}{OCTOMATE_MCP_PATH}",
+                headers=[
+                    schema.HttpHeader(
+                        name="Authorization",
+                        value=f"Bearer {issued.bearer.get_secret_value()}",
+                    ),
+                    schema.HttpHeader(
+                        name=CONVERSATION_HEADER, value=str(conversation_id)
+                    ),
+                ],
             )
-        try:
-            yield [
-                schema.HttpMcpServer(
-                    name=OCTOMATE_SERVER_NAME,
-                    type="http",
-                    url=f"{habitat.core_url}{OCTOMATE_MCP_PATH}",
-                    headers=[
-                        schema.HttpHeader(
-                            name="Authorization",
-                            value=f"Bearer {issued.token.get_secret_value()}",
-                        ),
-                        schema.HttpHeader(
-                            name=CONVERSATION_HEADER, value=str(conversation_id)
-                        ),
-                    ],
-                )
-            ]
-        finally:
-            with CancelScope(shield=True):
-                await auth.revoke_api_key(user_id, issued.key.id)
+        ]
 
     async def invoke(
         self,

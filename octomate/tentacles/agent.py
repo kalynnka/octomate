@@ -15,7 +15,6 @@ from contextlib import (
     asynccontextmanager,
     nullcontext,
 )
-from datetime import UTC, datetime
 from functools import cached_property
 from io import BytesIO
 from pathlib import Path, PurePosixPath
@@ -52,6 +51,7 @@ from pydantic_ai.toolsets import AbstractToolset
 from starlette.datastructures import Headers
 
 from octomate.config.agents import AgentConfig, AgentRouteModelName
+from octomate.database import async_session
 from octomate.events import RunErrorEvent
 from octomate.fibers import MemoryFiber
 from octomate.habitat import Habitat
@@ -60,7 +60,7 @@ from octomate.managers.files import FileOffsetConflict
 from octomate.managers.habitat import Interruption, Invocation
 from octomate.nerve import AgentTopic, ChannelTopic, Impulse, Nerves, ThreadTopic
 from octomate.schemas.agent import AgentInfo
-from octomate.schemas.auth import IssuedApiKey, UserApiKey
+from octomate.schemas.auth import ApiKey, RuntimeApiKey
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
@@ -161,8 +161,6 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     conversations: ConversationManager
     workspaces: WorkspaceManager
     auth: AuthManager | None
-    api_keys: dict[UUID7, IssuedApiKey]  # One credential per user for this agent.
-    api_key_lock: asyncio.Lock
     habitats: HabitatManager
     # Programmatically assembled agents may have no deployment config.
     config: AgentConfig | None = None
@@ -190,8 +188,6 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         self.threads = threads
         self.files = files
         self.auth = auth
-        self.api_keys = {}
-        self.api_key_lock = asyncio.Lock()
         self.habitats = habitats
 
     def routers(self) -> tuple[APIRouter, ...]:
@@ -213,7 +209,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         async def active_conversation(
             conversation_id: UUID7,
             # FastAPI binds these router-local dependencies when registering the routes.
-            key: UserApiKey = Depends(verify_hook_key),  # noqa: B008
+            key: ApiKey = Depends(verify_hook_key),  # noqa: B008
         ) -> Conversation:
             if not self.habitats.residenced(key.user_id, conversation_id):
                 raise HTTPException(
@@ -229,7 +225,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         @router.get("/{conversation_id}", response_class=Response)
         async def download_transcript(
             conversation_id: UUID7,
-            key: UserApiKey = Depends(verify_hook_key),  # noqa: B008
+            key: ApiKey = Depends(verify_hook_key),  # noqa: B008
         ) -> Response:
             """Serve the authenticated owner's retained JSONL for this conversation."""
             try:
@@ -252,7 +248,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         async def transcript_offsets(
             subagent_ids: list[str],
             conversation: Conversation = Depends(active_conversation),  # noqa: B008
-            key: UserApiKey = Depends(verify_hook_key),  # noqa: B008
+            key: ApiKey = Depends(verify_hook_key),  # noqa: B008
         ) -> TranscriptOffsets:
             """Where each of the conversation's transcripts resumes. A subagent named
             for the first time gets its conversation here, and starts at zero."""
@@ -287,7 +283,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             transcript_id: UUID7,
             request: Request,
             conversation: Conversation = Depends(active_conversation),  # noqa: B008
-            key: UserApiKey = Depends(verify_hook_key),  # noqa: B008
+            key: ApiKey = Depends(verify_hook_key),  # noqa: B008
         ) -> TranscriptKept | JSONResponse:
             """Append complete transcript lines for the owner's active habitat invocation.
 
@@ -332,39 +328,28 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
 
         return router
 
-    async def runtime_api_key(self, user_id: UUID7 | None) -> IssuedApiKey | None:
-        """Reuse the user's runtime credential, replacing it when its lifetime expires."""
+    async def runtime_api_key(self, user_id: UUID7 | None) -> RuntimeApiKey | None:
+        """Acquire the user's persisted credential shared by this agent's replicas."""
         auth = self.auth
         if user_id is None or auth is None:
             return None
-        async with self.api_key_lock:
-            issued = self.api_keys.get(user_id)
-            if issued is not None and (
-                issued.key.expires_at is None
-                or issued.key.expires_at > datetime.now(UTC)
-            ):
-                return issued
-            with anyio.CancelScope(shield=True):
-                if issued is not None:
-                    await auth.revoke_api_key(user_id, issued.key.id)
-                issued = await auth.create_api_key(
-                    user_id,
-                    name=f"{self.id} runtime",
-                    scopes=["hooks", "mcp"],
-                    expires_at=datetime.now(UTC) + auth.config.runtime_api_key_lifetime,
-                )
-                self.api_keys[user_id] = issued
-            return issued
+        return await auth.runtime_api_key(
+            user_id, agent_id=self.id, scopes=["hooks", "mcp"]
+        )
 
     async def revoke_runtime_keys(self) -> None:
-        """Revoke this agent's credentials after its active runs have finished."""
-        async with self.api_key_lock:
-            api_keys, self.api_keys = self.api_keys, {}
-            auth = self.auth
-            if auth is None:
-                return
-            for issued in api_keys.values():
-                await auth.revoke_api_key(issued.key.user_id, issued.key.id)
+        """Explicitly revoke this agent's persisted credentials across all cores."""
+        auth = self.auth
+        if auth is None:
+            return
+        async with async_session() as session:
+            keys = await session.list(
+                RuntimeApiKey,
+                expressions=[RuntimeApiKey["runtime_agent_id"] == self.id],
+                limit=None,
+            )
+        for key in keys:
+            await auth.revoke_api_key(key.user_id, key.id)
 
     # Capability blurb the triage agent reads when routing to a reception agent.
     # Subclasses refine this default; overridable at init.

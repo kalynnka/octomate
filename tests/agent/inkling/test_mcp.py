@@ -151,7 +151,7 @@ async def test_inkling_calls_todos_through_authenticated_mcp_and_publishes_once(
         assert host.auth is not None
         assert scope.user_profile is not None
         assert scope.user_profile.user_id is not None
-        assert len(await host.auth.list_api_keys(scope.user_profile.user_id)) == 1
+        assert await host.auth.list_api_keys(scope.user_profile.user_id) == []
 
 
 async def test_todo_mcp_rejects_another_users_conversation_and_has_no_owner_arguments(
@@ -262,7 +262,6 @@ async def test_anonymous_inkling_run_does_not_mount_core_mcp_tools() -> None:
         )
     assert result.output == "Bare agent"
     assert seen == []
-    assert inkling.api_keys == {}
 
 
 async def test_registered_inkling_run_requires_configured_authentication(
@@ -293,7 +292,6 @@ async def test_registered_inkling_run_requires_configured_authentication(
                     invocation=invocation,
                     conversation_address=scope.conversation_address,
                 )
-    assert inkling.api_keys == {}
 
 
 async def test_mcp_accomplices_leave_parent_run_attribution_to_core_persistence(

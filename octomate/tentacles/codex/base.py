@@ -108,7 +108,7 @@ from octomate.schemas.artifacts import (
     HtmlArtifact,
     McpAppArtifact,
 )
-from octomate.schemas.auth import IssuedApiKey
+from octomate.schemas.auth import RuntimeApiKey
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
@@ -1069,8 +1069,8 @@ class CodexTentacle(AgentTentacle[str, None]):
                 env=invocation.environment,
                 thread_id=thread_id,
                 conversation_id=conversation.id,
-                api_key_id=api_key.key.id if api_key is not None else None,
-                mcp_bearer=api_key.token if api_key is not None else None,
+                api_key_id=api_key.runtime_nonce if api_key is not None else None,
+                mcp_bearer=api_key.bearer if api_key is not None else None,
                 cwd=str(invocation.cwd),
                 approval_mode=ApprovalMode.auto_review
                 if permission_mode == "auto_review"
@@ -1274,7 +1274,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             "Choose a denial with /approve <review-id>: " + ", ".join(denials)
         )
 
-    async def runtime_api_key(self, user_id: uuid.UUID | None) -> IssuedApiKey | None:
+    async def runtime_api_key(self, user_id: uuid.UUID | None) -> RuntimeApiKey | None:
         """Issue credentials only while the native runtime is available."""
         if user_id is not None and self.auth is not None and not self.ink.running:
             raise RuntimeError("Codex runtime is not running")
@@ -1342,7 +1342,6 @@ class CodexTentacle(AgentTentacle[str, None]):
                 for future in list(self.pendings.values()):
                     future.cancel()
                 self.pendings.clear()
-                await self.revoke_runtime_keys()
             if cancelled:
                 raise asyncio.CancelledError
 
@@ -1863,8 +1862,8 @@ class CodexTentacle(AgentTentacle[str, None]):
                 env=invocation.environment,
                 thread_id=conversation.external_id,
                 conversation_id=conversation.id,
-                api_key_id=api_key.key.id if api_key is not None else None,
-                mcp_bearer=api_key.token if api_key is not None else None,
+                api_key_id=api_key.runtime_nonce if api_key is not None else None,
+                mcp_bearer=api_key.bearer if api_key is not None else None,
                 cwd=run_cwd,
                 approval_mode=approval_mode,
                 base_instructions=self.config.base_instructions,

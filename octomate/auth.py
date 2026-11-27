@@ -236,7 +236,9 @@ async def create_api_key(
         issued = await manager.create_api_key(user.id, **body)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    return {"key": issued.key, "token": issued.token.get_secret_value()}
+    if issued.bearer is None:
+        raise RuntimeError("Issued API key has no bearer")
+    return {"key": issued, "token": issued.bearer.get_secret_value()}
 
 
 @auth_router.get("/api-keys", response_model=list[UserApiKey])
@@ -254,6 +256,9 @@ async def revoke_api_key(
     manager: Annotated[AuthManager, Depends(auth_manager)],
 ) -> None:
     try:
+        key = await manager.get_api_key(user.id, key_id)
+        if not isinstance(key, UserApiKey):
+            raise InvalidCredentials
         await manager.revoke_api_key(user.id, key_id)
     except InvalidCredentials as error:
         raise HTTPException(status_code=404, detail="API key not found") from error

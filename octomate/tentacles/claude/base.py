@@ -1285,11 +1285,11 @@ class ClaudeTentacle(AgentTentacle[str, None]):
         settings = None
         if managed:
             key = await self.runtime_api_key(invocation.owner_id)
-            if key is None:
+            if key is None or key.bearer is None:
                 raise HabitatError("Claude transcript upload requires authentication")
             env.update(
                 OCTOMATE_CLI_URL=invocation.habitat.core_url,
-                OCTOMATE_CLI_TOKEN=key.token.get_secret_value(),
+                OCTOMATE_CLI_TOKEN=key.bearer.get_secret_value(),
             )
             settings = json.dumps(
                 {

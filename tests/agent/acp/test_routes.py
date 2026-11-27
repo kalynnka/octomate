@@ -74,9 +74,10 @@ async def client(
     user = await a_user("alice")
     assert app.auth is not None
     key = await app.auth.create_api_key(user.id, name="ACP client", scopes=["acp"])
+    assert key.bearer is not None
     async with served_inkling_mcp(app, monkeypatch, lifespan=False):
         with TestClient(
-            app, headers={"Authorization": f"Bearer {key.token.get_secret_value()}"}
+            app, headers={"Authorization": f"Bearer {key.bearer.get_secret_value()}"}
         ) as client:
             assert client.portal is not None
             with client.portal.wrap_async_context_manager(listening(app)):
@@ -263,8 +264,9 @@ async def test_foreign_account_cannot_load_list_or_prompt(client: TestClient) ->
     assert app.auth is not None
     other = await a_user("bob")
     key = await app.auth.create_api_key(other.id, name="other", scopes=["acp"])
+    assert key.bearer is not None
     with client.websocket_connect(
-        "/api/acp", headers={"Authorization": f"Bearer {key.token.get_secret_value()}"}
+        "/api/acp", headers={"Authorization": f"Bearer {key.bearer.get_secret_value()}"}
     ) as socket:
         initialize(socket)
         assert session_id not in str(rpc(socket, "session/list", {}))

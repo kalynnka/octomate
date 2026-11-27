@@ -1,9 +1,9 @@
-from pydantic import SecretStr
+from pydantic import UUID7, SecretStr
 
 from octomate.config import AuthConfig
 from octomate.database import async_session
 from octomate.managers.auth import AuthManager
-from octomate.schemas.auth import UserApiKey
+from octomate.schemas.auth import RuntimeApiKey, UserApiKey
 from octomate.schemas.user import User, UserProfile
 from octomate.types.auth import ApiKeyScope
 
@@ -58,3 +58,14 @@ async def a_api_key(
         session.add(key)
         await session.commit()
     return key
+
+
+async def runtime_api_keys(user_id: UUID7) -> list[RuntimeApiKey]:
+    async with async_session() as session:
+        return list(
+            await session.list(
+                RuntimeApiKey,
+                expressions=[RuntimeApiKey["user_id"] == user_id],
+                limit=None,
+            )
+        )
