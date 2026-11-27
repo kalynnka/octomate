@@ -246,7 +246,7 @@ def test_sbx_selection_rejects_unsupported_runtime(
 @pytest.mark.parametrize(
     ("assignments", "message"),
     [
-        (["codex=srt"], "only for Claude"),
+        (["deepseek=srt"], "only for Claude and Codex"),
         (["claude=unknown"], "native, srt or sbx"),
         (["other=native"], "selected AGENT=MODE"),
         (["claude"], "selected AGENT=MODE"),
@@ -258,7 +258,7 @@ def test_per_agent_habitat_rejects_invalid_assignments(
 ) -> None:
     with pytest.raises(typer.BadParameter, match=message):
         habitat_step(
-            ["claude", "codex"],
+            ["claude", "codex", "deepseek"],
             None,
             None,
             assignments=assignments,

@@ -64,7 +64,6 @@ from openai_codex.generated.v2_all import (
     ThreadClosedNotification,
     ThreadUnsubscribeResponse,
 )
-from openai_codex.generated.v2_all import ThreadForkParams as SdkThreadForkParams
 from pydantic import UUID7, AnyUrl, SecretStr, TypeAdapter, ValidationError
 from pydantic.alias_generators import to_snake
 from uuid_utils.compat import uuid7
@@ -445,7 +444,7 @@ class CodexInk(AgentInk):
                     base_instructions=base_instructions,
                     developer_instructions=developer_instructions,
                     ephemeral=ephemeral,
-                    permissions=PERMISSION_PROFILES[sandbox],
+                    permissions=self.bootstrap_profile(client, sandbox),
                     exclude_turns=True,
                 ),
             )
@@ -580,7 +579,7 @@ class CodexInk(AgentInk):
                 model=model,
                 model_provider=model_provider,
                 personality=personality,
-                permissions=PERMISSION_PROFILES[sandbox],
+                permissions=self.bootstrap_profile(client, sandbox),
             )
         )
         return AsyncThread(client, started.thread.id), started.model
@@ -623,7 +622,7 @@ class CodexInk(AgentInk):
                 model=model,
                 model_provider=model_provider,
                 personality=personality,
-                permissions=PERMISSION_PROFILES[sandbox],
+                permissions=self.bootstrap_profile(client, sandbox),
             ),
         )
         return AsyncThread(client, resumed.thread.id), resumed.model
@@ -736,12 +735,15 @@ class CodexInk(AgentInk):
         config = await self.thread_config(str(cwd), None, None, client=client)
         forked = await client._client.thread_fork(
             session_id,
-            SdkThreadForkParams(
+            ThreadForkParams(
                 thread_id=session_id,
                 cwd=str(cwd),
                 config=config,
                 ephemeral=False,
                 last_turn_id=last_turn_id,
+                permissions=":read-only"
+                if client.habitat is not None and not client.habitat.os_sandbox
+                else None,
             ),
         )
         if forked.thread.id == session_id:
@@ -822,7 +824,7 @@ class CodexInk(AgentInk):
                 "threadId": thread_id,
                 "approvalPolicy": approval_policy.model_dump(mode="json"),
                 "approvalsReviewer": reviewer.value if reviewer is not None else None,
-                "permissions": PERMISSION_PROFILES[sandbox],
+                **self.execution_policy(client, sandbox),
             },
             response_model=ThreadSettingsUpdateResponse,
         )
@@ -1016,6 +1018,34 @@ class CodexInk(AgentInk):
             _subscription=started.subscription,
         )
 
+    @staticmethod
+    def bootstrap_profile(client: SharedCodex, sandbox: Sandbox) -> PermissionProfile:
+        """Initialize a thread before the turn API can select external sandboxing.
+
+        Thread start/resume/fork do not accept externalSandbox. The read-only
+        profile avoids the restricted-read helper's nested OS sandbox during
+        instruction loading; every execution then receives execution_policy.
+        """
+        if client.habitat is not None and not client.habitat.os_sandbox:
+            return ":read-only"
+        return PERMISSION_PROFILES[sandbox]
+
+    @staticmethod
+    def execution_policy(client: SharedCodex, sandbox: Sandbox) -> JsonObject:
+        """Select enforcement independently of the caller's approval policy.
+
+        External sandboxing leaves filesystem and network boundaries to the
+        habitat; it cannot retain Codex's narrower read-only/workspace policy.
+        """
+        if client.habitat is not None and not client.habitat.os_sandbox:
+            return {
+                "sandboxPolicy": {
+                    "type": "externalSandbox",
+                    "networkAccess": "enabled",
+                }
+            }
+        return {"permissions": PERMISSION_PROFILES[sandbox]}
+
     async def start_turn(
         self,
         thread: AsyncThread,
@@ -1050,7 +1080,7 @@ class CodexInk(AgentInk):
                     "cwd": cwd,
                     "approvalPolicy": policy.model_dump(mode="json"),
                     "approvalsReviewer": reviewer.value if reviewer else None,
-                    "permissions": PERMISSION_PROFILES[sandbox],
+                    **self.execution_policy(client, sandbox),
                     "model": model,
                     "effort": effort.value if effort is not None else None,
                     "personality": personality.value
@@ -1074,7 +1104,7 @@ class CodexInk(AgentInk):
                     "input": inputs,
                     "approval_policy": policy,
                     "approvals_reviewer": reviewer,
-                    "permissions": PERMISSION_PROFILES[sandbox],
+                    **self.execution_policy(client, sandbox),
                     "cwd": cwd,
                     "effort": effort,
                     "model": model,

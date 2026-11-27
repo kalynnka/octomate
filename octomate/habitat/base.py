@@ -43,6 +43,9 @@ class Habitat(ABC):
     """The execution environment core prepares for an agent invocation."""
 
     type: ClassVar[str]  # Backend kind, independent of configured names and owners.
+    os_sandbox: ClassVar[bool] = (
+        True  # Whether harnesses should install their own OS sandbox.
+    )
     config: BaseHabitatConfig  # This environment's settings, including core access.
     resources: AsyncExitStack = field(
         default_factory=AsyncExitStack, init=False, repr=False, compare=False

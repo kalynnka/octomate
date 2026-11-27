@@ -36,16 +36,18 @@ class ThreadResumeParams(SdkThreadResumeParams):
 class ThreadForkParams(SdkThreadForkParams):
     """Native thread fork with the permission-profile field omitted by the SDK."""
 
-    permissions: PermissionProfile = Field(
-        description="Native permission profile to select."
+    permissions: PermissionProfile | None = Field(
+        default=None,
+        description="Native permission profile to select; otherwise inherit.",
     )
 
 
 class TurnStartParams(SdkTurnStartParams):
     """Native turn start with the permission-profile field omitted by the SDK."""
 
-    permissions: PermissionProfile = Field(
-        description="Native permission profile to select."
+    permissions: PermissionProfile | None = Field(
+        default=None,
+        description="Native permission profile; omitted when the habitat supplies external sandboxing.",
     )
 
 

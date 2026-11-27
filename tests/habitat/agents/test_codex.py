@@ -13,9 +13,11 @@ import pytest
 from httpx2 import URL
 from logfire.testing import CaptureLogfire
 from logfire.testing import capfire as capfire
-from openai_codex import CodexConfig
+from openai_codex import AsyncThread, CodexConfig
+from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.errors import CodexError, TransportClosedError
 from openai_codex.generated.v2_all import (
+    ReviewTarget,
     ThreadForkResponse,
     ThreadResumeResponse,
     ThreadStartResponse,
@@ -26,7 +28,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.config.agents import CodexConfig as AgentCodexConfig
 from octomate.config.habitat import SbxHabitatConfig
-from octomate.habitat import HabitatError
+from octomate.habitat import HabitatError, ManagedHabitat
 from octomate.habitat.sbx import SbxHabitat
 from octomate.managers.habitat import HabitatManager
 from octomate.nerve import Nerve
@@ -441,3 +443,58 @@ async def test_cancelled_request_does_not_close_shared_client(
         await sandbox.resources.aclose()
     with pytest.raises(ProcessLookupError):
         os.kill(first.pid, 0)
+
+
+@pytest.mark.parametrize("os_sandbox", [True, False])
+async def test_permission_updates_and_reviews_use_habitat_enforcement(
+    os_sandbox: bool,
+) -> None:
+    handler = AsyncMock(return_value={})
+    ink = CodexInk(
+        AgentCodexConfig(),
+        agent_id="codex",
+        mcp_url=URL("http://core/mcp"),
+        handler=handler,
+    )
+    client = SharedCodex(CodexConfig(), handler, instrument=False)
+    client.habitat = Mock(spec=ManagedHabitat, os_sandbox=os_sandbox)
+    client._client = AsyncMock()
+    ink.pool.core_client = client
+    conversation_id = uuid7()
+    ink.thread_bindings["thread"] = (conversation_id, None)
+    await ink.set_permission_mode(
+        "thread",
+        conversation_id=conversation_id,
+        approval_mode=ApprovalMode.auto_review,
+        sandbox=Sandbox.workspace_write,
+    )
+    ink.start_command = AsyncMock()
+    await ink.start_turn(
+        AsyncThread(client, "thread"),
+        "review",
+        approval_mode=ApprovalMode.auto_review,
+        sandbox=Sandbox.workspace_write,
+        cwd="/workspace",
+        effort=None,
+        model=None,
+        output_schema=None,
+        personality=None,
+        summary=None,
+        review=ReviewTarget.model_validate({"type": "uncommittedChanges"}),
+    )
+    assert client._client.request.await_count == 2
+    for call in client._client.request.await_args_list:
+        method, payload = call.args
+        assert method == "thread/settings/update"
+        assert payload["approvalPolicy"] == "on-request"
+        assert payload["approvalsReviewer"] == "auto_review"
+        if os_sandbox:
+            assert payload["permissions"] == "octomate-workspace"
+            assert "sandboxPolicy" not in payload
+        else:
+            assert "permissions" not in payload
+            assert payload["sandboxPolicy"] == {
+                "type": "externalSandbox",
+                "networkAccess": "enabled",
+            }
+    client._client._start_turn.assert_not_awaited()

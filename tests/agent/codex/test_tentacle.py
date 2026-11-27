@@ -470,6 +470,7 @@ class FakeCodex:
             if params.approvals_reviewer is ApprovalsReviewer.auto_review
             else None
         )
+        assert params.permissions is not None
         turn = await FakeThread(thread_id).turn(
             items[0].text
             if len(items) == 1 and isinstance(items[0], TextInput)
@@ -1067,7 +1068,7 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
             )
         fork.assert_awaited_once_with(
             "thread-new",
-            ThreadForkParams(
+            codex_ink.ThreadForkParams(
                 thread_id="thread-new",
                 cwd=str(
                     (
@@ -1141,7 +1142,7 @@ async def test_codex_fork_passes_the_turn_cutoff(
     assert result == "thread-fork"
     fork.assert_awaited_once_with(
         "source",
-        ThreadForkParams(
+        codex_ink.ThreadForkParams(
             thread_id="source",
             cwd="/destination",
             config={"mcp_servers": {}},
@@ -3656,6 +3657,7 @@ async def test_async_questions_continue_and_answers_resume_the_same_thread(
 )
 @pytest.mark.parametrize("resume", [False, True])
 @pytest.mark.parametrize("managed", [False, True])
+@pytest.mark.parametrize("os_sandbox", [True, False])
 @pytest.mark.parametrize(
     ("approval_mode", "reviewer", "policy"),
     [
@@ -3673,13 +3675,16 @@ async def test_thread_settings_preserve_reviewer_and_report_model(
     profile: str,
     resume: bool,
     managed: bool,
+    os_sandbox: bool,
     approval_mode: ApprovalMode | None,
     reviewer: ApprovalsReviewer | None,
     policy: AskForApprovalValue,
 ) -> None:
     tentacle = _tentacle(FakeConversationManager())
     client = AsyncMock(spec=SharedCodex)
-    client.habitat = Mock(spec=ManagedHabitat) if managed else None
+    client.habitat = (
+        Mock(spec=ManagedHabitat, os_sandbox=os_sandbox) if managed else None
+    )
     client._client = AsyncMock()
     client._client.thread_start.return_value.thread.id = "new-thread"
     client._client.thread_start.return_value.model = "runtime-model"
@@ -3724,13 +3729,17 @@ async def test_thread_settings_preserve_reviewer_and_report_model(
     assert params.approval_policy is not None
     assert params.approval_policy.root is policy
     assert params.approvals_reviewer is reviewer
-    assert params.permissions == profile
+    assert params.permissions == (
+        ":read-only" if managed and not os_sandbox else profile
+    )
     assert params.sandbox is None
 
 
 @pytest.mark.parametrize("skill", [False, True])
+@pytest.mark.parametrize("os_sandbox", [True, False])
 async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread(
     skill: bool,
+    os_sandbox: bool,
 ) -> None:
     tentacle = _tentacle(FakeConversationManager())
     client = SharedCodex(CodexSdkConfig(), AsyncMock(return_value={}), instrument=False)
@@ -3741,6 +3750,7 @@ async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread(
     )
     client._initialized = True
     tentacle.ink.pool.core_client = client
+    client.habitat = Mock(spec=ManagedHabitat, os_sandbox=os_sandbox)
     thread = AsyncThread(client, "warm-thread")
     for approval, sandbox, reviewer, policy in (
         (ApprovalMode.deny_all, Sandbox.full_access, None, AskForApprovalValue.never),
@@ -3790,10 +3800,18 @@ async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread(
         assert params.approval_policy is not None
         assert params.approval_policy.root is policy
         assert params.approvals_reviewer is reviewer
-        assert params.permissions == (
-            ":danger-full-access"
-            if sandbox is Sandbox.full_access
-            else "octomate-workspace"
-        )
-        assert params.sandbox_policy is None
+        if os_sandbox:
+            assert params.permissions == (
+                ":danger-full-access"
+                if sandbox is Sandbox.full_access
+                else "octomate-workspace"
+            )
+            assert params.sandbox_policy is None
+        else:
+            assert params.permissions is None
+            assert params.sandbox_policy is not None
+            assert params.sandbox_policy.model_dump(mode="json", by_alias=True) == {
+                "type": "externalSandbox",
+                "networkAccess": "enabled",
+            }
         assert params.cwd == "/workspace"

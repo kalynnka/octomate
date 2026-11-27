@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SrtHabitat(ManagedHabitat):
     type: ClassVar[str] = "srt"
+    os_sandbox: ClassVar[bool] = False
     config: SrtHabitatConfig
     user_id: UUID7
     root: Path  # Owner storage; the shared trust scope for this habitat's processes.
@@ -77,6 +78,10 @@ class SrtHabitat(ManagedHabitat):
             "HOME": str(self.root / "config" / "home"),
             "TMPDIR": str(self.root / "cache" / "tmp"),
             "PYTHONDONTWRITEBYTECODE": "1",
+            # Local core/provider endpoints must use the proxy too; direct
+            # loopback connections are denied by this habitat's policy.
+            "NO_PROXY": "",
+            "no_proxy": "",
         }
 
     async def request[T: BaseModel](

@@ -177,17 +177,18 @@ async def test_agents_share_selected_pool_per_user_and_shutdown_all_pools(
     )
 
 
-def test_srt_accepts_claude() -> None:
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_srt_accepts_supported_agents(agent: str) -> None:
     config = OctomateConfig.model_validate(
         {
             "habitats": {"native": {"mode": "srt"}},
-            "tentacles": {"claude": {"type": "claude"}},
+            "tentacles": {agent: {"type": agent}},
         }
     )
-    assert config.tentacles["claude"].enabled
+    assert config.tentacles[agent].enabled
 
 
-@pytest.mark.parametrize("agent", ["codex", "deepseek", "acp_agent", "inkling"])
+@pytest.mark.parametrize("agent", ["deepseek", "acp_agent", "inkling"])
 @pytest.mark.parametrize("enabled", [False, True])
 def test_srt_rejects_enabled_unsupported_agents(agent: str, enabled: bool) -> None:
     config = {
@@ -202,7 +203,9 @@ def test_srt_rejects_enabled_unsupported_agents(agent: str, enabled: bool) -> No
         },
     }
     if enabled:
-        with pytest.raises(ValidationError, match="SRT habitats support only Claude"):
+        with pytest.raises(
+            ValidationError, match="SRT habitats support only Claude and Codex"
+        ):
             OctomateConfig.model_validate(config)
     else:
         assert not OctomateConfig.model_validate(config).tentacles[agent].enabled
