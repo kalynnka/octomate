@@ -1061,6 +1061,14 @@ class CodexTentacle(AgentTentacle[str, None]):
             self.conversation_locks.hold(str(conversation.id)),
             contextlib.AsyncExitStack() as resources,
         ):
+            environment = await resources.enter_async_context(
+                self.ink.workspace(
+                    invocation,
+                    Sandbox.full_access
+                    if permission_mode == "full_access"
+                    else Sandbox.workspace_write,
+                )
+            )
             api_key = await self.runtime_api_key(context.user_id)
             codex_thread, _ = await self.ink.open_thread(
                 habitat=invocation.habitat,
@@ -1086,6 +1094,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 sandbox=Sandbox.full_access
                 if permission_mode == "full_access"
                 else Sandbox.workspace_write,
+                environment=environment,
             )
             thread_id = codex_thread.id
             if conversation.external_id != thread_id:
@@ -1854,6 +1863,9 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
             self.commands.invalidate(agent_id=self.id, conversation_id=conversation.id)
             session = self.gateway_manager.get(conversation.id)
+            environment = await resources.enter_async_context(
+                self.ink.workspace(invocation, sandbox)
+            )
             api_key = await self.runtime_api_key(invocation.owner_id)
             codex_thread, model_name = await self.ink.open_thread(
                 habitat=invocation.habitat,
@@ -1871,6 +1883,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 model_provider=self.provider if sdk_model is not None else None,
                 personality=personality,
                 sandbox=sandbox,
+                environment=environment,
             )
             codex_thread_id = codex_thread.id
             if conversation.external_id != codex_thread_id:
@@ -1901,6 +1914,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 personality=personality,
                 summary=summary,
                 review=review,
+                environment=environment,
             )
             resources.enter_context(self.track_turn(conversation.id, turn))
             completed_items: list[ThreadItem] = []

@@ -1263,6 +1263,7 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
+        environment: codex_ink.TurnEnvironmentParams | None = None,
     ) -> tuple[FakeThread, str]:
         # `user_review` is the one posture with no public SDK knob, so it is the
         # reviewer path the bridge exists for.
@@ -3368,6 +3369,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
+        environment: codex_ink.TurnEnvironmentParams | None = None,
     ) -> tuple[FakeThread, str]:
         servers = config["mcp_servers"]
         assert isinstance(servers, dict)

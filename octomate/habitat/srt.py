@@ -41,6 +41,8 @@ class SrtHabitat(ManagedHabitat):
     user_id: UUID7
     root: Path  # Owner storage; the shared trust scope for this habitat's processes.
     name: str = "default"  # Configured habitat name, independent of the owner.
+    read_only: bool = False  # Confine a run to reads, except its runtime home and temp.
+    scratch: Path | None = None  # Disposable runtime storage for workspace-scoped runs.
     settings: TemporaryDirectory[str] | None = field(default=None, init=False)
     executable: str | None = field(default=None, init=False)
     node: str | None = field(default=None, init=False)
@@ -64,6 +66,7 @@ class SrtHabitat(ManagedHabitat):
         return PurePosixPath(path)
 
     def environment(self) -> dict[str, str]:
+        state = self.scratch or self.root
         return {
             "PATH": os.pathsep.join(
                 (
@@ -75,8 +78,8 @@ class SrtHabitat(ManagedHabitat):
                     "/sbin",
                 )
             ),
-            "HOME": str(self.root / "config" / "home"),
-            "TMPDIR": str(self.root / "cache" / "tmp"),
+            "HOME": str(state / "config" / "home"),
+            "TMPDIR": str(state / "cache" / "tmp"),
             "PYTHONDONTWRITEBYTECODE": "1",
             # Local core/provider endpoints must use the proxy too; direct
             # loopback connections are denied by this habitat's policy.
@@ -155,6 +158,11 @@ class SrtHabitat(ManagedHabitat):
         readable.extend(
             [self.root, *runtimes, *(p.resolve() for p in self.config.read_paths)]
         )
+        if self.scratch is not None:
+            readable.append(self.scratch)
+        writable = [] if self.read_only else [str(self.root)]
+        if self.scratch is not None or self.read_only:
+            writable.extend(self.environment()[key] for key in ("HOME", "TMPDIR"))
         policy = {
             "network": {
                 "allowedDomains": [],
@@ -167,7 +175,7 @@ class SrtHabitat(ManagedHabitat):
                 "allowRead": [
                     {"path": str(path), "literal": True} for path in readable
                 ],
-                "allowWrite": [{"path": str(self.root), "literal": True}],
+                "allowWrite": [{"path": path, "literal": True} for path in writable],
                 # SRT adds this shared temp directory even with an allowlist.
                 "denyWrite": ["/tmp/claude", "/private/tmp/claude"],
             },

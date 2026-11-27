@@ -109,21 +109,31 @@ def habitat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SrtHabitat:
     )
 
 
+@pytest.mark.parametrize("read_only", [False, True])
 @pytest.mark.parametrize("denied_domains", [[], ["blocked.example:443"]])
 async def test_policy_denies_other_storage_and_host_environment(
-    habitat: SrtHabitat, monkeypatch: pytest.MonkeyPatch, denied_domains: list[str]
+    habitat: SrtHabitat,
+    monkeypatch: pytest.MonkeyPatch,
+    denied_domains: list[str],
+    read_only: bool,
 ) -> None:
     habitat.config = habitat.config.model_copy(
         update={"denied_domains": denied_domains}
     )
+    habitat.read_only = read_only
     monkeypatch.setenv("OPERATOR_SECRET", "not-for-guests")
     habitat.configure(habitat.config.executable)
     try:
         assert habitat.settings is not None
         policy = json.loads((Path(habitat.settings.name) / "settings.json").read_text())
         assert policy["filesystem"]["denyRead"] == ["/"]
+        writable = (
+            [habitat.environment()[key] for key in ("HOME", "TMPDIR")]
+            if read_only
+            else [str(habitat.root)]
+        )
         assert policy["filesystem"]["allowWrite"] == [
-            {"path": str(habitat.root), "literal": True}
+            {"path": path, "literal": True} for path in writable
         ]
         assert policy["network"]["allowLocalBinding"] is False
         assert policy["network"]["allowedDomains"] == []

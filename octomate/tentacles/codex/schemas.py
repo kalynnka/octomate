@@ -3,7 +3,12 @@
 from pathlib import Path
 from typing import Literal, NamedTuple
 
-from openai_codex.generated.v2_all import Model, ReasoningEffort, SkillScope
+from openai_codex.generated.v2_all import (
+    Model,
+    ReasoningEffort,
+    SkillScope,
+    TurnEnvironmentParams,
+)
 from openai_codex.generated.v2_all import ThreadForkParams as SdkThreadForkParams
 from openai_codex.generated.v2_all import ThreadResumeParams as SdkThreadResumeParams
 from openai_codex.generated.v2_all import ThreadStartParams as SdkThreadStartParams
@@ -23,6 +28,9 @@ class ThreadStartParams(SdkThreadStartParams):
     permissions: PermissionProfile = Field(
         description="Native permission profile to select."
     )
+    environments: list[TurnEnvironmentParams] | None = Field(
+        default=None, description="Execution environments selected for this operation."
+    )
 
 
 class ThreadResumeParams(SdkThreadResumeParams):
@@ -30,6 +38,9 @@ class ThreadResumeParams(SdkThreadResumeParams):
 
     permissions: PermissionProfile = Field(
         description="Native permission profile to select."
+    )
+    environments: list[TurnEnvironmentParams] | None = Field(
+        default=None, description="Execution environments selected for this operation."
     )
 
 
@@ -40,6 +51,9 @@ class ThreadForkParams(SdkThreadForkParams):
         default=None,
         description="Native permission profile to select; otherwise inherit.",
     )
+    environments: list[TurnEnvironmentParams] | None = Field(
+        default=None, description="Execution environments selected for this operation."
+    )
 
 
 class TurnStartParams(SdkTurnStartParams):
@@ -48,6 +62,9 @@ class TurnStartParams(SdkTurnStartParams):
     permissions: PermissionProfile | None = Field(
         default=None,
         description="Native permission profile; omitted when the habitat supplies external sandboxing.",
+    )
+    environments: list[TurnEnvironmentParams] | None = Field(
+        default=None, description="Execution environments selected for this operation."
     )
 
 
@@ -66,6 +83,10 @@ class ThreadSettingsUpdateResponse(BaseModel):
     The SDK omits this experimental endpoint. Codex emits
     thread/settings/updated when the settings have been applied for future turns.
     """
+
+
+class EnvironmentAddResponse(BaseModel):
+    """Native acknowledgement of executor registration, omitted by the SDK."""
 
 
 class CodexCommandDescriptor(CommandDescriptor, frozen=True):
