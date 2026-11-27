@@ -14,6 +14,7 @@ import typer
 from octomate_cli.config import CLISettings, cli_settings
 from octomate_cli.tentacles.deepseek.config import (
     DshHomeOption,
+    DshProfileManifest,
     dsh_home,
     patch_file,
     patch_text_with_block,
@@ -118,24 +119,46 @@ def mcp_install(
         dsh_executable()
         connector.mkdir(parents=True, exist_ok=True)
         source = Path(__file__).with_name("connector")
-        for name in ["package.json", "index.mjs"]:
-            shutil.copyfile(source / name, connector / name)
-        (connector / "cordis.patch.yml").write_text(
+        files = {
+            name: (source / name).read_bytes() for name in ["package.json", "index.mjs"]
+        }
+        files["cordis.patch.yml"] = (
             f"- insert:\n    - id: {MCP_ROW_ID}\n"
             f"      name: '{CONNECTOR_PACKAGE}'\n"
             f"      config:\n        url: {json.dumps(target)}\n"
-        )
+        ).encode()
+        changed = False
+        for name, content in files.items():
+            path = connector / name
+            if path.exists() and path.read_bytes() == content:
+                continue
+            path.write_bytes(content)
+            changed = True
         patch = patch_file(target_home)
         if patch.exists():
+            original = patch.read_text()
+            text = patch_text_without_block(original, MCP_MARK_BEGIN, MCP_MARK_END)
             text = patch_text_without_block(
-                patch.read_text(), MCP_MARK_BEGIN, MCP_MARK_END
+                text, LEGACY_MCP_MARK_BEGIN, LEGACY_MCP_MARK_END
             )
-            patch.write_text(
-                patch_text_without_block(
-                    text, LEGACY_MCP_MARK_BEGIN, LEGACY_MCP_MARK_END
-                )
-            )
-        plugin_command(target_home, profile, "add", str(connector))
+            if text != original:
+                patch.write_text(text)
+        profile_dir = target_home / "profiles" / profile
+        manifest_path = profile_dir / "package.json"
+        manifest = (
+            DshProfileManifest.model_validate_json(manifest_path.read_bytes())
+            if manifest_path.exists()
+            else DshProfileManifest()
+        )
+        package = profile_dir / "node_modules" / CONNECTOR_PACKAGE
+        if (
+            changed
+            or manifest.dependencies.get(CONNECTOR_PACKAGE) != f"link:{connector}"
+            or CONNECTOR_PACKAGE not in manifest.bundles
+            or not package.is_dir()
+            or package.resolve() != connector
+        ):
+            plugin_command(target_home, profile, "add", str(connector))
         typer.secho(
             f"Installed Octomate OAuth connector in DSH profile {profile!r} → {target}",
             fg=typer.colors.CYAN,
@@ -270,8 +293,9 @@ def mcp_login(dsh_url: DshUrlOption = None) -> None:
             f"DSH OAuth login did not complete: {error}", fg=typer.colors.RED, err=True
         )
         typer.secho(
-            "Start or restart the DSH profile containing the connector, configure its "
-            "launch URL with `octomate configure --dsh-url`, then run "
+            "Check that DSH and the Octomate API and authorization UI are running "
+            "and reachable. Verify DSH's launch URL with `octomate configure --dsh-url` "
+            "and check DSH's authorization diagnostics, then retry "
             "`octomate deepseek mcp login`.",
             dim=True,
             err=True,
