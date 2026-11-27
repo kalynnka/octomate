@@ -250,12 +250,16 @@ class ConsoleFiles(StaticFiles):
 
     async def get_response(self, path: str, scope: Scope) -> Response:
         try:
-            return await super().get_response(path, scope)
+            response = await super().get_response(path, scope)
         except HTTPException as missing:
             accept = Headers(scope=scope).get("accept", "")
             if missing.status_code != 404 or "text/html" not in accept:
                 raise
-            return await super().get_response("index.html", scope)
+            response = await super().get_response("index.html", scope)
+        if response.headers.get("content-type", "").startswith("text/html"):
+            response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+            response.headers["X-Frame-Options"] = "DENY"
+        return response
 
 
 class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):

@@ -183,8 +183,9 @@ async def test_complete_flow_refresh_and_revocation(
         )
     ).status_code == 401
     page = await browser.get("/oauth/consent")
-    assert page.status_code == 200
-    assert page.headers["x-frame-options"] == "DENY"
+    assert page.status_code == 302
+    assert page.headers["location"] == f"{ORIGIN}/auth/authorize"
+    assert page.headers["cache-control"] == "no-store"
     assert ticket not in page.text
     user_id = await sign_in(browser, auth)
     inspect = await browser.post(
@@ -475,11 +476,12 @@ async def test_registration_and_pending_consent_store_no_raw_ticket(
         "https://user:pass@host.test",
     ],
 )
-def test_issuer_configuration_rejects_non_origin_urls(
-    auth: AuthManager, url: str
+@pytest.mark.parametrize("field", ["oauth_issuer_url", "oauth_ui_url"])
+def test_oauth_configuration_rejects_non_origin_urls(
+    auth: AuthManager, url: str, field: str
 ) -> None:
     with pytest.raises(ValidationError):
-        AuthConfig.model_validate({**auth.config.model_dump(), "oauth_issuer_url": url})
+        AuthConfig.model_validate({**auth.config.model_dump(), field: url})
 
 
 async def test_disabled_issuer_has_no_protocol(
@@ -609,7 +611,7 @@ async def test_project_mounts_protocol_only_when_configured(
         response = await client.get("/.well-known/oauth-authorization-server")
         assert response.status_code == (200 if enabled else 404)
         consent = await client.get("/oauth/consent")
-        assert consent.status_code == (200 if enabled else 404)
+        assert consent.status_code == (302 if enabled else 404)
         assert (await client.get("/api/oauth/consent")).status_code == 404
         style = await client.get("/oauth/design/lonetrail.css")
         assert style.status_code == (200 if enabled or callback_enabled else 404)
@@ -638,12 +640,9 @@ async def test_concurrent_approval_and_denial_make_one_decision(
     assert sorted(result.status_code for result in results) == [200, 400]
 
 
-async def test_consent_reuses_local_trunkline_design_assets(
+async def test_callback_retains_local_trunkline_design_assets(
     browser: httpx2.AsyncClient,
 ) -> None:
-    page = await browser.get("/oauth/consent")
-    assert "/oauth/design/lonetrail.css" in page.text
-    assert "font-src 'self'" in page.headers["content-security-policy"]
     stylesheet = await browser.get("/oauth/design/lonetrail.css")
     assert stylesheet.status_code == 200
     assert "--page-bg:" in stylesheet.text
@@ -655,3 +654,13 @@ async def test_consent_reuses_local_trunkline_design_assets(
     assert font.content.startswith(b"OTTO")
     for name in ["unknown.woff2", "lonetrail.css", "..%2F..%2Fauthorization.py"]:
         assert (await browser.get(f"/oauth/design/fonts/{name}")).status_code == 404
+
+
+async def test_consent_redirects_to_configured_trunkline_origin(
+    browser: httpx2.AsyncClient, auth: AuthManager
+) -> None:
+    auth.config.oauth_ui_url = AnyHttpUrl("https://console.test")
+    response = await browser.get("/oauth/consent", headers={"host": "untrusted.test"})
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://console.test/auth/authorize"
+    assert response.headers["cache-control"] == "no-store"

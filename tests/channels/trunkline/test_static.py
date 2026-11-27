@@ -54,6 +54,8 @@ async def test_frontend_uses_the_enabled_channels_static_directory(
     if enabled and static_dir is not None:
         assert app.url_path_for("console", path="app.js") == "/app.js"
         assert index.text == "<html>Trunkline</html>"
+        assert index.headers["x-frame-options"] == "DENY"
+        assert index.headers["content-security-policy"] == "frame-ancestors 'none'"
         assert asset.text == "window.trunkline = true;"
     assert health.status_code == (503 if enabled else 404)
     assert mcp.status_code == 401
@@ -97,6 +99,7 @@ async def test_a_console_page_reloads_into_the_console(tmp_path: Path) -> None:
             "/threads/01a117fb-8ed6-7b82-be5f-6db7923b94d9", headers=page
         )
         control = await client.get("/control/agents", headers=page)
+        consent = await client.get("/auth/authorize", headers=page)
         artifact = await client.get(f"/artifacts/{uuid7()}", headers=page)
         asset = await client.get("/app.js", headers=page)
         missing_asset = await client.get("/missing.js")
@@ -105,6 +108,10 @@ async def test_a_console_page_reloads_into_the_console(tmp_path: Path) -> None:
         )
     assert (thread.status_code, thread.text) == (200, "<html>Trunkline</html>")
     assert (control.status_code, control.text) == (200, "<html>Trunkline</html>")
+    assert (consent.status_code, consent.text) == (200, "<html>Trunkline</html>")
     assert (artifact.status_code, artifact.text) == (200, "<html>Trunkline</html>")
+    assert thread.headers["x-frame-options"] == "DENY"
+    assert control.headers["content-security-policy"] == "frame-ancestors 'none'"
+    assert "x-frame-options" not in asset.headers
     assert asset.text == "window.trunkline = true;"
     assert (missing_asset.status_code, missing_api.status_code) == (404, 404)

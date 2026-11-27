@@ -55,13 +55,18 @@ class AuthConfig(BaseModel):
         description="Public origin for inbound OAuth. Enables native-harness and CLI authorization; HTTPS except for local development.",
     )
 
-    @field_validator("oauth_issuer_url")
+    oauth_ui_url: AnyHttpUrl | None = Field(
+        default=None,
+        description="Trunkline origin for OAuth sign-in and consent; defaults to the issuer origin when Trunkline is served there.",
+    )
+
+    @field_validator("oauth_issuer_url", "oauth_ui_url")
     @classmethod
     def validate_oauth_issuer(cls, value: AnyHttpUrl | None) -> AnyHttpUrl | None:
         if value is not None:
             validate_issuer_url(value)
             if value.path not in {None, "/"} or value.username or value.password:
-                raise ValueError("OAuth issuer must be an origin without credentials")
+                raise ValueError("OAuth origins must not contain a path or credentials")
         return value
 
     oauth_grant_idle_lifetime: timedelta = Field(

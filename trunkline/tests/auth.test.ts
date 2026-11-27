@@ -24,7 +24,7 @@ before(async () => {
 after(async () => { await server?.close() })
 afterEach(() => {
   mock.restoreAll()
-  useAuth.setState({ status: 'booting', user: null, page: 'login', invitation: '', linkProfile: '', notice: null, relay: 'ok' })
+  useAuth.setState({ status: 'booting', user: null, page: 'login', invitation: '', linkProfile: '', oauthConsent: '', notice: null, relay: 'ok' })
   delete browser.window
   delete browser.history
 })
@@ -153,3 +153,23 @@ test('wrong current password leaves the user signed in', async () => {
   await assert.rejects(useAuth.getState().actions.changePassword({ current_password: 'wrong', password: 'New password1!' }))
   assert.equal(useAuth.getState().status, 'signed-in')
 })
+
+for (const signedIn of [false, true]) {
+  test(`an OAuth ticket survives entry and sign-in (existing session: ${signedIn})`, async () => {
+    browser.window = { location: { hash: '#ticket=consent-ticket', pathname: '/auth/authorize', search: '' } }
+    const replaceState = mock.fn<History['replaceState']>()
+    browser.history = { replaceState }
+    mock.method(globalThis, 'fetch', async () => signedIn
+      ? Response.json(user) : new Response(null, { status: 401 }))
+    await useAuth.getState().actions.boot()
+    assert.equal(useAuth.getState().status, signedIn ? 'signed-in' : 'signed-out')
+    assert.equal(useAuth.getState().oauthConsent, 'consent-ticket')
+    assert.deepEqual(replaceState.mock.calls[0].arguments, [null, '', '/auth/authorize'])
+    if (!signedIn) {
+      mock.method(globalThis, 'fetch', async () => Response.json(user))
+      await useAuth.getState().actions.signIn('alice', 'Test password1!')
+    }
+    assert.equal(useAuth.getState().status, 'signed-in')
+    assert.equal(useAuth.getState().oauthConsent, 'consent-ticket')
+  })
+}

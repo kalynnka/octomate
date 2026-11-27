@@ -288,3 +288,33 @@ export async function confirmLinkProfile(token: string, expectedUserId: string):
   if (!res.ok) return refuse(res)
   return (await res.json()) as ApiUserProfile
 }
+
+
+export interface ApiOAuthConsent {
+  client_name: string
+  redirect_uri: string
+  resource: string
+  scopes: ApiKeyScope[]
+  user_id: string
+  username: string
+}
+
+export async function inspectOAuthConsent(ticket: string): Promise<ApiOAuthConsent> {
+  const res = await apiFetch('/oauth/consent/inspect', { method: 'POST', json: { ticket } })
+  if (!res.ok) {
+    if (res.status === 400) throw new ApiError(400, 'This request is invalid or expired. Start again from your application.')
+    return refuse(res)
+  }
+  return (await res.json()) as ApiOAuthConsent
+}
+
+export async function decideOAuthConsent(ticket: string, userId: string, approve: boolean): Promise<string> {
+  const res = await apiFetch('/oauth/consent/decide', {
+    method: 'POST', json: { ticket, expected_user_id: userId, approve },
+  })
+  if (!res.ok) {
+    if (res.status === 400) throw new ApiError(400, 'Authorization failed. Start again from your application.')
+    return refuse(res)
+  }
+  return ((await res.json()) as { redirect_uri: string }).redirect_uri
+}

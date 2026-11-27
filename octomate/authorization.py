@@ -5,12 +5,11 @@ import hashlib
 import hmac
 import secrets
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from mcp.server.auth.provider import construct_redirect_uri
 from mcp.shared.auth import (
     OAuthMetadata,
@@ -43,7 +42,6 @@ NO_STORE = {
     "Pragma": "no-cache",
     "Referrer-Policy": "no-referrer",
 }
-CONSENT_PAGE = Path(__file__).with_name("authorization.html").read_text()
 
 
 class Registration(BaseModel):
@@ -322,15 +320,15 @@ async def authorize(
     )
 
 
-@router.get("/consent", response_class=HTMLResponse)
-async def consent_page() -> HTMLResponse:
-    return HTMLResponse(
-        CONSENT_PAGE,
-        headers={
-            **NO_STORE,
-            "X-Frame-Options": "DENY",
-            "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
-        },
+@router.get("/consent")
+async def consent_page(
+    manager: Annotated[AuthManager, Depends(auth_manager)],
+    origin: Annotated[str, Depends(issuer)],
+) -> RedirectResponse:
+    # Browsers retain the request's ticket fragment when Location has no fragment.
+    target = str(manager.config.oauth_ui_url or origin).rstrip("/")
+    return RedirectResponse(
+        f"{target}/auth/authorize", status_code=302, headers=NO_STORE
     )
 
 
