@@ -44,6 +44,7 @@ from time import monotonic
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
+from httpx2 import HTTPError
 from octomate_protocol.deepseek import (
     ClientRequest,
     ErrResult,
@@ -66,6 +67,7 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
 from websockets.sync.client import connect as connect_sync
 
+from octomate_cli.auth import LoginRequired, LoginStore, bearer
 from octomate_cli.config import CLISettings, cli_settings
 from octomate_cli.streaming.files import (
     BACKOFF_CAP,
@@ -295,14 +297,18 @@ async def stream_session(
     session_id: str,
     transcript_path: Path,
     cwd: str,
-    token: str,
+    token: str | None,
     dsh_url: str,
 ) -> bool:
     """One connection's life. True when the session is done (the server said
     finalize, or it went idle); False to reconnect and resume."""
     history = await asyncio.to_thread(DshHistoryClient, dsh_url)
+    credential = await asyncio.to_thread(bearer, url, token)
+    if credential is None:
+        raise LoginRequired("No CLI credential found. Run `octomate login`.")
     async with connect(
-        url, additional_headers={"Authorization": f"Bearer {token}"}
+        url,
+        additional_headers={"Authorization": f"Bearer {credential.get_secret_value()}"},
     ) as websocket:
         await websocket.send(
             StreamHello(
@@ -397,7 +403,7 @@ async def run_tail(
     session_id: str,
     transcript_path: Path,
     cwd: str,
-    token: str,
+    token: str | None,
     dsh_url: str,
 ) -> None:
     """The reconnect loop around `stream_session`, mirroring the file tails':
@@ -420,11 +426,14 @@ async def run_tail(
                 print(f"octomate: stream refused: {reason}", file=sys.stderr)
                 return
             attempt += 1
+        except (LoginRequired, HTTPError) as error:
+            print(f"octomate: {error}", file=sys.stderr)
+            return
         except InvalidStatus as denied:
             if denied.response.status_code in {401, 403}:
                 print(
-                    "octomate: stream denied — a valid API token with hooks scope "
-                    "is required. Run `octomate configure --token <api-token>`.",
+                    "octomate: stream denied — a valid credential with hooks scope "
+                    "is required. Run `octomate login` or `octomate configure --token <api-token>`.",
                     file=sys.stderr,
                 )
                 return
@@ -446,11 +455,11 @@ def main(
     dsh_url: str,
 ) -> None:
     token = cli_settings().token
-    if not token:
+    if not token and not LoginStore(url).path.is_file():
         print(
             f"octomate: no credential — {CLISettings.env('token')} is unset and the "
             "client config holds none, so this session is not being streamed. "
-            "Run `octomate configure --token <api-token>`.",
+            "Run `octomate login` or `octomate configure --token <api-token>`.",
             file=sys.stderr,
         )
         raise SystemExit(1)

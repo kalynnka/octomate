@@ -41,6 +41,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Literal
 
+from httpx2 import HTTPError
 from octomate_protocol.stream import (
     STREAM_PROTOCOL,
     StreamEof,
@@ -60,6 +61,7 @@ from watchfiles import awatch
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
 
+from octomate_cli.auth import LoginRequired, LoginStore, bearer
 from octomate_cli.config import (
     CLISettings,
     cli_settings,
@@ -365,15 +367,19 @@ async def stream_session(
     session_id: str,
     transcript_path: Path,
     cwd: str,
-    token: str,
+    token: str | None,
     spool: Path | None = None,
     *,
     tail_type: type[SessionTail] = SessionTail,
 ) -> bool:
     """One connection's life. True when the session is done (the server said finalize,
     or it went idle and drained out); False to reconnect and resume."""
+    credential = await asyncio.to_thread(bearer, url, token)
+    if credential is None:
+        raise LoginRequired("No CLI credential found. Run `octomate login`.")
     async with connect(
-        url, additional_headers={"Authorization": f"Bearer {token}"}
+        url,
+        additional_headers={"Authorization": f"Bearer {credential.get_secret_value()}"},
     ) as websocket:
         await websocket.send(
             StreamHello(
@@ -467,7 +473,7 @@ async def run_tail(
     session_id: str,
     transcript_path: Path,
     cwd: str,
-    token: str,
+    token: str | None,
     spool: Path | None = None,
     *,
     tail_type: type[SessionTail] = SessionTail,
@@ -496,13 +502,16 @@ async def run_tail(
                 print(f"octomate: stream refused: {reason}", file=sys.stderr)
                 return
             attempt += 1
+        except (LoginRequired, HTTPError) as error:
+            print(f"octomate: {error}", file=sys.stderr)
+            return
         except InvalidStatus as denied:
             # A pre-accept denial arrives as an HTTP handshake rejection, not a
             # close code — `hook_guard`'s 401 — and does not heal by retrying.
             if denied.response.status_code in {401, 403}:
                 print(
-                    "octomate: stream denied — a valid API token with hooks scope "
-                    "is required. Run `octomate configure --token <api-token>`.",
+                    "octomate: stream denied — a valid credential with hooks scope "
+                    "is required. Run `octomate login` or `octomate configure --token <api-token>`.",
                     file=sys.stderr,
                 )
                 return
@@ -538,11 +547,11 @@ def main(
         with spool.open("a") as handle:
             handle.write(f"{agent_path}\n")
     token = cli_settings().token
-    if not token:
+    if not token and not LoginStore(url).path.is_file():
         print(
             f"octomate: no credential — {CLISettings.env('token')} is unset and the "
             "client config holds none, so this session is not being streamed. "
-            "Run `octomate configure --token <api-token>`.",
+            "Run `octomate login` or `octomate configure --token <api-token>`.",
             file=sys.stderr,
         )
         raise SystemExit(1)

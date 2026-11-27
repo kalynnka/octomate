@@ -31,25 +31,31 @@ class KnownBearers(TokenVerifier):
         self.users: UserManager = users
 
     async def owner(self, token: str, *, scope: ApiKeyScope) -> str | None:
+        principal = await self.verify_token(token, scope=scope)
+        return principal.subject if principal is not None else None
+
+    async def verify_token(
+        self, token: str, *, scope: ApiKeyScope = "mcp"
+    ) -> AccessToken | None:
         if self.auth is None:
             return None
         key = await self.auth.authenticate_api_key(SecretStr(token), scope=scope)
-        if key is None:
-            return None
-        user = await self.users.get(key.user_id)
-        return user.username if user is not None else None
-
-    async def verify_token(self, token: str) -> AccessToken | None:
-        owner = await self.owner(token, scope="mcp")
-        if owner is not None:
+        if key is not None:
+            user = await self.users.get(key.user_id)
+            if user is None:
+                return None
             return AccessToken(
-                token=token, client_id=owner, subject=owner, scopes=["mcp"]
+                token=token,
+                client_id=user.username,
+                subject=user.username,
+                scopes=[scope],
             )
-        if self.auth is None or self.auth.config.oauth_issuer_url is None:
+        if self.auth.config.oauth_issuer_url is None:
             return None
         issuer = str(self.auth.config.oauth_issuer_url).rstrip("/")
+        resource_path = OCTOMATE_MCP_PATH if scope == "mcp" else "/api"
         principal = await self.auth.authenticate_oauth_token(
-            SecretStr(token), resource=f"{issuer}{OCTOMATE_MCP_PATH}", scope="mcp"
+            SecretStr(token), resource=f"{issuer}{resource_path}", scope=scope
         )
         if principal is None:
             return None

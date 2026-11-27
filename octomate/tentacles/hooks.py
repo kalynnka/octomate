@@ -39,7 +39,7 @@ async def verify_hook_key(
 def hook_guard(
     bearers: KnownBearers,
 ) -> Callable[[str | None], Awaitable[str]]:
-    """Authenticate a hook request against API tokens with the hooks scope.
+    """Authenticate a hook request with a hooks-scoped API key or OAuth token.
 
     The dependency yields the owner's username for ledger attribution.
     """

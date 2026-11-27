@@ -12,6 +12,7 @@ from typing import Annotated
 
 import typer
 
+from octomate_cli.auth import login, logout
 from octomate_cli.cli import upgrade
 from octomate_cli.config import configure
 from octomate_cli.habitat import habitat_typer
@@ -25,6 +26,8 @@ app = typer.Typer(help="Octomate operator CLI.", no_args_is_help=True)
 app.command("upgrade")(upgrade)
 # The client API token is read by each agent's hooks, tail and MCP entry.
 app.command("configure")(configure)
+app.command("login")(login)
+app.command("logout")(logout)
 app.add_typer(service_typer, name="service")
 app.add_typer(habitat_typer, name="habitat")
 app.add_typer(mcp_typer, name="mcp")
