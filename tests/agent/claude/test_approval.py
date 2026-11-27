@@ -114,6 +114,9 @@ class ScriptedClaudeClient:
     async def query(self, prompt: str) -> None:
         return None
 
+    async def interrupt(self) -> None:
+        raise AssertionError("Unexpected interruption of the approval client")
+
     async def receive_response(self) -> AsyncIterator[Message]:
         assert self.options is not None
         if ScriptedClaudeClient.mode in ("approval", "approval_twice"):

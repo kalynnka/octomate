@@ -524,6 +524,9 @@ class RecordingClaudeClient:
     async def query(self, prompt: str) -> None:
         return None
 
+    async def interrupt(self) -> None:
+        raise AssertionError("Unexpected interruption of the recording client")
+
     async def receive_response(self) -> AsyncIterator[ClaudeMessage]:
         yield ResultMessage(
             subtype="success",

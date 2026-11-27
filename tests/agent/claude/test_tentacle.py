@@ -118,6 +118,9 @@ class FakeClaudeClient:
     async def query(self, prompt: str) -> None:
         FakeClaudeClient.last_prompt = prompt
 
+    async def interrupt(self) -> None:
+        raise AssertionError("Unexpected interruption of the scripted client")
+
     async def receive_response(self) -> AsyncIterator[Message]:
         yield AssistantMessage(
             content=[

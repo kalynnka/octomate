@@ -31,13 +31,14 @@ HERE = ChannelAddress("web", "thread", "lu", "lu", channel_thread_id="t1")
 THERE = ChannelAddress("web", "thread", "lu", "lu", channel_thread_id="t2")
 FAR = ChannelAddress("slack", "dm", "D1", "U1")
 EVENT = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="hi"))
-SIGNAL = AsleepSignal(invocation_id=uuid7())
+INVOCATION_ID = uuid7()
+SIGNAL = AsleepSignal(invocation_id=INVOCATION_ID)
 LATER = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="there"))
 
 
 async def test_directed_delivery_requires_one_ready_receiver() -> None:
     nerve = Nerve[Signal]()
-    topic = InvocationTopic(SIGNAL.invocation_id)
+    topic = InvocationTopic(INVOCATION_ID)
     with pytest.raises(FiberError, match="exactly one"):
         nerve.dispatch(topic, SIGNAL)
     async with MemoryFiber[Signal]() as first, MemoryFiber[Signal]() as second:
@@ -58,7 +59,7 @@ async def test_directed_delivery_requires_one_ready_receiver() -> None:
 
 async def test_directed_delivery_reports_a_full_receiver() -> None:
     nerve = Nerve[Signal]()
-    topic = InvocationTopic(SIGNAL.invocation_id)
+    topic = InvocationTopic(INVOCATION_ID)
     async with nerve.subscribe(topic, backlog=1) as receiver:
         nerve.dispatch(topic, SIGNAL)
         with pytest.raises(anyio.WouldBlock):
