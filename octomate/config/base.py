@@ -162,9 +162,10 @@ class OctomateConfig(BaseSettings):
             if self.habitats[agent.habitat].mode == "srt" and agent.type not in {
                 "claude",
                 "codex",
+                "deepseek",
             }:
                 raise ValueError(
-                    f"SRT habitats support only Claude and Codex; agent {name!r} must select native/sbx"
+                    f"SRT habitats support only Claude, Codex and DeepSeek; agent {name!r} must select native/sbx"
                 )
         return self
 

@@ -208,6 +208,29 @@ def test_sbx_selection_accepts_supported_agents(agent: str) -> None:
     ) == ({agent: HabitatMode.sbx}, image)
 
 
+@pytest.mark.parametrize("agent", ["claude", "codex", "deepseek"])
+def test_srt_selection_accepts_supported_agents(agent: str) -> None:
+    assert habitat_step(
+        [agent],
+        HabitatMode.srt,
+        None,
+        interactive=False,
+        target=DeploymentTarget.launchd,
+    ) == ({agent: HabitatMode.srt}, None)
+
+
+@pytest.mark.parametrize("agent", ["acp", "inkling"])
+def test_srt_selection_rejects_unsupported_agents(agent: str) -> None:
+    with pytest.raises(typer.BadParameter, match="SRT is currently supported only"):
+        habitat_step(
+            [agent],
+            HabitatMode.srt,
+            None,
+            interactive=False,
+            target=DeploymentTarget.launchd,
+        )
+
+
 def test_domains_match_the_shipped_kit() -> None:
     kit = yaml.safe_load(
         (Path(__file__).parents[2] / "octomate/habitat/spec.yaml").read_text()
@@ -246,7 +269,6 @@ def test_sbx_selection_rejects_unsupported_runtime(
 @pytest.mark.parametrize(
     ("assignments", "message"),
     [
-        (["deepseek=srt"], "only for Claude and Codex"),
         (["claude=unknown"], "native, srt or sbx"),
         (["other=native"], "selected AGENT=MODE"),
         (["claude"], "selected AGENT=MODE"),

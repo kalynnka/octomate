@@ -20,6 +20,7 @@ import contextlib
 import logging
 import os
 import re
+import shutil
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,7 +33,12 @@ from anyio.streams.buffered import BufferedByteReceiveStream
 from pydantic import HttpUrl, SecretStr
 
 from octomate.habitat.sbx import SbxHabitat
-from octomate.tentacles.deepseek.schema import DrivenConfigPatch
+from octomate.habitat.srt import SrtHabitat
+from octomate.tentacles.deepseek.schema import (
+    DrivenConfigPatch,
+    WorkspaceConfig,
+    WorkspacePlugin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +90,7 @@ class DeepseekProcess:
     dsh_home: Path
     ready_timeout: float
     browser_url: HttpUrl | None = None
-    habitat: SbxHabitat | None = None
+    habitat: SbxHabitat | SrtHabitat | None = None
     env: dict[str, str] = field(default_factory=dict)
     guest_task: asyncio.Task[None] | None = field(default=None, init=False)
     guest_stop: asyncio.Event = field(default_factory=asyncio.Event, init=False)
@@ -155,7 +161,7 @@ class DeepseekProcess:
         the retry would only hide the real error behind a second identical
         failure.
         """
-        if self.habitat is not None:
+        if isinstance(self.habitat, SbxHabitat):
             endpoint: asyncio.Future[HttpUrl] = (
                 asyncio.get_running_loop().create_future()
             )
@@ -328,7 +334,11 @@ class DeepseekProcess:
             *([NO_OPEN] if suppress_browser else []),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**self.child_environment(), "DSH_HOME": self.runtime_home.name},
+            env={
+                **self.child_environment(),
+                **self.env,
+                "DSH_HOME": self.runtime_home.name,
+            },
         )
         self.process = process
         stdout, stderr = process.stdout, process.stderr
@@ -355,7 +365,7 @@ class DeepseekProcess:
 
     def driven_patch(self, shared_home: Path) -> DrivenConfigPatch:
         """Isolate extensions while keeping durable data in the runtime home."""
-        return DrivenConfigPatch(
+        patch = DrivenConfigPatch(
             [
                 {
                     "id": "settings",
@@ -438,6 +448,46 @@ class DeepseekProcess:
                 },
             ]
         )
+        if isinstance(self.habitat, SrtHabitat):
+            habitat = self.habitat
+            if habitat.settings is None or habitat.executable is None:
+                raise RuntimeError("Prepare the DSH SRT habitat before starting web")
+            executable = shutil.which(self.executable)
+            if executable is None:
+                raise RuntimeError("Configured DSH executable was not found")
+            plugin = Path(__file__).with_name("workspace.mjs")
+            plugins: list[WorkspacePlugin] = []
+            for entry in patch.root:
+                if "id" not in entry:
+                    continue
+                if entry["id"] == "sandbox-policy":
+                    entry["config"]["workspaceRoot"] = str(habitat.root)
+                if (
+                    entry["id"] == "sandbox"
+                    or entry["id"] == "bash-sandbox"
+                    or entry["id"] == "fs-sandbox"
+                ):
+                    entry["disabled"] = True
+            for capability in ("sandbox", "shell", "fs"):
+                plugins.append(
+                    WorkspacePlugin(
+                        id="workspace-sandbox"
+                        if capability == "sandbox"
+                        else "workspace-shell"
+                        if capability == "shell"
+                        else "workspace-fs",
+                        name=plugin,
+                        config=WorkspaceConfig(
+                            capability=capability,
+                            executable=str(Path(executable).resolve()),
+                            runtime=str(Path(habitat.executable).with_name("index.js")),
+                            settings=str(Path(habitat.settings.name) / "settings.json"),
+                            root=str(habitat.root),
+                        ),
+                    )
+                )
+            patch.root.append({"insert": plugins})
+        return patch
 
     async def read_banner(
         self, process: asyncio.subprocess.Process, stdout: asyncio.StreamReader

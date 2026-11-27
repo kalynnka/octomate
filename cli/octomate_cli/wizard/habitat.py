@@ -31,7 +31,7 @@ def habitat_step(
     for agent in agents:
         if agent not in selections:
             choices = [HabitatMode.native, HabitatMode.sbx]
-            if agent in {"claude", "codex"}:
+            if agent in {"claude", "codex", "deepseek"}:
                 choices.insert(1, HabitatMode.srt)
             selections[agent] = mode or (
                 HabitatMode(
@@ -45,9 +45,13 @@ def habitat_step(
                 if interactive
                 else HabitatMode.native
             )
-        if selections[agent] == HabitatMode.srt and agent not in {"claude", "codex"}:
+        if selections[agent] == HabitatMode.srt and agent not in {
+            "claude",
+            "codex",
+            "deepseek",
+        }:
             raise typer.BadParameter(
-                "SRT is currently supported only for Claude and Codex."
+                "SRT is currently supported only for Claude, Codex and DeepSeek."
             )
         if selections[agent] == HabitatMode.sbx and agent not in SBX_AGENTS:
             raise typer.BadParameter(
